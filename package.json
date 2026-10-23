@@ -1,13 +1,13 @@
 {
   "name": "agent-notebook",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A bounded, voted, plain-text memory for AI agents. Zero dependencies, one small file per role, no embeddings, no vector DB.",
   "license": "MIT",
   "author": "Jean Ibarz",
   "homepage": "https://github.com/jeanibarz/agent-notebook",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jeanibarz/agent-notebook.git"
+    "url": "git+https://github.com/jeanibarz/agent-notebook.git"
   },
   "bugs": "https://github.com/jeanibarz/agent-notebook/issues",
   "keywords": [
@@ -39,6 +39,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "pretest": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build && npm test"

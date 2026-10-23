@@ -15,6 +15,9 @@
 // Every call appends one line to the usage ring so `nb stats` can surface
 // loop / went-silent / high-error-rate anomalies.
 
+import { realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+
 import {
   addEntry,
   logUsage,
@@ -178,7 +181,21 @@ function renderStats(dir: string, role: string | undefined, windowMs: number | u
 }
 
 /* c8 ignore start */
-if (import.meta.url === `file://${process.argv[1]}`) {
+// `process.argv[1]` is the invoked path (e.g. an npm bin symlink such as
+// node_modules/.bin/nb); `import.meta.url` resolves through that symlink to
+// the real file. Comparing them directly never matches for a symlinked bin,
+// which silently skips this block (the CLI exits 0 having done nothing) —
+// resolve argv[1]'s realpath first so the comparison works either way.
+function isMainModule(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
   runNbCli(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   });

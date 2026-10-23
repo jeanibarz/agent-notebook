@@ -41,7 +41,15 @@ If you need retrieval over large unstructured context, use a real vector store. 
 npm install -g agent-notebook
 ```
 
-(Or run it straight out of a clone — see Development below. Not yet on the npm registry; see Status.)
+Or run it straight from a clone, without installing globally:
+
+```
+git clone https://github.com/jeanibarz/agent-notebook.git
+cd agent-notebook
+npm install
+npm run build
+npm link   # puts `nb` on your PATH, pointing at this clone
+```
 
 ## Usage
 
@@ -72,7 +80,7 @@ The CLI is a thin wrapper over this library — `src/notebook.ts` is the whole m
 
 ## Status
 
-Early. This started as an internal tool for a multi-agent orchestrator and is being published to see whether the underlying idea — bounded, voted, one-line memory — is useful outside that specific context. It's not yet on the npm registry, and there's no marketing push behind it: if you find it because you were already looking for something like this, that's the signal this is worth taking further. Issues and forks are welcome either way.
+Early. This started as an internal tool for a multi-agent orchestrator and is being published to see whether the underlying idea — bounded, voted, one-line memory — is useful outside that specific context. It's on npm, but there's no marketing push behind it: if you find it because you were already looking for something like this, that's the signal this is worth taking further. Issues and forks are welcome either way.
 
 ## Contributing
 
