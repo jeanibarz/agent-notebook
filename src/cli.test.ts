@@ -1,9 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { runNbCli } from './cli.js';
+
+const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
 let dir: string;
 const SAVED = { ...process.env };
@@ -98,10 +101,15 @@ describe('runNbCli', () => {
     expect(r.err).toContain('+1 or -1');
   });
 
-  test('--version exits 0', async () => {
-    const r = await run(['--version']);
-    expect(r.code).toBe(0);
-    expect(r.out).toMatch(/^nb \(agent-notebook\)/);
+  test('--version (and -v / version) print the real package version', async () => {
+    // Assert the exact package.json version, not just "a semver" — this also
+    // catches a silent fallback (e.g. 0.0.0) if version resolution breaks.
+    expect(PKG_VERSION).toMatch(/^\d+\.\d+\.\d+/);
+    for (const flag of ['--version', '-v', 'version']) {
+      const r = await run([flag]);
+      expect(r.code).toBe(0);
+      expect(r.out).toBe(`nb (agent-notebook) ${PKG_VERSION}\n`);
+    }
   });
 
   test('an over-long add exits 1, is not stored, and tells the agent to retry', async () => {

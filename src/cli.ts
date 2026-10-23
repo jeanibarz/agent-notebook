@@ -16,6 +16,7 @@
 // loop / went-silent / high-error-rate anomalies.
 
 import { realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 import {
@@ -53,6 +54,18 @@ notes:
 
 docs: https://github.com/jeanibarz/agent-notebook`;
 
+// Resolve the shipped package.json relative to this module (not the cwd):
+// `../package.json` is the tarball root both from src/ (tests) and dist/
+// (the published bin). npm always includes package.json at the tarball root.
+function pkgVersion(): string {
+  try {
+    const pkg = createRequire(import.meta.url)('../package.json') as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 function parseDelta(arg: string): number {
   const t = arg.trim();
   if (t === '+1' || t === '1' || t === '++') return 1;
@@ -67,7 +80,7 @@ export async function runNbCli(argv: string[]): Promise<number> {
     return 0;
   }
   if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
-    process.stdout.write('nb (agent-notebook)\n');
+    process.stdout.write(`nb (agent-notebook) ${pkgVersion()}\n`);
     return 0;
   }
 
