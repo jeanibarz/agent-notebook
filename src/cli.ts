@@ -21,6 +21,7 @@ import { pathToFileURL } from 'node:url';
 
 import {
   addEntry,
+  isValidWindow,
   logUsage,
   maxChars,
   merge,
@@ -137,7 +138,17 @@ export async function runNbCli(argv: string[]): Promise<number> {
       case 'stats': {
         const rest = argv.slice(1);
         const sinceIdx = rest.indexOf('--since');
-        const windowMs = sinceIdx >= 0 ? parseWindowMs(rest[sinceIdx + 1]) : undefined;
+        const sinceVal = sinceIdx >= 0 ? rest[sinceIdx + 1] : undefined;
+        // Share `nb add`'s refusal to silently mislead: a mistyped --since
+        // otherwise falls back to 7d while the user believes they filtered.
+        // Warn (naming the accepted format and window used), then proceed with
+        // the default rather than reject — the least-surprising, forgiving path.
+        if (sinceIdx >= 0 && !isValidWindow(sinceVal)) {
+          process.stderr.write(
+            `nb stats: unrecognized --since '${sinceVal ?? ''}' (use Nd/Nh/Nm); showing 7d\n`,
+          );
+        }
+        const windowMs = sinceIdx >= 0 ? parseWindowMs(sinceVal) : undefined;
         const maybeRole = rest.find((a, i) => !a.startsWith('--') && (sinceIdx < 0 || i !== sinceIdx + 1));
         role = maybeRole ?? '-';
         process.stdout.write(renderStats(dir, maybeRole, windowMs) + '\n');
