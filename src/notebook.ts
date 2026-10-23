@@ -436,10 +436,22 @@ function percentile(sorted: number[], p: number): number {
   return sorted[idx];
 }
 
+/** Accepted `--since` window shape: a count followed by d (days), h (hours), or m (minutes). */
+const WINDOW_RE = /^(\d+)([dhm])$/;
+
+/**
+ * True when `raw` is a window `parseWindowMs` recognizes (Nd/Nh/Nm). Lets the
+ * CLI tell a mistyped `--since` (which would silently fall back to the default)
+ * apart from a genuinely valid one, so it can warn instead of misleading.
+ */
+export function isValidWindow(raw: string | undefined): boolean {
+  return raw != null && WINDOW_RE.test(raw.trim());
+}
+
 /** Parse a window like `7d`, `12h`, `30m` into milliseconds. Default 7 days. */
 export function parseWindowMs(raw: string | undefined): number {
   if (!raw) return 7 * 24 * 3600_000;
-  const m = /^(\d+)([dhm])$/.exec(raw.trim());
+  const m = WINDOW_RE.exec(raw.trim());
   if (!m) return 7 * 24 * 3600_000;
   const n = Number.parseInt(m[1], 10);
   return n * (m[2] === 'd' ? 86_400_000 : m[2] === 'h' ? 3_600_000 : 60_000);

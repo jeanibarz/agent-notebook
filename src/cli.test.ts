@@ -82,6 +82,35 @@ describe('runNbCli', () => {
     expect(s.out).toContain('window 30m');
   });
 
+  test('a valid --since emits no warning', async () => {
+    await run(['add', 'patcher', 'x']);
+    const s = await run(['stats', 'patcher', '--since', '12h']);
+    expect(s.code).toBe(0);
+    expect(s.out).toContain('window 12h');
+    expect(s.err).toBe('');
+  });
+
+  test('a malformed --since warns naming the format and the window used, then proceeds', async () => {
+    await run(['add', 'patcher', 'x']);
+    const s = await run(['stats', 'patcher', '--since', '7days']);
+    expect(s.code).toBe(0);
+    expect(s.err).toContain("unrecognized --since '7days'");
+    expect(s.err).toContain('Nd/Nh/Nm'); // names the accepted format
+    expect(s.err).toContain('showing 7d'); // names the window actually used
+    expect(s.err.trimEnd().split('\n')).toHaveLength(1); // one line, per the acceptance criteria
+    expect(s.out).toContain('window 7d'); // falls back to the default and still reports
+  });
+
+  test('--since with no value warns, renders empty quotes, and still resolves the role', async () => {
+    await run(['add', 'patcher', 'x']);
+    const s = await run(['stats', 'patcher', '--since']); // --since is the final arg
+    expect(s.code).toBe(0);
+    expect(s.err).toContain("unrecognized --since ''"); // empty-quote fallback for a missing value
+    expect(s.err).toContain('showing 7d');
+    expect(s.out).toContain('window 7d');
+    expect(s.out).toContain('role patcher'); // role still parsed despite the dangling flag
+  });
+
   test('unknown command exits 2', async () => {
     const r = await run(['frobnicate', 'patcher']);
     expect(r.code).toBe(2);
