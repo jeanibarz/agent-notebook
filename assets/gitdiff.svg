@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 240" width="760" height="240" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" role="img" aria-label="git diff on a notebook file: an added lesson shows as a green plus line and a recorded vote as a minus/plus score change — memory you can code-review.">
+  <rect x="0.5" y="0.5" width="759" height="239" rx="12" fill="#0b0f15" stroke="#2a3340"/>
+  <path d="M0 34 H760" stroke="#2a3340"/>
+  <rect x="0.5" y="0.5" width="759" height="33.5" rx="12" fill="#1d2531"/>
+  <rect x="0.5" y="16" width="759" height="18" fill="#1d2531"/>
+  <circle cx="22" cy="17" r="5" fill="#e0708a"/>
+  <circle cx="42" cy="17" r="5" fill="#e8b05a"/>
+  <circle cx="62" cy="17" r="5" fill="#46bfa6"/>
+  <text x="84" y="21" font-size="12" fill="#5a6675">reviewer.md — two runs apart</text>
+
+  <!-- prompt -->
+  <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.03;0.06;0.94;1" dur="7s" repeatCount="indefinite"/>
+    <text x="20" y="70" font-size="14.5"><tspan fill="#46bfa6">$ </tspan><tspan fill="#e7ebf2">git diff reviewer.md</tspan></text></g>
+
+  <!-- context -->
+  <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.1;0.13;0.94;1" dur="7s" repeatCount="indefinite"/>
+    <text x="20" y="100" font-size="14.5" fill="#5a6675" xml:space="preserve">  +6  reproduce the bug before fixing</text></g>
+
+  <!-- removed (old vote value) -->
+  <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.16;0.19;0.94;1" dur="7s" repeatCount="indefinite"/>
+    <rect x="12" y="110" width="736" height="22" rx="3" fill="#e0708a" fill-opacity="0.10"/>
+    <text x="20" y="126" font-size="14.5" fill="#e0708a" xml:space="preserve">- +1  prefer execFileSync over execSync</text></g>
+
+  <!-- added (new vote value) -->
+  <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.22;0.25;0.94;1" dur="7s" repeatCount="indefinite"/>
+    <rect x="12" y="136" width="736" height="22" rx="3" fill="#5fbf7e" fill-opacity="0.10"/>
+    <text x="20" y="152" font-size="14.5" fill="#5fbf7e" xml:space="preserve">+ +2  prefer execFileSync over execSync</text></g>
+
+  <!-- added (brand-new lesson) -->
+  <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.28;0.31;0.94;1" dur="7s" repeatCount="indefinite"/>
+    <rect x="12" y="162" width="736" height="22" rx="3" fill="#5fbf7e" fill-opacity="0.10"/>
+    <text x="20" y="178" font-size="14.5" fill="#5fbf7e" xml:space="preserve">+ +1  read the error message to the end</text></g>
+
+  <!-- caption -->
+  <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.4;0.44;0.94;1" dur="7s" repeatCount="indefinite"/>
+    <text x="20" y="212" font-size="13" font-style="italic" fill="#5a6675">— every add and every vote is a line in git history</text></g>
+</svg>

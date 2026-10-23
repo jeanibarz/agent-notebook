@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 250" width="760" height="250" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" role="img" aria-label="Running cat on a notebook file prints the whole plain-text memory at once — no query, no server, no embeddings.">
+  <rect x="0.5" y="0.5" width="759" height="249" rx="12" fill="#0b0f15" stroke="#2a3340"/>
+  <path d="M0 34 H760" stroke="#2a3340"/>
+  <rect x="0.5" y="0.5" width="759" height="33.5" rx="12" fill="#1d2531"/>
+  <rect x="0.5" y="16" width="759" height="18" fill="#1d2531"/>
+  <circle cx="22" cy="17" r="5" fill="#e0708a"/>
+  <circle cx="42" cy="17" r="5" fill="#e8b05a"/>
+  <circle cx="62" cy="17" r="5" fill="#46bfa6"/>
+  <text x="84" y="21" font-size="12" fill="#5a6675">reviewer — memory</text>
+
+  <!-- prompt -->
+  <g opacity="1">
+    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.03;0.07;0.94;1" dur="6s" repeatCount="indefinite"/>
+    <text x="20" y="70" font-size="15"><tspan fill="#46bfa6">$ </tspan><tspan fill="#e7ebf2">cat ~/.agent-notebook/notebooks/reviewer.md</tspan></text>
+  </g>
+
+  <!-- the whole file, appearing at once -->
+  <g opacity="1">
+    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.17;0.2;0.94;1" dur="6s" repeatCount="indefinite"/>
+    <text font-size="15" y="104"><tspan x="20" fill="#e8b05a">+6</tspan><tspan x="64" fill="#e7ebf2">reproduce the bug before fixing it</tspan></text>
+    <text font-size="15" y="130"><tspan x="20" fill="#e8b05a">+4</tspan><tspan x="64" fill="#e7ebf2">run the full suite, not just the new test</tspan></text>
+    <text font-size="15" y="156"><tspan x="20" fill="#e8b05a">+2</tspan><tspan x="64" fill="#e7ebf2">read the error message to the end</tspan></text>
+    <text font-size="15" y="182"><tspan x="20" fill="#e8b05a">+1</tspan><tspan x="64" fill="#e7ebf2">prefer execFileSync over execSync</tspan></text>
+  </g>
+
+  <!-- caption -->
+  <g opacity="1">
+    <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.33;0.38;0.94;1" dur="6s" repeatCount="indefinite"/>
+    <text x="20" y="222" font-size="13" font-style="italic" fill="#5a6675">— no query. no server. no embeddings. it's a file.</text>
+  </g>
+</svg>

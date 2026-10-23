@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" width="760" height="300" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" role="img" aria-label="A fixed 6-of-6 notebook. A +1 vote lifts a line past its neighbour by score; a new lesson enters at the +1 floor while the lowest-scored line is evicted.">
+  <rect x="0.5" y="0.5" width="759" height="299" rx="12" fill="#0b0f15" stroke="#2a3340"/>
+  <path d="M0 34 H760" stroke="#2a3340"/>
+  <rect x="0.5" y="0.5" width="759" height="33.5" rx="12" fill="#1d2531"/>
+  <rect x="0.5" y="16" width="759" height="18" fill="#1d2531"/>
+  <circle cx="22" cy="17" r="5" fill="#e0708a"/>
+  <circle cx="42" cy="17" r="5" fill="#e8b05a"/>
+  <circle cx="62" cy="17" r="5" fill="#46bfa6"/>
+  <text x="84" y="21" font-size="12" fill="#5a6675">nb show reviewer — bounded, voted</text>
+
+  <text x="20" y="56" font-size="12" fill="#8c97a8">sorted by score</text>
+  <text x="740" y="56" font-size="12" fill="#e0708a" text-anchor="end">6 / 6 full</text>
+
+  <g opacity="1">
+    <animate attributeName="opacity" values="0;1;1;1;0" keyTimes="0;0.03;0.5;0.95;1" dur="6s" repeatCount="indefinite"/>
+
+    <!-- r1 (static) -->
+    <g><rect x="20" y="68" width="720" height="26" rx="6" fill="#1d2531" stroke="#2a3340"/>
+      <text font-size="14" y="85"><tspan x="32" fill="#8d8af0">026ba2</tspan><tspan x="104" fill="#e8b05a">+6</tspan><tspan x="148" fill="#e7ebf2">reproduce the bug before fixing</tspan></text></g>
+    <!-- r2 (static) -->
+    <g><rect x="20" y="100" width="720" height="26" rx="6" fill="#1d2531" stroke="#2a3340"/>
+      <text font-size="14" y="117"><tspan x="32" fill="#8d8af0">66a8f6</tspan><tspan x="104" fill="#e8b05a">+5</tspan><tspan x="148" fill="#e7ebf2">run the full suite before done</tspan></text></g>
+
+    <!-- r3 "read the error" (+3) drops one row -->
+    <g>
+      <animateTransform attributeName="transform" type="translate" values="0 0;0 0;0 32;0 32" keyTimes="0;0.13;0.24;1" dur="6s" repeatCount="indefinite"/>
+      <rect x="20" y="132" width="720" height="26" rx="6" fill="#1d2531" stroke="#2a3340"/>
+      <text font-size="14" y="149"><tspan x="32" fill="#8d8af0">d1c5b4</tspan><tspan x="104" fill="#e8b05a">+3</tspan><tspan x="148" fill="#e7ebf2">read the error to the end</tspan></text>
+    </g>
+
+    <!-- r4 "prefer execFileSync" (+3 -> +4) climbs past r3 on a vote -->
+    <g>
+      <animateTransform attributeName="transform" type="translate" values="0 0;0 0;0 -32;0 -32" keyTimes="0;0.13;0.24;1" dur="6s" repeatCount="indefinite"/>
+      <rect x="20" y="164" width="720" height="26" rx="6" fill="#1d2531" stroke="#46bfa6"/>
+      <text font-size="14" y="181"><tspan x="32" fill="#8d8af0">b5c43d</tspan><tspan x="148" fill="#e7ebf2">prefer execFileSync over execSync</tspan></text>
+      <text font-size="14" y="181" x="104" fill="#e8b05a" opacity="1"><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.13;0.16;1" dur="6s" repeatCount="indefinite"/>+3</text>
+      <text font-size="14" y="181" x="104" fill="#e8b05a" opacity="0"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.13;0.16;1" dur="6s" repeatCount="indefinite"/>+4</text>
+      <text font-size="12" y="181" x="568" fill="#46bfa6" opacity="0"><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.08;0.13;0.3;0.42;1" dur="6s" repeatCount="indefinite"/>vote +1 ✓</text>
+    </g>
+
+    <!-- r5 (static) -->
+    <g><rect x="20" y="196" width="720" height="26" rx="6" fill="#1d2531" stroke="#2a3340"/>
+      <text font-size="14" y="213"><tspan x="32" fill="#8d8af0">0a92a2</tspan><tspan x="104" fill="#e8b05a">+1</tspan><tspan x="148" fill="#e7ebf2">keep lessons under 200 chars</tspan></text></g>
+
+    <!-- r6 "guess the failing test" (-2) is the lowest score — evicted -->
+    <g opacity="1">
+      <animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.5;0.64;1" dur="6s" repeatCount="indefinite"/>
+      <animateTransform attributeName="transform" type="translate" values="0 0;0 0;30 0;30 0" keyTimes="0;0.5;0.64;1" dur="6s" repeatCount="indefinite"/>
+      <rect x="20" y="228" width="720" height="26" rx="6" fill="#1d2531" stroke="#3a2a30"/>
+      <text font-size="14" y="245"><tspan x="32" fill="#8d8af0">6b23b7</tspan><tspan x="104" fill="#e0708a">-2</tspan><tspan x="148" fill="#8c97a8">guess the failing test from its name</tspan></text>
+    </g>
+
+    <!-- new lesson enters low, at the +1 floor, in the slot the evicted line leaves -->
+    <g opacity="0">
+      <animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.52;0.66;1" dur="6s" repeatCount="indefinite"/>
+      <rect x="20" y="228" width="720" height="26" rx="6" fill="#1d2531" stroke="#46bfa6"/>
+      <text font-size="14" y="245"><tspan x="32" fill="#8d8af0">e5a1c8</tspan><tspan x="104" fill="#e8b05a">+1</tspan><tspan x="148" fill="#e7ebf2">always run lint before claiming done</tspan></text>
+    </g>
+  </g>
+
+  <text x="20" y="288" font-size="12" font-style="italic" fill="#5a6675">— newcomers enter at +1 · the lowest score is evicted, never the oldest</text>
+</svg>
