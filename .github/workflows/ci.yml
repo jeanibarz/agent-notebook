@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      # vitest 5 imports `styleText` from node:util, which only exists on
+      # Node 20.12+, so the suite cannot run on Node 18. The build step above
+      # still verifies the package compiles on its minimum engine (>=18).
+      - run: npm test
+        if: matrix.node-version != 18
