@@ -140,6 +140,137 @@ describe('caps', () => {
   });
 });
 
+describe('serialization round-trip', () => {
+  // The plain-text file (`<score>\t<lesson>` lines) is the tool's durable
+  // contract: its backup/diff story and how an upgraded binary must still read
+  // an old on-disk notebook. These tests pin that codec with a hand-rolled
+  // generator (no fast-check, to honor the zero-dependency stance) so a future
+  // tweak to the field separator, the +N score formatting, the no-tab
+  // tolerance, or whitespace collapsing becomes a loud failure instead of a
+  // silent corruption of a user's memory file.
+  //
+  // The round-trip runs through the REAL codec end-to-end via the public API:
+  // addEntry/vote persist with formatLine, readEntries parses with parseLine.
+  const RAW_LESSONS = [
+    'plain lesson',
+    'tab\there and\tthere',                 // tabs = the field separator
+    'line one\nline two\r\nline three',     // newlines = the record separator
+    '+5 looks like a score but is lesson text', // leading score-like token
+    '-3 leading negative-looking token',
+    'café — naïve — 日本語 — 🧠 unicode survives',
+    '   leading and trailing   whitespace   ',
+    'multiple     interior     spaces',
+    'x'.repeat(maxChars()),                 // exactly at the length cap
+    'y'.repeat(maxChars() - 1),             // just under the cap
+  ];
+  // Integer scores spanning negative, zero, the +1 default, and the +N path.
+  const SCORES = [-3, 0, 1, 4];
+
+  test('format→parse recovers every (score, lesson) pair through the on-disk codec', async () => {
+    let n = 0;
+    let exercised = 0;
+    for (const raw of RAW_LESSONS) {
+      const text = sanitizeLesson(raw);
+      expect(text).not.toMatch(/[\t\r\n]/); // sanitize never leaves our separators behind
+      if (text === '' || text.length > maxChars()) continue; // addEntry would reject these
+      for (const target of SCORES) {
+        const role = `rt-${n++}`;
+        const add = await addEntry(dir, role, text);
+        expect(add.added).toBe(true); // stored at the +1 default
+        // Drive the score to `target`; each vote re-formats and re-parses the
+        // whole file, so reaching a non-default score already round-trips it.
+        const id = entryId(text);
+        const steps = target - 1;
+        for (let i = 0; i < Math.abs(steps); i++) await vote(dir, role, id, steps >= 0 ? 1 : -1);
+        // format -> parse recovers the exact entry.
+        expect(readEntries(dir, role)).toEqual([{ score: target, text }]);
+        exercised++;
+      }
+    }
+    // Make the `continue` guard loud: if a case were ever silently skipped the
+    // loop would weaken without failing, so assert the full matrix ran.
+    expect(exercised).toBe(RAW_LESSONS.length * SCORES.length);
+  });
+
+  test('re-formatting a parsed notebook is a byte-for-byte fixed point', async () => {
+    // A true fixed point is parse→format→parse→format, not just two reads.
+    // Drive a no-op mutation (vote up, then back down) so the whole file is
+    // re-serialised twice, then assert the bytes and entries never drifted.
+    await addEntry(dir, 'fp', 'alpha lesson');
+    await addEntry(dir, 'fp', 'beta lesson');
+    const before = readFileSync(join(dir, 'fp.md'), 'utf-8');
+    await vote(dir, 'fp', entryId('alpha lesson'), 1); // rewrites the whole file via formatLine
+    await vote(dir, 'fp', entryId('alpha lesson'), -1); // back to the original scores
+    expect(readFileSync(join(dir, 'fp.md'), 'utf-8')).toBe(before); // format(parse(x)) === x
+    expect(readEntries(dir, 'fp')).toEqual([
+      { score: 1, text: 'alpha lesson' },
+      { score: 1, text: 'beta lesson' },
+    ]);
+  });
+
+  test('parseLine reads a hand-written score line: first-tab split, whitespace collapse, bad-score fallback', () => {
+    // These lines are written in the ON-DISK format directly (not via addEntry),
+    // so the PARSE side of the codec sees raw tabs and odd score columns that a
+    // pre-sanitized in-memory lesson can never produce.
+    const lines = [
+      '+2\ta\tb',                // a second tab lives INSIDE the lesson: split on the FIRST tab only
+      '+1\t  collapse   me  ',   // the parse side must collapse interior/edge whitespace
+      'abc\tnon-numeric score',  // an unparseable score column falls back to 0
+      '\tempty score column',    // an empty score column falls back to 0
+      '1.5\tfractional score',   // parseInt stops at '.', so +1
+      '-12\ttwo digit negative', // multi-digit signed scores survive
+      '+10\ttwo digit positive',
+    ];
+    writeFileSync(join(dir, 'raw.md'), lines.join('\n') + '\n', 'utf-8');
+    expect(readEntries(dir, 'raw')).toEqual([
+      { score: 2, text: 'a b' },
+      { score: 1, text: 'collapse me' },
+      { score: 0, text: 'non-numeric score' },
+      { score: 0, text: 'empty score column' },
+      { score: 1, text: 'fractional score' },
+      { score: -12, text: 'two digit negative' },
+      { score: 10, text: 'two digit positive' },
+    ]);
+  });
+
+  test('persists each entry as "<signed-score>\\t<lesson>" at the byte level', async () => {
+    await addEntry(dir, 'fmt', 'first lesson');
+    await addEntry(dir, 'fmt', 'second lesson');
+    await vote(dir, 'fmt', entryId('second lesson'), -1); // +1 -> 0
+    await vote(dir, 'fmt', entryId('second lesson'), -1); //  0 -> -1
+    const raw = readFileSync(join(dir, 'fmt.md'), 'utf-8');
+    expect(raw).toBe('+1\tfirst lesson\n-1\tsecond lesson\n'); // pins the tab + signed score
+    expect(readEntries(dir, 'fmt')).toEqual([
+      { score: 1, text: 'first lesson' },
+      { score: -1, text: 'second lesson' },
+    ]);
+  });
+
+  test('a tab-less line reads back as score 0 (hand-edited notebook tolerance)', () => {
+    // A human may jot a bare lesson with no score column; parseLine must treat
+    // it as score 0, sanitized — an invariant worth pinning.
+    const lines = [
+      'a bare hand-written lesson',
+      '   padded   bare   lesson   ',
+      'café unicode bare lesson 🧠',
+    ];
+    writeFileSync(join(dir, 'bare.md'), lines.join('\n') + '\n', 'utf-8');
+    expect(readEntries(dir, 'bare')).toEqual([
+      { score: 0, text: 'a bare hand-written lesson' },
+      { score: 0, text: 'padded bare lesson' },
+      { score: 0, text: 'café unicode bare lesson 🧠' },
+    ]);
+  });
+
+  test('sanitizeLesson is idempotent — a second pass is a fixed point', () => {
+    for (const raw of RAW_LESSONS) {
+      const once = sanitizeLesson(raw);
+      expect(sanitizeLesson(once)).toBe(once);
+      expect(once).not.toMatch(/[\t\r\n]/);
+    }
+  });
+});
+
 describe('vote', () => {
   test('votes by stable id and by substring query', async () => {
     await addEntry(dir, 'v', 'alpha lesson');
