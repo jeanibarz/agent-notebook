@@ -150,4 +150,42 @@ describe('runNbCli', () => {
     const show = await run(['show', 'patcher']);
     expect(show.out).toContain('is empty');
   });
+
+  test('merge consolidates two entries into one, reflected by show', async () => {
+    await run(['add', 'patcher', 'alpha lesson one']);
+    await run(['add', 'patcher', 'beta lesson two']);
+    const m = await run(['merge', 'patcher', 'alpha', 'beta', 'merged lesson alpha+beta']);
+    expect(m.code).toBe(0);
+    expect(m.out).toContain('merged two entries into one');
+    const show = await run(['show', 'patcher']);
+    expect(show.out).toContain('merged lesson alpha+beta');
+    expect(show.out).not.toContain('alpha lesson one');
+    expect(show.out).not.toContain('beta lesson two');
+  });
+
+  test('merge with a missing argument exits 1', async () => {
+    await run(['add', 'patcher', 'alpha lesson one']);
+    await run(['add', 'patcher', 'beta lesson two']);
+    const r = await run(['merge', 'patcher', 'alpha', 'beta']); // no merged lesson
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('missing <merged lesson>');
+  });
+
+  test('rm deletes an entry, reflected by show', async () => {
+    await run(['add', 'patcher', 'keep this lesson']);
+    await run(['add', 'patcher', 'drop this lesson']);
+    const r = await run(['rm', 'patcher', 'drop']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('removed');
+    expect(r.out).toContain('drop this lesson');
+    const show = await run(['show', 'patcher']);
+    expect(show.out).not.toContain('drop this lesson');
+    expect(show.out).toContain('keep this lesson');
+  });
+
+  test('rm with a missing argument exits 1', async () => {
+    const r = await run(['rm', 'patcher']); // no id|query selector
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('missing <id|query>');
+  });
 });
