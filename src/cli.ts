@@ -9,7 +9,7 @@
 //   nb vote   <role> <id|query> +1|-1      adjust an entry's score
 //   nb merge  <role> <idA> <idB> "<merged>"  consolidate two entries into one
 //   nb rm     <role> <id|query>            delete an entry judged useless
-//   nb stats  [<role>] [--since 7d]        usage analytics + anomaly flags
+//   nb stats  [<role>] [--since 7d] [--json]  usage analytics + anomaly flags (--json = raw StatsReport)
 //   nb path   [<role>]                     print the notebooks dir, or a role's file path
 //   nb --help                              this help
 //
@@ -44,7 +44,7 @@ usage:
   nb vote   <role> <id|query> +1|-1       upvote/downvote an entry you used
   nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
   nb rm     <role> <id|query>             delete an entry
-  nb stats  [<role>] [--since 7d]         usage analytics + anomaly flags
+  nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly flags (--json emits the raw StatsReport)
   nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
   nb --help                               show this help
   nb --version                            print the tool version
@@ -155,7 +155,15 @@ export async function runNbCli(argv: string[]): Promise<number> {
         const windowMs = sinceIdx >= 0 ? parseWindowMs(sinceVal) : undefined;
         const maybeRole = rest.find((a, i) => !a.startsWith('--') && (sinceIdx < 0 || i !== sinceIdx + 1));
         role = maybeRole ?? '-';
-        process.stdout.write(renderStats(dir, maybeRole, windowMs) + '\n');
+        // `--json` emits the raw StatsReport (stable, machine-readable) so a
+        // supervising agent can act on a loop/went-silent/high-error-rate
+        // anomaly without regex-parsing the human table. The --since warning
+        // above stays on stderr, keeping stdout pure JSON.
+        if (rest.includes('--json')) {
+          process.stdout.write(JSON.stringify(stats(dir, { role: maybeRole, windowMs })) + '\n');
+        } else {
+          process.stdout.write(renderStats(dir, maybeRole, windowMs) + '\n');
+        }
         break;
       }
       case 'path': {
