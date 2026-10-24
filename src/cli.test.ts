@@ -188,4 +188,23 @@ describe('runNbCli', () => {
     expect(r.code).toBe(1);
     expect(r.err).toContain('missing <id|query>');
   });
+
+  test('path with no role prints the notebooks dir (respecting NB_DIR)', async () => {
+    const r = await run(['path']);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(`${dir}\n`); // bare path, pipeable into cat/$(...)
+  });
+
+  test('path <role> prints the resolved absolute role file path', async () => {
+    const r = await run(['path', 'reviewer']);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(`${join(dir, 'reviewer.md')}\n`);
+    expect(r.out.trimEnd()).toMatch(/\/reviewer\.md$/);
+  });
+
+  test('path with an unsafe role name is rejected by the existing safe-role check', async () => {
+    const r = await run(['path', '../escape']);
+    expect(r.code).toBe(1);
+    expect(r.err).toMatch(/invalid role name/);
+  });
 });
