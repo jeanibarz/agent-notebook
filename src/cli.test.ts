@@ -111,6 +111,50 @@ describe('runNbCli', () => {
     expect(s.out).toContain('role patcher'); // role still parsed despite the dangling flag
   });
 
+  test('--json emits a single valid StatsReport object on stdout', async () => {
+    await run(['add', 'patcher', 'x']); // records one `add` usage row
+    const s = await run(['stats', 'patcher', '--json']);
+    expect(s.code).toBe(0);
+    const rep = JSON.parse(s.out); // parses => valid JSON, exactly one object
+    expect(rep).toMatchObject({
+      window: expect.any(String),
+      totalCalls: expect.any(Number),
+      perCommand: expect.any(Array),
+      anomalies: expect.any(Array),
+    });
+    // perCommand carries the full CommandStat shape, keyed by the recorded command.
+    const add = rep.perCommand.find((c: { command: string }) => c.command === 'add');
+    expect(add).toMatchObject({
+      command: 'add',
+      calls: expect.any(Number),
+      errors: expect.any(Number),
+      errorRate: expect.any(Number),
+      p50ms: expect.any(Number),
+      p95ms: expect.any(Number),
+      lastUsed: expect.any(String),
+    });
+    expect(s.out).not.toContain('nb usage —'); // the human table is NOT emitted
+  });
+
+  test('--json composes with --since and a role, warning on stderr while stdout stays pure JSON', async () => {
+    await run(['add', 'patcher', 'x']);
+    const s = await run(['stats', 'patcher', '--since', '7days', '--json']); // bad window + role + json
+    expect(s.code).toBe(0);
+    expect(s.err).toContain("unrecognized --since '7days'"); // still warns on a bad window
+    const rep = JSON.parse(s.out); // stdout is pure JSON despite the warning on stderr
+    expect(rep.window).toBe('7d'); // bad window falls back to the default
+  });
+
+  test('without --json the default table path is unchanged; --json diverges only when asked', async () => {
+    await run(['add', 'patcher', 'x']);
+    const plain = await run(['stats', 'patcher', '--since', '30m']);
+    const json = await run(['stats', 'patcher', '--since', '30m', '--json']);
+    expect(plain.out).toContain('nb usage —'); // default path still renders the table
+    expect(plain.out).toContain('window 30m');
+    expect(() => JSON.parse(plain.out)).toThrow(); // the table is not JSON
+    expect(plain.out).not.toBe(json.out); // the flag is the only thing that changes output
+  });
+
   test('unknown command exits 2', async () => {
     const r = await run(['frobnicate', 'patcher']);
     expect(r.code).toBe(2);
