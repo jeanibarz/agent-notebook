@@ -11,7 +11,7 @@
 // Everything here is plain fs over one small file under a mkdir spinlock, so
 // a call is a millisecond, deterministic, and offline.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmdirSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, rmdirSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -397,6 +397,27 @@ export function render(dir: string, role: string): string {
       return `${entryId(x.e.text)}  [${s}]  ${x.e.text}`;
     })
     .join('\n');
+}
+
+/**
+ * The roles that have a notebook, as sorted file stems. A role file is
+ * `<role>.md`; the sidecar `.nb-usage.log` and `.nb.lock` share the directory
+ * and are excluded by keeping only non-dotfile `*.md` entries (dotfiles like a
+ * hypothetical `.foo.md` are skipped too — a role name never starts with `.`,
+ * per `assertSafeRole`). An absent/empty notebooks dir yields `[]` (not an
+ * error), so `nb roles` can report "no roles yet" and exit 0 on a clean machine.
+ */
+export function listRoles(dir: string): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return []; // dir does not exist yet (nothing has been written)
+  }
+  return names
+    .filter((n) => !n.startsWith('.') && n.endsWith('.md'))
+    .map((n) => n.slice(0, -'.md'.length))
+    .sort();
 }
 
 // ---------------------------------------------------------------------------

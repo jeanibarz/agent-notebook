@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -250,5 +250,41 @@ describe('runNbCli', () => {
     const r = await run(['path', '../escape']);
     expect(r.code).toBe(1);
     expect(r.err).toMatch(/invalid role name/);
+  });
+
+  test('roles on an empty/absent notebooks dir prints a friendly note and exits 0', async () => {
+    const r = await run(['roles']);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(''); // stdout stays empty so the list pipes cleanly
+    expect(r.err).toMatch(/no roles yet/);
+  });
+
+  test('roles lists each role file stem, sorted, one per line', async () => {
+    await run(['add', 'reviewer', 'a lesson']);
+    await run(['add', 'patcher', 'b lesson']);
+    await run(['add', 'planner', 'c lesson']);
+    const r = await run(['roles']);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('patcher\nplanner\nreviewer\n'); // sorted, stems only, one per line
+  });
+
+  test('roles excludes the .nb-usage.log and .nb.lock sidecars', async () => {
+    // `add` writes the role file AND appends a usage row (creating .nb-usage.log),
+    // and takes the mkdir spinlock (.nb.lock) while writing — so both sidecars
+    // are present in the dir and must not appear as roles.
+    await run(['add', 'reviewer', 'a lesson']);
+    const r = await run(['roles']);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('reviewer\n');
+    expect(r.out).not.toContain('nb-usage');
+    expect(r.out).not.toContain('nb.lock');
+  });
+
+  test('roles excludes other non-.md entries that share the dir', async () => {
+    await run(['add', 'reviewer', 'a lesson']);
+    writeFileSync(join(dir, 'notes.txt'), 'not a notebook'); // a stray non-.md file
+    const r = await run(['roles']);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('reviewer\n'); // only the .md stem, not "notes"
   });
 });
