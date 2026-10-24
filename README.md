@@ -103,9 +103,15 @@ The CLI is a thin wrapper over this library — `src/notebook.ts` is the whole m
 
 Early. This started as an internal tool for a multi-agent orchestrator and is being published to see whether the underlying idea — bounded, voted, one-line memory — is useful outside that specific context. It's on npm, but there's no marketing push behind it: if you find it because you were already looking for something like this, that's the signal this is worth taking further. Issues and forks are welcome either way.
 
+## Changelog
+
+Notable changes per release are recorded in [CHANGELOG.md](CHANGELOG.md).
+
 ## Contributing
 
 The entire point is that this stays small. A PR that adds a feature should make the case for why the bounded/voted/one-line model needs it, not just that it would be nice to have. Bug fixes, docs, and test coverage are always welcome.
+
+Please add a one-line entry under the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md) for any user-facing change.
 
 ## License
 
