@@ -10,6 +10,7 @@
 //   nb merge  <role> <idA> <idB> "<merged>"  consolidate two entries into one
 //   nb rm     <role> <id|query>            delete an entry judged useless
 //   nb stats  [<role>] [--since 7d]        usage analytics + anomaly flags
+//   nb path   [<role>]                     print the notebooks dir, or a role's file path
 //   nb --help                              this help
 //
 // Every call appends one line to the usage ring so `nb stats` can surface
@@ -17,10 +18,12 @@
 
 import { realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
   addEntry,
+  assertSafeRole,
   isValidWindow,
   logUsage,
   maxChars,
@@ -42,6 +45,7 @@ usage:
   nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
   nb rm     <role> <id|query>             delete an entry
   nb stats  [<role>] [--since 7d]         usage analytics + anomaly flags
+  nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
   nb --help                               show this help
   nb --version                            print the tool version
 
@@ -152,6 +156,22 @@ export async function runNbCli(argv: string[]): Promise<number> {
         const maybeRole = rest.find((a, i) => !a.startsWith('--') && (sinceIdx < 0 || i !== sinceIdx + 1));
         role = maybeRole ?? '-';
         process.stdout.write(renderStats(dir, maybeRole, windowMs) + '\n');
+        break;
+      }
+      case 'path': {
+        // Read-only on notebook state (like `show`/`stats`, it still appends one
+        // usage row via the shared `finally`): expose the file layout the
+        // plain-text promise relies on, so nobody has to hard-code
+        // `$NB_DIR | ~/.agent-notebook/notebooks/<role>.md`. Output is a BARE path
+        // (no decoration) so it pipes into `cat`/`$(...)`.
+        const maybeRole = argv[1];
+        if (maybeRole == null || maybeRole === '') {
+          process.stdout.write(dir + '\n');
+        } else {
+          role = maybeRole;
+          assertSafeRole(role); // reuse the existing escape-proof role check
+          process.stdout.write(join(dir, `${role}.md`) + '\n');
+        }
         break;
       }
       default:
