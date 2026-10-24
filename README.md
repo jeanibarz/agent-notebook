@@ -71,12 +71,13 @@ nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
 nb rm     <role> <id|query>             delete an entry
 nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly flags (--json emits the raw StatsReport)
 nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
+nb roles                                list the roles that have a notebook (one per line, sorted)
 nb --help                               show this help
 ```
 
 Every `show` line starts with a short stable id — pass that id (or a unique prefix, or a unique text substring) to `vote`/`rm`/`merge`. An over-long `add` is rejected outright, never silently truncated, so you rewrite it shorter instead of storing a cut-off, useless lesson.
 
-`NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than 200/200. You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory and `nb path <role>` the resolved file, so `cat "$(nb path reviewer)"` or `git diff "$(nb path reviewer)"` just works.
+`NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than 200/200. You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory and `nb path <role>` the resolved file, so `cat "$(nb path reviewer)"` or `git diff "$(nb path reviewer)"` just works. `nb roles` lists the roles that already have a notebook (one stem per line, sorted, with the `.nb-usage.log`/`.nb.lock` sidecars filtered out) so the set of memories is discoverable from the tool instead of an `ls`; it prints a friendly note to stderr and exits 0 when none exist yet.
 
 ### Machine-readable `nb stats`
 

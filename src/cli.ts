@@ -11,6 +11,7 @@
 //   nb rm     <role> <id|query>            delete an entry judged useless
 //   nb stats  [<role>] [--since 7d] [--json]  usage analytics + anomaly flags (--json = raw StatsReport)
 //   nb path   [<role>]                     print the notebooks dir, or a role's file path
+//   nb roles                               list the roles that have a notebook, one per line
 //   nb --help                              this help
 //
 // Every call appends one line to the usage ring so `nb stats` can surface
@@ -25,6 +26,7 @@ import {
   addEntry,
   assertSafeRole,
   isValidWindow,
+  listRoles,
   logUsage,
   maxChars,
   merge,
@@ -46,6 +48,7 @@ usage:
   nb rm     <role> <id|query>             delete an entry
   nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly flags (--json emits the raw StatsReport)
   nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
+  nb roles                                list the roles that have a notebook (one per line, sorted)
   nb --help                               show this help
   nb --version                            print the tool version
 
@@ -179,6 +182,20 @@ export async function runNbCli(argv: string[]): Promise<number> {
           role = maybeRole;
           assertSafeRole(role); // reuse the existing escape-proof role check
           process.stdout.write(join(dir, `${role}.md`) + '\n');
+        }
+        break;
+      }
+      case 'roles': {
+        // Read-only inventory of the notebooks dir (like `path`, it still appends
+        // one usage row via the shared `finally`): make the set of memories
+        // self-describing instead of forcing an `ls` + mental filtering of the
+        // `.nb-usage.log`/`.nb.lock` sidecars. Plain list (names only, one per
+        // line, sorted) so it pipes into `wc -l`/`xargs`/`$(...)`.
+        const roles = listRoles(dir);
+        if (roles.length === 0) {
+          process.stderr.write('no roles yet — add one with `nb add <role> "<lesson>"`\n');
+        } else {
+          process.stdout.write(roles.join('\n') + '\n');
         }
         break;
       }
