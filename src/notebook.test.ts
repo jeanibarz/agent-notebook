@@ -1,7 +1,31 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// Durable-write observation hook (issue #15). `node:fs` is wrapped so a test can
+// observe the fsync/rename order and simulate a platform where directory fsync
+// throws. Everything delegates to the real fs; when `events` is null and
+// `failDirFsync` is false (the default, reset in afterEach) behavior is identical
+// to the unwrapped module, so every other test is unaffected.
+const fsHook = vi.hoisted(() => ({ events: null as string[] | null, failDirFsync: false, failBodyFsync: false }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    fsyncSync: (fd: number) => {
+      const isDir = actual.fstatSync(fd).isDirectory();
+      fsHook.events?.push(isDir ? 'fsync-dir' : 'fsync-body');
+      if (isDir && fsHook.failDirFsync) throw new Error('EINVAL: directory fsync unsupported');
+      if (!isDir && fsHook.failBodyFsync) throw new Error('EIO: body fsync failed');
+      return actual.fsyncSync(fd);
+    },
+    renameSync: ((from: Parameters<typeof actual.renameSync>[0], to: Parameters<typeof actual.renameSync>[1]) => {
+      fsHook.events?.push('rename');
+      return actual.renameSync(from, to);
+    }) as typeof actual.renameSync,
+  };
+});
 
 import {
   addEntry,
@@ -480,6 +504,48 @@ describe('usage log + stats', () => {
     writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
     const rep = stats(dir, { now });
     expect(rep.anomalies.some((a) => a.kind === 'high-error-rate')).toBe(true);
+  });
+});
+
+describe('durable writes (issue #15)', () => {
+  afterEach(() => {
+    fsHook.events = null;
+    fsHook.failDirFsync = false;
+    fsHook.failBodyFsync = false;
+  });
+
+  test('an add round-trips and leaves no temp file behind (rename completed)', async () => {
+    await addEntry(dir, 'patcher', 'durable lesson');
+    expect(readEntries(dir, 'patcher')).toEqual([{ score: 1, text: 'durable lesson' }]);
+    expect(existsSync(join(dir, 'patcher.md'))).toBe(true);
+    // The atomic rename consumed the temp file; nothing is left half-written.
+    expect(existsSync(join(dir, 'patcher.md.tmp'))).toBe(false);
+  });
+
+  test('fsyncs the body before the rename and the parent directory after it', async () => {
+    fsHook.events = [];
+    await addEntry(dir, 'patcher', 'ordering lesson');
+    // Body flushed, THEN rename, THEN the parent directory flushed.
+    expect(fsHook.events).toEqual(['fsync-body', 'rename', 'fsync-dir']);
+    expect(readEntries(dir, 'patcher')).toEqual([{ score: 1, text: 'ordering lesson' }]);
+  });
+
+  test('a directory-fsync failure is swallowed and the write still succeeds', async () => {
+    // Simulate a platform where fsync'ing a directory throws (e.g. Windows):
+    // the body fsync still runs for real, only the directory fsync fails.
+    fsHook.failDirFsync = true;
+    const r = await addEntry(dir, 'patcher', 'survives dir fsync failure');
+    expect(r.added).toBe(true);
+    expect(readEntries(dir, 'patcher')).toEqual([{ score: 1, text: 'survives dir fsync failure' }]);
+  });
+
+  test('a body-fsync failure is NOT swallowed: the write fails and the prior file is untouched', async () => {
+    // Establish a committed baseline, then make the body fsync throw on the next write.
+    await addEntry(dir, 'patcher', 'first lesson');
+    fsHook.failBodyFsync = true;
+    await expect(addEntry(dir, 'patcher', 'second lesson')).rejects.toThrow(/body fsync failed/);
+    // The rename never ran, so the committed notebook is intact and the new lesson is absent.
+    expect(readEntries(dir, 'patcher')).toEqual([{ score: 1, text: 'first lesson' }]);
   });
 });
 

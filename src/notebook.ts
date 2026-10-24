@@ -11,10 +11,10 @@
 // Everything here is plain fs over one small file under a mkdir spinlock, so
 // a call is a millisecond, deterministic, and offline.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmdirSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 /** Hard caps, read at call time so they can be tuned by env without a code change (and set per-test). */
 export function maxLines(): number {
@@ -167,8 +167,50 @@ function writeEntries(dir: string, role: string, entries: Entry[]): void {
   const file = roleFile(dir, role);
   const body = entries.map(formatLine).join('\n');
   const tmp = `${file}.tmp`;
-  writeFileSync(tmp, entries.length ? body + '\n' : '', 'utf-8');
+  writeFileDurable(file, tmp, entries.length ? body + '\n' : '');
+}
+
+/**
+ * Write `data` to `tmp`, flush it to stable storage, then atomically rename it
+ * over `file` and flush the parent directory so the rename itself survives a
+ * crash or power-loss. The rename alone is atomic but not durable: without the
+ * fsyncs the data and/or the rename can still be lost after the call returns,
+ * which would let `nb add` report success for a lesson that never reached disk.
+ */
+function writeFileDurable(file: string, tmp: string, data: string): void {
+  const fd = openSync(tmp, 'w');
+  try {
+    writeFileSync(fd, data, 'utf-8');
+    fsyncSync(fd); // body hits stable storage before the rename
+  } finally {
+    closeSync(fd);
+  }
   renameSync(tmp, file); // atomic replace
+  fsyncDir(dirname(file)); // make the rename itself durable
+}
+
+/**
+ * Best-effort fsync of a directory so a rename within it is durable. Opening or
+ * fsync'ing a directory is unsupported on some platforms (e.g. Windows) and
+ * throws there; a failure must never fail the write, since the rename is still
+ * atomic — we only lose the extra crash-durability guarantee.
+ */
+function fsyncDir(dir: string): void {
+  let fd: number | undefined;
+  try {
+    fd = openSync(dir, 'r');
+    fsyncSync(fd);
+  } catch {
+    /* platform does not support directory fsync; the rename is still atomic */
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 }
 
 /** Evict down to MAX_LINES by removing the lowest-scored entries (ties → oldest/earliest). */
