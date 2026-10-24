@@ -1,7 +1,16 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+
+const execFileAsync = promisify(execFile);
+// The built CLI, used to drive REAL cross-process contention on the mkdir lock
+// (the actual hazard: several `nb` invocations mutating one role at once).
+// `npm test` builds dist/ via the pretest script before vitest runs.
+const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 
 // Durable-write observation hook (issue #15). `node:fs` is wrapped so a test can
 // observe the fsync/rename order and simulate a platform where directory fsync
@@ -546,6 +555,94 @@ describe('durable writes (issue #15)', () => {
     await expect(addEntry(dir, 'patcher', 'second lesson')).rejects.toThrow(/body fsync failed/);
     // The rename never ran, so the committed notebook is intact and the new lesson is absent.
     expect(readEntries(dir, 'patcher')).toEqual([{ score: 1, text: 'first lesson' }]);
+  });
+});
+
+describe('locking (mkdir spinlock)', () => {
+  // withLock serializes every mutation behind a `.nb.lock` directory: it spins
+  // (20ms) up to a 2s acquire deadline, and steals a lock whose mtime is older
+  // than the 10s stale threshold. These tests drive that one safety-critical
+  // primitive directly — concurrency must not lose an update, a blocked op must
+  // wait and then acquire, an aged lock must be reclaimed, a live lock must make
+  // acquisition time out, and the lock must always be released.
+  //
+  // NOTE on in-process vs. cross-process: withLock's critical section (`fn()`)
+  // is synchronous, so Promise.all of several mutations in ONE process can never
+  // interleave — the event loop runs each read-modify-write to completion before
+  // the next starts, lock or no lock. An in-process "concurrency" test therefore
+  // passes even if the lock is deleted and proves nothing. The genuine hazard is
+  // several OS processes, so the no-lost-update test spawns real `nb` children.
+
+  test('cross-process: concurrent `nb add` invocations on one role all land (no lost update)', async () => {
+    const N = 8; // small, deterministic; ~N*20ms serialization ≪ each child's 2s acquire budget
+    const env = { ...process.env, NB_DIR: dir };
+    delete env.NB_MAX_LINES; // keep the default 200-line cap so none of the N is evicted
+    // Fire N separate processes at the same role simultaneously. Without the
+    // lock each reads the same base file and its atomic rename clobbers the
+    // others' — a classic lost update, leaving fewer than N lines. The lock
+    // serializes them so every distinct lesson survives.
+    await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        execFileAsync(process.execPath, [CLI, 'add', 'race', `cross process lesson ${i}`], { env }),
+      ),
+    );
+    const texts = readEntries(dir, 'race').map((e) => e.text).sort();
+    const expected = Array.from({ length: N }, (_, i) => `cross process lesson ${i}`).sort();
+    expect(texts).toEqual(expected); // all N present, none lost
+  }, 30_000);
+
+  test('an operation blocked by a live lock waits, then acquires once the lock is freed', async () => {
+    const lock = join(dir, '.nb.lock');
+    mkdirSync(lock); // a live lock held by "another process" (fresh mtime → never stolen)
+    let releasedAt = 0;
+    // Free the lock well within the 2s acquire budget so the spinning op gets it.
+    const timer = setTimeout(() => {
+      releasedAt = Date.now();
+      rmSync(lock, { recursive: true, force: true });
+    }, 60);
+    const r = await addEntry(dir, 'waiter', 'acquired after the lock was freed');
+    clearTimeout(timer);
+    expect(r.added).toBe(true);
+    // The op resolved only AFTER the release fired: it genuinely spun on the lock
+    // rather than ignoring it or stealing a fresh one. (If the lock were removed
+    // from withLock, the op would resolve immediately, clearTimeout would cancel
+    // the release, and releasedAt would still be 0 — so this fails on regression.)
+    expect(releasedAt).toBeGreaterThan(0);
+    expect(readEntries(dir, 'waiter')).toEqual([{ score: 1, text: 'acquired after the lock was freed' }]);
+  });
+
+  test('reclaims a stale .nb.lock (mtime older than the 10s stale threshold) and completes', async () => {
+    const lock = join(dir, '.nb.lock');
+    mkdirSync(lock); // a crashed nb process left the lock dir behind
+    const agedSeconds = Date.now() / 1000 - 20; // back-date mtime 20s into the past (> 10s threshold)
+    utimesSync(lock, agedSeconds, agedSeconds);
+    // The next op must steal the aged lock rather than wait out the 2s deadline.
+    const r = await addEntry(dir, 'stale', 'written after stealing a stale lock');
+    expect(r.added).toBe(true);
+    expect(readEntries(dir, 'stale')).toEqual([{ score: 1, text: 'written after stealing a stale lock' }]);
+    // The stolen lock is released again when the operation finishes.
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test('a fresh (non-stale) lock is NOT stolen: acquisition times out after ~2s', async () => {
+    const lock = join(dir, '.nb.lock');
+    mkdirSync(lock); // a live lock held by another process (recent mtime → never stolen)
+    const started = Date.now();
+    // withLock spins for its 2s budget, never steals the fresh lock, then throws.
+    await expect(addEntry(dir, 'blocked', 'should never be written')).rejects.toThrow(/locked/);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(2000);
+    // The blocked op mutated nothing: no role file was created.
+    expect(existsSync(join(dir, 'blocked.md'))).toBe(false);
+  }, 10_000);
+
+  test('releases the lock even when the operation throws (finally path)', async () => {
+    // vote on an empty notebook throws INSIDE the locked section; the finally
+    // block must still remove .nb.lock so the next op is not blocked forever.
+    await expect(vote(dir, 'nobody', 'anything', 1)).rejects.toThrow(/empty/);
+    expect(existsSync(join(dir, '.nb.lock'))).toBe(false);
+    // Proof the notebook is still usable afterwards (the lock really was freed).
+    const r = await addEntry(dir, 'nobody', 'usable after a thrown op released the lock');
+    expect(r.added).toBe(true);
   });
 });
 
