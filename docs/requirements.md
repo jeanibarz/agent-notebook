@@ -174,7 +174,9 @@ remain; a removed existing entry SHALL be reported in `evicted`.
 <a id="fr-add-006"></a>
 **FR-ADD-006 (Must).** When the notebook is full and the newcomer (`score 1`) is the
 strict lowest, the newcomer SHALL NOT be stored; the result SHALL be
-`reason: 'rejected-full'` and the file SHALL be unchanged. *(See [DP-5](#dp-5).)*
+`reason: 'rejected-full'` and the stored set SHALL be unchanged (the file is
+rewritten with the same entries, which also normalizes any hand-edited lines).
+*(See [DP-5](#dp-5).)*
 
 *Acceptance (table):*
 
@@ -283,16 +285,19 @@ npm bin symlink.
 ### 4.10 Durability & concurrency
 
 <a id="fr-lock-001"></a>
-**FR-LOCK-001 (Must).** Every mutating operation SHALL run under a `mkdir`-based
-spinlock on `.nb.lock`, with an acquire budget of ~2s; a lock older than ~10s SHALL
-be treated as stale and stolen.
+**FR-LOCK-001 (Must).** Every notebook mutation (`add`/`vote`/`merge`/`rm`) SHALL run
+under a `mkdir`-based spinlock on `.nb.lock`, with an acquire budget of ~2s; a lock
+older than ~10s SHALL be treated as stale and stolen. (The usage log is appended
+outside this lock — see [FR-USAGE-001](#fr-usage-001).)
 **Rationale:** Serial CLI calls on one host occasionally overlap; the lock keeps a
 concurrent `add`+`vote` from corrupting the file, and stale-steal recovers from a
 crashed process.
 
 <a id="fr-dur-001"></a>
-**FR-DUR-001 (Must).** A write SHALL go to a temp file, be `fsync`'d, atomically
-renamed over the target, and the parent directory SHALL be `fsync`'d.
+**FR-DUR-001 (Must).** A *notebook* write SHALL go to a temp file, be `fsync`'d,
+atomically renamed over the target, and the parent directory SHALL be `fsync`'d. (The
+usage log is written best-effort with a plain write + rename and no `fsync` — losing a
+monitoring row is acceptable; losing a lesson is not.)
 **Rationale:** The rename is atomic but not durable; without the fsyncs a crash could
 lose a lesson the CLI already reported as added. *(Directory-fsync failure is
 tolerated for platforms that disallow it.)*
@@ -300,16 +305,18 @@ tolerated for platforms that disallow it.)*
 ### 4.11 Usage log & stats
 
 <a id="fr-usage-001"></a>
-**FR-USAGE-001 (Must).** Each CLI invocation SHALL append one row
-`"<iso-ts>\t<role>\t<command>\t<ok|err>\t<ms>"` to the usage ring, bounded to
+**FR-USAGE-001 (Must).** Each CLI invocation other than `--help`/`--version` (which
+return before any work) SHALL append one row
+`"<iso-ts>\t<role>\t<command>\t<ok|err>\t<ms>ms"` to the usage ring, bounded to
 `usageRing` rows (oldest dropped). A failure to log SHALL NOT fail the operation.
 **Rationale:** Monitoring must itself be bounded and must never break a real call.
 
 <a id="fr-stats-001"></a>
 **FR-STATS-001 (Should).** `stats` SHALL roll up per-command calls/errors/p50/p95/last-used
 within a window (`parseWindowMs`, default 7d) and flag three anomalies: **loop**
-(≥N calls of one role+command within a window), **went-silent** (used historically,
-zero in-window), **high-error-rate** (≥ERR_MIN calls and ≥ERR_RATE failures).
+(≥`NB_LOOP_N` calls of one role+command within `NB_LOOP_WINDOW_S`), **went-silent**
+(used historically, zero in-window, and last seen longer than `NB_SILENT_H` ago),
+**high-error-rate** (≥`NB_ERR_MIN` calls and ≥`NB_ERR_RATE` failures).
 
 <a id="fr-stats-002"></a>
 **FR-STATS-002 (Should).** A malformed anomaly-tuning value SHALL fall back to the
@@ -330,7 +337,8 @@ operation; a lesson SHALL never exceed `maxChars`; the usage log SHALL never exc
 
 <a id="nfr-port-001"></a>
 **NFR-PORT-001 (Must).** The tool SHALL run on Node.js ≥ 18 as an ESM package with no
-runtime dependencies, on Linux and macOS.
+runtime dependencies. CI exercises Linux on Node 18/20/22; macOS is a supported target
+(no Linux-specific syscalls) but is not currently covered by CI.
 
 <a id="nfr-safe-001"></a>
 **NFR-SAFE-001 (Must).** No operation SHALL write, read, or delete outside `NB_DIR`;
@@ -381,7 +389,8 @@ forces on an entry's lifetime ([DP-1](#dp-1)).
 
 ## 7. Configuration
 
-All are read at call time (clamped; an unset or unparseable value uses the default).
+All are read at call time and clamped to the stated range; a missing value falls back
+to the default (integer vars also fall back on a non-numeric string).
 
 | Variable | Default | Range | Effect |
 |---|---|---|---|
