@@ -75,6 +75,22 @@ describe('runNbCli', () => {
     expect(v.out).toContain('[+2]');
   });
 
+  test('vote accepts -1 and the ++/-- delta aliases through the CLI', async () => {
+    // The CLI vote tests otherwise only drive +1 success and an invalid delta.
+    // parseDelta also accepts `-1`, `++`, and `--`; exercise those branches end
+    // to end so a break in the alias/negative parsing is caught at the CLI layer.
+    await run(['add', 'patcher', 'tune this lesson']); // starts at +1
+    const up = await run(['vote', 'patcher', 'tune', '++']); // alias for +1
+    expect(up.code).toBe(0);
+    expect(up.out).toContain('[+2]');
+    const down = await run(['vote', 'patcher', 'tune', '-1']); // explicit -1
+    expect(down.code).toBe(0);
+    expect(down.out).toContain('[+1]');
+    const down2 = await run(['vote', 'patcher', 'tune', '--']); // alias for -1
+    expect(down2.code).toBe(0);
+    expect(down2.out).toContain('[+0]'); // signed-zero formatting from fmt()
+  });
+
   test('stats --since labels the window and returns 0', async () => {
     await run(['add', 'patcher', 'x']);
     const s = await run(['stats', 'patcher', '--since', '30m']);
@@ -116,23 +132,26 @@ describe('runNbCli', () => {
     const s = await run(['stats', 'patcher', '--json']);
     expect(s.code).toBe(0);
     const rep = JSON.parse(s.out); // parses => valid JSON, exactly one object
-    expect(rep).toMatchObject({
-      window: expect.any(String),
-      totalCalls: expect.any(Number),
-      perCommand: expect.any(Array),
-      anomalies: expect.any(Array),
-    });
-    // perCommand carries the full CommandStat shape, keyed by the recorded command.
+    // Exactly one usage row exists at read time (the single `add`; this `stats`
+    // row is logged only afterwards), so the counts are deterministic — assert
+    // the concrete values, not just their types, or a miscount regression hides.
+    expect(rep.window).toBe('7d'); // default window with no --since
+    expect(rep.totalCalls).toBe(1);
+    expect(rep.anomalies).toEqual([]); // one healthy call => no anomalies
+    expect(rep.perCommand).toHaveLength(1); // only `add` recorded
     const add = rep.perCommand.find((c: { command: string }) => c.command === 'add');
     expect(add).toMatchObject({
       command: 'add',
-      calls: expect.any(Number),
-      errors: expect.any(Number),
-      errorRate: expect.any(Number),
+      calls: 1,
+      errors: 0,
+      errorRate: 0,
+      // latency is timing-dependent, but it must be a finite, non-negative number.
       p50ms: expect.any(Number),
       p95ms: expect.any(Number),
       lastUsed: expect.any(String),
     });
+    expect(add.p50ms).toBeGreaterThanOrEqual(0);
+    expect(add.lastUsed).not.toBe(''); // a real ISO timestamp was recorded
     expect(s.out).not.toContain('nb usage —'); // the human table is NOT emitted
   });
 

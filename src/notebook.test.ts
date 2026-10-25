@@ -392,6 +392,34 @@ describe('merge', () => {
     expect(entries[0].score).toBe(2); // max(+1, +2)
   });
 
+  test('drops a THIRD entry whose text the merged lesson duplicates (never creates a dup)', async () => {
+    // merge A+B into text that is a near-duplicate (dedupKey-equal) of a third
+    // entry C. The dedup-drop branch must remove C so the notebook never holds
+    // two entries with the same dedupKey — the invariant addEntry enforces.
+    await addEntry(dir, 'm', 'alpha one');          // A
+    await addEntry(dir, 'm', 'beta two');           // B
+    await addEntry(dir, 'm', 'shared merged text'); // C (the third entry)
+    await vote(dir, 'm', entryId('alpha one'), 1);  // A -> +2
+    await vote(dir, 'm', entryId('beta two'), 1);
+    await vote(dir, 'm', entryId('beta two'), 1);   // B -> +3
+    await vote(dir, 'm', entryId('shared merged text'), 1); // C -> +2 (higher than it will inherit)
+
+    // Merged text dedupKey-equals C ("Shared merged text!!" normalizes to C's key).
+    const r = await merge(dir, 'm', entryId('alpha one'), entryId('beta two'), 'Shared merged text!!');
+    expect(r.added).toBe(true);
+
+    const entries = readEntries(dir, 'm');
+    // Exactly ONE entry survives: A and B consumed, C dropped as the duplicate.
+    expect(entries).toHaveLength(1);
+    expect(entries[0].text).toBe('Shared merged text!!');
+    // No two entries share a dedupKey (the invariant this branch protects).
+    expect(new Set(entries.map((e) => dedupKey(e.text))).size).toBe(entries.length);
+    // Documented behavior (NOT asserted as desirable): the merged entry inherits
+    // only max(A,B) = +3; the dropped C's +2 is discarded. Pinned so a change to
+    // merge's score inheritance becomes a visible, deliberate decision.
+    expect(entries[0].score).toBe(3);
+  });
+
   test('refuses to merge an entry with itself', async () => {
     await addEntry(dir, 'm', 'only one');
     const id = entryId('only one');
