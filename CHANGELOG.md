@@ -11,6 +11,12 @@ versions are listed plainly.
 
 ### Added
 - This changelog.
+- `docs/requirements.md` — a canonical specification of the essential
+  features, design choices, and their rationale (including why the on-disk
+  file is stored in insertion order rather than sorted), so settled decisions
+  are not re-litigated or mistaken for bugs.
+- A pull-request template (`.github/PULL_REQUEST_TEMPLATE.md`) with a checklist
+  item that keeps `docs/requirements.md` in sync with code changes.
 
 ### Changed
 - The README now documents the `nb stats` anomaly-tuning environment variables (#8).
