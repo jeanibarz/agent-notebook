@@ -706,7 +706,7 @@ describe('display ordering ("moving" an entry)', () => {
     ]);
   });
 
-  test("the README example: upvoting a +2 to +3 lifts it to second place — [+4,+2,+2,+2,+1] -> [+4,+3,+2,+2,+1]", async () => {
+  test("upvoting a +2 to +3 lifts it to second place — [+4,+2,+2,+2,+1] -> [+4,+3,+2,+2,+1]", async () => {
     await seed('ex', [['a', 4], ['b', 2], ['c', 2], ['d', 2], ['e', 1]]);
     // Upvote the 4th displayed entry (the last of the three tied +2s = 'd').
     const before = displayed('ex');
@@ -784,9 +784,9 @@ describe('display ordering ("moving" an entry)', () => {
   });
 
   test('a lower-scored older entry stays below a higher-scored newer one after add', async () => {
-    // Insert 'old' first, raise it, then add 'new'. 'new' outranks nothing yet;
-    // then upvote 'new' twice so it overtakes 'old' — verifying the ranking
-    // tracks score, and reversing on a tie falls back to insertion order.
+    // Both start at +1, so the initial tie falls back to insertion order (old
+    // above new). Upvoting 'new' to +2 then lets it overtake 'old' — the
+    // ranking tracks score first, insertion order only to break ties.
     await addEntry(dir, 'race', 'old'); // +1 (file idx 0)
     await addEntry(dir, 'race', 'new'); // +1 (file idx 1)
     expect(displayed('race').map((x) => x.text)).toEqual(['old', 'new']); // tie -> older first
