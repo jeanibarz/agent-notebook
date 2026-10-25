@@ -657,3 +657,143 @@ describe('core smoke (full learn cycle)', () => {
     expect(entries.find((e) => e.text.startsWith('tests'))!.score).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Display ordering — how an entry "moves" when its score changes.
+//
+// These tests pin down the behavior the project README implies with "nb show
+// (highest-scored first)", and correct a common misconception: `add` NEVER
+// reorders. A lesson is always appended at the end of file order with score
+// +1; the file is stored in insertion order, not score order. An entry only
+// appears to "move" because the DISPLAY layer (`render` / `nb show`) sorts a
+// copy by score descending, breaking ties by insertion order (oldest first).
+// So the thing that moves an entry is a `vote` that changes its score relative
+// to its neighbors — the move is in the rendered view, never in the file.
+// ---------------------------------------------------------------------------
+describe('display ordering ("moving" an entry)', () => {
+  // Parse `render` output back into a score+text sequence, in display order, so
+  // a test can assert the exact ranking a user would see from `nb show`.
+  function displayed(role: string): { score: number; text: string }[] {
+    const out = render(dir, role);
+    if (out.includes('is empty')) return [];
+    return out.split('\n').map((line) => {
+      const m = /^\S+\s+\[([+-]\d+)\]\s+(.*)$/.exec(line);
+      if (!m) throw new Error(`unparseable render line: ${JSON.stringify(line)}`);
+      return { score: Number.parseInt(m[1], 10), text: m[2] };
+    });
+  }
+
+  // Seed a notebook so each [text, targetScore] reaches targetScore, inserted
+  // in the given file order (so tie-break-by-insertion is deterministic).
+  // targetScore must be >= 1 since `add` starts every entry at +1.
+  async function seed(role: string, specs: [string, number][]): Promise<void> {
+    for (const [text] of specs) await addEntry(dir, role, text);
+    for (const [text, score] of specs) {
+      for (let s = 1; s < score; s++) await vote(dir, role, entryId(text), 1);
+    }
+  }
+
+  test('seed helper produces the intended display ranking', async () => {
+    // Guards the premise of the tests below: scores [4,2,2,2,1] in file order
+    // a,b,c,d,e render as [4,2,2,2,1] (ties a,b,c,d keep insertion order).
+    await seed('s', [['a', 4], ['b', 2], ['c', 2], ['d', 2], ['e', 1]]);
+    expect(displayed('s')).toEqual([
+      { score: 4, text: 'a' },
+      { score: 2, text: 'b' },
+      { score: 2, text: 'c' },
+      { score: 2, text: 'd' },
+      { score: 1, text: 'e' },
+    ]);
+  });
+
+  test("the README example: upvoting a +2 to +3 lifts it to second place — [+4,+2,+2,+2,+1] -> [+4,+3,+2,+2,+1]", async () => {
+    await seed('ex', [['a', 4], ['b', 2], ['c', 2], ['d', 2], ['e', 1]]);
+    // Upvote the 4th displayed entry (the last of the three tied +2s = 'd').
+    const before = displayed('ex');
+    expect(before[3]).toEqual({ score: 2, text: 'd' });
+
+    await vote(dir, 'ex', entryId('d'), 1); // d: +2 -> +3
+
+    // d is now strictly above the remaining +2s, so it jumps to position 2.
+    expect(displayed('ex')).toEqual([
+      { score: 4, text: 'a' },
+      { score: 3, text: 'd' },
+      { score: 2, text: 'b' },
+      { score: 2, text: 'c' },
+      { score: 1, text: 'e' },
+    ]);
+    // The score sequence matches the user's expectation exactly.
+    expect(displayed('ex').map((x) => x.score)).toEqual([4, 3, 2, 2, 1]);
+  });
+
+  test('voting reorders only the DISPLAY; the stored file order is unchanged', async () => {
+    await seed('store', [['a', 4], ['b', 2], ['c', 2], ['d', 2], ['e', 1]]);
+    const fileBefore = readEntries(dir, 'store').map((e) => e.text);
+    expect(fileBefore).toEqual(['a', 'b', 'c', 'd', 'e']); // insertion order
+
+    await vote(dir, 'store', entryId('d'), 1); // d moves UP in the view...
+
+    // ...but the file is still in insertion order: 'd' did not move on disk.
+    expect(readEntries(dir, 'store').map((e) => e.text)).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(readEntries(dir, 'store').find((e) => e.text === 'd')!.score).toBe(3);
+  });
+
+  test('an upvote INTO a tie lands at the BOTTOM of its new tier (insertion-order tie-break, not newest-on-top)', async () => {
+    // e: +1 -> +2 joins the b,c,d tier. Because tie-break is insertion order and
+    // 'e' was inserted last, it sits *below* b,c,d rather than jumping over them.
+    await seed('tie', [['a', 4], ['b', 2], ['c', 2], ['d', 2], ['e', 1]]);
+    await vote(dir, 'tie', entryId('e'), 1); // e -> +2
+    expect(displayed('tie')).toEqual([
+      { score: 4, text: 'a' },
+      { score: 2, text: 'b' },
+      { score: 2, text: 'c' },
+      { score: 2, text: 'd' },
+      { score: 2, text: 'e' },
+    ]);
+  });
+
+  test('a downvote moves an entry DOWN past lower-scored neighbors', async () => {
+    await seed('down', [['a', 4], ['b', 3], ['c', 2], ['d', 1]]);
+    await vote(dir, 'down', entryId('b'), -1); // b: +3 -> +2, ties with c (b older -> above c)
+    expect(displayed('down')).toEqual([
+      { score: 4, text: 'a' },
+      { score: 2, text: 'b' },
+      { score: 2, text: 'c' },
+      { score: 1, text: 'd' },
+    ]);
+    await vote(dir, 'down', entryId('b'), -1); // b: +2 -> +1, now below c and ties with d (b older)
+    expect(displayed('down')).toEqual([
+      { score: 4, text: 'a' },
+      { score: 2, text: 'c' },
+      { score: 1, text: 'b' },
+      { score: 1, text: 'd' },
+    ]);
+  });
+
+  test('`add` does NOT move an entry: a fresh +1 lesson appends last on disk and ranks by score, not recency', async () => {
+    await seed('add', [['established', 3]]); // one high-scored lesson
+    await addEntry(dir, 'add', 'brand-new'); // +1, newest
+
+    // On disk: appended at the end (insertion order), NOT promoted to the top.
+    expect(readEntries(dir, 'add').map((e) => e.text)).toEqual(['established', 'brand-new']);
+    // In the view: ranked below the higher-scored lesson despite being newest.
+    expect(displayed('add')).toEqual([
+      { score: 3, text: 'established' },
+      { score: 1, text: 'brand-new' },
+    ]);
+  });
+
+  test('a lower-scored older entry stays below a higher-scored newer one after add', async () => {
+    // Insert 'old' first, raise it, then add 'new'. 'new' outranks nothing yet;
+    // then upvote 'new' twice so it overtakes 'old' — verifying the ranking
+    // tracks score, and reversing on a tie falls back to insertion order.
+    await addEntry(dir, 'race', 'old'); // +1 (file idx 0)
+    await addEntry(dir, 'race', 'new'); // +1 (file idx 1)
+    expect(displayed('race').map((x) => x.text)).toEqual(['old', 'new']); // tie -> older first
+    await vote(dir, 'race', entryId('new'), 1); // new -> +2, overtakes old
+    expect(displayed('race')).toEqual([
+      { score: 2, text: 'new' },
+      { score: 1, text: 'old' },
+    ]);
+  });
+});
