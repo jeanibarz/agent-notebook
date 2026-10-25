@@ -77,6 +77,8 @@ nb --help                               show this help
 
 Every `show` line starts with a short stable id — pass that id (or a unique prefix, or a unique text substring) to `vote`/`rm`/`merge`. An over-long `add` is rejected outright, never silently truncated, so you rewrite it shorter instead of storing a cut-off, useless lesson.
 
+**Storage order vs. display order.** `nb show` sorts highest-scored first, but the `<role>.md` file on disk is stored in *insertion order*, not sorted — so a raw `cat` of the file looks unordered, and that is intentional, not a bug. Sorting happens only at display time: ids are content-derived (stable across reordering), the lowest-scored line is evicted regardless of position, and keeping insertion order means a `vote` rewrites exactly one line in place — the smallest, most stable git diff — and preserves the "ties → oldest" tie-break that both display and eviction rely on. Read a notebook with `nb show`, not by eyeballing the file.
+
 `NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than 200/200. You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory and `nb path <role>` the resolved file, so `cat "$(nb path reviewer)"` or `git diff "$(nb path reviewer)"` just works. `nb roles` lists the roles that already have a notebook (one stem per line, sorted, with the `.nb-usage.log`/`.nb.lock` sidecars filtered out) so the set of memories is discoverable from the tool instead of an `ls`; it prints a friendly note to stderr and exits 0 when none exist yet.
 
 ### Machine-readable `nb stats`
