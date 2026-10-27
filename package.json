@@ -41,7 +41,7 @@
   "scripts": {
     "build": "tsc && chmod +x dist/cli.js",
     "pretest": "npm run build",
-    "test": "vitest run",
+    "test": "node scripts/check-node-for-tests.mjs && vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build && npm test"
   },
