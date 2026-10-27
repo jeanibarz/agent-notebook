@@ -268,7 +268,7 @@ SHALL throw otherwise.
 traversal outside `NB_DIR`, and the 128-character bound keeps `<role>.md` under
 typical filename limits so an over-long name throws a friendly `invalid role name`
 error instead of a bare `ENAMETOOLONG` stack. 128 fits `role@owner-repo` plus a suffix.
-*Proven by:* `notebook.test.ts` → "rejects path-traversal and unsafe role names".
+*Proven by:* `notebook.test.ts` → "rejects path-traversal and unsafe role names"; "bounds role-name length with a friendly error before it becomes a filename".
 
 <a id="fr-roles-001"></a>
 **FR-ROLES-001 (Should).** `listRoles` SHALL return the sorted stems of `*.md` files
