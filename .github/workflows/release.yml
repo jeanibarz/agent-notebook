@@ -17,16 +17,18 @@ jobs:
       id-token: write # required for npm's OIDC Trusted Publishing — no NPM_TOKEN secret needed
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # Trusted Publishing needs npm >= 11.5.0; pin to a recent npm regardless
-      # of whatever version actions/setup-node's Node bundles.
-      - run: npm install -g npm@latest
+      # Trusted Publishing needs npm >= 11.5.0; pin to a specific recent npm
+      # (not npm@latest) so the publish job is reproducible and a moving npm
+      # release cannot silently change it, regardless of the Node bundled by
+      # actions/setup-node.
+      - run: npm install -g npm@11.21.1
 
       - run: npm ci
       - run: npm run build
