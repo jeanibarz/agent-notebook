@@ -795,6 +795,69 @@ describe('locking (mkdir spinlock)', () => {
   });
 });
 
+describe('reaps leftover *.md.tmp on lock acquire (issue #46)', () => {
+  // A crash between writeFileDurable's `<role>.md.tmp` and its rename leaves an
+  // orphaned temp in the notebooks dir that nothing else removes. The next locked
+  // mutation sweeps it — only this writer's `*.md.tmp` convention, never a real
+  // notebook or the usage log.
+
+  test('a planted role.md.tmp is removed by the next locked mutation', async () => {
+    const orphan = join(dir, 'role.md.tmp');
+    writeFileSync(orphan, 'crash debris from an interrupted write', 'utf-8');
+    expect(existsSync(orphan)).toBe(true);
+    // Any locked mutation triggers the reap — add on an UNRELATED role so we prove
+    // the sweep is dir-wide, not tied to the role being written.
+    const r = await addEntry(dir, 'patcher', 'a fresh lesson');
+    expect(r.added).toBe(true);
+    expect(existsSync(orphan)).toBe(false);
+  });
+
+  test('real *.md notebooks are never deleted by the reap', async () => {
+    await addEntry(dir, 'keepme', 'a committed lesson');
+    writeFileSync(join(dir, 'orphan.md.tmp'), 'debris', 'utf-8');
+    // A later mutation reaps the .md.tmp but must leave every real notebook intact.
+    await addEntry(dir, 'other', 'another lesson');
+    expect(existsSync(join(dir, 'orphan.md.tmp'))).toBe(false);
+    expect(readEntries(dir, 'keepme')).toEqual([{ score: 1, text: 'a committed lesson' }]);
+    expect(existsSync(join(dir, 'keepme.md'))).toBe(true);
+  });
+
+  test('the usage log and its per-pid temp are not reaped (dotfile / not *.md.tmp)', async () => {
+    const usage = join(dir, '.nb-usage.log');
+    const usageTmp = join(dir, `.nb-usage.log.${process.pid}.tmp`);
+    writeFileSync(usage, 'usage rows', 'utf-8');
+    writeFileSync(usageTmp, 'a usage-log temp mid-compact', 'utf-8');
+    await addEntry(dir, 'patcher', 'triggers a reap');
+    // Neither the log nor its temp matches the `*.md.tmp` convention (and both are
+    // dotfiles), so the reap leaves them untouched.
+    expect(existsSync(usage)).toBe(true);
+    expect(existsSync(usageTmp)).toBe(true);
+  });
+
+  test('a dotfile *.md.tmp is NOT reaped (the dotfile guard, isolated)', async () => {
+    // A role name never starts with `.` (assertSafeRole), so `.hidden.md.tmp` is
+    // not our convention even though it ends in `.md.tmp`. This isolates the
+    // `name.startsWith('.')` half of the guard: unlike the usage-log temp (which
+    // is excluded by the suffix check too), only a dotfile that DOES end in
+    // `.md.tmp` can prove the dotfile branch is load-bearing.
+    const hidden = join(dir, '.hidden.md.tmp');
+    writeFileSync(hidden, 'a dotfile that ends in .md.tmp', 'utf-8');
+    await addEntry(dir, 'patcher', 'triggers a reap');
+    expect(existsSync(hidden)).toBe(true);
+  });
+
+  test('a *.md.tmp in a subdirectory is left untouched (reap is non-recursive)', async () => {
+    // readdirSync is not recursive: the reap only sweeps the top level of the
+    // notebooks dir, so a `.md.tmp` nested one level down survives.
+    const sub = join(dir, 'sub');
+    mkdirSync(sub);
+    const nested = join(sub, 'foo.md.tmp');
+    writeFileSync(nested, 'debris in a subdir', 'utf-8');
+    await addEntry(dir, 'patcher', 'triggers a reap');
+    expect(existsSync(nested)).toBe(true);
+  });
+});
+
 describe('stats notebook inventory (issue #40)', () => {
   test('empty dir: no notebooks, totals zeroed, cap = maxLines()', async () => {
     const rep = stats(dir, { now: Date.now() });
