@@ -43,7 +43,20 @@ export interface Entry {
 /** A role name is a path segment; reject anything that could escape the notebooks dir. */
 const SAFE_ROLE = /^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$/;
 
+/**
+ * Max role-name length. A role becomes the `<role>.md` filename, so an
+ * unbounded name hits the filesystem's `ENAMETOOLONG` with a bare Node stack
+ * instead of a notebook error. 128 fits `role@owner-repo` plus a suffix and
+ * stays well under typical 255-byte filename limits.
+ */
+const MAX_ROLE_LEN = 128;
+
 export function assertSafeRole(role: string): void {
+  if (role.length > MAX_ROLE_LEN) {
+    throw new Error(
+      `invalid role name: ${JSON.stringify(role)} (too long: ${role.length} chars, max ${MAX_ROLE_LEN})`,
+    );
+  }
   if (!SAFE_ROLE.test(role) || role.includes('..')) {
     throw new Error(`invalid role name: ${JSON.stringify(role)} (allowed: letters, digits, . _ @ -)`);
   }

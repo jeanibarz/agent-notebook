@@ -467,6 +467,28 @@ describe('role safety', () => {
     expect(() => assertSafeRole('patcher')).not.toThrow();
     expect(() => assertSafeRole('cartographer@some-repo')).not.toThrow();
   });
+
+  test('bounds role-name length with a friendly error before it becomes a filename', () => {
+    // A 300-char alphanumeric name passes the character pattern but would hit
+    // ENAMETOOLONG as `<role>.md`; it must throw the friendly length error.
+    // `129` passes the character pattern, so only the length guard can reject
+    // it — asserting the distinct `too long` diagnostic pins which guard fired.
+    expect(() => assertSafeRole('a'.repeat(300))).toThrow(/invalid role name: .* \(too long: 300 chars, max 128\)/);
+    // The boundary: 128 chars is allowed, 129 is not.
+    expect(() => assertSafeRole('a'.repeat(128))).not.toThrow();
+    expect(() => assertSafeRole('a'.repeat(129))).toThrow(/too long: 129 chars, max 128/);
+    // A realistic long role stays legal.
+    expect(() => assertSafeRole('code-review@jeanibarz-agent-notebook')).not.toThrow();
+  });
+
+  test('an over-long role is rejected by a runtime write before any file is created', async () => {
+    // The acceptance criterion is end-to-end: driving an over-long role through
+    // a real entry point must surface the friendly error instead of a bare
+    // `ENAMETOOLONG`, and must not leave a `<role>.md` behind.
+    const tooLong = 'a'.repeat(300);
+    await expect(addEntry(dir, tooLong, 'x')).rejects.toThrow(/invalid role name/);
+    expect(existsSync(join(dir, `${tooLong}.md`))).toBe(false);
+  });
 });
 
 describe('usage log + stats', () => {
