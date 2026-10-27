@@ -109,19 +109,49 @@ The anomaly detection in `nb stats` (loop / went-silent / high-error-rate flags)
 ## Programmatic use
 
 ```ts
-import { addEntry, readEntries, vote, render, notebooksDir } from 'agent-notebook';
+import {
+  addEntry,
+  readEntries,
+  vote,
+  merge,
+  remove,
+  render,
+  listRoles,
+  notebooksDir,
+  type AddResult,
+} from 'agent-notebook';
 
 // `dir` is the storage directory. Any path works; notebooksDir() resolves the
 // default — $NB_DIR if set, else ~/.agent-notebook/notebooks — the same
 // location the `nb` CLI uses.
 const dir = notebooksDir();
 
-await addEntry(dir, 'reviewer', 'run lint before claiming done');
+// addEntry never throws on a *content* rejection and never silently truncates:
+// it resolves to an AddResult. Check `added`; when it is false, `reason` says
+// why — 'duplicate' (an equivalent line already exists), 'empty' (nothing left
+// after sanitizing), 'too-long' (over NB_MAX_CHARS; `length` carries the
+// submitted size so you can report it), or 'rejected-full' (the notebook is at
+// NB_MAX_LINES and every stored line outranks this one). The fifth reason,
+// 'added', is the success case. (An invalid role name or an I/O error still
+// throws — those are faults, not rejected content.)
+const r: AddResult = await addEntry(dir, 'reviewer', 'run lint before claiming done');
+if (!r.added) console.warn(`not stored: ${r.reason}`);
+await addEntry(dir, 'reviewer', 'run the linter first'); // a near-duplicate
+await addEntry(dir, 'reviewer', 'obsolete note to drop');
 
 const entries = readEntries(dir, 'reviewer'); // Entry[] = { score, text }
 
-// vote/merge/rm select by stable id, unique prefix, or unique text substring.
-await vote(dir, 'reviewer', 'run lint', +1);
+// vote/merge/remove select an entry by stable id, unique prefix, or unique text
+// substring — and throw if the selector matches no entry, or more than one.
+await vote(dir, 'reviewer', 'run lint before', +1);
+
+// merge folds two entries into a single line, inheriting the higher of their
+// two scores; remove deletes one. Both rewrite the notebook under the same lock
+// as addEntry and vote.
+await merge(dir, 'reviewer', 'run lint before', 'linter first', 'run lint before every commit');
+await remove(dir, 'reviewer', 'obsolete note');
+
+listRoles(dir); // string[] — roles that already have a notebook, sorted
 
 console.log(render(dir, 'reviewer')); // highest-scored first
 ```
