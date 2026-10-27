@@ -432,11 +432,24 @@ export interface UsageRow {
   ms: number;
 }
 
+/**
+ * Collapse the TSV-structural characters (tab, CR, LF) in a single usage-log
+ * field to spaces so an attacker-influenced value cannot inject an extra
+ * column or an extra row. A well-formed field — a role like `patcher`, a
+ * command like `add` — contains none of these, so it is left byte-identical.
+ */
+function sanitizeUsageField(raw: string): string {
+  return raw.replace(/[\t\r\n]+/g, ' ');
+}
+
 export function logUsage(dir: string, role: string, command: string, ok: boolean, ms: number): void {
   try {
     mkdirSync(dir, { recursive: true });
     const file = usageFile(dir);
-    const line = `${new Date().toISOString()}\t${role}\t${command}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms`;
+    // `role` and `command` are the only caller-supplied strings; sanitize them
+    // so a tab/CR/LF (e.g. in an unsafe role that `add` rejected but the CLI's
+    // finally block still logs) cannot split the row and mis-align parseUsage.
+    const line = `${new Date().toISOString()}\t${sanitizeUsageField(role)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms`;
     let lines: string[] = [];
     if (existsSync(file)) lines = readFileSync(file, 'utf-8').split('\n').filter((l) => l !== '');
     lines.push(line);
