@@ -214,6 +214,34 @@ describe('runNbCli', () => {
     expect(show.out).toContain('is empty');
   });
 
+  test('add past NB_MAX_LINES evicts the lowest-scored entry and names it in the output', async () => {
+    // Drive the CLI's eviction branch end to end: with a tiny cap, a third `add`
+    // must evict the lowest-scored existing entry AND report it in the `added`
+    // line — the exact feedback an agent relies on to know its memory changed.
+    // notebook.test.ts covers the library eviction; this covers the CLI message
+    // (a wrong count, a missing evicted suffix, or the wrong entry would be a
+    // user-facing regression that the library-level tests do not catch).
+    process.env.NB_MAX_LINES = '2';
+    // Vote down the SECOND (younger) entry so the lowest-scored entry is NOT the
+    // oldest — otherwise a FIFO-eviction regression (drop oldest, ignore score)
+    // would still pass. alpha stays +1 (oldest), beta drops to 0 (lowest-scored).
+    expect((await run(['add', 'patcher', 'alpha lesson one'])).code).toBe(0); // +1, oldest
+    expect((await run(['add', 'patcher', 'beta lesson two'])).code).toBe(0); // +1 — notebook now full at the cap of 2
+    expect((await run(['vote', 'patcher', 'beta', '-1'])).code).toBe(0); // beta → 0, now the lowest-scored but NOT the oldest
+    const r = await run(['add', 'patcher', 'gamma lesson three']); // over the cap → must evict beta, not the older alpha
+    expect(r.code).toBe(0);
+    // Stable message (fixed single-space template, not padded whitespace): the
+    // resulting size stays at the cap and the evicted lowest-scored entry is
+    // named with its score.
+    expect(r.out).toMatch(/added — 2 lines \(evicted lowest-scored: \[\+0\] beta lesson two\)/);
+    // The eviction really happened by score, not by age: beta is gone while the
+    // older alpha survives alongside the newest entry, and the cap held.
+    const show = await run(['show', 'patcher']);
+    expect(show.out).not.toContain('beta lesson two');
+    expect(show.out).toContain('alpha lesson one');
+    expect(show.out).toContain('gamma lesson three');
+  });
+
   test('merge consolidates two entries into one, reflected by show', async () => {
     await run(['add', 'patcher', 'alpha lesson one']);
     await run(['add', 'patcher', 'beta lesson two']);
