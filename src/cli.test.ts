@@ -407,4 +407,75 @@ describe('runNbCli', () => {
     expect(r.code).toBe(0);
     expect(r.out).toBe('reviewer\n'); // only the .md stem, not "notes"
   });
+
+  describe('--json on add/vote/rm/merge (issue #41)', () => {
+    // A supervisor should branch on `reason`/`score` without regex-parsing the
+    // English line, exactly as `stats --json` already allows for monitoring.
+    /** stdout must be exactly one parseable JSON object and nothing else. */
+    function parseOnly(out: string): unknown {
+      expect(out.endsWith('\n')).toBe(true);
+      expect(out.trimEnd().includes('\n')).toBe(false); // single line, no stray prose
+      return JSON.parse(out);
+    }
+
+    test('add --json prints a parseable AddResult and nothing else (exit 0)', async () => {
+      const r = await run(['add', 'patcher', 'prefer execFileSync', '--json']);
+      expect(r.code).toBe(0);
+      expect(r.err).toBe(''); // warnings/errors would be on stderr; there are none
+      expect(parseOnly(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1 });
+    });
+
+    test('add --json on a duplicate emits reason:"duplicate" and stays exit 0', async () => {
+      await run(['add', 'patcher', 'same lesson']);
+      const r = await run(['add', 'patcher', 'same lesson', '--json']);
+      expect(r.code).toBe(0); // a duplicate is a skip, not a failure
+      expect(parseOnly(r.out)).toMatchObject({ added: false, reason: 'duplicate', size: 1 });
+    });
+
+    test('add --json on a too-long lesson emits reason:"too-long" on stdout but still exits 1', async () => {
+      process.env.NB_MAX_CHARS = '25';
+      const r = await run(['add', 'patcher', 'z'.repeat(60), '--json']);
+      expect(r.code).toBe(1); // exit code unchanged from the text path
+      expect(parseOnly(r.out)).toMatchObject({ added: false, reason: 'too-long', length: 60 });
+      const show = await run(['show', 'patcher']);
+      expect(show.out).toContain('is empty'); // and it was not stored
+    });
+
+    test('vote --json prints a parseable VoteResult', async () => {
+      await run(['add', 'patcher', 'run lint before done']);
+      const r = await run(['vote', 'patcher', 'lint', '+1', '--json']);
+      expect(r.code).toBe(0);
+      expect(parseOnly(r.out)).toEqual({ text: 'run lint before done', score: 2 });
+    });
+
+    test('rm --json prints the removed entry', async () => {
+      await run(['add', 'patcher', 'delete me']);
+      const r = await run(['rm', 'patcher', 'delete me', '--json']);
+      expect(r.code).toBe(0);
+      expect(parseOnly(r.out)).toEqual({ text: 'delete me', score: 1 });
+    });
+
+    test('merge --json prints the resulting AddResult', async () => {
+      await run(['add', 'patcher', 'alpha lesson']);
+      await run(['add', 'patcher', 'beta lesson']);
+      const r = await run(['merge', 'patcher', 'alpha', 'beta', 'alpha+beta merged', '--json']);
+      expect(r.code).toBe(0);
+      expect(parseOnly(r.out)).toMatchObject({ added: true, reason: 'added', size: 1 });
+    });
+
+    test('the flag is positional-order-independent and leaves the role/lesson intact', async () => {
+      // --json between the role and the lesson must be stripped before positional
+      // parsing, so the lesson is not swallowed and the role still resolves.
+      const r = await run(['add', 'patcher', '--json', 'a lesson in the middle']);
+      expect(r.code).toBe(0);
+      expect(parseOnly(r.out)).toMatchObject({ added: true, reason: 'added', size: 1 });
+      const show = await run(['show', 'patcher']);
+      expect(show.out).toContain('a lesson in the middle'); // stored verbatim, flag not captured
+    });
+
+    test('without --json the English lines are unchanged', async () => {
+      const r = await run(['add', 'patcher', 'plain text path']);
+      expect(r.out).toBe('added — 1 lines\n');
+    });
+  });
 });
