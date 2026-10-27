@@ -337,6 +337,31 @@ function renderStats(dir: string, role: string | undefined, windowMs: number | u
   return lines.join('\n');
 }
 
+// Settle the process exit status from the `runNbCli` promise. On resolve, the
+// returned code becomes `process.exitCode`. On *rejection* — an unexpected bug
+// in the CLI wrapper, not a handled command error (`runNbCli` try/catches those
+// and resolves with a code) — write the error to stderr and force exit 1.
+// Without this `.catch`, a rejection left `exitCode` unset (often 0) plus an
+// `unhandledRejection` warning, so a crashing CLI looked like success to an
+// orchestrator that only checks the exit code (DP-5: never silently mislead).
+// We set `process.exitCode` rather than calling `process.exit(1)`, which would
+// abort synchronously before `runNbCli`'s `finally` (logUsage) could run.
+export function settleCliExit(result: Promise<number>): Promise<void> {
+  return result.then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (err: unknown) => {
+      // Set the failing exit code *before* touching stderr: if `stderr.write`
+      // itself throws (e.g. EPIPE on a closed pipe) the code is already set, so
+      // the crash can never leak back out as a success exit (0).
+      process.exitCode = 1;
+      const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      process.stderr.write(`nb: fatal: ${detail}\n`);
+    },
+  );
+}
+
 /* c8 ignore start */
 // `process.argv[1]` is the invoked path (e.g. an npm bin symlink such as
 // node_modules/.bin/nb); `import.meta.url` resolves through that symlink to
@@ -353,8 +378,6 @@ function isMainModule(): boolean {
 }
 
 if (isMainModule()) {
-  runNbCli(process.argv.slice(2)).then((code) => {
-    process.exitCode = code;
-  });
+  void settleCliExit(runNbCli(process.argv.slice(2)));
 }
 /* c8 ignore stop */
