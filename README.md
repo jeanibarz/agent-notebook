@@ -19,6 +19,8 @@ $ nb vote reviewer 3f9a2c +1
 
 Most "agent memory" tooling reaches for a vector database the moment anyone says the word "memory." Most agents don't need one. If what you actually want is "let this agent remember a handful of short, durable lessons across runs," a notebook is enough: a capped, append-and-vote text file that a human can `cat`, `grep`, and diff in git.
 
+The point of durable memory isn't to answer the questions an agent knows to ask — it's to put the hard-won lesson it would otherwise forget to look for back in front of it. So a notebook is *shown* to the agent, not searched; the lessons it needs arrive without it having to name them.
+
 `agent-notebook` is the whole mechanism, nothing more:
 
 - **One entry = one line.** `<score>\t<lesson>`, at most 200 characters, no multi-paragraph notes.

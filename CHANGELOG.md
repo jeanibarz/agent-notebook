@@ -11,6 +11,10 @@ versions are listed plainly.
 
 ### Added
 - This changelog.
+- **DP-8 / NG-007** in `docs/requirements.md`, and a matching line in the README:
+  memory's job is to surface the lesson an agent would not think to search for, so
+  the notebook is *shown* (injected) rather than queried — a search-first retrieval
+  model is a non-goal.
 - `docs/requirements.md` — a canonical specification of the essential
   features, design choices, and their rationale (including why the on-disk
   file is stored in insertion order rather than sorted), so settled decisions
