@@ -128,6 +128,8 @@ Notable changes per release are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## Contributing
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build and test (note: `npm test` needs Node 20.12+) and what to read first.
+
 The entire point is that this stays small. A PR that adds a feature should make the case for why the bounded/voted/one-line model needs it, not just that it would be nice to have. Bug fixes, docs, and test coverage are always welcome.
 
 The essential features, design choices, and the rationale behind them are specified in [docs/requirements.md](docs/requirements.md) — read it before proposing a change, and keep it in sync (the PR template has a checklist item for this). It's also the place to find out why something works the way it does (for example, why the notebook file is stored in insertion order rather than sorted).
