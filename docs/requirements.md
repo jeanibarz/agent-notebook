@@ -125,6 +125,22 @@ Node.js standard library.
 **Rationale:** The whole mechanism is small enough not to need them, and a memory
 tool an agent calls constantly should not drag a dependency tree or its CVEs.
 
+<a id="dp-8"></a>
+### DP-8: Memory's job is to surface what the agent would not think to ask for — **Must**
+The tool SHALL deliver lessons by *presentation* — injection at session start, and
+(where an organization or discovery layer is built) structure that nudges the agent
+toward the relevant notebook — rather than by requiring the agent to query for them.
+A retrieval model that depends on the agent already knowing what to search for SHALL
+NOT be the primary path ([NG-007](#ng-007)).
+**Rationale:** The highest-value lesson is the one the agent would never think to
+search for — if it already knew to look, it would scarcely need the memory. An agent
+re-running a task does not know which past mistake is about to recur, and a search
+returns only what you can already name, so it cannot catch the un-anticipated repeat.
+This is why the notebook is *injected* at session start rather than queried, and why
+lessons are *voted* ([DP-1](#dp-1)) — so a hard-won lesson the agent rarely re-derives
+still survives to be re-presented. Any discovery or organization layer SHALL be judged
+by how well it surfaces relevant lessons the agent did not ask for.
+
 ---
 
 ## 4. Functional requirements
@@ -402,6 +418,11 @@ forces on an entry's lifetime ([DP-1](#dp-1)).
 <a id="ng-006"></a>
 **NG-006.** `add` SHALL NOT truncate an over-long lesson to fit the cap
 ([FR-ADD-004](#fr-add-004)).
+
+<a id="ng-007"></a>
+**NG-007.** The tool SHALL NOT require an agent to query in order to retrieve its own
+memory. Search, if ever offered, is a secondary convenience; the primary path is
+presentation ([DP-8](#dp-8)).
 
 ---
 
