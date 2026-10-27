@@ -23,7 +23,10 @@ describe('CHANGELOG.md', () => {
     const text = changelog();
     for (const v of ['0.1.0', '0.1.1', '0.1.2', '0.1.3']) {
       // Tagged releases are bracketed (and linked); untagged ones are plain.
-      expect(text).toMatch(new RegExp(`^##\\s*\\[?${v.replace(/\./g, '\\.')}\\]?`, 'm'));
+      // Anchor the end of the version so a prefix match can't pass: without the
+      // trailing boundary, the `0.1.1` check would also be satisfied by a future
+      // `## 0.1.13` heading even if 0.1.1 itself were missing from the file.
+      expect(text).toMatch(new RegExp(`^##\\s*\\[?${v.replace(/\./g, '\\.')}\\]?(?:\\s|$)`, 'm'));
     }
   });
 
