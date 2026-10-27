@@ -178,6 +178,19 @@ strict lowest, the newcomer SHALL NOT be stored; the result SHALL be
 rewritten with the same entries, which also normalizes any hand-edited lines).
 *(See [DP-5](#dp-5).)*
 
+<a id="fr-add-007"></a>
+**FR-ADD-007 (Should).** On the CLI, a lesson operand of `-` SHALL mean "read the
+lesson from stdin", so a supervising agent can pipe a lesson in without shell-quoting
+it as an argument. The CLI SHALL read exactly one line: a single trailing line ending
+(LF, CRLF, or a lone CR) SHALL be stripped, and input that still contains any line
+break (`\n` or `\r`) SHALL be refused (exit 1, message on stderr) rather than
+flattened — honoring "one entry = one line" ([DP-2](#dp-2)), since `sanitizeLesson`
+would otherwise collapse the line breaks into a space. The resulting line SHALL go through the unchanged
+[`addEntry`](#fr-add-001) (same empty/duplicate/too-long/eviction behavior; empty
+stdin yields `reason: 'empty'`). Because `-` denotes stdin, the one-character lesson
+`-` cannot be stored through this operand; a literal hyphen SHALL go through the
+library `addEntry` or a non-dash quoted argument. *(See [DP-5](#dp-5).)*
+
 *Acceptance (table):*
 
 | Precondition | Input | reason | Stored? |
@@ -264,9 +277,10 @@ print `<NB_DIR>/<role>.md` as a bare path (pipe-friendly, no decoration).
 ### 4.9 CLI contract
 
 <a id="fr-cli-001"></a>
-**FR-CLI-001 (Must).** `nb` SHALL implement: `show`, `add`, `vote`, `merge`, `rm`,
-`stats [<role>] [--since <N{d,h,m}>] [--json]`, `path [<role>]`, `roles`, `--help`,
-`--version`.
+**FR-CLI-001 (Must).** `nb` SHALL implement: `show`, `add <role> ("<lesson>"|-)`,
+`vote`, `merge`, `rm`, `stats [<role>] [--since <N{d,h,m}>] [--json]`, `path [<role>]`,
+`roles`, `--help`, `--version`. The `-` lesson operand of `add` reads from stdin per
+[FR-ADD-007](#fr-add-007).
 
 <a id="fr-cli-002"></a>
 **FR-CLI-002 (Must).** Exit codes SHALL be: `0` success; `1` a handled operation

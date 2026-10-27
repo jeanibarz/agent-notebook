@@ -66,6 +66,7 @@ npm link   # puts `nb` on your PATH, pointing at this clone
 ```
 nb show   <role>                        print the notebook (highest-scored first)
 nb add    <role> "<lesson>"             add a lesson (dedup-skipped; rejected if too long, never truncated)
+nb add    <role> -                      read the lesson from stdin (one line; multi-line is refused)
 nb vote   <role> <id|query> +1|-1       upvote/downvote an entry you used
 nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
 nb rm     <role> <id|query>             delete an entry
@@ -76,6 +77,15 @@ nb --help                               show this help
 ```
 
 Every `show` line starts with a short stable id — pass that id (or a unique prefix, or a unique text substring) to `vote`/`rm`/`merge`. An over-long `add` is rejected outright, never silently truncated, so you rewrite it shorter instead of storing a cut-off, useless lesson.
+
+**Piping a lesson in.** Pass `-` as the lesson to read it from stdin, so an agent that just wrote a lesson into a pipe can hand it over without shell-quoting:
+
+```
+$ printf '%s\n' 'run lint first' | nb add reviewer -
+added — 1 lines
+```
+
+It reads exactly one line: a single trailing newline is stripped, and **multi-line** input is refused (exit 1) rather than silently flattened into one run-together entry — one entry is one line. Because `-` means stdin, the one-character lesson `-` can't be stored through this form; use a non-dash quoted argument, or call the library's `addEntry` directly, if you ever need a literal hyphen. Everything else is unchanged — the piped line still goes through the same caps, dedup, and eviction as a quoted argument.
 
 **Storage order vs. display order.** `nb show` sorts highest-scored first, but the `<role>.md` file on disk is stored in *insertion order*, not sorted — so a raw `cat` of the file looks unordered, and that is intentional, not a bug. Sorting happens only at display time: ids are content-derived (stable across reordering), the lowest-scored line is evicted regardless of position, and keeping insertion order means a `vote` rewrites exactly one line in place — the smallest, most stable git diff — and preserves the "ties → oldest" tie-break that both display and eviction rely on. Read a notebook with `nb show`, not by eyeballing the file.
 

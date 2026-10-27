@@ -6,6 +6,7 @@
 // Commands:
 //   nb show   <role>                       print the notebook
 //   nb add    <role> "<lesson>"            dedup-skip, score +1, write, trim (lowest-score out)
+//   nb add    <role> -                     read the one-line lesson from stdin (multi-line refused)
 //   nb vote   <role> <id|query> +1|-1      adjust an entry's score
 //   nb merge  <role> <idA> <idB> "<merged>"  consolidate two entries into one
 //   nb rm     <role> <id|query>            delete an entry judged useless
@@ -44,6 +45,7 @@ const HELP = `nb — the Agent Notebook (bounded, voted, per-role memory)
 usage:
   nb show   <role>                        print the notebook (highest-scored first)
   nb add    <role> "<lesson>"             add a lesson (dedup-skipped; rejected if too long, never truncated)
+  nb add    <role> -                      read the lesson from stdin (one line; multi-line is refused)
   nb vote   <role> <id|query> +1|-1       upvote/downvote an entry you used
   nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
   nb rm     <role> <id|query>             delete an entry
@@ -57,6 +59,10 @@ notes:
   - add/vote/rm/merge accept --json (after the subcommand): stdout is one JSON
     result object and nothing else; warnings/errors stay on stderr. Exit codes are
     unchanged (a too-long add still exits 1, a duplicate still exits 0).
+  - \`nb add <role> -\` reads the lesson from stdin (one line, so a supervising agent
+    can pipe it in without shell-quoting). It reads exactly one line: a trailing
+    newline is stripped and multi-line input is REFUSED (exit 1), never flattened —
+    one entry = one line. To store a literal single hyphen, use the library addEntry.
   - a notebook holds at most 200 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
@@ -85,7 +91,10 @@ function parseDelta(arg: string): number {
   throw new Error('vote direction must be +1 or -1');
 }
 
-export async function runNbCli(argv: string[]): Promise<number> {
+export async function runNbCli(
+  argv: string[],
+  readStdin: () => Promise<string> = readStdinDefault,
+): Promise<number> {
   const cmd = (argv[0] ?? '').trim();
   if (cmd === '' || cmd === '--help' || cmd === '-h' || cmd === 'help') {
     process.stdout.write(HELP + '\n');
@@ -117,7 +126,16 @@ export async function runNbCli(argv: string[]): Promise<number> {
       }
       case 'add': {
         role = need(args[1], 'role');
-        const lesson = need(args[2], 'lesson');
+        // A lesson operand of `-` means "read the lesson from stdin" so a
+        // supervising agent that wrote a lesson into a pipe can hand it over
+        // without shell-quoting it. We read exactly one line (see
+        // `readOneLine`): multi-line input is refused rather than flattened,
+        // because `sanitizeLesson` would otherwise collapse the newlines into a
+        // single space and silently store a run-together lesson — violating the
+        // "one entry = one line" contract. The result still goes through the
+        // unchanged `addEntry`, so caps, dedup, and eviction behave identically.
+        let lesson = need(args[2], 'lesson');
+        if (lesson === '-') lesson = readOneLine(await readStdin());
         const r = await addEntry(dir, role, lesson);
         if (json) {
           // One result object on stdout; `too-long` keeps exit 1 (below) while
@@ -238,6 +256,43 @@ function need(v: string | undefined, name: string): string {
   if (v == null || v === '') throw new Error(`missing <${name}> argument`);
   return v;
 }
+
+// Reduce piped stdin to the single lesson line it must be. One trailing line
+// ending (LF, CRLF, or a lone CR) is stripped — a well-formed `printf '%s\n'
+// '...'` or editor line ends with one — and any line break that remains means
+// the caller piped more than one line, which is refused (exit 1) rather than
+// silently flattened into one entry. We test for a bare `\r` too, not just
+// `\n`: `sanitizeLesson` collapses `\r` to a space exactly like `\n`, so an
+// old-Mac CR line break would otherwise flatten just as silently. An empty
+// stream yields '' and falls through to `addEntry`'s `empty`.
+function readOneLine(raw: string): string {
+  const body = raw.replace(/\r\n$|\r$|\n$/, '');
+  if (/[\r\n]/.test(body)) {
+    throw new Error(
+      'refusing multi-line stdin — a lesson is one line (one entry = one line). ' +
+        'Pipe exactly one line, or pass the lesson as a single quoted argument.',
+    );
+  }
+  return body;
+}
+
+/* c8 ignore start */
+// The real stdin reader for `nb add <role> -`. Drains stdin to a string. Guards
+// against a TTY: with no pipe, reading would block forever waiting for the user,
+// so we fail fast with a message that shows the intended pipe form instead. The
+// test suite injects its own reader, so this branch is excluded from coverage.
+async function readStdinDefault(): Promise<string> {
+  if (process.stdin.isTTY) {
+    throw new Error(
+      "lesson '-' reads from stdin, but stdin is a terminal — pipe the lesson in, " +
+        "e.g. `printf '%s\\n' 'run lint first' | nb add reviewer -`",
+    );
+  }
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString('utf-8');
+}
+/* c8 ignore stop */
 
 function fmt(score: number): string {
   return score >= 0 ? `+${score}` : `${score}`;
