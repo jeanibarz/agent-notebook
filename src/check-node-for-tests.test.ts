@@ -17,13 +17,17 @@ const guard = join(root, 'scripts', 'check-node-for-tests.mjs');
 const EXPECTED_MESSAGE = 'tests require Node 20.12+; the library still claims runtime >=18';
 
 describe('nodeSupportsTests', () => {
-  // styleText landed in node:util on 20.12.0, so that is the floor.
+  // styleText landed in node:util on 20.12.0, and was backported to the 21.x
+  // line only in 21.7.0 — so 21.0–21.6 must be rejected despite major > 20.
   test.each([
     ['18.20.4', false],
     ['20.0.0', false],
     ['20.11.1', false],
     ['20.12.0', true],
     ['20.19.0', true],
+    ['21.0.0', false],
+    ['21.6.2', false],
+    ['21.7.0', true],
     ['22.0.0', true],
     ['24.11.1', true],
   ])('%s -> %s', (version, supported) => {

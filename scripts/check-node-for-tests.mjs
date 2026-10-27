@@ -19,13 +19,18 @@ export const UNSUPPORTED_MESSAGE =
 
 /**
  * Returns true when `version` (shaped like `process.versions.node`, e.g.
- * "20.12.0") is new enough to run the test suite, i.e. >= 20.12.0.
+ * "20.12.0") can run the test suite, i.e. `node:util` exports `styleText`.
+ * styleText was added in 20.12.0 and backported to the 21.x line only in
+ * 21.7.0, so Node 21.0–21.6 lacks it even though 21 > 20 — we must reject that
+ * window, not just everything below 20.12.
  */
 export function nodeSupportsTests(version) {
   const [major = 0, minor = 0] = String(version).split('.').map((n) => Number.parseInt(n, 10) || 0);
-  if (major > 20) return true;
+  if (major > 21) return true;
   if (major < 20) return false;
-  return minor >= 12;
+  if (major === 20) return minor >= 12;
+  // major === 21: styleText landed on this line in 21.7.0.
+  return minor >= 7;
 }
 
 /**
