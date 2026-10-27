@@ -83,7 +83,7 @@ Every `show` line starts with a short stable id — pass that id (or a unique pr
 
 ### Machine-readable `nb stats`
 
-`nb stats --json` prints the raw `StatsReport` to stdout as a single JSON object instead of the human table, so a supervising agent can act on a `loop` / `went-silent` / `high-error-rate` anomaly without regex-parsing formatted text. The shape is the exported `StatsReport` interface (`{ window, totalCalls, perCommand[], anomalies[] }`) and is a stable contract. It composes with `[<role>]` and `--since`; a bad `--since` window still warns on stderr (stdout stays pure JSON) and falls back to 7d.
+`nb stats --json` prints the raw `StatsReport` to stdout as a single JSON object instead of the human table, so a supervising agent can act on a `loop` / `went-silent` / `high-error-rate` anomaly without regex-parsing formatted text. The shape is the exported `StatsReport` interface (`{ window, totalCalls, perCommand[], anomalies[], notebooks[], notebookTotals }`) and is a stable, additive-only contract. `notebooks` is the per-role inventory — `{ role, lines, cap }` for each role's notebook, where `lines` is the stored-lesson count and `cap` is `maxLines()` — so a supervisor can see that a role is at (or near) its cap and about to evict a lesson; `notebookTotals` aggregates it as `{ roles, lines, cap }`. The inventory is the current on-disk state, not a slice of the usage window. It composes with `[<role>]` and `--since`; a bad `--since` window still warns on stderr (stdout stays pure JSON) and falls back to 7d.
 
 ### Tuning `nb stats`
 

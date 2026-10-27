@@ -44,6 +44,7 @@ import {
   entryId,
   logUsage,
   maxChars,
+  maxLines,
   merge,
   readEntries,
   remove,
@@ -731,6 +732,87 @@ describe('locking (mkdir spinlock)', () => {
     // Proof the notebook is still usable afterwards (the lock really was freed).
     const r = await addEntry(dir, 'nobody', 'usable after a thrown op released the lock');
     expect(r.added).toBe(true);
+  });
+});
+
+describe('stats notebook inventory (issue #40)', () => {
+  test('empty dir: no notebooks, totals zeroed, cap = maxLines()', async () => {
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.notebooks).toEqual([]);
+    expect(rep.notebookTotals).toEqual({ roles: 0, lines: 0, cap: maxLines() });
+    // additive: the issue #18 fields stay present and unchanged.
+    expect(rep.window).toBe('7d'); // default window when none is passed
+    expect(rep.perCommand).toEqual([]);
+    expect(rep.anomalies).toEqual([]);
+  });
+
+  test('one role: its line count and cap are reported, with matching totals', async () => {
+    await addEntry(dir, 'patcher', 'prefer execFileSync, array args');
+    await addEntry(dir, 'patcher', 'run lint before done');
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.notebooks).toEqual([{ role: 'patcher', lines: 2, cap: maxLines() }]);
+    expect(rep.notebookTotals).toEqual({ roles: 1, lines: 2, cap: maxLines() });
+  });
+
+  test('a role at NB_MAX_LINES reports lines === cap, a sibling stays below it', async () => {
+    process.env.NB_MAX_LINES = '3';
+    for (const l of ['one', 'two', 'three']) await addEntry(dir, 'full', l); // 3/3 — at cap
+    await addEntry(dir, 'spare', 'just one'); // 1/3 — below cap
+    const rep = stats(dir, { now: Date.now() });
+    // Exact rows (sorted). The full role's lines equal its cap — the "about to
+    // evict" signal — while the sibling, under the same global cap, stays below.
+    expect(rep.notebooks).toEqual([
+      { role: 'full', lines: 3, cap: 3 },
+      { role: 'spare', lines: 1, cap: 3 },
+    ]);
+    expect(rep.notebookTotals).toEqual({ roles: 2, lines: 4, cap: 3 });
+  });
+
+  test('multiple roles are listed sorted, with exact rows and aggregate totals', async () => {
+    await addEntry(dir, 'zeta', 'a');
+    await addEntry(dir, 'alpha', 'b');
+    await addEntry(dir, 'alpha', 'c');
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.notebooks).toEqual([
+      { role: 'alpha', lines: 2, cap: maxLines() },
+      { role: 'zeta', lines: 1, cap: maxLines() },
+    ]);
+    expect(rep.notebookTotals).toEqual({ roles: 2, lines: 3, cap: maxLines() });
+  });
+
+  test('a role filter scopes the inventory to exactly that notebook (exact match, not prefix)', async () => {
+    await addEntry(dir, 'patcher', 'x');
+    await addEntry(dir, 'patcher2', 'y'); // a prefix-collision sibling: must NOT leak in
+    await addEntry(dir, 'cartographer', 'z');
+    const rep = stats(dir, { role: 'patcher', now: Date.now() });
+    expect(rep.notebooks).toEqual([{ role: 'patcher', lines: 1, cap: maxLines() }]);
+    expect(rep.notebookTotals).toEqual({ roles: 1, lines: 1, cap: maxLines() });
+  });
+
+  test('a role filter for a role with no notebook yields an empty inventory', async () => {
+    await addEntry(dir, 'patcher', 'x');
+    const rep = stats(dir, { role: 'nobody', now: Date.now() });
+    expect(rep.notebooks).toEqual([]);
+    expect(rep.notebookTotals).toEqual({ roles: 0, lines: 0, cap: maxLines() });
+  });
+
+  test('sidecar and stray non-role files are not counted as notebooks', async () => {
+    await addEntry(dir, 'patcher', 'x'); // a real role → patcher.md
+    logUsage(dir, 'patcher', 'add', true, 1); // writes the .nb-usage.log sidecar
+    writeFileSync(join(dir, 'notes.txt'), 'not a role file', 'utf-8');
+    writeFileSync(join(dir, '.hidden.md'), 'a dotfile, not a role', 'utf-8');
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.notebooks).toEqual([{ role: 'patcher', lines: 1, cap: maxLines() }]);
+  });
+
+  test('inventory reflects current on-disk state, not the usage window', async () => {
+    await addEntry(dir, 'patcher', 'a lesson');
+    // A far-future `now` with a 60s window drops every usage row, but the
+    // notebook file is still on disk, so the inventory must still report it.
+    const rep = stats(dir, { now: Date.now() + 10 * 86_400_000, windowMs: 60_000 });
+    expect(rep.totalCalls).toBe(0);
+    expect(rep.perCommand).toEqual([]);
+    expect(rep.notebooks).toEqual([{ role: 'patcher', lines: 1, cap: maxLines() }]);
   });
 });
 
