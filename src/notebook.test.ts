@@ -577,15 +577,47 @@ describe('usage log + stats', () => {
     expect(rep.anomalies.some((a) => a.kind === 'high-error-rate')).toBe(true);
   });
 
-  test('logUsage writes through a PER-PROCESS-unique temp path before the atomic rename (issue #32)', () => {
-    // The core of the fix, pinned deterministically: logUsage runs OUTSIDE the
-    // .nb.lock spinlock (the CLI calls it from `finally`), so two concurrent nb
-    // processes must not share one temp path or one's rename can clobber the
-    // other mid-write. The temp source of the atomic rename must carry this
-    // process's pid — a revert to the old shared `${file}.tmp` fails this.
+  test('three appends under cap produce three rows without a compact (issue #45)', () => {
+    // The hot path: while the log is under the ring, each call appends its one
+    // row in place — it must NOT read-slice-rewrite the whole file (no rename).
+    fsHook.renames = []; // capture any atomic-rename temp source
+    try {
+      logUsage(dir, 'p', 'add', true, 5);
+      logUsage(dir, 'p', 'vote', true, 7);
+      logUsage(dir, 'p', 'show', false, 3);
+      const lines = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').split('\n').filter((l) => l !== '');
+      expect(lines.length).toBe(3); // three distinct rows
+      expect(fsHook.renames).toEqual([]); // append-only: not a single compact/rewrite happened
+      // Each row is whole and parseable (the append never glued two together).
+      const rep = stats(dir, { now: Date.now() });
+      expect(rep.totalCalls).toBe(3);
+    } finally {
+      fsHook.renames = null; // leave the shared hook as the other tests expect it
+    }
+  });
+
+  test('an append after a crash-truncated row (no trailing newline) does not glue rows (issue #45)', () => {
+    // A previous writer crashed mid-row, leaving a line without its final `\n`.
+    // The next append must start a fresh row, not concatenate onto the partial.
+    const usage = join(dir, '.nb-usage.log');
+    writeFileSync(usage, `${new Date().toISOString()}\tp\tadd\tok\t2ms`, 'utf-8'); // NO trailing newline
+    logUsage(dir, 'p', 'vote', true, 3);
+    const lines = readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '');
+    expect(lines.length).toBe(2); // two separate rows, not one glued row
+    expect(lines.every((l) => l.split('\t').length === 5)).toBe(true);
+  });
+
+  test('logUsage compacts through a PER-PROCESS-unique temp path before the atomic rename (issue #32)', () => {
+    // The compact path (over-cap) is pinned deterministically: logUsage runs
+    // OUTSIDE the .nb.lock spinlock (the CLI calls it from `finally`), so two
+    // concurrent nb processes must not share one temp path or one's rename can
+    // clobber the other mid-write. The temp source of the atomic rename must
+    // carry this process's pid — a revert to the old shared `${file}.tmp` fails.
+    process.env.NB_USAGE_RING = '100'; // the clamp floor; fill it, then force one compact
+    for (let i = 0; i < 100; i++) logUsage(dir, 'p', 'show', true, 1); // appends (no rename yet)
     fsHook.renames = []; // opt in to capturing rename source paths
     try {
-      logUsage(dir, 'p', 'show', true, 1);
+      logUsage(dir, 'p', 'show', true, 1); // over cap -> compacts via temp+rename
       const usage = join(dir, '.nb-usage.log');
       expect(fsHook.renames).toEqual([`${usage}.${process.pid}.tmp`]);
     } finally {
