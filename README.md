@@ -99,10 +99,21 @@ The anomaly detection in `nb stats` (loop / went-silent / high-error-rate flags)
 ## Programmatic use
 
 ```ts
-import { addEntry, readEntries, vote, render } from 'agent-notebook';
+import { addEntry, readEntries, vote, render, notebooksDir } from 'agent-notebook';
+
+// `dir` is the storage directory. Any path works; notebooksDir() resolves the
+// default — $NB_DIR if set, else ~/.agent-notebook/notebooks — the same
+// location the `nb` CLI uses.
+const dir = notebooksDir();
 
 await addEntry(dir, 'reviewer', 'run lint before claiming done');
-const entries = readEntries(dir, 'reviewer');
+
+const entries = readEntries(dir, 'reviewer'); // Entry[] = { score, text }
+
+// vote/merge/rm select by stable id, unique prefix, or unique text substring.
+await vote(dir, 'reviewer', 'run lint', +1);
+
+console.log(render(dir, 'reviewer')); // highest-scored first
 ```
 
 The CLI is a thin wrapper over this library — `src/notebook.ts` is the whole mechanism, with zero runtime dependencies.
