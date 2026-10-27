@@ -16,7 +16,7 @@ beforeEach(() => {
   process.env.NB_DIR = dir;
 });
 afterEach(() => {
-  for (const k of ['NB_DIR', 'NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_ROLE']) {
+  for (const k of ['NB_DIR', 'NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_ROLE', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S']) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
@@ -125,6 +125,29 @@ describe('runNbCli', () => {
     expect(s.err).toContain('showing 7d');
     expect(s.out).toContain('window 7d');
     expect(s.out).toContain('role patcher'); // role still parsed despite the dangling flag
+  });
+
+  test('the human stats table renders a detected anomaly line (with the role suffix)', async () => {
+    // The --json path and the library's anomaly detection are both covered, but
+    // the HUMAN table's anomaly rendering in renderStats (the `anomalies:` header
+    // and the `[kind] command (role X): detail` line, including the conditional
+    // role suffix) had no test. Seed a tight loop of calls into the usage log,
+    // then run `nb stats` WITHOUT --json and assert the rendered anomaly line, so
+    // a regression in that user-facing formatting is caught.
+    process.env.NB_LOOP_N = '3';
+    process.env.NB_LOOP_WINDOW_S = '120';
+    const now = Date.now();
+    const rows = Array.from({ length: 4 }, (_, i) =>
+      `${new Date(now - i * 1000).toISOString()}\tpatcher\tadd\tok\t2ms`,
+    );
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const s = await run(['stats', 'patcher']); // default table path (no --json)
+    expect(s.code).toBe(0);
+    expect(s.out).toContain('  anomalies:'); // the header branch, not the "none" line
+    expect(s.out).toContain('[loop] add (role patcher):'); // kind, command, and the conditional role suffix
+    expect(s.out).not.toContain('anomalies: none');
+    // The per-command table row is rendered too (the `add` command summary line).
+    expect(s.out).toMatch(/^\s*add\s+\d+\s+\d+%/m);
   });
 
   test('--json emits a single valid StatsReport object on stdout', async () => {

@@ -106,7 +106,11 @@ describe('dedup', () => {
   });
 
   test('dedupKey normalizes case, punctuation, whitespace', () => {
-    expect(dedupKey('Use   execFileSync!!')).toBe(dedupKey('use execfilesync'));
+    // Assert the concrete normalized value, not just that two inputs agree: a
+    // dedupKey that returned a constant would satisfy an equality-only check but
+    // fail here (and would wrongly collapse every lesson into one).
+    expect(dedupKey('Use   execFileSync!!')).toBe('use execfilesync');
+    expect(dedupKey('use execfilesync')).toBe('use execfilesync');
   });
 
   test('distinct lessons are both kept', async () => {
