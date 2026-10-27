@@ -23,8 +23,15 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** Run runNbCli with stdout/stderr captured. */
-async function run(argv: string[]): Promise<{ code: number; out: string; err: string }> {
+/**
+ * Run runNbCli with stdout/stderr captured. When `stdin` is provided, it is fed
+ * to the CLI through the injectable stdin reader (used by `nb add <role> -`), so
+ * the stdin path is exercised without touching the real `process.stdin`.
+ */
+async function run(
+  argv: string[],
+  stdin?: string,
+): Promise<{ code: number; out: string; err: string }> {
   let out = '';
   let err = '';
   const origOut = process.stdout.write.bind(process.stdout);
@@ -33,8 +40,9 @@ async function run(argv: string[]): Promise<{ code: number; out: string; err: st
   process.stdout.write = (s: string) => ((out += s), true);
   // @ts-expect-error — test shim for capturing writes
   process.stderr.write = (s: string) => ((err += s), true);
+  const reader = stdin === undefined ? undefined : async () => stdin;
   try {
-    const code = await runNbCli(argv);
+    const code = await runNbCli(argv, reader);
     return { code, out, err };
   } finally {
     process.stdout.write = origOut;
@@ -406,6 +414,77 @@ describe('runNbCli', () => {
     const r = await run(['roles']);
     expect(r.code).toBe(0);
     expect(r.out).toBe('reviewer\n'); // only the .md stem, not "notes"
+  });
+
+  describe('add <role> - reads the lesson from stdin (issue #38)', () => {
+    test('happy path: a single piped line is stored and prints the usual added line', async () => {
+      // The acceptance criterion: `printf '%s\n' 'run lint first' | nb add reviewer -`.
+      const r = await run(['add', 'reviewer', '-'], 'run lint first\n');
+      expect(r.code).toBe(0);
+      expect(r.out).toBe('added — 1 lines\n'); // the usual message, same as a quoted arg
+      expect(r.err).toBe('');
+      const show = await run(['show', 'reviewer']);
+      expect(show.out).toContain('run lint first'); // stored verbatim, trailing newline stripped
+    });
+
+    test('a piped line with no trailing newline is stored just the same', async () => {
+      const r = await run(['add', 'reviewer', '-'], 'no trailing newline');
+      expect(r.code).toBe(0);
+      expect(r.out).toBe('added — 1 lines\n');
+      const show = await run(['show', 'reviewer']);
+      expect(show.out).toContain('no trailing newline');
+    });
+
+    test('multi-line stdin is REFUSED (exit 1) and nothing is stored, not flattened', async () => {
+      // One entry = one line: sanitizeLesson would otherwise collapse the two
+      // lines into one space-joined entry, silently losing the boundary. The CLI
+      // must reject it before addEntry ever sees it.
+      const r = await run(['add', 'reviewer', '-'], 'line one\nline two\n');
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/multi-line/i);
+      expect(r.err).toMatch(/one entry = one line/i);
+      const show = await run(['show', 'reviewer']);
+      expect(show.out).toContain('is empty'); // not stored, and definitely not flattened
+      expect(show.out).not.toContain('line one line two');
+    });
+
+    test('CRLF and lone-CR line breaks are refused too, not flattened to a space', async () => {
+      // sanitizeLesson collapses \r just like \n, so every line-ending
+      // convention (LF, CRLF, old-Mac CR) must trigger the multi-line refusal —
+      // otherwise a two-line paste would silently store one run-together entry.
+      for (const raw of ['one\r\ntwo\r\n', 'alpha\rbeta\n']) {
+        const r = await run(['add', 'reviewer', '-'], raw);
+        expect(r.code).toBe(1);
+        expect(r.err).toMatch(/multi-line/i);
+      }
+      const show = await run(['show', 'reviewer']);
+      expect(show.out).toContain('is empty'); // none of them were stored
+    });
+
+    test('a single trailing CRLF is stripped, leaving the clean line', async () => {
+      const r = await run(['add', 'reviewer', '-'], 'windows line\r\n');
+      expect(r.code).toBe(0);
+      expect(r.out).toBe('added — 1 lines\n');
+      const show = await run(['show', 'reviewer']);
+      expect(show.out).toContain('windows line');
+      expect(show.out).not.toContain('\r'); // the trailing CR was stripped, not stored
+    });
+
+    test('empty stdin falls through to the empty-lesson skip (exit 0), not a crash', async () => {
+      const r = await run(['add', 'reviewer', '-'], '');
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('skipped (empty lesson)');
+      const show = await run(['show', 'reviewer']);
+      expect(show.out).toContain('is empty');
+    });
+
+    test('--json composes with the stdin operand', async () => {
+      // --json is stripped before positional parsing, so `-` is still args[2].
+      const r = await run(['add', 'reviewer', '-', '--json'], 'piped with json\n');
+      expect(r.code).toBe(0);
+      expect(r.err).toBe('');
+      expect(JSON.parse(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1 });
+    });
   });
 
   describe('--json on add/vote/rm/merge (issue #41)', () => {
