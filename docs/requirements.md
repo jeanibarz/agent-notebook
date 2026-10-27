@@ -261,9 +261,13 @@ message naming the role.
 ### 4.8 Roles & paths
 
 <a id="fr-safe-001"></a>
-**FR-SAFE-001 (Must).** A role name SHALL match `^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$`
-and SHALL NOT contain `..`. `assertSafeRole` SHALL throw otherwise.
-**Rationale:** The role is a path segment; this prevents traversal outside `NB_DIR`.
+**FR-SAFE-001 (Must).** A role name SHALL match `^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$`,
+SHALL NOT contain `..`, and SHALL be at most 128 characters long. `assertSafeRole`
+SHALL throw otherwise.
+**Rationale:** The role is a path segment; the pattern and `..` check prevent
+traversal outside `NB_DIR`, and the 128-character bound keeps `<role>.md` under
+typical filename limits so an over-long name throws a friendly `invalid role name`
+error instead of a bare `ENAMETOOLONG` stack. 128 fits `role@owner-repo` plus a suffix.
 *Proven by:* `notebook.test.ts` → "rejects path-traversal and unsafe role names".
 
 <a id="fr-roles-001"></a>

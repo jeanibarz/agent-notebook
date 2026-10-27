@@ -467,6 +467,18 @@ describe('role safety', () => {
     expect(() => assertSafeRole('patcher')).not.toThrow();
     expect(() => assertSafeRole('cartographer@some-repo')).not.toThrow();
   });
+
+  test('bounds role-name length with a friendly error before it becomes a filename', () => {
+    // A 300-char alphanumeric name passes the character pattern but would hit
+    // ENAMETOOLONG as `<role>.md`; it must throw an `invalid role name` error.
+    const tooLong = 'a'.repeat(300);
+    expect(() => assertSafeRole(tooLong)).toThrow(/invalid role name/);
+    // The boundary: 128 chars is allowed, 129 is not.
+    expect(() => assertSafeRole('a'.repeat(128))).not.toThrow();
+    expect(() => assertSafeRole('a'.repeat(129))).toThrow(/invalid role name/);
+    // A realistic long role stays legal.
+    expect(() => assertSafeRole('code-review@jeanibarz-agent-notebook')).not.toThrow();
+  });
 });
 
 describe('usage log + stats', () => {
