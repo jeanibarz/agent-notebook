@@ -337,8 +337,8 @@ operation; a lesson SHALL never exceed `maxChars`; the usage log SHALL never exc
 
 <a id="nfr-port-001"></a>
 **NFR-PORT-001 (Must).** The tool SHALL run on Node.js ≥ 18 as an ESM package with no
-runtime dependencies. CI exercises Linux on Node 18/20/22; macOS is a supported target
-(no Linux-specific syscalls) but is not currently covered by CI.
+runtime dependencies. CI exercises Linux and macOS on Node 18/20/22; macOS is a
+supported target (no Linux-specific syscalls) and is covered by CI.
 
 <a id="nfr-safe-001"></a>
 **NFR-SAFE-001 (Must).** No operation SHALL write, read, or delete outside `NB_DIR`;
