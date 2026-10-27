@@ -483,6 +483,34 @@ describe('usage log + stats', () => {
     expect(voteStat.errorRate).toBe(1);
   });
 
+  test('a tab/CR/LF in a field cannot split the row (rejected-unsafe-role regression)', () => {
+    // The CLI logs in a `finally` block even when `add` rejected an unsafe role,
+    // so a raw tab/newline in the role once became extra columns/rows and
+    // mis-attributed the telemetry. Each field must stay structurally inert.
+    const nasty = 'evil\trole\ndrop\rtable';
+    logUsage(dir, nasty, 'add\tcmd', false, 4);
+    const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
+    const rows = raw.split('\n').filter((l) => l !== '');
+    expect(rows.length).toBe(1); // the CR/LF did not spawn extra rows
+    const cols = rows[0].split('\t');
+    expect(cols.length).toBe(5); // exactly five columns, tabs collapsed
+    expect(cols[1]).toBe('evil role drop table'); // role: tab+CR+LF all collapsed to single spaces
+    // stats still parses it as one call attributed to the sanitized command.
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.totalCalls).toBe(1);
+    expect(rep.perCommand.map((c) => c.command)).toEqual(['add cmd']);
+  });
+
+  test('a well-formed row is written unchanged (sanitizing is a no-op)', () => {
+    // Guards against the sanitizer altering normal rows: only tab/CR/LF change.
+    logUsage(dir, 'patcher', 'add', true, 5);
+    const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
+    expect(raw.endsWith('\n')).toBe(true);
+    const [ts, role, command, status, ms] = raw.trimEnd().split('\t');
+    expect([role, command, status, ms]).toEqual(['patcher', 'add', 'ok', '5ms']);
+    expect(Number.isNaN(Date.parse(ts))).toBe(false); // ts untouched, still ISO
+  });
+
   test('usage log is a bounded ring (oldest dropped)', () => {
     process.env.NB_USAGE_RING = '100';
     for (let i = 0; i < 150; i++) logUsage(dir, 'p', 'show', true, 1);
