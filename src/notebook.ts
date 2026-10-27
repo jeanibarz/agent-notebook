@@ -11,7 +11,7 @@
 // Everything here is plain fs over one small file under a mkdir spinlock, so
 // a call is a millisecond, deterministic, and offline.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, rmdirSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, rmdirSync, unlinkSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -134,12 +134,48 @@ async function withLock<T>(dir: string, fn: () => T): Promise<T> {
     }
   }
   try {
+    reapLeftoverTemps(dir);
     return fn();
   } finally {
     try {
       rmdirSync(lock);
     } catch {
       /* best-effort release */
+    }
+  }
+}
+
+/**
+ * Reap orphaned notebook temp files left behind by a crashed writer. A durable
+ * notebook write goes to `<role>.md.tmp` and is renamed over `<role>.md`
+ * (writeFileDurable); if the process dies between creating that temp and the
+ * rename, the `.md.tmp` orphan lingers in the notebooks dir forever — nothing
+ * else removes it, and it clutters directory listings, backups, and a
+ * git-tracked notebooks dir. We sweep it here, under the just-acquired mkdir
+ * lock, which serializes every mutation — so any `*.md.tmp` we see is dead
+ * crash debris, never a rename in flight by a live writer. Scope is deliberately
+ * narrow to this writer's own convention:
+ *   - only `*.md.tmp` — never a real `*.md` notebook, never the usage log or its
+ *     per-pid `.nb-usage.log.<pid>.tmp` temp (a dotfile, excluded below too);
+ *   - only the top level of `dir` (readdirSync is not recursive);
+ *   - never a dotfile — a role name never starts with `.` (assertSafeRole), so a
+ *     `.x.md.tmp` is not ours to remove.
+ * Best-effort: any failure (a racing unlink, a permission error) is swallowed so
+ * a stale temp can never block a real mutation.
+ */
+function reapLeftoverTemps(dir: string): void {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return; // dir unreadable — nothing to reap
+  }
+  for (const name of names) {
+    if (name.startsWith('.') || !name.endsWith('.md.tmp')) continue;
+    try {
+      unlinkSync(join(dir, name));
+    } catch {
+      /* already gone or not removable — reaping is best-effort */
     }
   }
 }
