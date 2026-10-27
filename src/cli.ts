@@ -9,6 +9,7 @@
 //   nb vote   <role> <id|query> +1|-1      adjust an entry's score
 //   nb merge  <role> <idA> <idB> "<merged>"  consolidate two entries into one
 //   nb rm     <role> <id|query>            delete an entry judged useless
+//   (add/vote/rm/merge take --json: one structured result object on stdout)
 //   nb stats  [<role>] [--since 7d] [--json]  usage analytics + anomaly flags (--json = raw StatsReport)
 //   nb path   [<role>]                     print the notebooks dir, or a role's file path
 //   nb roles                               list the roles that have a notebook, one per line
@@ -53,6 +54,9 @@ usage:
   nb --version                            print the tool version
 
 notes:
+  - add/vote/rm/merge accept --json (after the subcommand): stdout is one JSON
+    result object and nothing else; warnings/errors stay on stderr. Exit codes are
+    unchanged (a too-long add still exits 1, a duplicate still exits 0).
   - a notebook holds at most 200 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
@@ -96,6 +100,14 @@ export async function runNbCli(argv: string[]): Promise<number> {
   const started = Date.now();
   let role = '-';
   let ok = false;
+  // `--json` on a mutation (add/vote/rm/merge) emits the library's structured
+  // result object on stdout and nothing else, so a supervisor can branch on
+  // `reason`/`score` without regex-parsing the English line. Strip it before
+  // positional parsing (like `stats`, it is a flag, not a role/lesson), and keep
+  // it only on the commands that return a result object — `show`/`path`/`roles`
+  // ignore it. Exit codes are unchanged (a too-long add still exits 1).
+  const json = argv.includes('--json');
+  const args = json ? argv.filter((a) => a !== '--json') : argv;
   try {
     switch (cmd) {
       case 'show': {
@@ -104,10 +116,15 @@ export async function runNbCli(argv: string[]): Promise<number> {
         break;
       }
       case 'add': {
-        role = need(argv[1], 'role');
-        const lesson = need(argv[2], 'lesson');
+        role = need(args[1], 'role');
+        const lesson = need(args[2], 'lesson');
         const r = await addEntry(dir, role, lesson);
-        if (r.reason === 'duplicate') process.stdout.write(`skipped (near-duplicate already present) — ${r.size} lines\n`);
+        if (json) {
+          // One result object on stdout; `too-long` keeps exit 1 (below) while
+          // still emitting its `reason`, so a supervisor sees why it failed.
+          process.stdout.write(JSON.stringify(r) + '\n');
+          if (r.reason === 'too-long') return 1;
+        } else if (r.reason === 'duplicate') process.stdout.write(`skipped (near-duplicate already present) — ${r.size} lines\n`);
         else if (r.reason === 'empty') process.stdout.write('skipped (empty lesson)\n');
         else if (r.reason === 'rejected-full') process.stdout.write(`skipped (notebook full — every entry outranks this lesson; vote one down or merge first) — ${r.size} lines\n`);
         else if (r.reason === 'too-long') throw new Error(`lesson too long (${r.length} chars > ${maxChars()} max). Rewrite it shorter as ONE complete line and retry — it was NOT truncated or stored.`);
@@ -119,27 +136,30 @@ export async function runNbCli(argv: string[]): Promise<number> {
         break;
       }
       case 'vote': {
-        role = need(argv[1], 'role');
-        const selector = need(argv[2], 'id|query');
-        const delta = parseDelta(need(argv[3], '+1|-1'));
+        role = need(args[1], 'role');
+        const selector = need(args[2], 'id|query');
+        const delta = parseDelta(need(args[3], '+1|-1'));
         const r = await vote(dir, role, selector, delta);
-        process.stdout.write(`${delta > 0 ? '+1' : '-1'} → [${fmt(r.score)}] ${r.text}\n`);
+        if (json) process.stdout.write(JSON.stringify(r) + '\n');
+        else process.stdout.write(`${delta > 0 ? '+1' : '-1'} → [${fmt(r.score)}] ${r.text}\n`);
         break;
       }
       case 'merge': {
-        role = need(argv[1], 'role');
-        const a = need(argv[2], 'idA');
-        const b = need(argv[3], 'idB');
-        const merged = need(argv[4], 'merged lesson');
+        role = need(args[1], 'role');
+        const a = need(args[2], 'idA');
+        const b = need(args[3], 'idB');
+        const merged = need(args[4], 'merged lesson');
         const r = await merge(dir, role, a, b, merged);
-        process.stdout.write(`merged two entries into one — ${r.size} lines\n`);
+        if (json) process.stdout.write(JSON.stringify(r) + '\n');
+        else process.stdout.write(`merged two entries into one — ${r.size} lines\n`);
         break;
       }
       case 'rm': {
-        role = need(argv[1], 'role');
-        const selector = need(argv[2], 'id|query');
+        role = need(args[1], 'role');
+        const selector = need(args[2], 'id|query');
         const r = await remove(dir, role, selector);
-        process.stdout.write(`removed — [${fmt(r.score)}] ${r.text}\n`);
+        if (json) process.stdout.write(JSON.stringify(r) + '\n');
+        else process.stdout.write(`removed — [${fmt(r.score)}] ${r.text}\n`);
         break;
       }
       case 'stats': {
