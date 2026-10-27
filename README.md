@@ -2,7 +2,7 @@
 
 A bounded, voted, plain-text memory for AI agents — one small file per role, no embeddings, no vector DB, no network call.
 
-<p align="center"><img src="assets/cat.svg" alt="Running cat on a notebook file prints the whole plain-text memory at once — no query, no server, no embeddings." width="760"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/assets/cat.svg" alt="Running cat on a notebook file prints the whole plain-text memory at once — no query, no server, no embeddings." width="760"></p>
 
 ```
 $ nb add reviewer "run lint before claiming done"
@@ -28,7 +28,7 @@ Most "agent memory" tooling reaches for a vector database the moment anyone says
 
 The cap and the vote are the whole mechanism. A new lesson enters at the `+1` floor; a vote lifts it past its neighbours by score; and when the file is full the *lowest-scored* line is evicted — never the oldest:
 
-<p align="center"><img src="assets/leaderboard.svg" alt="A fixed 6-of-6 notebook: a +1 vote lifts a line past its neighbour by score, and a new lesson enters at the +1 floor while the lowest-scored line is evicted." width="760"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/assets/leaderboard.svg" alt="A fixed 6-of-6 notebook: a +1 vote lifts a line past its neighbour by score, and a new lesson enters at the +1 floor while the lowest-scored line is evicted." width="760"></p>
 
 ## What it deliberately does not do
 
@@ -43,7 +43,7 @@ If you need retrieval over large unstructured context, use a real vector store. 
 
 Because a notebook is a plain file in a git-backed directory, everything your agent learns is a line you can review — an added lesson is a green `+`, a recorded vote a `-`/`+` score change. You cannot `git diff` a vector DB:
 
-<p align="center"><img src="assets/gitdiff.svg" alt="git diff on a notebook file: an added lesson shows as a green plus line and a recorded vote as a minus/plus score change — memory you can code-review." width="760"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/assets/gitdiff.svg" alt="git diff on a notebook file: an added lesson shows as a green plus line and a recorded vote as a minus/plus score change — memory you can code-review." width="760"></p>
 
 ## Install
 
