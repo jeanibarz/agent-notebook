@@ -11,7 +11,7 @@
 // Everything here is plain fs over one small file under a mkdir spinlock, so
 // a call is a millisecond, deterministic, and offline.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, rmdirSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, rmdirSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -450,18 +450,38 @@ export function logUsage(dir: string, role: string, command: string, ok: boolean
     // so a tab/CR/LF (e.g. in an unsafe role that `add` rejected but the CLI's
     // finally block still logs) cannot split the row and mis-align parseUsage.
     const line = `${new Date().toISOString()}\t${sanitizeUsageField(role)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms`;
-    let lines: string[] = [];
-    if (existsSync(file)) lines = readFileSync(file, 'utf-8').split('\n').filter((l) => l !== '');
-    lines.push(line);
+    const existing = existsSync(file) ? readFileSync(file, 'utf-8') : '';
+    const lines = existing.split('\n').filter((l) => l !== '');
     const ring = usageRing();
-    if (lines.length > ring) lines = lines.slice(lines.length - ring); // oldest dropped
+
+    if (lines.length < ring) {
+      // Under cap (the hot path on nearly every `nb` call): append the one new
+      // row in place instead of reading-slicing-rewriting the whole ring
+      // (issue #45). Monitoring sits on a path whose budget is "a call is a
+      // millisecond", so we must not rewrite thousands of unchanged bytes — nor
+      // churn an inode via rename — just to record one line. appendFileSync is a
+      // single write that never touches the preceding bytes.
+      //
+      // Guard the trailing newline: if a previous writer crashed mid-row the
+      // file may lack a final `\n`, and a blind append would glue our row onto
+      // the end of theirs. Prefix a newline in that case so each row stays whole.
+      const sep = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+      appendFileSync(file, `${sep}${line}\n`, 'utf-8');
+      return;
+    }
+
+    // At/over cap: compact. Slice to the newest `ring` rows (oldest dropped) and
+    // atomically replace the file — this is the only path that rewrites the
+    // previous bytes, and it runs only when a plain append would exceed the ring.
+    lines.push(line);
+    const kept = lines.slice(lines.length - ring);
     // Per-process-unique temp path: this log write runs OUTSIDE the .nb.lock
     // (it is called from the CLI's finally block), so two concurrent nb
     // processes would otherwise write and rename the same `${file}.tmp` and
     // clobber each other mid-write. The pid keeps each writer's temp distinct;
     // the rename is still atomic, so a reader sees one whole file or the other.
     const tmp = `${file}.${process.pid}.tmp`;
-    writeFileSync(tmp, lines.join('\n') + '\n', 'utf-8');
+    writeFileSync(tmp, kept.join('\n') + '\n', 'utf-8');
     renameSync(tmp, file);
   } catch {
     /* monitoring is best-effort; never fail a real operation because the log write failed */
