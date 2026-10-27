@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -17,7 +17,7 @@ const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 // throws. Everything delegates to the real fs; when `events` is null and
 // `failDirFsync` is false (the default, reset in afterEach) behavior is identical
 // to the unwrapped module, so every other test is unaffected.
-const fsHook = vi.hoisted(() => ({ events: null as string[] | null, failDirFsync: false, failBodyFsync: false }));
+const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, failDirFsync: false, failBodyFsync: false }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
@@ -31,6 +31,7 @@ vi.mock('node:fs', async (importOriginal) => {
     },
     renameSync: ((from: Parameters<typeof actual.renameSync>[0], to: Parameters<typeof actual.renameSync>[1]) => {
       fsHook.events?.push('rename');
+      fsHook.renames?.push(String(from)); // capture the temp source path (opt-in; null by default)
       return actual.renameSync(from, to);
     }) as typeof actual.renameSync,
   };
@@ -542,6 +543,61 @@ describe('usage log + stats', () => {
     const rep = stats(dir, { now });
     expect(rep.anomalies.some((a) => a.kind === 'high-error-rate')).toBe(true);
   });
+
+  test('logUsage writes through a PER-PROCESS-unique temp path before the atomic rename (issue #32)', () => {
+    // The core of the fix, pinned deterministically: logUsage runs OUTSIDE the
+    // .nb.lock spinlock (the CLI calls it from `finally`), so two concurrent nb
+    // processes must not share one temp path or one's rename can clobber the
+    // other mid-write. The temp source of the atomic rename must carry this
+    // process's pid — a revert to the old shared `${file}.tmp` fails this.
+    fsHook.renames = []; // opt in to capturing rename source paths
+    try {
+      logUsage(dir, 'p', 'show', true, 1);
+      const usage = join(dir, '.nb-usage.log');
+      expect(fsHook.renames).toEqual([`${usage}.${process.pid}.tmp`]);
+    } finally {
+      fsHook.renames = null; // leave the shared hook as the other tests expect it
+    }
+  });
+
+  test('logUsage never throws and writes nothing when the log cannot be written (best-effort contract)', () => {
+    // Point logUsage at a path that is a FILE, not a directory, so its internal
+    // mkdir/write fail. Monitoring is best-effort: it must swallow the failure
+    // (never fail a real operation) and leave no usage log behind.
+    const asFile = join(dir, 'not-a-dir');
+    writeFileSync(asFile, 'x', 'utf-8');
+    expect(() => logUsage(asFile, 'p', 'show', true, 1)).not.toThrow();
+    expect(existsSync(join(asFile, '.nb-usage.log'))).toBe(false);
+  });
+
+  test('cross-process: overlapping usage-log writers leave a parseable file and no stray temp (issue #32)', async () => {
+    // The acceptance scenario, with real OS processes (distinct pids): logUsage
+    // runs unlocked, so concurrent `nb` invocations write the usage log at once.
+    // A per-process temp keeps each rename atomic — the final file is always one
+    // writer's complete content, and every writer's temp is consumed by its own
+    // rename (no shared `.nb-usage.log.tmp` left dangling). `nb show` on an empty
+    // role exits 0 and still appends one usage row via the CLI's `finally`.
+    const RING = 100;
+    process.env.NB_USAGE_RING = String(RING);
+    for (let i = 0; i < RING; i++) logUsage(dir, 'seed', 'show', true, 1); // fill the ring so each writer trims+rewrites the whole file
+    const env = { ...process.env, NB_DIR: dir };
+    const N = 12;
+    await Promise.all(
+      Array.from({ length: N }, () =>
+        execFileAsync(process.execPath, [CLI, 'show', 'race'], { env }),
+      ),
+    );
+    const lines = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').split('\n').filter((l) => l !== '');
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.length).toBeLessThanOrEqual(RING); // ring bound holds under contention
+    // Every surviving line is a complete, well-formed usage row — no torn/partial
+    // line (the corruption a shared temp path could leave).
+    for (const l of lines) {
+      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms$/);
+    }
+    // No stray temp file lingered: every writer's rename consumed its own temp.
+    expect(readdirSync(dir).filter((f) => f.startsWith('.nb-usage.log.') && f.endsWith('.tmp'))).toEqual([]);
+  }, 30_000);
 });
 
 describe('durable writes (issue #15)', () => {

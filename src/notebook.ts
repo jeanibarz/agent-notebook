@@ -442,7 +442,12 @@ export function logUsage(dir: string, role: string, command: string, ok: boolean
     lines.push(line);
     const ring = usageRing();
     if (lines.length > ring) lines = lines.slice(lines.length - ring); // oldest dropped
-    const tmp = `${file}.tmp`;
+    // Per-process-unique temp path: this log write runs OUTSIDE the .nb.lock
+    // (it is called from the CLI's finally block), so two concurrent nb
+    // processes would otherwise write and rename the same `${file}.tmp` and
+    // clobber each other mid-write. The pid keeps each writer's temp distinct;
+    // the rename is still atomic, so a reader sees one whole file or the other.
+    const tmp = `${file}.${process.pid}.tmp`;
     writeFileSync(tmp, lines.join('\n') + '\n', 'utf-8');
     renameSync(tmp, file);
   } catch {
