@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { runNbCli } from './cli.js';
+import { runNbCli, settleCliExit } from './cli.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
@@ -556,5 +556,64 @@ describe('runNbCli', () => {
       const r = await run(['add', 'patcher', 'plain text path']);
       expect(r.out).toBe('added — 1 lines\n');
     });
+  });
+});
+
+// The CLI entrypoint is `settleCliExit(runNbCli(...))`. `runNbCli` try/catches
+// every handled command error and resolves with an exit code, so no input makes
+// the real promise reject today — the `.catch` guards against a *future* bug in
+// the wrapper. These tests drive `settleCliExit` directly with synthetic
+// promises to prove the contract: a rejection yields exit code 1 + a stderr
+// line (so a crash can't look like success — DP-5), and a resolution forwards
+// the code (so the happy path keeps exiting 0).
+describe('settleCliExit', () => {
+  // Mutating process.exitCode would otherwise leak into vitest's own exit; each
+  // test captures stderr and restores both exitCode and stderr.write afterwards.
+  async function withSettle(
+    result: Promise<number>,
+  ): Promise<{ exitCode: typeof process.exitCode; err: string }> {
+    const savedExit = process.exitCode;
+    const origErr = process.stderr.write.bind(process.stderr);
+    let err = '';
+    // @ts-expect-error — test shim for capturing writes
+    process.stderr.write = (s: string) => ((err += s), true);
+    try {
+      await settleCliExit(result);
+      return { exitCode: process.exitCode, err };
+    } finally {
+      process.stderr.write = origErr;
+      process.exitCode = savedExit;
+    }
+  }
+
+  test('a rejected promise sets exit code 1 and writes a stderr line', async () => {
+    const { exitCode, err } = await withSettle(Promise.reject(new Error('boom in the wrapper')));
+    expect(exitCode).toBe(1);
+    expect(err).toContain('boom in the wrapper');
+    expect(err).toMatch(/^nb: fatal:/);
+  });
+
+  test('a non-Error rejection is stringified, still exit 1', async () => {
+    const { exitCode, err } = await withSettle(Promise.reject('plain string failure'));
+    expect(exitCode).toBe(1);
+    expect(err).toContain('plain string failure');
+  });
+
+  test('an Error with no stack falls back to its message', async () => {
+    const stackless = new Error('no-stack failure');
+    stackless.stack = undefined;
+    const { exitCode, err } = await withSettle(Promise.reject(stackless));
+    expect(exitCode).toBe(1);
+    expect(err).toContain('no-stack failure');
+  });
+
+  test('a resolved promise forwards the exit code and writes nothing to stderr', async () => {
+    const zero = await withSettle(Promise.resolve(0));
+    expect(zero.exitCode).toBe(0);
+    expect(zero.err).toBe('');
+
+    const two = await withSettle(Promise.resolve(2));
+    expect(two.exitCode).toBe(2);
+    expect(two.err).toBe('');
   });
 });
