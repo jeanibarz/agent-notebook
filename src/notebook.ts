@@ -491,11 +491,38 @@ export interface Anomaly {
   detail: string;
 }
 
+/**
+ * One role's notebook occupancy. `lines` is the stored lesson count (what the
+ * cap counts and `trim` evicts against); `cap` is `maxLines()` at call time. A
+ * role is "about to evict" when `lines` approaches `cap`; `lines === cap` means
+ * the next distinct add evicts the lowest-scored lesson, so a supervisor can see
+ * memory pressure without listing files.
+ */
+export interface NotebookStat {
+  role: string;
+  lines: number;
+  cap: number;
+}
+
+export interface NotebookTotals {
+  roles: number;
+  lines: number;
+  cap: number;
+}
+
 export interface StatsReport {
   window: string;
   totalCalls: number;
   perCommand: CommandStat[];
   anomalies: Anomaly[];
+  /**
+   * Notebook inventory (issue #40): per-role line counts and the `maxLines()`
+   * cap, plus `notebookTotals`. Additive to the report from issue #18 / PR #24 —
+   * `window`/`perCommand`/`anomalies` are unchanged. When `stats` is called with
+   * a `role`, only that role's notebook is listed (empty if it has none).
+   */
+  notebooks: NotebookStat[];
+  notebookTotals: NotebookTotals;
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -629,5 +656,23 @@ export function stats(
       : windowMs % 3_600_000 === 0
         ? `${windowMs / 3_600_000}h`
         : `${Math.round(windowMs / 60_000)}m`;
-  return { window, totalCalls: recent.length, perCommand, anomalies };
+
+  // Notebook inventory (issue #40). Independent of the usage window — it is the
+  // current on-disk state, not a time slice. Scoped to `opts.role` when given,
+  // mirroring the per-command filtering above. `cap` is read once so every row
+  // and the total report the same value.
+  const cap = maxLines();
+  const inventoryRoles = opts.role ? listRoles(dir).filter((r) => r === opts.role) : listRoles(dir);
+  const notebooks: NotebookStat[] = inventoryRoles.map((role) => ({
+    role,
+    lines: readEntries(dir, role).length,
+    cap,
+  }));
+  const notebookTotals: NotebookTotals = {
+    roles: notebooks.length,
+    lines: notebooks.reduce((sum, n) => sum + n.lines, 0),
+    cap,
+  };
+
+  return { window, totalCalls: recent.length, perCommand, anomalies, notebooks, notebookTotals };
 }

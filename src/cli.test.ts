@@ -197,6 +197,56 @@ describe('runNbCli', () => {
     expect(plain.out).not.toBe(json.out); // the flag is the only thing that changes output
   });
 
+  test('stats table shows the notebook inventory with a FULL marker at cap (issue #40)', async () => {
+    process.env.NB_MAX_LINES = '2';
+    await run(['add', 'patcher', 'alpha']);
+    await run(['add', 'patcher', 'bravo']); // patcher now at cap 2/2
+    await run(['add', 'scout', 'solo']); // scout below cap 1/2
+    const s = await run(['stats']);
+    expect(s.code).toBe(0);
+    const out = s.out.split('\n').map((l) => l.trim());
+    expect(out).toContain('notebooks: 2 roles, 3 lines (cap 2/role)');
+    // Whole-row, line-anchored assertions (^…$ on one line) so a regex can never
+    // match across rows or treat 1/2 as a prefix of 1/20.
+    expect(out.some((l) => /^patcher\s+2\/2\s+FULL$/.test(l))).toBe(true);
+    expect(out.some((l) => /^scout\s+1\/2$/.test(l))).toBe(true); // below cap: no marker
+  });
+
+  test('stats table says "notebooks: none" when no role has a notebook', async () => {
+    const s = await run(['stats']); // only the stats call itself is logged; no notebook files
+    expect(s.code).toBe(0);
+    expect(s.out).toContain('notebooks: none');
+    expect(s.out).not.toContain('FULL');
+  });
+
+  test('stats <role> scopes the table inventory to that role (singular header)', async () => {
+    await run(['add', 'patcher', 'a']);
+    await run(['add', 'scout', 'b']); // a second role that must be excluded
+    const s = await run(['stats', 'patcher']);
+    expect(s.code).toBe(0);
+    const out = s.out.split('\n').map((l) => l.trim());
+    expect(out).toContain('notebooks: 1 role, 1 lines (cap 200/role)'); // singular "role"
+    expect(out.some((l) => /^patcher\s+1\/200$/.test(l))).toBe(true);
+    expect(out.some((l) => /^scout\b/.test(l))).toBe(false); // the other role is not listed
+  });
+
+  test('stats --json includes per-role lines and the maxLines cap (issue #40)', async () => {
+    process.env.NB_MAX_LINES = '5';
+    await run(['add', 'patcher', 'one']);
+    await run(['add', 'patcher', 'two']);
+    const s = await run(['stats', '--json']);
+    expect(s.code).toBe(0);
+    const report = JSON.parse(s.out);
+    // old fields stay present and well-typed (additive contract)
+    expect(report).toHaveProperty('window');
+    expect(typeof report.totalCalls).toBe('number');
+    expect(Array.isArray(report.perCommand)).toBe(true);
+    expect(Array.isArray(report.anomalies)).toBe(true);
+    // new inventory fields
+    expect(report.notebooks).toEqual([{ role: 'patcher', lines: 2, cap: 5 }]);
+    expect(report.notebookTotals).toEqual({ roles: 1, lines: 2, cap: 5 });
+  });
+
   test('unknown command exits 2', async () => {
     const r = await run(['frobnicate', 'patcher']);
     expect(r.code).toBe(2);

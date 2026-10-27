@@ -246,6 +246,19 @@ function renderStats(dir: string, role: string | undefined, windowMs: number | u
   } else {
     lines.push('  anomalies: none');
   }
+  // Notebook inventory (issue #40): make memory pressure visible — a role at
+  // `lines/cap` where the two are equal is one distinct add from an eviction,
+  // flagged FULL so a supervisor spots it without listing files.
+  const nb = rep.notebookTotals;
+  if (rep.notebooks.length === 0) {
+    lines.push('  notebooks: none');
+  } else {
+    lines.push(`  notebooks: ${nb.roles} role${nb.roles === 1 ? '' : 's'}, ${nb.lines} lines (cap ${nb.cap}/role)`);
+    for (const n of rep.notebooks) {
+      const full = n.lines >= n.cap ? '  FULL' : '';
+      lines.push(`    ${n.role.padEnd(20)}  ${String(n.lines).padStart(4)}/${n.cap}${full}`);
+    }
+  }
   return lines.join('\n');
 }
 
