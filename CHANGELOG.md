@@ -15,6 +15,24 @@ versions are listed plainly.
   earn their place; most roles need far fewer than 200. Raise it any time with
   `NB_MAX_LINES` (range unchanged, 1–5000). The character cap (`NB_MAX_CHARS`) stays 200.
 
+### Added
+- Onboarding and harness-integration documentation (docs-only; no package behaviour change).
+  - `AGENTS.md` (with `CLAUDE.md` as a symlink to it) — the agent operating contract: the
+    four moments (list / open / subagent / retrospective) and how to write a lesson. The
+    core behaviour is harness-agnostic: the agent lists the notebooks and opens the ones
+    that fit, rather than a role-specific notebook being auto-injected.
+  - `docs/getting-started.md` (plain-language intro with diagrams), `docs/harness-setup.md`
+    (make Claude Code / Codex CLI use it on Linux/macOS/Windows via the list-&-open
+    instruction, plus optional convenience hooks, git-versioning, backup, janitor),
+    `docs/enterprise.md` (data-sovereignty / security / compliance rollout), and
+    `docs/visual-explainer.html`.
+  - `examples/` — the optional harness layer: `nb-git-wrapper.mjs` (a commit per change),
+    `nb-backup.sh` (daily push), `nb-janitor.mjs` (read-only cross-notebook diagnostics:
+    paraphrase-duplicate and near-duplicate-role detection, cap pressure, growth trends),
+    and hook recipes for Claude Code and Codex CLI.
+  - `.claude/skills/` — `agent-notebook-setup` and `agent-notebook-explain` skills that
+    walk a user through configuration or explain the tool on request.
+
 ## [0.2.1] - 2026-10-28
 
 ### Added

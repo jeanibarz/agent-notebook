@@ -48,6 +48,14 @@ standard library (requirements **DP-7**). A PR that adds a runtime dependency
 must explain why it is unavoidable; expect it to be declined unless there is
 genuinely no alternative.
 
+## Documentation map
+
+- [docs/requirements.md](docs/requirements.md) — the behavioural spec (source of truth).
+- [docs/self-observing-notebook.md](docs/self-observing-notebook.md) — why the tool instruments itself.
+- [AGENTS.md](AGENTS.md) (= `CLAUDE.md`) — the agent operating contract.
+- [docs/getting-started.md](docs/getting-started.md) · [docs/harness-setup.md](docs/harness-setup.md) · [docs/enterprise.md](docs/enterprise.md) — the user-facing guides.
+- [examples/](examples/) — the optional harness layer (git wrapper, backup, janitor, hooks). These describe a layer *around* the package; per **DP-6** nothing clever runs inside an `nb` call, so changes here never touch the hot path.
+
 ## Changelog
 
 Add a one-line entry under the `## [Unreleased]` section of
