@@ -73,6 +73,7 @@ nb vote   <role> <id|query> +1|-1       upvote/downvote an entry you used
 nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
 nb split  <role> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
 nb rm     <role> <id|query>             delete an entry
+nb describe <role> ["<text>"]           set the notebook's one-line description (no text → print it)
 nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly flags (--json emits the raw StatsReport)
 nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
 nb roles                                list the roles that have a notebook (one per line, sorted)
@@ -96,6 +97,20 @@ The optional `--reason <code>` (and `--note "<text>"`) is recorded in the usage 
 - `add` — no enum yet: free text only via `--note`, so `add`'s codes can emerge from mined notes rather than be guessed up front
 
 The reason is always optional (omit it rather than invent one). An unrecognized code is accepted as `other` with the code kept in the note, never rejected — the `other` rate is the thermostat that tells us when a new reason code should be minted. Codes are per-op: a code valid for one op buckets to `other` on another.
+
+**Describing a notebook.** `nb describe <role> "<text>"` gives a notebook a one-line *description* — a **trigger** that says "the situation in which you should open me", so an agent (or a plain list of notebooks) can decide whether to open it without reading its lessons. It is stored as a leading `# desc:` comment at the top of the `<role>.md` file:
+
+```
+$ nb describe reviewer "build / test / worktree gotchas for this repo"
+description set for role "reviewer": build / test / worktree gotchas for this repo
+$ nb describe reviewer           # no text → print the current one
+build / test / worktree gotchas for this repo
+$ nb show reviewer               # the description leads the output as a header
+# desc: build / test / worktree gotchas for this repo
+acf179  [+1]  run lint before claiming done
+```
+
+The description is capped like a lesson (rejected, not truncated, if too long), and an empty text (`nb describe reviewer ""`) clears it. The `# key: value` block round-trips through every mutation and is never turned into a lesson; unknown keys are preserved verbatim, so the file format stays forward-compatible. This stays within the no-schema non-goal — metadata is optional comment lines in the *file*, not a field on a lesson.
 
 **Piping a lesson in.** Pass `-` as the lesson to read it from stdin, so an agent that just wrote a lesson into a pipe can hand it over without shell-quoting:
 

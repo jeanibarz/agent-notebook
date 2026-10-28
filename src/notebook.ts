@@ -118,6 +118,81 @@ export function dedupKey(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// notebook metadata (leading `# key: value` comment lines)
+// ---------------------------------------------------------------------------
+
+/**
+ * A metadata line: a *leading* `# key: value` comment at the very top of a
+ * notebook file (e.g. `# desc: build/test gotchas for this repo`). It carries
+ * notebook-level context — a one-line description an agent reads to decide
+ * whether to open the notebook — WITHOUT adding a field to a lesson ([NG-004]):
+ * the lesson stays a plain string, and metadata is just optional comment lines
+ * the file already round-trips. The key is lowercase, starting with a letter;
+ * the value is the rest of the line. An entry always starts with `±score\t` (or
+ * is a bare score-0 lesson with no `#`), so a `#`-leading `key:` line is
+ * unambiguous and backward-compatible — existing notebooks have no `#` lines.
+ */
+const META_RE = /^#\s*([a-z][a-z0-9_-]*):\s?(.*)$/;
+
+/** True when `line` is a notebook metadata line (`# key: value`). */
+export function isMetaLine(line: string): boolean {
+  return META_RE.test(line);
+}
+
+/**
+ * The LEADING block of metadata lines of a role file, verbatim (the raw strings,
+ * `#` included). Only the maximal run of `# key: value` lines at the very top is
+ * metadata; the first non-metadata line (an entry) ends the block, so a `# key:`
+ * line that somehow sits *among* entries stays an ordinary score-0 lesson
+ * ([FR-MODEL-003]) — exactly how `readEntries` treats it. Returning the raw
+ * lines (not a parsed map) lets a mutation re-emit unknown keys byte-for-byte
+ * (forward-compatible), rewriting only the key it actually changes.
+ */
+export function readMetaLines(dir: string, role: string): string[] {
+  const file = roleFile(dir, role);
+  if (!existsSync(file)) return [];
+  const out: string[] = [];
+  for (const line of readFileSync(file, 'utf-8').split('\n')) {
+    if (META_RE.test(line)) out.push(line);
+    else break; // first entry (or blank) ends the leading metadata block
+  }
+  return out;
+}
+
+/** The value of metadata `key` within a set of raw metadata lines, or `null` if absent. */
+export function getMetaValue(lines: string[], key: string): string | null {
+  for (const line of lines) {
+    const m = META_RE.exec(line);
+    if (m && m[1] === key) return m[2];
+  }
+  return null;
+}
+
+/**
+ * Return `lines` with metadata `key` set to `value`, order preserved: an existing
+ * key is rewritten in place, a new key is appended. An empty `value` REMOVES the
+ * key (so `nb describe <role> ""` clears the description rather than storing an
+ * empty `# desc:` line). Only the touched key is re-canonicalized to `# key:
+ * value`; every other line is left verbatim, so unknown keys round-trip
+ * unchanged ([NG-004] forward-compatibility).
+ */
+export function setMetaValue(lines: string[], key: string, value: string): string[] {
+  const out: string[] = [];
+  let seen = false;
+  for (const line of lines) {
+    const m = META_RE.exec(line);
+    if (m && m[1] === key) {
+      seen = true;
+      if (value !== '') out.push(`# ${key}: ${value}`); // empty value → drop (clear)
+    } else {
+      out.push(line);
+    }
+  }
+  if (!seen && value !== '') out.push(`# ${key}: ${value}`);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // locking (tiny mkdir spinlock — single-host, serial CLI calls, rare contention)
 // ---------------------------------------------------------------------------
 
@@ -205,18 +280,38 @@ export function readEntries(dir: string, role: string): Entry[] {
   const file = roleFile(dir, role);
   if (!existsSync(file)) return [];
   const out: Entry[] = [];
+  // Skip the leading `# key: value` metadata block (notebook descriptions etc.):
+  // those lines are notebook-level context, not lessons, so they must not become
+  // score-0 entries. The block ends at the first non-metadata line; from there,
+  // every line parses as an entry exactly as before (a mid-file `# key:` line
+  // stays a tolerated bare lesson — see readMetaLines / FR-MODEL-003).
+  let inMeta = true;
   for (const line of readFileSync(file, 'utf-8').split('\n')) {
+    if (inMeta && META_RE.test(line)) continue;
+    inMeta = false;
     const e = parseLine(line);
     if (e && e.text !== '') out.push(e);
   }
   return out;
 }
 
-function writeEntries(dir: string, role: string, entries: Entry[]): void {
+/**
+ * Write a notebook, preserving its leading metadata block. `metaLines` lets a
+ * caller that is itself changing the metadata (e.g. `setDescription`) pass the
+ * new block; every other mutation omits it, so the existing block is re-read
+ * from disk under the lock and re-emitted unchanged — which is how the
+ * description round-trips through `add`/`vote`/`merge`/`split`/`rm`. The metadata
+ * leads the file; the entries follow in insertion order ([DP-3]). A file with
+ * metadata but no entries is still written (its block survives an emptied
+ * notebook), and only a notebook with neither becomes the empty string.
+ */
+function writeEntries(dir: string, role: string, entries: Entry[], metaLines?: string[]): void {
   const file = roleFile(dir, role);
-  const body = entries.map(formatLine).join('\n');
+  const meta = metaLines ?? readMetaLines(dir, role);
+  const lines = [...meta, ...entries.map(formatLine)];
+  const body = lines.join('\n');
   const tmp = `${file}.tmp`;
-  writeFileDurable(file, tmp, entries.length ? body + '\n' : '');
+  writeFileDurable(file, tmp, lines.length ? body + '\n' : '');
 }
 
 /**
@@ -506,6 +601,49 @@ export function remove(dir: string, role: string, selector: string): Promise<Vot
     const [gone] = entries.splice(idx, 1);
     writeEntries(dir, role, entries);
     return { text: gone.text, score: gone.score };
+  });
+}
+
+/** The `desc` metadata key: a notebook's optional one-line description/trigger. */
+export const DESC_KEY = 'desc';
+
+export interface DescribeResult {
+  role: string;
+  /** The description after the call: the new text when set, or the current text when read. `null` when none is set. */
+  desc: string | null;
+  /** True when this call wrote a new description; false for a read-only query. */
+  set: boolean;
+}
+
+/**
+ * Read a notebook's one-line description (the `# desc:` metadata value), or
+ * `null` if none is set. Read-only and lock-free — it only inspects the leading
+ * metadata block.
+ */
+export function getDescription(dir: string, role: string): string | null {
+  return getMetaValue(readMetaLines(dir, role), DESC_KEY);
+}
+
+/**
+ * Set (or clear) a notebook's one-line description, stored as a leading
+ * `# desc: <text>` metadata line. The text is sanitized to one line and capped
+ * exactly like a lesson — an over-`maxChars` description is REJECTED, not
+ * truncated ([DP-5] / [FR-ADD-004]), so the agent rewrites a shorter *complete*
+ * line. An empty (post-sanitize) text clears the description. Every other
+ * metadata key and all entries are preserved verbatim (round-trip), and the
+ * write goes through the same durable, locked path as any mutation.
+ */
+export function setDescription(dir: string, role: string, text: string): Promise<DescribeResult> {
+  return withLock(dir, () => {
+    const clean = sanitizeLesson(text);
+    if (clean.length > maxChars()) {
+      // Reject rather than truncate, exactly as add/merge/split do.
+      throw new Error(`description is ${clean.length} chars; max is ${maxChars()} — shorten it`);
+    }
+    const entries = readEntries(dir, role);
+    const meta = setMetaValue(readMetaLines(dir, role), DESC_KEY, clean);
+    writeEntries(dir, role, entries, meta);
+    return { role, desc: clean === '' ? null : clean, set: true };
   });
 }
 

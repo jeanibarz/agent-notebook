@@ -42,6 +42,9 @@ import {
   assertSafeRole,
   dedupKey,
   entryId,
+  getDescription,
+  getMetaValue,
+  isMetaLine,
   logUsage,
   maxChars,
   maxLines,
@@ -49,9 +52,12 @@ import {
   normalizeReason,
   parseUsage,
   readEntries,
+  readMetaLines,
   remove,
   render,
   sanitizeLesson,
+  setDescription,
+  setMetaValue,
   split,
   stats,
   vote,
@@ -1368,5 +1374,144 @@ describe('display ordering ("moving" an entry)', () => {
       { score: 2, text: 'new' },
       { score: 1, text: 'old' },
     ]);
+  });
+});
+
+describe('notebook metadata / descriptions (issue #70)', () => {
+  test('a leading `# key: value` line is metadata, NOT a score-0 lesson', () => {
+    // Backward-compatibility hinge: an entry always starts with `±score\t` (or is
+    // a bare tab-less lesson), so a `#`-leading `key:` line is unambiguously the
+    // description block and must be skipped by readEntries — never surfaced as a
+    // lesson the way a hand-edited bare line (FR-MODEL-003) is.
+    writeFileSync(
+      join(dir, 'm.md'),
+      '# desc: build / test gotchas for this repo\n+3\trun build before test\n',
+      'utf-8',
+    );
+    expect(readEntries(dir, 'm')).toEqual([{ score: 3, text: 'run build before test' }]);
+    expect(getDescription(dir, 'm')).toBe('build / test gotchas for this repo');
+    expect(readMetaLines(dir, 'm')).toEqual(['# desc: build / test gotchas for this repo']);
+  });
+
+  test('only the LEADING block is metadata; a `# key:` line among entries stays a bare lesson', () => {
+    // The metadata block ends at the first entry. A `# foo: bar` line AFTER an
+    // entry is an ordinary tab-less lesson (FR-MODEL-003 tolerance), not metadata
+    // — so readEntries keeps it and readMetaLines does not claim it.
+    writeFileSync(
+      join(dir, 'm.md'),
+      '# desc: top of file\n+1\tfirst lesson\n# late: not metadata\n',
+      'utf-8',
+    );
+    expect(readMetaLines(dir, 'm')).toEqual(['# desc: top of file']);
+    expect(readEntries(dir, 'm')).toEqual([
+      { score: 1, text: 'first lesson' },
+      { score: 0, text: '# late: not metadata' },
+    ]);
+  });
+
+  test('a `#` comment that is not `key:` shaped is a bare lesson, not metadata', () => {
+    // `# just a note` has no `key:` — it does not match the metadata grammar, so
+    // it is a tab-less lesson (score 0), exactly as before this feature existed.
+    writeFileSync(join(dir, 'm.md'), '# just a note, not key: value\n', 'utf-8');
+    expect(isMetaLine('# just a note, not key: value')).toBe(false);
+    expect(getDescription(dir, 'm')).toBeNull();
+    expect(readEntries(dir, 'm')).toEqual([{ score: 0, text: '# just a note, not key: value' }]);
+  });
+
+  test('setDescription writes a leading `# desc:` line and getDescription reads it', async () => {
+    await addEntry(dir, 'r', 'a lesson');
+    const res = await setDescription(dir, 'r', 'when debugging the build');
+    expect(res).toEqual({ role: 'r', desc: 'when debugging the build', set: true });
+    expect(getDescription(dir, 'r')).toBe('when debugging the build');
+    // The description leads the file; the entry follows.
+    expect(readFileSync(join(dir, 'r.md'), 'utf-8')).toBe(
+      '# desc: when debugging the build\n+1\ta lesson\n',
+    );
+  });
+
+  test('getDescription is null when no description is set', async () => {
+    await addEntry(dir, 'r', 'a lesson');
+    expect(getDescription(dir, 'r')).toBeNull();
+  });
+
+  test('the description round-trips through every mutation (add/vote/merge/rm/split)', async () => {
+    await setDescription(dir, 'r', 'the trigger line');
+    await addEntry(dir, 'r', 'alpha');
+    await addEntry(dir, 'r', 'beta');
+    await addEntry(dir, 'r', 'gamma');
+    expect(getDescription(dir, 'r')).toBe('the trigger line'); // survived three adds
+    await vote(dir, 'r', entryId('alpha'), 1);
+    expect(getDescription(dir, 'r')).toBe('the trigger line'); // survived a vote
+    await merge(dir, 'r', entryId('alpha'), entryId('beta'), 'alpha+beta');
+    expect(getDescription(dir, 'r')).toBe('the trigger line'); // survived a merge
+    await split(dir, 'r', entryId('gamma'), 'gamma one', 'gamma two');
+    expect(getDescription(dir, 'r')).toBe('the trigger line'); // survived a split
+    await remove(dir, 'r', entryId('gamma one'));
+    expect(getDescription(dir, 'r')).toBe('the trigger line'); // survived a rm
+  });
+
+  test('the description survives even when the last entry is removed', async () => {
+    await setDescription(dir, 'r', 'keep me');
+    await addEntry(dir, 'r', 'only lesson');
+    await remove(dir, 'r', entryId('only lesson'));
+    expect(readEntries(dir, 'r')).toEqual([]);
+    expect(getDescription(dir, 'r')).toBe('keep me'); // metadata outlives an emptied notebook
+    expect(readFileSync(join(dir, 'r.md'), 'utf-8')).toBe('# desc: keep me\n');
+  });
+
+  test('an over-long description is REJECTED, not truncated', async () => {
+    process.env.NB_MAX_CHARS = '30';
+    await expect(setDescription(dir, 'r', 'x'.repeat(31))).rejects.toThrow(/31 chars; max is 30/);
+    expect(getDescription(dir, 'r')).toBeNull(); // nothing stored
+    // Exactly at the cap is accepted.
+    const ok = await setDescription(dir, 'r', 'y'.repeat(30));
+    expect(ok.desc).toHaveLength(30);
+  });
+
+  test('setDescription replaces an existing description in place', async () => {
+    await setDescription(dir, 'r', 'first');
+    await setDescription(dir, 'r', 'second');
+    expect(getDescription(dir, 'r')).toBe('second');
+    expect(readMetaLines(dir, 'r')).toEqual(['# desc: second']); // one line, not two
+  });
+
+  test('an empty text clears the description (removes the # desc: line)', async () => {
+    await setDescription(dir, 'r', 'to be cleared');
+    await addEntry(dir, 'r', 'a lesson');
+    const res = await setDescription(dir, 'r', '');
+    expect(res.desc).toBeNull();
+    expect(getDescription(dir, 'r')).toBeNull();
+    expect(readFileSync(join(dir, 'r.md'), 'utf-8')).toBe('+1\ta lesson\n'); // no metadata line left
+  });
+
+  test('a description with tabs/newlines is flattened to one line before storage', async () => {
+    await setDescription(dir, 'r', '  trigger\twith\ntabs  ');
+    expect(getDescription(dir, 'r')).toBe('trigger with tabs');
+  });
+
+  test('unknown metadata keys are preserved verbatim through a mutation and setDescription', async () => {
+    // Forward-compatibility: a future/foreign key we do not understand must
+    // round-trip byte-for-byte and never be mistaken for a lesson.
+    writeFileSync(
+      join(dir, 'r.md'),
+      '# owner: jean\n# desc: original\n+1\ta lesson\n',
+      'utf-8',
+    );
+    await addEntry(dir, 'r', 'another lesson'); // a mutation that does not touch metadata
+    expect(readMetaLines(dir, 'r')).toEqual(['# owner: jean', '# desc: original']);
+    await setDescription(dir, 'r', 'updated'); // changes only `desc`, leaves `owner` verbatim
+    expect(readMetaLines(dir, 'r')).toEqual(['# owner: jean', '# desc: updated']);
+    expect(getMetaValue(readMetaLines(dir, 'r'), 'owner')).toBe('jean');
+    expect(readEntries(dir, 'r').map((e) => e.text)).toEqual(['a lesson', 'another lesson']);
+  });
+
+  test('setMetaValue appends a new key, rewrites an existing one, and clears on empty', () => {
+    expect(setMetaValue([], 'desc', 'hi')).toEqual(['# desc: hi']);
+    expect(setMetaValue(['# owner: jean'], 'desc', 'hi')).toEqual(['# owner: jean', '# desc: hi']);
+    expect(setMetaValue(['# desc: old', '# owner: jean'], 'desc', 'new')).toEqual([
+      '# desc: new',
+      '# owner: jean',
+    ]);
+    expect(setMetaValue(['# desc: old', '# owner: jean'], 'desc', '')).toEqual(['# owner: jean']);
   });
 });

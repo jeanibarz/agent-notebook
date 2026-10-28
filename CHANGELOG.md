@@ -10,6 +10,15 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- Notebook descriptions: `# key: value` metadata + `nb describe` (#70). A notebook file
+  may now begin with a leading `# key: value` comment block; `readEntries` skips it (a
+  `#`-leading `key:` line never becomes a score-0 lesson) and every mutation round-trips
+  it. `nb describe <role> "<text>"` sets the notebook's one-line description — a *trigger*
+  for when to open it — stored as a `# desc:` line; `nb describe <role>` prints it, an
+  empty text clears it, and `nb show` prints it as a header. The description is capped
+  like a lesson (rejected, not truncated), and unknown keys are preserved verbatim
+  (forward-compatible). Stays within the no-schema non-goal — metadata is optional
+  comment lines in the file, not a field on a lesson. Level 1 of discovery for epic #73.
 - Entry-level + outcome logging in the usage ring (#67). Each `.nb-usage.log` row now
   also records the entry id(s) a call touched, a session id from the `NB_SESSION`
   environment variable, and the call's outcome (`accepted`/`dedup-blocked` with the

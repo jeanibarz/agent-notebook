@@ -43,6 +43,8 @@ One definition per term, used identically in requirements, code, and tests.
 | **Dedup key** | The case-, punctuation-, and whitespace-insensitive normal form of a text (`dedupKey`), used for duplicate detection and the stable id. |
 | **Selector** | The argument to `vote`/`rm`/`merge`/`split` that identifies an entry: a stable id (exact or unique prefix) or a unique case-insensitive text substring. |
 | **Operation reason** | An optional, per-operation enum code (seed-and-grow, plus an `other` escape hatch and optional free-text note) recorded for a mutating op in the usage log — never in the notebook (see [FR-REASON-001](#fr-reason-001)). |
+| **Metadata** | Optional leading `# key: value` comment lines at the top of a notebook file, carrying notebook-level context (not lessons). Skipped by `readEntries`, round-tripped through every mutation (see [FR-DESC-001](#fr-desc-001)). |
+| **Description** | The `# desc:` metadata value: a one-line *trigger* ("the situation in which you should open me") that lets an agent decide whether to open a notebook without reading its lessons. Set/printed with `nb describe` (see [FR-DESC-002](#fr-desc-002)). |
 | **Cap** | `maxLines` (max entries per notebook) and `maxChars` (max characters per lesson). |
 | **Eviction** | Removing the lowest-scored entry (ties: oldest) when the notebook exceeds `maxLines`. |
 | **Usage ring** | A bounded append-only log of CLI calls (`.nb-usage.log`) that `nb stats` reads. |
@@ -321,7 +323,7 @@ print `<NB_DIR>/<role>.md` as a bare path (pipe-friendly, no decoration).
 <a id="fr-cli-001"></a>
 **FR-CLI-001 (Must).** `nb` SHALL implement: `show`, `add <role> ("<lesson>"|-)`,
 `vote`, `merge`, `split <role> <id|query> "<a>" "<b>"`,
-`rm`, `stats [<role>] [--since <N{d,h,m}>] [--json]`, `path [<role>]`,
+`rm`, `describe <role> ["<text>"]`, `stats [<role>] [--since <N{d,h,m}>] [--json]`, `path [<role>]`,
 `roles`, `--help`, `--version`. The `-` lesson operand of `add` reads from stdin per
 [FR-ADD-007](#fr-add-007). The optional `[--reason <code>] [--note "<text>"]` flags are
 consumed by every mutating op — `add`, `merge`, `rm`, and `split` — (the operation-reasons
@@ -442,6 +444,39 @@ within a window (`parseWindowMs`, default 7d) and flag three anomalies: **loop**
 <a id="fr-stats-002"></a>
 **FR-STATS-002 (Should).** A malformed anomaly-tuning value SHALL fall back to the
 documented default (never `NaN`, which would disable detection).
+
+### 4.13 Notebook descriptions & metadata
+
+<a id="fr-desc-001"></a>
+**FR-DESC-001 (Should).** A notebook file MAY begin with a **metadata** block: a
+leading run of `# key: value` comment lines matching `^#\s*([a-z][a-z0-9_-]*):\s?(.*)$`.
+`readEntries` SHALL skip the leading metadata block (such a line SHALL NOT become a
+score-0 lesson), and every mutation (`add`/`vote`/`merge`/`split`/`rm`) SHALL
+round-trip the block unchanged. Only the *leading* run is metadata — a `# key:`
+line that follows an entry stays a tolerated bare lesson ([FR-MODEL-003](#fr-model-003)).
+**Rationale:** An entry always starts with `±score\t` (or is a bare tab-less lesson),
+so a `#`-leading `key:` line is unambiguous and backward-compatible — existing
+notebooks have no `#` lines. Unknown keys SHALL be preserved verbatim and ignored
+(forward-compatible). This stays within [NG-004](#ng-004): metadata is optional
+comment lines in the *file*, not a field on a lesson.
+*Proven by:* `notebook.test.ts` → "notebook metadata / descriptions (issue #70)".
+
+<a id="fr-desc-002"></a>
+**FR-DESC-002 (Should).** `nb describe <role> "<text>"` SHALL set the notebook's
+one-line **description** (the `# desc:` metadata value); `nb describe <role>` with no
+text SHALL print the current description (bare, pipe-friendly) or warn on stderr and
+exit 0 when none is set. `setDescription`/`getDescription` are the library form.
+An empty (post-sanitize) text SHALL clear the description.
+
+<a id="fr-desc-003"></a>
+**FR-DESC-003 (Should).** A description SHALL be sanitized to one line
+(`sanitizeLesson`) and capped exactly like a lesson: an over-`maxChars` description
+SHALL be rejected, never truncated ([DP-5](#dp-5) / [FR-ADD-004](#fr-add-004)).
+
+<a id="fr-desc-004"></a>
+**FR-DESC-004 (Should).** `nb show` SHALL print the description (when set) as a
+`# desc: <text>` header above the rendered entries, so a reader sees what a notebook
+is *for* before its contents.
 
 ---
 
