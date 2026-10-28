@@ -96,7 +96,8 @@ Four things to notice about the file:
 2. **The number is a score.** Every time the assistant finds a lesson useful, it
    gives it a **+1**; if a lesson misled it, a **−1**. Good lessons float to the
    top.
-3. **It's capped.** A notebook holds at most 200 lessons. When it's full, the
+3. **It's capped.** A notebook holds at most 50 lessons by default (you can raise
+   the cap). When it's full, the
    *lowest-scored* line is dropped to make room — so useless or harmful notes
    fall out, and the hard-won ones survive. It can never turn into a junk drawer.
 4. **The top line is a label**, the *description*: one sentence saying "open me

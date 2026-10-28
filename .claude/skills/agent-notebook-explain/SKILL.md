@@ -24,7 +24,7 @@ Then the design in four facts — this *is* the whole mechanism:
 1. **One lesson = one line** (≤200 chars). Not a document; a hard-won reminder.
 2. **A score, set by votes.** +1 when a lesson helped, −1 when it misled. Good
    lessons float up.
-3. **Bounded (≤200 lines).** When full, the *lowest-scored* line is evicted — so
+3. **Bounded (≤50 lines by default).** When full, the *lowest-scored* line is evicted — so
    it self-cleans and never becomes a junk drawer.
 4. **Plain text, surfaced not searched.** It's a file you can read, edit, and
    `git diff`; the agent lists its notebooks and opens the ones that fit (seeing

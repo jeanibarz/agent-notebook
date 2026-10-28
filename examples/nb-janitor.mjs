@@ -7,7 +7,7 @@
 //   file, the usage log, and (if NB_DIR is a git repo) the commit history, and
 //   reports four things, each with a concrete suggested `nb` command:
 //
-//     1. Cap pressure & reorg       — notebooks near the 200-line cap that will
+//     1. Cap pressure & reorg       — notebooks near the cap (50 lines by default) that will
 //                                      start evicting lessons; split candidates.
 //     2. Near-duplicate ROLE names  — likely typos / fragmentation (e.g.
 //                                      `reviewer` vs `review`) that split memory.
@@ -51,7 +51,7 @@ const NB_DIR =
   process.env.NB_DIR && process.env.NB_DIR.trim() !== ''
     ? process.env.NB_DIR
     : join(homedir(), '.agent-notebook', 'notebooks');
-const MAX_LINES = Number.parseInt(process.env.NB_MAX_LINES ?? '200', 10) || 200;
+const MAX_LINES = Number.parseInt(process.env.NB_MAX_LINES ?? '50', 10) || 50;
 
 // ---- read the store (mirrors the package's file conventions) --------------
 function readNotebooks(dir) {

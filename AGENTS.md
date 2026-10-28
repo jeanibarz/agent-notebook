@@ -19,7 +19,8 @@ New here? Start with the [plain-language guide](docs/getting-started.md) or the
 ## 1. What the notebook is (one paragraph)
 
 A notebook is a bounded, voted, plain-text memory for one *role* — one kind of
-task (`reviewer`, `release`, `repro`). It holds at most 200 one-line lessons,
+task (`reviewer`, `release`, `repro`). It holds at most 50 one-line lessons by
+default (raise the cap with `NB_MAX_LINES`),
 ranked by the votes agents cast on them; when it is full the lowest-scored line
 is evicted. There is one notebook per role, and `nb list` shows the whole set —
 each with a one-line description of *when to open it* — so you can see what

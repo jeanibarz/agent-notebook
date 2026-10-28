@@ -32,7 +32,6 @@ versions are listed plainly.
     and hook recipes for Claude Code and Codex CLI.
   - `.claude/skills/` — `agent-notebook-setup` and `agent-notebook-explain` skills that
     walk a user through configuration or explain the tool on request.
->>>>>>> 43d2a36 (docs: add AGENTS.md, onboarding guides, and harness-integration examples)
 
 ## [0.2.1] - 2026-10-28
 

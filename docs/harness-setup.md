@@ -222,7 +222,7 @@ What each section diagnoses, and why it matters:
 
 | Section | Signal | What you do about it |
 |---|---|---|
-| **1. Cap pressure & reorg** | a notebook ≥ 80% of the 200-line cap is about to start evicting lessons | split its concerns into [namespaced roles](../README.md#grouping-notebooks--the--namespace-convention) so no single notebook thrashes |
+| **1. Cap pressure & reorg** | a notebook ≥ 80% of the cap (50 lines by default) is about to start evicting lessons | split its concerns into [namespaced roles](../README.md#grouping-notebooks--the--namespace-convention) so no single notebook thrashes |
 | **2. Near-duplicate roles** | `reviewer` vs `review` — the same memory fragmented by a typo | consolidate the lessons under one role, retire the orphan |
 | **3. Duplicate lessons** | paraphrase pairs the exact-match dedup let through (a *recall* problem — the agent re-derived something it already knew) | `nb merge` the real duplicates into one tighter line |
 | **4. Volume & silence** | how the store grew over time (from git), and roles that went quiet | spot a role that broke/was abandoned, or a healthy "notebook is sufficient" plateau |
