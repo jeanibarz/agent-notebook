@@ -340,10 +340,32 @@ tolerated for platforms that disallow it.)*
 
 <a id="fr-usage-001"></a>
 **FR-USAGE-001 (Must).** Each CLI invocation other than `--help`/`--version` (which
-return before any work) SHALL append one row
-`"<iso-ts>\t<role>\t<command>\t<ok|err>\t<ms>ms"` to the usage ring, bounded to
-`usageRing` rows (oldest dropped). A failure to log SHALL NOT fail the operation.
+return before any work) SHALL append one tab-delimited row to the usage ring,
+bounded to `usageRing` rows (oldest dropped). The row's first five columns SHALL be
+`"<iso-ts>\t<role>\t<command>\t<ok|err>\t<ms>ms"`, followed by the five entry-level
+columns of [FR-USAGE-002](#fr-usage-002). A failure to log SHALL NOT fail the
+operation, and every field SHALL be sanitized (tab/CR/LF collapsed to spaces) so a
+value cannot inject an extra column or row.
 **Rationale:** Monitoring must itself be bounded and must never break a real call.
+*Proven by:* `notebook.test.ts` → `describe('usage log + stats')`.
+
+<a id="fr-usage-002"></a>
+**FR-USAGE-002 (Should).** Each usage row SHALL additionally record, after the five
+base columns, five entry-level/outcome columns:
+`"\t<session>\t<entry-ids>\t<outcome>\t<collided-id>\t<evicted-id:score>"`, where
+`session` is the value of `NB_SESSION` at call time (blank when unset — co-access is
+then not computed), `entry-ids` is the comma-joined stable id(s) the call touched,
+`outcome` is `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` for `add`,
+`up`/`down` for `vote`, `removed` for `rm`, `merged` for `merge`, and blank for a
+read-only command, `collided-id` is the id of the existing entry that blocked a
+`dedup-blocked` add, and `evicted-id:score` is the entry an `add` evicted and its
+final score. The parser SHALL tolerate an old five-column row written before this
+change, reading the missing columns as blank/empty.
+**Rationale:** Diagnostic signals (recall/precision, co-access, findability, coverage
+× surfacing) rest on entry-level data living in the log, not the notebook — this adds
+no field to a lesson ([NG-004](#ng-004)), keeping the one-line / no-schema contract.
+*Proven by:* `notebook.test.ts` → `describe('entry-level + outcome logging (issue #67)')`
+and `cli.test.ts` → `describe('usage log records entry ids + outcome (issue #67)')`.
 
 <a id="fr-stats-001"></a>
 **FR-STATS-001 (Should).** `stats` SHALL roll up per-command calls/errors/p50/p95/last-used
@@ -409,7 +431,9 @@ machines. Backup is whatever already backs up the home directory (or git on `NB_
 
 <a id="ng-004"></a>
 **NG-004.** The tool SHALL NOT add a multi-field schema — a lesson is a string, a
-score is an integer.
+score is an integer. (This governs the *notebook*. The usage log
+[FR-USAGE-002](#fr-usage-002) may carry richer per-call columns; it is monitoring
+telemetry, not entry storage, and adds no field to a lesson.)
 
 <a id="ng-005"></a>
 **NG-005.** The tool SHALL NOT age, decay, or schedule. Vote and cap are the only
@@ -434,6 +458,7 @@ to the default (integer vars also fall back on a non-numeric string).
 | Variable | Default | Range | Effect |
 |---|---|---|---|
 | `NB_DIR` | `~/.agent-notebook/notebooks` | — | Notebooks directory. |
+| `NB_SESSION` | _(unset → blank)_ | — | Session id a caller/hook sets; recorded per usage row ([FR-USAGE-002](#fr-usage-002)) to group a session's calls. |
 | `NB_MAX_LINES` | 200 | 1–5000 | `maxLines` — entries per notebook. |
 | `NB_MAX_CHARS` | 200 | 20–2000 | `maxChars` — characters per lesson. |
 | `NB_USAGE_RING` | 5000 | 100–100000 | `usageRing` — rows in the usage log. |

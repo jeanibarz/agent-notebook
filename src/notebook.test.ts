@@ -46,6 +46,7 @@ import {
   maxChars,
   maxLines,
   merge,
+  parseUsage,
   readEntries,
   remove,
   render,
@@ -61,7 +62,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'agent-notebook-'));
 });
 afterEach(() => {
-  for (const k of ['NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_USAGE_RING', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ERR_RATE']) {
+  for (const k of ['NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_USAGE_RING', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ERR_RATE', 'NB_SESSION']) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
@@ -515,7 +516,7 @@ describe('usage log + stats', () => {
     const rows = raw.split('\n').filter((l) => l !== '');
     expect(rows.length).toBe(1); // the CR/LF did not spawn extra rows
     const cols = rows[0].split('\t');
-    expect(cols.length).toBe(5); // exactly five columns, tabs collapsed
+    expect(cols.length).toBe(10); // five base + five richer columns, all tabs collapsed
     expect(cols[1]).toBe('evil role drop table'); // role: tab+CR+LF all collapsed to single spaces
     // stats still parses it as one call attributed to the sanitized command.
     const rep = stats(dir, { now: Date.now() });
@@ -626,7 +627,11 @@ describe('usage log + stats', () => {
     logUsage(dir, 'p', 'vote', true, 3);
     const lines = readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '');
     expect(lines.length).toBe(2); // two separate rows, not one glued row
-    expect(lines.every((l) => l.split('\t').length === 5)).toBe(true);
+    // The pre-existing row is an old five-column one; the fresh append is a
+    // ten-column one. Both must parse — proving the append started a clean row
+    // and parseUsage tolerates the short legacy row.
+    expect(parseUsage(dir)).toHaveLength(2);
+    expect(parseUsage(dir).every((r) => r.command.length > 0)).toBe(true);
   });
 
   test('logUsage compacts through a PER-PROCESS-unique temp path before the atomic rename (issue #32)', () => {
@@ -680,11 +685,120 @@ describe('usage log + stats', () => {
     // Every surviving line is a complete, well-formed usage row — no torn/partial
     // line (the corruption a shared temp path could leave).
     for (const l of lines) {
-      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms$/);
+      // Five base columns followed by the five richer ones (empty for a `show`).
+      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){5}$/);
     }
     // No stray temp file lingered: every writer's rename consumed its own temp.
     expect(readdirSync(dir).filter((f) => f.startsWith('.nb-usage.log.') && f.endsWith('.tmp'))).toEqual([]);
   }, 30_000);
+});
+
+describe('entry-level + outcome logging (issue #67)', () => {
+  test('parseUsage reads back the five richer columns a call records', () => {
+    logUsage(dir, 'patcher', 'add', true, 5, {
+      session: 'task-42',
+      entries: ['abc123'],
+      outcome: 'accepted',
+      evicted: 'def456:-2',
+    });
+    const [row] = parseUsage(dir);
+    expect(row.session).toBe('task-42');
+    expect(row.entries).toEqual(['abc123']);
+    expect(row.outcome).toBe('accepted');
+    expect(row.collided).toBe('');
+    expect(row.evicted).toBe('def456:-2');
+  });
+
+  test('session defaults to NB_SESSION when meta.session is absent', () => {
+    process.env.NB_SESSION = 'sess-from-env';
+    logUsage(dir, 'p', 'show', true, 1);
+    expect(parseUsage(dir)[0].session).toBe('sess-from-env');
+  });
+
+  test('session is blank when NB_SESSION is unset (co-access not computable)', () => {
+    delete process.env.NB_SESSION;
+    logUsage(dir, 'p', 'show', true, 1);
+    expect(parseUsage(dir)[0].session).toBe('');
+  });
+
+  test('a comma-joined entries field round-trips to a list (merge touches three ids)', () => {
+    logUsage(dir, 'p', 'merge', true, 2, { entries: ['aaa', 'bbb', 'ccc'], outcome: 'merged' });
+    const [row] = parseUsage(dir);
+    expect(row.entries).toEqual(['aaa', 'bbb', 'ccc']);
+    expect(row.outcome).toBe('merged');
+  });
+
+  test('a tab/CR/LF in NB_SESSION cannot inject an extra column or row', () => {
+    process.env.NB_SESSION = 'a\tb\nc';
+    logUsage(dir, 'p', 'add', true, 1, { entries: ['id1'], outcome: 'accepted' });
+    const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
+    expect(raw.split('\n').filter((l) => l !== '')).toHaveLength(1); // one row
+    const [row] = parseUsage(dir);
+    expect(row.session).toBe('a b c'); // the structural chars collapsed to spaces
+    expect(row.entries).toEqual(['id1']); // columns stayed aligned
+  });
+
+  test('an old five-column row parses with blank richer fields (backward compatible)', () => {
+    // A ring written before this change has only the original five columns.
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      `2026-10-23T10:00:00.000Z\tpatcher\tadd\tok\t5ms\n`,
+      'utf-8',
+    );
+    const [row] = parseUsage(dir);
+    expect(row.command).toBe('add');
+    expect(row.ok).toBe(true);
+    expect(row.ms).toBe(5);
+    expect(row.session).toBe('');
+    expect(row.entries).toEqual([]);
+    expect(row.outcome).toBe('');
+    expect(row.collided).toBe('');
+    expect(row.evicted).toBe('');
+  });
+
+  test('a mix of old and new rows parses, and stats still rolls up both', () => {
+    const old = `2026-10-23T10:00:00.000Z\tp\tadd\tok\t5ms`; // five columns
+    writeFileSync(join(dir, '.nb-usage.log'), old + '\n', 'utf-8');
+    logUsage(dir, 'p', 'vote', true, 3, { entries: ['xyz'], outcome: 'up' }); // ten columns
+    const rows = parseUsage(dir);
+    expect(rows).toHaveLength(2);
+    expect(rows[1].outcome).toBe('up');
+    const rep = stats(dir, { now: Date.parse('2026-10-23T10:01:00.000Z') });
+    expect(rep.totalCalls).toBe(2);
+  });
+
+  test('richer-column logging stays inside the bounded ring', () => {
+    process.env.NB_USAGE_RING = '100';
+    for (let i = 0; i < 150; i++) {
+      logUsage(dir, 'p', 'add', true, 1, { entries: [`id${i}`], outcome: 'accepted', session: 's' });
+    }
+    expect(parseUsage(dir)).toHaveLength(100);
+  });
+
+  test('logUsage with meta never throws when the log cannot be written (best-effort holds)', () => {
+    const asFile = join(dir, 'not-a-dir');
+    writeFileSync(asFile, 'x', 'utf-8');
+    expect(() =>
+      logUsage(asFile, 'p', 'add', true, 1, { entries: ['id1'], outcome: 'accepted' }),
+    ).not.toThrow();
+  });
+
+  test('addEntry reports the touched id, and the colliding id on a dedup block', async () => {
+    const first = await addEntry(dir, 'p', 'always run the build before vitest');
+    expect(first.reason).toBe('added');
+    expect(first.id).toBe(entryId('always run the build before vitest'));
+    const dup = await addEntry(dir, 'p', 'always run the build before vitest');
+    expect(dup.reason).toBe('duplicate');
+    expect(dup.collidedId).toBe(first.id); // points at the entry that blocked it
+  });
+
+  test('merge reports the two source ids and the merged id', async () => {
+    await addEntry(dir, 'p', 'alpha lesson one');
+    await addEntry(dir, 'p', 'beta lesson two');
+    const r = await merge(dir, 'p', 'alpha', 'beta', 'merged alpha and beta');
+    expect(r.sources).toEqual([entryId('alpha lesson one'), entryId('beta lesson two')]);
+    expect(r.id).toBe(entryId('merged alpha and beta'));
+  });
 });
 
 describe('durable writes (issue #15)', () => {

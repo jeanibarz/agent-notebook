@@ -285,6 +285,12 @@ export interface AddResult {
   size: number;
   /** For 'too-long': the length of the submitted lesson, so the caller can report it. */
   length?: number;
+  /** Stable id this result concerns: the added/merged entry, or the submitted lesson on a duplicate/rejection. Absent for 'empty'. Lets the usage log record which entry a call touched. */
+  id?: string;
+  /** For 'duplicate': the id of the existing entry that blocked the add (the colliding entry). */
+  collidedId?: string;
+  /** For merge: the ids of the two source entries consumed into the merged one. */
+  sources?: [string, string];
 }
 
 export function addEntry(dir: string, role: string, lesson: string): Promise<AddResult> {
@@ -292,14 +298,16 @@ export function addEntry(dir: string, role: string, lesson: string): Promise<Add
     const text = sanitizeLesson(lesson);
     const entries = readEntries(dir, role);
     if (text === '') return { added: false, reason: 'empty', evicted: null, size: entries.length };
+    const id = entryId(text);
     if (text.length > maxChars()) {
       // Reject rather than truncate: a cut-off lesson is often useless, so the
       // agent should retry with a shorter *complete* one.
-      return { added: false, reason: 'too-long', evicted: null, size: entries.length, length: text.length };
+      return { added: false, reason: 'too-long', evicted: null, size: entries.length, length: text.length, id };
     }
     const key = dedupKey(text);
-    if (entries.some((e) => dedupKey(e.text) === key)) {
-      return { added: false, reason: 'duplicate', evicted: null, size: entries.length };
+    const collider = entries.find((e) => dedupKey(e.text) === key);
+    if (collider) {
+      return { added: false, reason: 'duplicate', evicted: null, size: entries.length, id, collidedId: entryId(collider.text) };
     }
     const newEntry: Entry = { score: 1, text };
     entries.push(newEntry);
@@ -310,7 +318,7 @@ export function addEntry(dir: string, role: string, lesson: string): Promise<Add
       // lesson was the lowest-scored, so it is not stored. Report honestly so
       // the agent's retrospective doesn't believe it saved something.
       writeEntries(dir, role, kept); // === the prior set; no net change
-      return { added: false, reason: 'rejected-full', evicted: null, size: kept.length };
+      return { added: false, reason: 'rejected-full', evicted: null, size: kept.length, id };
     }
     let evicted: Entry | null = null;
     if (kept.length < before) {
@@ -318,7 +326,7 @@ export function addEntry(dir: string, role: string, lesson: string): Promise<Add
       evicted = entries.find((e) => !keptSet.has(e)) ?? null;
     }
     writeEntries(dir, role, kept);
-    return { added: true, reason: 'added', evicted, size: kept.length };
+    return { added: true, reason: 'added', evicted, size: kept.length, id };
   });
 }
 
@@ -407,6 +415,7 @@ export function merge(dir: string, role: string, selA: string, selB: string, mer
     const ia = selectIndex(entries, selA);
     const ib = selectIndex(entries, selB);
     if (ia === ib) throw new Error('merge needs two different entries');
+    const sources: [string, string] = [entryId(entries[ia].text), entryId(entries[ib].text)];
     const text = sanitizeLesson(mergedLesson);
     if (text === '') throw new Error('merged lesson is empty');
     if (text.length > maxChars()) {
@@ -421,7 +430,7 @@ export function merge(dir: string, role: string, selA: string, selB: string, mer
     deduped.push({ score, text });
     const kept = trim(deduped);
     writeEntries(dir, role, kept);
-    return { added: true, reason: 'added', evicted: null, size: kept.length };
+    return { added: true, reason: 'added', evicted: null, size: kept.length, id: entryId(text), sources };
   });
 }
 
@@ -479,26 +488,74 @@ export interface UsageRow {
   command: string;
   ok: boolean;
   ms: number;
+  /** Session id (from `NB_SESSION`) the call ran under; `''` when unset. */
+  session: string;
+  /** Stable id(s) of the entry/entries the call touched; `[]` when none. */
+  entries: string[];
+  /** Outcome token: `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` (add), `up`/`down` (vote), `removed` (rm), `merged` (merge); `''` otherwise. */
+  outcome: string;
+  /** For a `dedup-blocked` add: the id of the existing entry that blocked it; `''` otherwise. */
+  collided: string;
+  /** For an add that evicted: `<id>:<finalScore>` of the entry that left; `''` otherwise. */
+  evicted: string;
+}
+
+/**
+ * The richer per-call fields `logUsage` records beyond ts/role/command/ok/ms.
+ * All optional: the caller fills only what its command produced (a `show` fills
+ * none), and `session` defaults to `NB_SESSION`. This is deliberately a log
+ * schema, not a notebook one — it leaves the lesson a plain string ([NG-004]),
+ * so none of this adds a field to an entry.
+ */
+export interface UsageMeta {
+  /** Overrides `NB_SESSION`; mainly for tests. Absent → read `process.env.NB_SESSION`. */
+  session?: string;
+  /** Stable ids the call touched (added/voted/removed, or merge's sources + result). */
+  entries?: string[];
+  /** Outcome token (see `UsageRow.outcome`). */
+  outcome?: string;
+  /** Colliding entry id for a `dedup-blocked` add. */
+  collided?: string;
+  /** `<id>:<finalScore>` of an evicted entry. */
+  evicted?: string;
 }
 
 /**
  * Collapse the TSV-structural characters (tab, CR, LF) in a single usage-log
  * field to spaces so an attacker-influenced value cannot inject an extra
  * column or an extra row. A well-formed field — a role like `patcher`, a
- * command like `add` — contains none of these, so it is left byte-identical.
+ * command like `add`, an `NB_SESSION` like `task-42` — contains none of these,
+ * so it is left byte-identical.
  */
 function sanitizeUsageField(raw: string): string {
   return raw.replace(/[\t\r\n]+/g, ' ');
 }
 
-export function logUsage(dir: string, role: string, command: string, ok: boolean, ms: number): void {
+export function logUsage(
+  dir: string,
+  role: string,
+  command: string,
+  ok: boolean,
+  ms: number,
+  meta: UsageMeta = {},
+): void {
   try {
     mkdirSync(dir, { recursive: true });
     const file = usageFile(dir);
-    // `role` and `command` are the only caller-supplied strings; sanitize them
-    // so a tab/CR/LF (e.g. in an unsafe role that `add` rejected but the CLI's
-    // finally block still logs) cannot split the row and mis-align parseUsage.
-    const line = `${new Date().toISOString()}\t${sanitizeUsageField(role)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms`;
+    // `role`, `command`, and every meta field are caller-supplied (and
+    // `session` comes from an env var a hook sets); sanitize each so a tab/CR/LF
+    // cannot split the row or shift a column and mis-align parseUsage. The five
+    // richer columns are appended AFTER the original five, so an old reader that
+    // looks only at the first five still parses, and an old row missing them
+    // round-trips as blank (backward-compatible — see parseUsage).
+    const session = sanitizeUsageField(meta.session ?? process.env.NB_SESSION ?? '');
+    const entries = (meta.entries ?? []).map(sanitizeUsageField).join(',');
+    const outcome = sanitizeUsageField(meta.outcome ?? '');
+    const collided = sanitizeUsageField(meta.collided ?? '');
+    const evicted = sanitizeUsageField(meta.evicted ?? '');
+    const line =
+      `${new Date().toISOString()}\t${sanitizeUsageField(role)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
+      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}`;
     const existing = existsSync(file) ? readFileSync(file, 'utf-8') : '';
     const lines = existing.split('\n').filter((l) => l !== '');
     const ring = usageRing();
@@ -537,13 +594,17 @@ export function logUsage(dir: string, role: string, command: string, ok: boolean
   }
 }
 
-function parseUsage(dir: string): UsageRow[] {
+export function parseUsage(dir: string): UsageRow[] {
   const file = usageFile(dir);
   if (!existsSync(file)) return [];
   const rows: UsageRow[] = [];
   for (const line of readFileSync(file, 'utf-8').split('\n')) {
     if (line.trim() === '') continue;
-    const [ts, role, command, status, msRaw] = line.split('\t');
+    // Positional parse, tolerant of old five-column rows: the richer columns
+    // (session…evicted) are undefined on a pre-upgrade row and default to
+    // blank/empty, so a ring written before this change still reads cleanly.
+    const [ts, role, command, status, msRaw, session, entriesRaw, outcome, collided, evicted] =
+      line.split('\t');
     if (!ts || !command) continue;
     rows.push({
       ts,
@@ -551,6 +612,11 @@ function parseUsage(dir: string): UsageRow[] {
       command: command ?? '',
       ok: status === 'ok',
       ms: Number.parseInt((msRaw ?? '0').replace(/ms$/, ''), 10) || 0,
+      session: session ?? '',
+      entries: entriesRaw ? entriesRaw.split(',').filter((x) => x !== '') : [],
+      outcome: outcome ?? '',
+      collided: collided ?? '',
+      evicted: evicted ?? '',
     });
   }
   return rows;

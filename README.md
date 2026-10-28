@@ -97,6 +97,16 @@ It reads exactly one line: a single trailing newline is stripped, and **multi-li
 
 `nb stats --json` prints the raw `StatsReport` to stdout as a single JSON object instead of the human table, so a supervising agent can act on a `loop` / `went-silent` / `high-error-rate` anomaly without regex-parsing formatted text. The shape is the exported `StatsReport` interface (`{ window, totalCalls, perCommand[], anomalies[], notebooks[], notebookTotals }`) and is a stable, additive-only contract. `notebooks` is the per-role inventory — `{ role, lines, cap }` for each role's notebook, where `lines` is the stored-lesson count and `cap` is `maxLines()` — so a supervisor can see that a role is at (or near) its cap and about to evict a lesson; `notebookTotals` aggregates it as `{ roles, lines, cap }`. The inventory is the current on-disk state, not a slice of the usage window. It composes with `[<role>]` and `--since`; a bad `--since` window still warns on stderr (stdout stays pure JSON) and falls back to 7d.
 
+### What the usage log records
+
+Every `nb` call appends one tab-delimited row to the usage ring (`.nb-usage.log`). Beyond the base `timestamp · role · command · ok|err · duration`, each row also records, per call:
+
+- the **entry id(s)** the call touched — the added/voted/removed entry, or (for `merge`) the two sources plus the merged result;
+- a **session id** read from the `NB_SESSION` environment variable (a hook or supervising agent sets it so calls can be grouped; absent → blank, and co-access simply isn't computed);
+- the **outcome** — for `add`, `accepted` or `dedup-blocked` (and on a block, the colliding entry's id); for `vote`, `up` or `down`; `removed` / `merged` for `rm` / `merge`; plus, when an `add` evicts, which entry left and its final score.
+
+This is richer *logging* only — the notebook file and the one-line lesson are untouched (it adds no field to an entry). Older rows written before this change are still read correctly; their extra columns are simply blank. Logging stays best-effort: a logging failure never fails a real `nb` operation, and the ring stays bounded by `NB_USAGE_RING`.
+
 ### Tuning `nb stats`
 
 The anomaly detection in `nb stats` (loop / went-silent / high-error-rate flags) is tunable via env vars — out-of-range values are clamped to the stated bounds, and an unset or unparseable value falls back to the default:
