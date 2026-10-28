@@ -670,6 +670,56 @@ describe('runNbCli', () => {
       expect(r.err).toContain('--reason needs a value');
     });
   });
+
+  describe('operation reasons on add/merge/rm (issue #69)', () => {
+    test('merge logs a recognized reason (duplicate)', async () => {
+      await run(['add', 'patcher', 'run the build first']);
+      await run(['add', 'patcher', 'build before running tests']);
+      const m = await run(['merge', 'patcher', 'run the build', 'build before', 'run the build before tests', '--reason', 'duplicate']);
+      expect(m.code).toBe(0);
+      const row = parseUsage(dir).at(-1)!;
+      expect(row.command).toBe('merge');
+      expect(row.outcome).toBe('merged');
+      expect(row.reason).toBe('duplicate');
+    });
+
+    test('rm logs a recognized reason (obsolete) and the removed id', async () => {
+      await run(['add', 'patcher', 'use the --cache flag always']);
+      const r = await run(['rm', 'patcher', 'cache flag', '--reason', 'obsolete', '--note', 'flag was removed in v3']);
+      expect(r.code).toBe(0);
+      const row = parseUsage(dir).at(-1)!;
+      expect(row.command).toBe('rm');
+      expect(row.outcome).toBe('removed');
+      expect(row.reason).toBe('obsolete');
+      expect(row.note).toBe('flag was removed in v3');
+      expect(row.entries).toEqual([entryId('use the --cache flag always')]);
+    });
+
+    test('rm with an unrecognized code is logged as other, code kept in the note', async () => {
+      await run(['add', 'patcher', 'a lesson to drop']);
+      await run(['rm', 'patcher', 'lesson to drop', '--reason', 'stale', '--note', 'no longer relevant']);
+      const row = parseUsage(dir).at(-1)!;
+      expect(row.reason).toBe('other');
+      expect(row.note).toBe('stale: no longer relevant');
+    });
+
+    test('add records a free-text note with an empty reason (no enum yet)', async () => {
+      await run(['add', 'patcher', 'prefer execFileSync over execSync', '--note', 'learned from a shell-injection bug']);
+      const row = parseUsage(dir).at(-1)!;
+      expect(row.command).toBe('add');
+      expect(row.outcome).toBe('accepted');
+      expect(row.reason).toBe('');
+      expect(row.note).toBe('learned from a shell-injection bug');
+    });
+
+    test('merge --reason without a value exits 1 (never silently dropped)', async () => {
+      await run(['add', 'patcher', 'first lesson line']);
+      await run(['add', 'patcher', 'second lesson line']);
+      const r = await run(['merge', 'patcher', 'first lesson', 'second lesson', 'merged line', '--reason']);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('--reason needs a value');
+    });
+  });
 });
 
 // The CLI entrypoint is `settleCliExit(runNbCli(...))`. `runNbCli` try/catches

@@ -73,12 +73,25 @@ notes:
     each inheriting the original's score. Each half is rejected (not truncated) if too
     long, and a split never creates a duplicate (the two halves must differ from each
     other and from every surviving entry, else the split is refused and nothing changes).
-    It accepts an optional \`--reason <code>\` (+ \`--note "<text>"\`), logged (never stored
-    in the notebook) so the split rate and its reason become a diagnostic signal:
-      overloaded  the entry crammed two distinct lessons into one line — cut them apart
-                  (e.g. "run build, then vitest" → "run build first" + "run vitest after build")
-      other       any other motive; add \`--note\` so a recurring one can become its own code
-    An unrecognized code is accepted as \`other\` (kept in the note), never rejected.
+  - add/merge/rm/split accept an optional \`--reason <code>\` (+ \`--note "<text>"\`), logged
+    (never stored in the notebook) so each op's rate-by-reason becomes a diagnostic
+    signal. The reason is always OPTIONAL (omit it rather than invent one — forcing it
+    breeds filler), and an unrecognized code is accepted as \`other\` (kept in the note),
+    never rejected, so a recurring one can later become its own code. Per-op codes:
+      merge  duplicate  the two entries say the same thing — one is a reworded copy of the
+                        other (e.g. "run build then test" + "build before running tests")
+             other      any other motive (e.g. editing one and deleting the other was
+                        cheaper than three calls); add \`--note\` to describe it
+      rm     wrong      the lesson is incorrect or misleading — it should not have been
+                        stored (e.g. "vitest needs Node 18" when it actually needs 20)
+             obsolete   the lesson was true but no longer applies (e.g. a CLI flag the
+                        tool has since removed, or a path that was refactored away)
+             other      any other motive; add \`--note\` so a recurring one can emerge
+      split  overloaded the entry crammed two distinct lessons into one line — cut apart
+                        (e.g. "run build, then vitest" → "run build first" + "run vitest")
+             other      any other motive; add \`--note\` so a recurring one can emerge
+      add    (no enum yet — free text only: use \`--note "<text>"\`; add's codes will emerge
+             from mined notes rather than be guessed up front)
   - a notebook holds at most 200 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
@@ -139,15 +152,16 @@ export async function runNbCli(
   const json = argv.includes('--json');
   let args = json ? argv.filter((a) => a !== '--json') : argv;
   // `--reason <code>` / `--note "<text>"` attach an optional, never-required
-  // reason to a mutating op, logged (never stored in the notebook). Only `split`
-  // consumes them in this release (its enum: overloaded · other); pulling them
-  // out of `args` BEFORE positional parsing keeps them from being mistaken for a
-  // lesson operand. (The operation-reasons issue generalizes this to the other
-  // mutating ops.)
+  // reason to a mutating op, logged (never stored in the notebook). Every
+  // mutating op consumes them — `merge` (duplicate · other), `rm` (wrong ·
+  // obsolete · other), `split` (overloaded · other), and `add` (free text only,
+  // no enum yet). Pulling them out of `args` BEFORE positional parsing keeps
+  // them from being mistaken for a lesson/operand; `normalizeReason` validates
+  // the code against the op's seed-and-grow enum.
   let reasonArg: string | undefined;
   let noteArg: string | undefined;
   try {
-    if (cmd === 'split') {
+    if (cmd === 'add' || cmd === 'merge' || cmd === 'rm' || cmd === 'split') {
       // Inside the try so a malformed flag (e.g. `--reason` with no value)
       // becomes a handled exit-1 error, not an uncaught rejection.
       ({ value: reasonArg, rest: args } = extractOption(args, '--reason'));
@@ -179,6 +193,15 @@ export async function runNbCli(
         meta.outcome = r.reason === 'added' ? 'accepted' : r.reason === 'duplicate' ? 'dedup-blocked' : r.reason;
         if (r.collidedId) meta.collided = r.collidedId;
         if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
+        // `add` has no seeded enum yet (free text only): a `--note` records
+        // free text, and a stray `--reason` buckets to `other` so its vocabulary
+        // can emerge from mined notes. Set BEFORE the output branch below, which
+        // can `throw`/`return` on 'too-long' — the finally still logs meta.
+        {
+          const { reason, note } = normalizeReason('add', reasonArg, noteArg);
+          if (reason) meta.reason = reason;
+          if (note) meta.note = note;
+        }
         if (json) {
           // One result object on stdout; `too-long` keeps exit 1 (below) while
           // still emitting its `reason`, so a supervisor sees why it failed.
@@ -214,6 +237,12 @@ export async function runNbCli(
         const r = await merge(dir, role, a, b, merged);
         meta.entries = [...(r.sources ?? []), ...(r.id ? [r.id] : [])];
         meta.outcome = 'merged';
+        // Reason lives in the usage log only (merge enum: duplicate · other).
+        {
+          const { reason, note } = normalizeReason('merge', reasonArg, noteArg);
+          if (reason) meta.reason = reason;
+          if (note) meta.note = note;
+        }
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else process.stdout.write(`merged two entries into one — ${r.size} lines\n`);
         break;
@@ -241,6 +270,12 @@ export async function runNbCli(
         const r = await remove(dir, role, selector);
         meta.entries = [entryId(r.text)];
         meta.outcome = 'removed';
+        // Reason lives in the usage log only (rm enum: wrong · obsolete · other).
+        {
+          const { reason, note } = normalizeReason('rm', reasonArg, noteArg);
+          if (reason) meta.reason = reason;
+          if (note) meta.note = note;
+        }
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else process.stdout.write(`removed — [${fmt(r.score)}] ${r.text}\n`);
         break;

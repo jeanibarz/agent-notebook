@@ -538,6 +538,32 @@ describe('operation reasons (seed-and-grow enum)', () => {
     expect(normalizeReason('split', 'OTHER', 'mixed two concerns')).toEqual({ reason: 'other', note: 'mixed two concerns' });
   });
 
+  test('merge seeds duplicate · other', () => {
+    expect(normalizeReason('merge', 'duplicate', undefined)).toEqual({ reason: 'duplicate', note: '' });
+    expect(normalizeReason('merge', 'other', 'cheaper than three calls')).toEqual({ reason: 'other', note: 'cheaper than three calls' });
+  });
+
+  test('rm seeds wrong · obsolete · other', () => {
+    expect(normalizeReason('rm', 'wrong', undefined)).toEqual({ reason: 'wrong', note: '' });
+    expect(normalizeReason('rm', 'OBSOLETE', undefined)).toEqual({ reason: 'obsolete', note: '' });
+    expect(normalizeReason('rm', 'stale', 'path refactored away')).toEqual({ reason: 'other', note: 'stale: path refactored away' });
+  });
+
+  test('add has no seeded enum: a code buckets to other so the vocabulary can emerge', () => {
+    // Free text (a bare --note) records with an empty reason, and any code on
+    // `add` becomes `other` (kept in the note) rather than being rejected.
+    expect(normalizeReason('add', undefined, 'found via grep')).toEqual({ reason: '', note: 'found via grep' });
+    expect(normalizeReason('add', 'learned', 'from a failed CI run')).toEqual({ reason: 'other', note: 'learned: from a failed CI run' });
+  });
+
+  test('codes are per-op: a code valid for one op is other on another', () => {
+    // `overloaded` is split's; it is not in merge's or rm's vocabulary.
+    expect(normalizeReason('merge', 'overloaded', undefined)).toEqual({ reason: 'other', note: 'overloaded' });
+    expect(normalizeReason('rm', 'duplicate', undefined)).toEqual({ reason: 'other', note: 'duplicate' });
+    // `duplicate` is merge's; it is not in split's vocabulary.
+    expect(normalizeReason('split', 'duplicate', undefined)).toEqual({ reason: 'other', note: 'duplicate' });
+  });
+
   test('the usage log round-trips the reason and note columns', () => {
     logUsage(dir, 's', 'split', true, 3, { entries: ['aaa', 'bbb', 'ccc'], outcome: 'split', reason: 'overloaded', note: 'cut apart' });
     const [row] = parseUsage(dir);
