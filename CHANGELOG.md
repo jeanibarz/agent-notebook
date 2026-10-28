@@ -10,6 +10,17 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- Free diagnostic signals in `nb stats` (#72). Three memory-quality observations read
+  straight from the usage ring — no new agent action, no field added to a lesson: 
+  **browse-without-use** (a notebook `show`n in a session with no `vote` on it that
+  session → its description may over-promise), **eviction-while-still-voted** (the cap
+  evicted an entry that had been voted on → the cap may be too tight for that role), and
+  **vote-reversal** (the same entry upvoted in one session and downvoted in another →
+  correct but mis-aimed). They surface in the human table under a `signals:` section and
+  in `--json` as `StatsReport.signals` (`DiagnosticSignal = { kind, role, detail,
+  session?, entry? }`), computed over the same windowed, role-scoped rows as the
+  anomalies. browse-without-use and vote-reversal are session-scoped, so set `NB_SESSION`.
+  The `failed-search→add` coverage signal is deferred to the future `nb search` command.
 - `nb list` — the notebook index (#71). One richest-first line per notebook — name,
   lesson count, and description — so an agent can decide *which* notebook to open
   without reading any of them (level 1 of progressive disclosure for epic #73). `ls`
