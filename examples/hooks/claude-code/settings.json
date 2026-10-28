@@ -1,0 +1,39 @@
+{
+  "//": "Example Claude Code hooks for agent-notebook. Merge the `hooks` block into",
+  "//1": "~/.claude/settings.json (global) or .claude/settings.json (per project).",
+  "//2": "Replace /ABSOLUTE/PATH with where you copied the example scripts, and make",
+  "//3": "them executable: chmod +x nb-session-start.sh nb-retrospective.sh",
+  "//4": "Optionally set env (NB_ROLE, NB_DIR, NB_SESSION, NB_BIN) in your shell or here.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABSOLUTE/PATH/examples/hooks/claude-code/nb-session-start.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABSOLUTE/PATH/examples/hooks/claude-code/nb-retrospective.sh"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABSOLUTE/PATH/examples/hooks/claude-code/nb-retrospective.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
