@@ -1,6 +1,6 @@
 {
   "name": "agent-notebook",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A bounded, voted, plain-text memory for AI agents. Zero dependencies, one small file per role, no embeddings, no vector DB.",
   "license": "MIT",
   "author": "Jean Ibarz",

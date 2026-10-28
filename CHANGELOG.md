@@ -9,6 +9,13 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-28
+
+### Added
+- `nb show <role> --json` (#87) emits the notebook as `{ role, description, entries: [{ id, score, text }] }`,
+  in the same order and with the same ids as the human output, so agents no longer parse text. The flag works
+  before or after the role; the human output is unchanged. Library form: `showJson(dir, role)`.
+
 ### Fixed
 - `nb describe` now strips the optional `--reason`/`--note` flags before reading its
   text operand, like the other mutating commands (#91). Previously an option placed
@@ -150,6 +157,7 @@ versions are listed plainly.
 ### Added
 - Initial release: a bounded, voted, plain-text memory for AI agents. Commands: `nb add`, `show`, `vote`, `merge`, `rm`, `stats`. Each role's notebook holds at most 200 lines, each at most 200 characters, and the lowest-scored line is evicted first when full. The library has zero runtime dependencies.
 
-[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/jeanibarz/agent-notebook/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/jeanibarz/agent-notebook/releases/tag/v0.1.3
