@@ -116,6 +116,25 @@ vote genuinely touches it. It satisfies the constraints:
   it); the only degradation when mixing old and new binaries is that the old one's
   votes won't update recency. Nothing breaks.
 
+A **touch** (a vote, add, or merge/split result) moves its line to the bottom, so
+position encodes "how long since anyone engaged this lesson":
+
+```mermaid
+flowchart LR
+  subgraph B["file BEFORE — top = stalest"]
+    direction TB
+    b1["A  +1"] --> b2["B  +1"] --> b3["C  +1"]
+  end
+  subgraph A["file AFTER — vote +1 on A"]
+    direction TB
+    a1["B  +1"] --> a2["C  +1"] --> a3["A  +2  ← moved to the fresh end"]
+  end
+  B -->|"touch A (a vote is a touch)"| A
+```
+
+Nothing is sorted on disk; `nb show` still ranks by score at display time. The
+file order is *only* the recency record the eviction policy below reads.
+
 ## 6. The policy (fires only when the notebook is full)
 
 Everything below engages **only when an add/split pushes the notebook over
@@ -144,11 +163,21 @@ On an add/split that overflows the cap:
    it is what stops a once-upvoted lesson being immortal (without it, nothing
    below such a lesson ever leaves, so it never can).
 
+```mermaid
+flowchart TD
+  A["add / split: a new lesson arrives<br/>(lands at the fresh end)"] --> B{"notebook over the cap?"}
+  B -->|no| C["keep it · done<br/>(sub-cap notebooks are untouched)"]
+  B -->|yes| D["1 · the newcomer is ALWAYS kept"]
+  D --> E["2 · EVICT the lowest-scored line<br/>ties → stalest (top of file)<br/>never the newcomer"]
+  E --> F["3 · AGE the stalest SURVIVOR<br/>dock its score by 1"]
+  F --> G["back at the cap · done"]
+```
+
 ### Why this hits the goals
 
 - **G1:** a newcomer can never be the victim, so it always gets its trial.
 - **G2 + G4:** a stale high lesson is pulled down one point per add-when-full by
-  step 2 — eventually evictable, with no downvote required.
+  step 3 — eventually evictable, with no downvote required.
 - **G3:** eviction still removes the lowest score first, so a hard-earned lesson is
   the last to go; a +30 lesson survives ~30× longer under decay than a +1.
 - **G5:** decay targets the *stalest* line (recency), so an actively-used high
@@ -167,7 +196,48 @@ to get G2, and this is the gentlest, most targeted form of it. "Staying near the
 top requires continued use" is the intended behavior, not a bug. Scores stay
 bounded (C4) because decay pulls the top down as votes push it up.
 
-## 7. What this is NOT
+## 7. Worked examples
+
+These trace the actual bytes. The file is written **top = stalest → bottom =
+freshest**; `nb show` would re-rank these by score, but here we show the *stored*
+order so the mechanism is visible.
+
+### 7.1 A touch moves a line; a full notebook still admits a newcomer
+
+Cap = 3. Scores are the signed numbers; the arrow marks what changed.
+
+| # | command | stored file (top → bottom) | what happened |
+|---|---------|----------------------------|---------------|
+| 1 | `add A`, `add B`, `add C` | `A +1` · `B +1` · `C +1` | three adds; recency = insertion order so far |
+| 2 | `vote A +1` | `B +1` · `C +1` · **`A +2`** | A is *touched* → moves to the fresh end (and +1) |
+| 3 | `add D` (now 4 > cap 3) | **`C 0`** · `A +2` · `D +1` | newcomer **D kept**; `B +1` was the lowest & stalest → **evicted**; `C` is the stalest survivor → **aged** +1 → 0 |
+
+Step 3 is the whole policy in one line: *admit D, evict the lowest (B), age the
+stalest survivor (C)*. Note B — not the newcomer — left, and the aging fell on C,
+the line nobody had touched, not on A, which had just been voted.
+
+### 7.2 The life of a lesson — immortal no more, but rescued by one vote
+
+Cap = 2. A lesson `S` is upvoted to **+5**, then the notebook stays busy (a new
+lesson arrives each round). Watch `S`'s score as the per-add aging reaches it
+(it is the stalest, since nothing re-touches it):
+
+| round | event | `S`'s score | note |
+|-------|-------|-------------|------|
+| 0 | `S` upvoted to +5, notebook full | **+5** | under plain eviction, immortal — newcomers enter at +1 and are always lower |
+| 1 | `add` (S is stalest survivor) | +4 | docked 1 |
+| 2 | `add` | +3 | docked 1 |
+| 3 | `add` | +2 | … |
+| 4 | `add` | +1 | … |
+| 5 | `add` | — | `S` is now tied at the bottom and **evicted** |
+
+So a once-valued lesson that goes quiet ages out in ~`score` busy rounds instead
+of living forever. **But a single `vote S +1` at any round** moves `S` to the
+fresh end and lifts its score — it is no longer the stalest, so the aging skips it
+entirely and lands on the next-stalest line. Continued usefulness keeps a lesson
+alive; only *silence* retires it.
+
+## 8. What this is NOT
 
 - **Not a decay curve or a scheduler (DP-1 preserved in spirit).** There is no
   timer, no background job, no half-life over wall-clock time. Decay is an

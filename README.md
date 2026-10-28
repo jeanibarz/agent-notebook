@@ -24,13 +24,13 @@ The point of durable memory isn't to answer the questions an agent knows to ask 
 `agent-notebook` is the whole mechanism, nothing more:
 
 - **One entry = one line.** `<score>\t<lesson>`, at most 200 characters, no multi-paragraph notes.
-- **Bounded.** At most 50 lines per role by default (raise with `NB_MAX_LINES`). When full, the lowest-scored line is evicted first — harmful or useless lessons leave, useful ones survive.
-- **Voted, not aged.** An agent votes +1/-1 on a lesson it used. No decay curve, no relevance scoring, no scheduler.
+- **Bounded.** At most 50 lines per role by default (raise with `NB_MAX_LINES`). A new lesson is *always* admitted; when full, the lowest-scored line is evicted — harmful or useless lessons leave, useful ones survive.
+- **Voted, with recency-aware eviction.** An agent votes +1/-1 on a lesson it used, and a vote also marks the lesson as recently used. No wall-clock decay curve, no relevance scoring, no scheduler — the only aging is one point docked from the *stalest* line when a full notebook takes a new lesson, so a once-useful lesson that goes quiet eventually makes way instead of being immortal. ([How, and why.](docs/eviction-and-aging.md))
 - **Plain text.** `~/.agent-notebook/notebooks/<role>.md`. Readable, diffable, greppable, backed up by whatever already backs up your home directory.
 
-The cap and the vote are the whole mechanism. A new lesson enters at the `+1` floor; a vote lifts it past its neighbours by score; and when the file is full the *lowest-scored* line is evicted — never the oldest:
+The cap and the vote are the whole mechanism. A new lesson enters at the `+1` floor; a vote lifts it past its neighbours by score; and when the file is full the *lowest-scored* line is evicted — never the newcomer, and never by age alone:
 
-<p align="center"><img src="https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/assets/leaderboard.svg" alt="A fixed 6-of-6 notebook: a +1 vote lifts a line past its neighbour by score, and a new lesson enters at the +1 floor while the lowest-scored line is evicted." width="760"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/assets/leaderboard.svg" alt="A fixed 6-of-6 notebook shown as a score-ranked leaderboard: a +1 vote lifts a line past its neighbour by score, and a new lesson enters at the +1 floor while the lowest-scored line is evicted." width="760"></p>
 
 ## What it deliberately does not do
 
@@ -134,7 +134,7 @@ added — 1 lines
 
 It reads exactly one line: a single trailing newline is stripped, and **multi-line** input is refused (exit 1) rather than silently flattened into one run-together entry — one entry is one line. Because `-` means stdin, the one-character lesson `-` can't be stored through this form; use a non-dash quoted argument, or call the library's `addEntry` directly, if you ever need a literal hyphen. Everything else is unchanged — the piped line still goes through the same caps, dedup, and eviction as a quoted argument.
 
-**Storage order vs. display order.** `nb show` sorts highest-scored first, but the `<role>.md` file on disk is stored in *insertion order*, not sorted — so a raw `cat` of the file looks unordered, and that is intentional, not a bug. Sorting happens only at display time: ids are content-derived (stable across reordering), the lowest-scored line is evicted regardless of position, and keeping insertion order means a `vote` rewrites exactly one line in place — the smallest, most stable git diff — and preserves the "ties → oldest" tie-break that both display and eviction rely on. Read a notebook with `nb show`, not by eyeballing the file.
+**Storage order vs. display order.** `nb show` sorts highest-scored first, but the `<role>.md` file on disk is stored in *recency order* — least-recently-touched first — not sorted by score, so a raw `cat` of the file looks unordered, and that is intentional, not a bug. A *touch* (a vote of either sign, an add, or a merge/split's new lesson) moves its line to the end, so the top of the file is the stalest lesson. That ordering is the recency signal eviction needs (at zero character cost — no timestamp), carried only in line position: ids are content-derived so they stay stable across reordering, and when the notebook is full the lowest-scored line is evicted (ties → stalest) and the stalest survivor is aged a point. The one cost is that a vote is now a line *move* (a ~2-line git diff) rather than a one-line in-place edit. Read a notebook with `nb show`, not by eyeballing the file. ([Full rationale.](docs/eviction-and-aging.md))
 
 `NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than the 50-line / 200-char defaults. You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory and `nb path <role>` the resolved file, so `cat "$(nb path reviewer)"` or `git diff "$(nb path reviewer)"` just works.
 

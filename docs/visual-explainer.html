@@ -178,10 +178,37 @@
   <h2>Four facts — and that is all of it.</h2>
   <div class="cards" style="margin-top:0.6rem">
     <div class="card"><div class="n">01</div><h3>One lesson, one line</h3><p>At most 200 characters. Not a document — a single hard-won reminder you could read aloud.</p></div>
-    <div class="card"><div class="n">02</div><h3>Voted, not aged</h3><p>+1 when a lesson helped, −1 when it misled. Good lessons float up; no decay curve, no scheduler.</p></div>
-    <div class="card"><div class="n">03</div><h3>Bounded, and configurable</h3><p>A capped list — 50 lessons by default, and the cap is one setting you tune up if a role needs more. When full, the <em>lowest-scored</em> line is evicted, so it self-cleans and never rots into a junk drawer.</p></div>
+    <div class="card"><div class="n">02</div><h3>Voted, recency-aware</h3><p>+1 when a lesson helped, −1 when it misled — and a vote also marks it recently used. Good lessons float up; no wall-clock decay, no scheduler.</p></div>
+    <div class="card"><div class="n">03</div><h3>Bounded, self-cleaning</h3><p>A capped list — 50 by default, tunable. A new lesson always gets in; when full, the <em>lowest-scored</em> line is evicted and the <em>stalest</em> one loses a point — so a once-useful lesson gone quiet makes way, and it never rots into a junk drawer.</p></div>
     <div class="card"><div class="n">04</div><h3>Plain text</h3><p>One file per role. You can <code style="font-family:var(--font-mono)">cat</code> it, <code style="font-family:var(--font-mono)">grep</code> it, and <code style="font-family:var(--font-mono)">git diff</code> it. You cannot do that to a vector database.</p></div>
   </div>
+</div></section>
+
+<section><div class="wrap stack reveal">
+  <p class="eyebrow">when the shelf is full</p>
+  <h2>A new lesson always gets in — something has to give.</h2>
+  <p class="muted" style="max-width:62ch">A full notebook still accepts a new lesson. The weakest line (lowest score) is evicted, and the <em>stalest</em> survivor — the one nobody has used for the longest — loses a single point. Keep using a lesson and it stays near the top forever; let it go quiet and it fades out on its own. No timer, no cleanup job.</p>
+  <div class="two" style="margin-top:0.8rem">
+    <div class="nb" aria-label="A full notebook before a new lesson arrives">
+      <div class="nb-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>full · a new lesson arrives</span></div>
+      <div class="nb-body">
+        <div class="row"><span class="sc">+5</span><span class="tx">useful once, but not used in a long time <em style="color:var(--muted)">← stalest</em></span></div>
+        <div class="row"><span class="sc">+3</span><span class="tx">still used often</span></div>
+        <div class="row"><span class="sc">+2</span><span class="tx">a handy helper</span></div>
+        <div class="row"><span class="sc">+1</span><span class="tx">weakest line — lowest score, leaves first</span></div>
+      </div>
+    </div>
+    <div class="nb" aria-label="The same notebook after the new lesson is admitted">
+      <div class="nb-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>after</span></div>
+      <div class="nb-body">
+        <div class="row"><span class="sc">+4</span><span class="tx">the stale line, aged one point <em style="color:var(--muted)">← −1</em></span></div>
+        <div class="row"><span class="sc">+3</span><span class="tx">still used often</span></div>
+        <div class="row"><span class="sc">+2</span><span class="tx">a handy helper</span></div>
+        <div class="row rise"><span class="sc">+1</span><span class="tx">the new lesson — always admitted <em style="color:var(--muted)">← new</em></span></div>
+      </div>
+    </div>
+  </div>
+  <p class="muted" style="margin-top:0.8rem; max-width:62ch">The weakest <code style="font-family:var(--font-mono)">+1</code> line dropped off; the newcomer took a slot; the long-unused <code style="font-family:var(--font-mono)">+5</code> slipped to <code style="font-family:var(--font-mono)">+4</code>. One upvote on that line at any time would move it back to "fresh" and spare it — so only genuine silence retires a lesson. <a class="ln" href="https://github.com/jeanibarz/agent-notebook/blob/main/docs/eviction-and-aging.md">The exact rule, and why →</a></p>
 </div></section>
 
 <section><div class="wrap stack reveal">
