@@ -497,9 +497,9 @@ and **vote-reversal** (one entry id with an `up` vote in one session and a `down
 **different** session → correct but mis-aimed). browse-without-use and vote-reversal are
 session-scoped and SHALL skip rows with a blank session ([FR-USAGE-002](#fr-usage-002):
 "co-access is then not computed"). The field is additive — the report from
-[FR-STATS-001](#fr-stats-001) and the issue-#40 inventory is otherwise unchanged. The
-`failed-search→add` coverage-gap signal is intentionally deferred to a future `nb search`
-command and is NOT part of this set.
+[FR-STATS-001](#fr-stats-001) and the issue-#40 inventory is otherwise unchanged. A fourth
+kind, **failed-search** (a `no-match` `search` followed by an `accepted` `add` in the same
+session → a coverage gap), was added with `nb search` — see [FR-SEARCH-002](#fr-search-002).
 **Rationale:** These signals diagnose description quality, cap pressure, and mis-targeting
 from behaviour the agent already performs; reading them costs nothing and keeps the
 one-line / no-schema lesson contract intact. They are heuristic hints, not verdicts.
@@ -529,9 +529,10 @@ deflated `0`. Each rate SHALL be **gated on engagement**: only sessions that sho
 vote are scored (a vote-less or blank-session row is excluded as a setup/plumbing gap,
 not read as "healthy quiet"). A rate with an empty denominator (no engaged sessions, or
 no attempts within them) SHALL be `null`, never a misleading `0` ([DP-5](#dp-5)); the
-human table shows `null` as `—`. Until `nb search` exists, every delivered lesson is
-treated as *pushed* for `precisionMiss` (per [NG-007](#ng-007)); when search lands this
-narrows to non-search-delivered lessons. The field is additive — the rest of the report
+human table shows `null` as `—`. Every delivered lesson is currently treated as *pushed*
+for `precisionMiss` (per [NG-007](#ng-007)); now that `nb search`
+([FR-SEARCH-001](#fr-search-001)) exists, narrowing this to *non-search-delivered* lessons
+is a possible future refinement, not yet implemented. The field is additive — the rest of the report
 is unchanged. `--json` SHALL emit it inside the `StatsReport`.
 **Rationale:** The free signals ([FR-STATS-003](#fr-stats-003)) point at *which* entry
 or description needs attention; these named rates say whether the notebook is covering
@@ -573,6 +574,50 @@ SHALL be rejected, never truncated ([DP-5](#dp-5) / [FR-ADD-004](#fr-add-004)).
 **FR-DESC-004 (Should).** `nb show` SHALL print the description (when set) as a
 `# desc: <text>` header above the rendered entries, so a reader sees what a notebook
 is *for* before its contents.
+
+### 4.14 `search` — the demoted keyword fallback (issue #82)
+
+<a id="fr-search-001"></a>
+**FR-SEARCH-001 (Should).** `search(dir, query, {prefix?, any?})` SHALL scan every
+notebook's entries and description for the query's whitespace-split **terms**, matching
+each term as a **case-insensitive substring**. The default SHALL be **AND** (an entry is
+a hit only if it contains *every* term); `any` SHALL make it **OR** (any one term). An
+entry is matched on its own text; the description is matched separately, so a notebook
+whose description matches SHALL surface (with any entry hits) even when no single entry
+contains the terms. Results SHALL group by notebook; within a group, hits SHALL rank by
+terms-matched, then score, then file order; groups SHALL rank by their best hit
+(description-only matches last), ties by role name — all deterministic. Each hit SHALL
+carry the entry's stable **id**, so the agent can `vote` it afterwards. `prefix` SHALL
+scope by role name (the `.` namespace convention); an empty/whitespace query SHALL yield
+no terms and no groups (never an error). `nb search <query> [prefix] [--any] [--json]` is
+the CLI form; `--json` SHALL emit the raw `SearchResult`. Search SHALL be **keyword-only**
+— plain substring over terms, no embeddings or similarity ranking ([NG-001](#ng-001)).
+**Rationale:** Search is a **secondary convenience**, explicitly demoted below surfacing
+([DP-8](#dp-8), [NG-007](#ng-007)): the highest-value lesson is the one the agent would
+not think to search for, so presentation (injection + the `nb list` index) stays the
+primary path, and both the help text and the command output SHALL say so plainly. A whole
+notebook is ≤`maxLines` short lines, so scanning them all is instant ([DP-6](#dp-6)).
+*Proven by:* `notebook.test.ts` → `describe('search — the demoted keyword fallback (issue #82)')`
+and `cli.test.ts` → `describe('nb search …')`.
+
+<a id="fr-search-002"></a>
+**FR-SEARCH-002 (Should).** The CLI SHALL log each `search` to the usage ring
+([FR-USAGE-002](#fr-usage-002)) with outcome `match` or `no-match` and the query in the
+`note` field (reusing existing columns — no new column), under `role` `-` since it spans
+notebooks. `stats` SHALL then derive a **`failed-search`** `DiagnosticSignal`
+([FR-STATS-003](#fr-stats-003)): within one session, a `no-match` search followed
+by an `accepted` `add` SHALL be flagged as a **coverage gap** the notebook did not hold,
+labelled by the agent's own query (one signal per session + added-entry; a blank session
+is skipped, and a terms-less query logs `no-terms`, never `no-match`, so it cannot be a
+false gap). Because the `search` row is logged under role `-` (it spans notebooks), the
+signal is observable only in an **unscoped** `stats` report — `nb stats <role>` filters to
+one role and cannot pair the cross-notebook search with the add. **Rationale:** This is the
+`failed-search → add` gap-sensor — the coverage signal deferred from #72. A search that
+keeps failing for a topic is exactly where presentation is failing for that topic, and the
+agent labels it for free ([DP-8](#dp-8)). The search `note` carries an agent-supplied query,
+sanitized like every usage field so it cannot split the row ([FR-USAGE-002](#fr-usage-002)).
+*Proven by:* `notebook.test.ts` → `describe('failed-search → add gap signal (issue #82)')`
+and the `nb search` logging / end-to-end CLI tests.
 
 ---
 

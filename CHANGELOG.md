@@ -10,6 +10,19 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- `nb search <query> [prefix] [--any]` (#82) — a **demoted, secondary** keyword fallback
+  and gap-sensor. The primary path is *surfacing* (injection + the `nb list` index), per
+  [DP-8] / [NG-007]; search exists only for genuine known-item lookup, and both the help
+  text and the output say so plainly. It is **keyword-only** (plain case-insensitive
+  substring over the query's terms — no embeddings, [NG-001]): it scans every notebook's
+  lessons and descriptions, AND-over-terms by default (`--any` for OR), groups hits by
+  notebook most-relevant-first, and prints each lesson's id so the agent can `vote` it.
+  `--json` emits the raw `SearchResult`; the library form is `search(dir, query, {prefix?, any?})`.
+  A search that finds nothing is logged (outcome `no-match`, query in the usage note) and is
+  not an error (exit 0). That unlocks the **`failed-search → add` coverage-gap signal**
+  deferred from #72: `nb stats` now derives a fourth `DiagnosticSignal` kind, `failed-search`,
+  when a `no-match` search is followed by an accepted `add` in the same session — a gap the
+  notebook did not hold, labelled by the agent's own query.
 - Named **surfacing metrics** in `nb stats` (#81). `StatsReport.surfacing`
   (`SurfacingMetrics`) turns the usage ring into the rates the design rationale §4
   defines: **coverage** (novel-add rate = accepted ÷ attempts), **recall-miss** (the

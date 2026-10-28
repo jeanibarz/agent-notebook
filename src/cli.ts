@@ -13,6 +13,7 @@
 //   nb rm     <role> <id|query>            delete an entry judged useless
 //   (add/vote/rm/merge take --json: one structured result object on stdout)
 //   nb describe <role> ["<text>"]          set the notebook's one-line description (or print it)
+//   nb search <query> [prefix] [--any]     SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
 //   nb stats  [<role>] [--since 7d] [--json]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport)
 //   nb path   [<role>]                     print the notebooks dir, or a role's file path
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
@@ -42,10 +43,12 @@ import {
   parseWindowMs,
   remove,
   render,
+  search,
   setDescription,
   split,
   stats,
   vote,
+  type SearchResult,
   type UsageMeta,
 } from './notebook.js';
 
@@ -68,6 +71,7 @@ usage:
   nb split  <role> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
   nb rm     <role> <id|query>             delete an entry
   nb describe <role> ["<text>"]           set the notebook's one-line description (no text → print the current one)
+  nb search <query> [prefix] [--any]      SECONDARY keyword fallback — scan all notebooks (surfacing is the primary path)
   nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
   nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
@@ -120,6 +124,16 @@ notes:
     convention, e.g. \`nb list review.\`); \`--limit N\` bounds the rows (default ${LIST_DEFAULT_LIMIT}) so discovery
     cost stays flat as notebooks grow; \`--json\` emits the raw NotebookListing. An empty (zero-lesson,
     no-description) notebook is hidden — it is phantom debris with nothing to discover.
+  - \`nb search <query> [prefix]\` is a DEMOTED, SECONDARY keyword fallback — the primary path is
+    *surfacing* (a notebook is shown to you at session start, and \`nb list\` helps you pick one),
+    because the lesson you most need is the one you would not think to search for. Reach for search
+    only for a genuine known-item lookup. It is KEYWORD-ONLY (plain case-insensitive substring over
+    the query's terms — no embeddings or semantic ranking): it scans every notebook's lessons and
+    descriptions, AND-over-terms by default (\`--any\` for OR), and groups the hits by notebook,
+    most-relevant-first, printing each lesson's id so you can \`vote\` it later. A bare \`prefix\` scopes
+    by name (the \`.\` convention, e.g. \`nb search lock review.\`); \`--json\` emits the raw SearchResult.
+    A search that finds nothing is also a signal: it is logged so a later \`add\` in the same session
+    reads back as a \`failed-search\` coverage gap in \`nb stats\`.
   - \`nb stats\` also surfaces free *diagnostic signals* read straight from the usage log (no
     extra agent action): browse-without-use (a notebook shown in a session but no entry voted
     that session — the description may over-promise), eviction-while-still-voted (the cap
@@ -349,6 +363,34 @@ export async function runNbCli(
         }
         break;
       }
+      case 'search': {
+        // The demoted keyword fallback (issue #82). Spans notebooks, so `role`
+        // stays `-` (like `list`). `--json` is already stripped from `args`; pull
+        // out the boolean `--any` (OR instead of AND), leaving the query at
+        // args[1] and an optional positional name prefix at args[2].
+        const any = args.includes('--any');
+        const searchArgs = any ? args.filter((a) => a !== '--any') : args;
+        const query = need(searchArgs[1], 'query');
+        const prefix = searchArgs[2]; // optional positional prefix (undefined → all notebooks)
+        const result = search(dir, query, { prefix, any });
+        // Log the search so the `failed-search → add` gap-sensor can read it back:
+        // outcome `match`/`no-match` plus the query in `note` (no new log column).
+        // A no-match is NOT an error — the command succeeded, it just found
+        // nothing (exit 0, like a dedup-blocked add), so `ok` is set below. A query
+        // with no searchable terms (e.g. all whitespace) is logged as `no-terms`,
+        // NOT `no-match`, so an empty query can never masquerade as a coverage gap
+        // (the `failed-search` signal keys on `no-match`) — DP-5, never mislead.
+        meta.outcome = result.terms.length === 0 ? 'no-terms' : result.groups.length > 0 ? 'match' : 'no-match';
+        meta.note = query;
+        if (json) {
+          process.stdout.write(JSON.stringify(result) + '\n');
+        } else {
+          const { out, err } = renderSearch(query, any, result);
+          if (out) process.stdout.write(out);
+          if (err) process.stderr.write(err);
+        }
+        break;
+      }
       case 'stats': {
         const rest = argv.slice(1);
         const sinceIdx = rest.indexOf('--since');
@@ -542,6 +584,46 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
     const trigger = r.desc ?? r.auto; // explicit description, else the (auto) top lesson
     const descPart = trigger ? `  ${trigger}${r.desc === null ? '  (auto)' : ''}` : '';
     lines.push(`  ${r.role.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`);
+  }
+  return { out: lines.join('\n') + '\n', err: '' };
+}
+
+/**
+ * Render a `nb search` result for the human path. Returns `{out, err}` so a match
+ * writes to stdout (pipe-clean) and a no-match writes a friendly note to stderr
+ * (keeping stdout empty), exactly like `nb list`. A no-match is not an error — the
+ * note reminds the reader that search is the secondary path AND that the miss was
+ * recorded as a possible coverage gap. On a match: one header line (term count and
+ * AND/OR mode), then per notebook a role line (with its description when set, and a
+ * `(description match)` tag when only the description matched) followed by one
+ * indented `<id>  [score]  <text>` line per hit — the id so the agent can `vote` it.
+ */
+function renderSearch(query: string, any: boolean, result: SearchResult): { out: string; err: string } {
+  const mode = any ? 'OR' : 'AND';
+  if (result.groups.length === 0) {
+    // Distinguish "no searchable terms" from "searched, found nothing" — only the
+    // latter is the logged gap signal.
+    const err =
+      result.terms.length === 0
+        ? `nb search: no searchable terms in "${query}"\n`
+        : `no lessons match "${query}" (${mode}) — search is the secondary path (lessons are surfaced to you, ` +
+          `not searched); this miss was recorded as a possible coverage gap\n`;
+    return { out: '', err };
+  }
+  const hitCount = result.groups.reduce((n, g) => n + g.hits.length, 0);
+  const nbCount = result.groups.length;
+  const lines = [
+    `agent-notebook search — "${query}" (${mode} over ${result.terms.length} term${result.terms.length === 1 ? '' : 's'}): ` +
+      `${hitCount} hit${hitCount === 1 ? '' : 's'} in ${nbCount} notebook${nbCount === 1 ? '' : 's'} ` +
+      `(secondary fallback — lessons are normally surfaced to you, not searched)`,
+  ];
+  for (const g of result.groups) {
+    const descPart = g.desc ? `  — ${g.desc}` : '';
+    const descOnly = g.hits.length === 0 ? '  (description match)' : g.descMatched ? '  (+description match)' : '';
+    lines.push(`  ${g.role}${descPart}${descOnly}`);
+    for (const h of g.hits) {
+      lines.push(`    ${h.id}  [${fmt(h.score)}]  ${h.text}`);
+    }
   }
   return { out: lines.join('\n') + '\n', err: '' };
 }
