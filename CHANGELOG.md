@@ -9,6 +9,14 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Fixed
+- `nb describe` now strips the optional `--reason`/`--note` flags before reading its
+  text operand, like the other mutating commands (#91). Previously an option placed
+  before the text (`nb describe <role> --reason other "real text"`) was silently stored
+  as the description and the intended text dropped, exiting 0 — a DP-5 violation. The
+  flags are now logged to the usage log (never the notebook); `describe` has no seeded
+  enum, so a stray code buckets to `other` with its text kept in the note, like `add`.
+
 ## [0.2.0] - 2026-10-28
 
 ### Added
