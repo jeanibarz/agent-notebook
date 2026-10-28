@@ -141,6 +141,24 @@ agent-notebook notebooks — 3 in /home/you/.agent-notebook/notebooks
 
 Notebooks are ordered **richest-first** (most lessons first — the ones most worth reusing), ties broken by name. A notebook with no `# desc:` falls back to its top-scored lesson, marked `(auto)`. A bare `prefix` filters by name using the `.` namespace convention (`nb list review.` shows just `review.*`), and `--limit N` bounds the rows (default 50) so the index stays a flat, cheap read as notebooks accumulate — the header then reads `showing N of total`. `nb list --json` emits the raw `NotebookListing` (`{ dir, total, rows[] }`) for a supervising agent. An empty (zero-lesson, no-description) notebook is hidden — it is phantom debris with nothing to discover — while a described-but-empty notebook is kept, because its description is still a deliberate trigger. It prints a friendly note to stderr and exits 0 when no notebook (or none matching the prefix) exists yet.
 
+### Grouping notebooks — the `.` namespace convention
+
+When one role grows several distinct concerns, split them into **namespaced notebooks** named with a `.`-delimited prefix — `review.tests`, `review.correctness`, `review.security` — instead of one overloaded `review`. This is the recommended way to "group by concept", and it is a **naming convention only**: nothing new to configure.
+
+```
+$ nb list review.
+agent-notebook notebooks — 2 matching "review." in /home/you/.agent-notebook/notebooks
+  review.correctness   9  reviewing a diff for logic bugs
+  review.tests         4  reviewing test coverage and quality
+```
+
+- **Lexical clustering, no engine.** Related notebooks sort together and `nb list review.` / `nb search "flaky" review.` scope straight to the group — plain prefix matching on the name, never embeddings or similarity ([NG-001](docs/requirements.md#ng-001)).
+- **Keep the trailing dot.** `review.` matches the namespace but *not* a bare sibling that merely shares the stem (`reviewer`), so the group stays exactly what you meant.
+- **No new storage.** A namespaced role is still one flat `<role>.md` file — `review.tests.md`, `review.correctness.md` — never a directory. `.` is already a legal role character, so there is nothing to enable.
+- **`@` is separate.** It stays reserved for the existing `role@project` scoping and composes with a namespace (`review.tests@your-repo`).
+
+See [FR-NAMESPACE-001](docs/requirements.md#fr-namespace-001).
+
 ### Searching — the demoted fallback
 
 `nb search <query>` exists, but it is deliberately the **secondary** path. The point of this tool is that a notebook is *shown* to you — injected at session start, picked from the [`nb list`](#discovering-notebooks--nb-list) index — because the lesson you most need is the one you would never think to search for ([DP-8](docs/requirements.md), [NG-007](docs/requirements.md#ng-007)). Reach for `search` only for a genuine known-item lookup.

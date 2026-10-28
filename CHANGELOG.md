@@ -10,6 +10,17 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- The **`.` namespace convention** for grouping notebooks (#83) — a documented,
+  recommended way to cluster related notebooks by a `.`-delimited role-name prefix
+  (`review.tests`, `review.correctness`) so they sort together and `nb list review.` /
+  `nb search "flaky" review.` scope straight to the group. It is a **naming convention
+  only**: a namespaced role is a first-class role (no change to `assertSafeRole` — `.`
+  was already a legal interior character) stored as one flat `<role>.md` file, never a
+  directory, and grouped lexically with no embeddings or similarity ([NG-001]). Keep the
+  trailing dot so `review.` does not also match a bare `reviewer`; `@` stays reserved for
+  the existing `role@project` scoping and composes with a namespace
+  (`review.tests@repo`). Documented in the README and as [FR-NAMESPACE-001]; part of
+  epic #73 (Phase 2).
 - `nb search <query> [prefix] [--any]` (#82) — a **demoted, secondary** keyword fallback
   and gap-sensor. The primary path is *surfacing* (injection + the `nb list` index), per
   [DP-8] / [NG-007]; search exists only for genuine known-item lookup, and both the help
