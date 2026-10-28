@@ -27,6 +27,7 @@ import { pathToFileURL } from 'node:url';
 import {
   addEntry,
   assertSafeRole,
+  entryId,
   isValidWindow,
   listRoles,
   logUsage,
@@ -38,6 +39,7 @@ import {
   render,
   stats,
   vote,
+  type UsageMeta,
 } from './notebook.js';
 
 const HELP = `nb — the Agent Notebook (bounded, voted, per-role memory)
@@ -109,6 +111,11 @@ export async function runNbCli(
   const started = Date.now();
   let role = '-';
   let ok = false;
+  // Richer usage-log fields for this call (entry-level + outcome logging, #67).
+  // Each command fills what it produced; `show`/`path`/`roles`/`stats` leave it
+  // empty and `logUsage` writes blanks. `session` is filled by `logUsage` from
+  // `NB_SESSION`, so it is not set here.
+  const meta: UsageMeta = {};
   // `--json` on a mutation (add/vote/rm/merge) emits the library's structured
   // result object on stdout and nothing else, so a supervisor can branch on
   // `reason`/`score` without regex-parsing the English line. Strip it before
@@ -137,6 +144,13 @@ export async function runNbCli(
         let lesson = need(args[2], 'lesson');
         if (lesson === '-') lesson = readOneLine(await readStdin());
         const r = await addEntry(dir, role, lesson);
+        // Record which entry was touched and how it landed BEFORE the output
+        // branch below, which can `throw`/`return` on 'too-long' — the finally
+        // still logs, so meta must already be set.
+        meta.entries = r.id ? [r.id] : [];
+        meta.outcome = r.reason === 'added' ? 'accepted' : r.reason === 'duplicate' ? 'dedup-blocked' : r.reason;
+        if (r.collidedId) meta.collided = r.collidedId;
+        if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
         if (json) {
           // One result object on stdout; `too-long` keeps exit 1 (below) while
           // still emitting its `reason`, so a supervisor sees why it failed.
@@ -158,6 +172,8 @@ export async function runNbCli(
         const selector = need(args[2], 'id|query');
         const delta = parseDelta(need(args[3], '+1|-1'));
         const r = await vote(dir, role, selector, delta);
+        meta.entries = [entryId(r.text)];
+        meta.outcome = delta > 0 ? 'up' : 'down';
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else process.stdout.write(`${delta > 0 ? '+1' : '-1'} → [${fmt(r.score)}] ${r.text}\n`);
         break;
@@ -168,6 +184,8 @@ export async function runNbCli(
         const b = need(args[3], 'idB');
         const merged = need(args[4], 'merged lesson');
         const r = await merge(dir, role, a, b, merged);
+        meta.entries = [...(r.sources ?? []), ...(r.id ? [r.id] : [])];
+        meta.outcome = 'merged';
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else process.stdout.write(`merged two entries into one — ${r.size} lines\n`);
         break;
@@ -176,6 +194,8 @@ export async function runNbCli(
         role = need(args[1], 'role');
         const selector = need(args[2], 'id|query');
         const r = await remove(dir, role, selector);
+        meta.entries = [entryId(r.text)];
+        meta.outcome = 'removed';
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else process.stdout.write(`removed — [${fmt(r.score)}] ${r.text}\n`);
         break;
@@ -248,7 +268,7 @@ export async function runNbCli(
     return 1;
   } finally {
     // The `stats` read of the usage log happens above; logging it afterwards is fine.
-    logUsage(dir, role, cmd, ok, Date.now() - started);
+    logUsage(dir, role, cmd, ok, Date.now() - started, meta);
   }
 }
 

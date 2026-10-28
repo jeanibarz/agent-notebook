@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { runNbCli, settleCliExit } from './cli.js';
+import { entryId, parseUsage } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
@@ -16,7 +17,7 @@ beforeEach(() => {
   process.env.NB_DIR = dir;
 });
 afterEach(() => {
-  for (const k of ['NB_DIR', 'NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_ROLE', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S']) {
+  for (const k of ['NB_DIR', 'NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_ROLE', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SESSION']) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
@@ -483,7 +484,7 @@ describe('runNbCli', () => {
       const r = await run(['add', 'reviewer', '-', '--json'], 'piped with json\n');
       expect(r.code).toBe(0);
       expect(r.err).toBe('');
-      expect(JSON.parse(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1 });
+      expect(JSON.parse(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1, id: entryId('piped with json') });
     });
   });
 
@@ -501,7 +502,7 @@ describe('runNbCli', () => {
       const r = await run(['add', 'patcher', 'prefer execFileSync', '--json']);
       expect(r.code).toBe(0);
       expect(r.err).toBe(''); // warnings/errors would be on stderr; there are none
-      expect(parseOnly(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1 });
+      expect(parseOnly(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1, id: entryId('prefer execFileSync') });
     });
 
     test('add --json on a duplicate emits reason:"duplicate" and stays exit 0', async () => {
@@ -555,6 +556,49 @@ describe('runNbCli', () => {
     test('without --json the English lines are unchanged', async () => {
       const r = await run(['add', 'patcher', 'plain text path']);
       expect(r.out).toBe('added — 1 lines\n');
+    });
+  });
+
+  describe('usage log records entry ids + outcome (issue #67)', () => {
+    test('add logs the accepted outcome and the touched entry id', async () => {
+      await run(['add', 'patcher', 'prefer execFileSync, array args']);
+      const [row] = parseUsage(dir);
+      expect(row.command).toBe('add');
+      expect(row.ok).toBe(true);
+      expect(row.outcome).toBe('accepted');
+      expect(row.entries).toEqual([entryId('prefer execFileSync, array args')]);
+    });
+
+    test('a duplicate add logs dedup-blocked and the colliding entry id', async () => {
+      await run(['add', 'patcher', 'run lint before done']);
+      await run(['add', 'patcher', 'run lint before done']);
+      const dupRow = parseUsage(dir).at(-1)!;
+      expect(dupRow.outcome).toBe('dedup-blocked');
+      expect(dupRow.collided).toBe(entryId('run lint before done'));
+    });
+
+    test('vote logs the direction and the voted entry id', async () => {
+      await run(['add', 'patcher', 'alpha lesson']);
+      await run(['vote', 'patcher', 'alpha', '+1']);
+      const voteRow = parseUsage(dir).at(-1)!;
+      expect(voteRow.command).toBe('vote');
+      expect(voteRow.outcome).toBe('up');
+      expect(voteRow.entries).toEqual([entryId('alpha lesson')]);
+    });
+
+    test('NB_SESSION is threaded onto every row the call writes', async () => {
+      process.env.NB_SESSION = 'cli-session-7';
+      await run(['add', 'patcher', 'session threaded lesson']);
+      expect(parseUsage(dir).at(-1)!.session).toBe('cli-session-7');
+    });
+
+    test('a read-only command (show) logs blank richer fields', async () => {
+      await run(['show', 'patcher']);
+      const [row] = parseUsage(dir);
+      expect(row.command).toBe('show');
+      expect(row.entries).toEqual([]);
+      expect(row.outcome).toBe('');
+      expect(row.session).toBe('');
     });
   });
 });

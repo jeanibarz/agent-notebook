@@ -10,6 +10,12 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- Entry-level + outcome logging in the usage ring (#67). Each `.nb-usage.log` row now
+  also records the entry id(s) a call touched, a session id from the `NB_SESSION`
+  environment variable, and the call's outcome (`accepted`/`dedup-blocked` with the
+  colliding id, vote direction, eviction). The parser tolerates old five-column rows,
+  logging stays best-effort, and the ring stays bounded — no field is added to a
+  lesson. Foundation for the self-observing-notebook diagnostics (epic #73).
 - This changelog.
 - **DP-8 / NG-007** in `docs/requirements.md`, and a matching line in the README:
   memory's job is to surface the lesson an agent would not think to search for, so
