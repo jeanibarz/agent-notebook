@@ -284,7 +284,6 @@ export async function runNbCli(
           if (r.reason === 'too-long') return 1;
         } else if (r.reason === 'duplicate') process.stdout.write(`skipped (near-duplicate already present) — ${r.size} lines\n`);
         else if (r.reason === 'empty') process.stdout.write('skipped (empty lesson)\n');
-        else if (r.reason === 'rejected-full') process.stdout.write(`skipped (notebook full — every entry outranks this lesson; vote one down or merge first) — ${r.size} lines\n`);
         else if (r.reason === 'too-long') throw new Error(`lesson too long (${r.length} chars > ${maxChars()} max). Rewrite it shorter as ONE complete line and retry — it was NOT truncated or stored.`);
         else {
           process.stdout.write(`added — ${r.size} lines`);

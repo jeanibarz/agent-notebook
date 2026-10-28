@@ -39,8 +39,9 @@ One definition per term, used identically in requirements, code, and tests.
 | **Entry** | One lesson = one line `"<score>\t<text>"`. The in-memory shape is `{ score: number; text: string }`. |
 | **Lesson** / **text** | The single-line content of an entry, at most `maxChars` characters, no tab/newline. |
 | **Score** | A signed integer: the running sum of +1/-1 votes on an entry. |
-| **File order** / **insertion order** | The order entries physically appear in the file — the order they were added, preserved across votes. |
-| **Display order** | The order `nb show` / `render` presents entries: score descending, ties broken by ascending file order (oldest first). |
+| **File order** / **recency order** | The order entries physically appear in the file — least-recently-*touched* first. A *touch* (a vote of either sign, an add, or a merge/split's new lesson) moves its entry to the end, so the top of the file is the stalest entry. |
+| **Touch** | An engagement with a specific entry that refreshes its recency: a `vote` (±1), an `add`, or the new lesson(s) a `merge`/`split` creates. A read (`show`/`search`) is not a touch. |
+| **Display order** | The order `nb show` / `render` presents entries: score descending, ties broken by ascending file order (stalest / least-recently-touched first). |
 | **Stable id** | A 6-hex-character identifier derived from an entry's deduped text (`entryId`), not its position. |
 | **Dedup key** | The case-, punctuation-, and whitespace-insensitive normal form of a text (`dedupKey`), used for duplicate detection and the stable id. |
 | **Selector** | The argument to `vote`/`rm`/`merge`/`split` that identifies an entry: a stable id (exact or unique prefix) or a unique case-insensitive text substring. |
@@ -48,7 +49,8 @@ One definition per term, used identically in requirements, code, and tests.
 | **Metadata** | Optional leading `# key: value` comment lines at the top of a notebook file, carrying notebook-level context (not lessons). Skipped by `readEntries`, round-tripped through every mutation (see [FR-DESC-001](#fr-desc-001)). |
 | **Description** | The `# desc:` metadata value: a one-line *trigger* ("the situation in which you should open me") that lets an agent decide whether to open a notebook without reading its lessons. Set/printed with `nb describe` (see [FR-DESC-002](#fr-desc-002)). |
 | **Cap** | `maxLines` (max entries per notebook) and `maxChars` (max characters per lesson). |
-| **Eviction** | Removing the lowest-scored entry (ties: oldest) when the notebook exceeds `maxLines`. |
+| **Eviction** | Removing the lowest-scored entry (ties: stalest) when the notebook exceeds `maxLines`. The newcomer is never the one removed. |
+| **Staleness decay** / **aging** | Docking one point from the stalest surviving entry each time a full notebook accepts a new lesson, so a once-upvoted lesson that goes quiet eventually becomes evictable (see [eviction-and-aging.md](./eviction-and-aging.md)). |
 | **Usage ring** | A bounded append-only log of CLI calls (`.nb-usage.log`) that `nb stats` reads. |
 
 ---
@@ -75,24 +77,29 @@ no tab, carriage return, or newline (collapsed to single spaces by `sanitizeLess
 as an unambiguous field separator. Multi-line notes are a non-goal.
 
 <a id="dp-3"></a>
-### DP-3: Storage order is insertion order; display order is by score — **Must**
-The notebook file SHALL be stored in insertion order and SHALL NOT be re-sorted on
-mutation. Sorting by score SHALL happen only at read/display time (`render`,
-`nb show`), and the injected/printed view SHALL be score-descending with ties
-broken by ascending insertion order (oldest first).
-**Rationale (this is the one that reads like a bug but is not):**
-- Insertion order is the *only* record of an entry's age, because the line format
-  carries no timestamp. That age is load-bearing: it is the tie-breaker for both
-  display ranking and eviction ("ties → oldest"). Physically re-sorting by score
-  would destroy it and corrupt the tie-break — e.g. add A, B, C (all +1); upvote C
-  to +2 (it moves); downvote C back to +1; a stable re-sort would now place C
-  (newest) at the *top* of the +1 tie instead of the bottom.
-- A `vote` rewrites exactly one line in place, which is the smallest, most stable
-  git diff — important because notebooks are often tracked in git.
-- Stable ids ([DP-4](#dp-4)) make
-  reordering unnecessary, so there is nothing to gain from it.
+### DP-3: Storage order is recency order; display order is by score — **Must**
+The notebook file SHALL be stored in **recency order** — least-recently-*touched*
+first — with a touch (a `vote` of either sign, an `add`, or a `merge`/`split`'s new
+lesson) moving its entry to the END of the file. Sorting by score SHALL happen only
+at read/display time (`render`, `nb show`), and the injected/printed view SHALL be
+score-descending with ties broken by ascending file order (stalest first).
+**Rationale:**
+- The line format carries no timestamp, but eviction needs to tell a *stale* high
+  lesson from an *active* one (see [eviction-and-aging.md](./eviction-and-aging.md)).
+  Last-touch order is that recency signal, carried by position at **zero character
+  cost** — and it is the *right* signal: insertion order (the previous rule) is the
+  FIFO trap, where a frequently-reused lesson looks as old as a dead one. The top of
+  the file is therefore the stalest lesson, which is what the staleness-decay and the
+  eviction tie-break act on.
+- The cost: a `vote` is now a line *move* (a delete + an append, which git renders as
+  a ~2-line move) rather than a 1-line in-place edit. This is the one diff cost the
+  design accepts; everything else stays a small diff, and git is not required at all
+  ([DP-6](#dp-6)).
+- No migration: an existing file's insertion order is a fine *initial* recency order
+  (older = staler, a fair prior), and an older binary still reads a reordered file
+  (it ranks by score and addresses entries by content id ([DP-4](#dp-4))).
 A raw `cat` of the file therefore looks unordered; read it with `nb show`.
-*Proven by:* `notebook.test.ts` → `describe('display ordering ("moving" an entry)')`.
+*Proven by:* `notebook.test.ts` → `describe('display ordering ("moving" an entry)')` and the recency/aging tests under `describe('caps')`.
 
 <a id="dp-4"></a>
 ### DP-4: Entry identity is content-derived and stable — **Must**
@@ -107,8 +114,8 @@ a vote to land on the wrong lesson. A content id does not move.
 ### DP-5: Never silently mislead the agent — **Must**
 Operations SHALL report honestly rather than pretend success:
 - An over-long `add` SHALL be rejected, not truncated ([FR-ADD-004](#fr-add-004)).
-- An `add` to a full notebook where every entry outranks the newcomer SHALL report
-  `rejected-full` and store nothing ([FR-ADD-006](#fr-add-006)).
+- An `add` that evicts SHALL report the removed entry in `evicted`, so the agent
+  knows its memory changed ([FR-ADD-005](#fr-add-005)).
 - A `vote`/`rm`/`merge` selector that is ambiguous or unmatched SHALL refuse and
   list candidate ids, rather than act on a guess ([FR-SEL-002](#fr-sel-002)).
 - A bad `nb stats --since` value SHALL warn on stderr, not silently filter.
@@ -189,15 +196,20 @@ of exactly `maxChars` SHALL be accepted. *(See [DP-5](#dp-5).)*
 
 <a id="fr-add-005"></a>
 **FR-ADD-005 (Must).** When adding exceeds `maxLines`, eviction SHALL remove the
-lowest-scored entries, breaking ties by oldest (lowest file index), until `maxLines`
-remain; a removed existing entry SHALL be reported in `evicted`.
+lowest-scored entries, breaking ties by stalest (lowest file index), until `maxLines`
+remain, and SHALL NOT remove the just-added newcomer; a removed existing entry SHALL
+be reported in `evicted`. (See [eviction-and-aging.md](./eviction-and-aging.md).)
 
 <a id="fr-add-006"></a>
-**FR-ADD-006 (Must).** When the notebook is full and the newcomer (`score 1`) is the
-strict lowest, the newcomer SHALL NOT be stored; the result SHALL be
-`reason: 'rejected-full'` and the stored set SHALL be unchanged (the file is
-rewritten with the same entries, which also normalizes any hand-edited lines).
-*(See [DP-5](#dp-5).)*
+**FR-ADD-006 (Must).** A newcomer SHALL always be admitted — there is no
+`rejected-full`. When the notebook is full, after the eviction of
+[FR-ADD-005](#fr-add-005) the stalest surviving entry (the topmost non-newcomer)
+SHALL be docked one point (**staleness decay / aging**). This runs *after*
+eviction, so the dock never flips which entry is lowest. The decay is what prevents
+a once-upvoted lesson from being immortal: it drifts to the top as fresher lessons
+are touched and loses a point per add until it is re-voted (moved back to fresh) or
+evicted. Decay fires ONLY when a notebook is over cap; a sub-cap notebook is
+untouched. *(See [DP-1](#dp-1), [DP-3](#dp-3).)*
 
 <a id="fr-add-007"></a>
 **FR-ADD-007 (Should).** On the CLI, a lesson operand of `-` SHALL mean "read the
@@ -220,7 +232,7 @@ library `addEntry` or a non-dash quoted argument. *(See [DP-5](#dp-5).)*
 | contains `dedupKey`-equal line | near-duplicate | `duplicate` | no |
 | `maxChars=30` | 50-char lesson | `too-long` | no |
 | full, mixed scores, newcomer not lowest | new lesson | `added` | yes, lowest evicted |
-| full, every entry outranks newcomer | new lesson | `rejected-full` | no |
+| full, every entry outranks newcomer | new lesson | `added` | yes — stalest line aged, lowest evicted |
 
 ### 4.3 `vote`
 
@@ -229,8 +241,11 @@ library `addEntry` or a non-dash quoted argument. *(See [DP-5](#dp-5).)*
 only `+1` or `-1`; any other value SHALL throw.
 
 <a id="fr-vote-002"></a>
-**FR-VOTE-002 (Must).** A vote SHALL add `delta` to the selected entry's score in
-place and SHALL NOT change file order. *(See [DP-3](#dp-3).)*
+**FR-VOTE-002 (Must).** A vote SHALL add `delta` to the selected entry's score and,
+as a *touch*, SHALL move that entry to the END of file order (it is now the
+most-recently-touched). Both signs count — a downvote is engagement too; the low
+score, not the position, is what makes an entry an eviction target, so moving a
+downvoted entry to the fresh end never shields it. *(See [DP-3](#dp-3).)*
 
 <a id="fr-vote-003"></a>
 **FR-VOTE-003 (Should).** Scores MAY go negative (a repeatedly downvoted lesson), and
@@ -450,7 +465,8 @@ base columns, five entry-level/outcome columns:
 `"\t<session>\t<entry-ids>\t<outcome>\t<collided-id>\t<evicted-id:score>"`, where
 `session` is the value of `NB_SESSION` at call time (blank when unset — co-access is
 then not computed), `entry-ids` is the comma-joined stable id(s) the call touched,
-`outcome` is `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` for `add`,
+`outcome` is `accepted`/`dedup-blocked`/`empty`/`too-long` for `add` (plus
+`rejected-full` in logs predating the always-admit policy; `add` no longer emits it),
 `up`/`down` for `vote`, `removed` for `rm`, `merged` for `merge`, `split` for `split`,
 and blank for a
 read-only command, `collided-id` is the id of the existing entry that blocked a
@@ -551,6 +567,8 @@ no field added to a lesson ([NG-004](#ng-004)):
 
 Each rate SHALL be conditioned on **attempts** (`addAttempts` = `accepted` +
 `dedup-blocked` + `rejected-full`, excluding the malformed `empty`/`too-long`;
+`rejected-full` is a historical outcome — the always-admit policy no longer
+produces it, but old logs may still carry it, so it stays in the denominator;
 `votesActedOn` = `up` + `down`), so a lazy agent is a small sample rather than a
 deflated `0`. Each rate SHALL be **gated on engagement**: only sessions that show a
 vote are scored (a vote-less or blank-session row is excluded as a setup/plumbing gap,

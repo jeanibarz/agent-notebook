@@ -178,16 +178,60 @@ describe('caps', () => {
     expect(readEntries(dir, 'r').map((e) => e.text).sort()).toEqual(['fresh', 'good']);
   });
 
-  test('rejects a new lesson when full and every entry outranks it', async () => {
+  test('a full notebook ALWAYS admits a newcomer, aging and evicting its stalest line', async () => {
+    // The old behavior rejected a newcomer when every entry outranked it; the
+    // recency-aging policy never does that (no more `rejected-full`). Instead the
+    // stalest high line is docked a point and evicted so the newcomer gets in.
     process.env.NB_MAX_LINES = '2';
     await addEntry(dir, 'r', 'alpha');
     await addEntry(dir, 'r', 'bravo');
-    await vote(dir, 'r', 'alpha', 1);
-    await vote(dir, 'r', 'bravo', 1); // both +2 (non-hex substrings, unambiguous)
-    const res = await addEntry(dir, 'r', 'charlie'); // +1 is the strict lowest -> not stored
-    expect(res.added).toBe(false);
-    expect(res.reason).toBe('rejected-full');
-    expect(readEntries(dir, 'r').map((e) => e.text).sort()).toEqual(['alpha', 'bravo']);
+    await vote(dir, 'r', 'alpha', 1); // alpha -> +2, touched (moves to fresh end)
+    await vote(dir, 'r', 'bravo', 1); // bravo -> +2, touched LAST, so alpha is now the stalest
+    const res = await addEntry(dir, 'r', 'charlie'); // always admitted
+    expect(res.added).toBe(true);
+    expect(res.reason).toBe('added');
+    // Eviction runs first by score (ties → stalest): alpha and bravo are both +2,
+    // alpha is the stalest (touched before bravo), so alpha is evicted.
+    expect(res.evicted?.text).toBe('alpha');
+    expect(readEntries(dir, 'r').map((e) => e.text).sort()).toEqual(['bravo', 'charlie']);
+    // Then the stalest SURVIVOR is aged one point — here bravo, which would
+    // otherwise be immortal (a newcomer at +1 can never outscore a static +2).
+    // That dock is what lets even bravo eventually fall if it goes quiet.
+    const byText = Object.fromEntries(readEntries(dir, 'r').map((e) => [e.text, e.score]));
+    expect(byText).toEqual({ bravo: 1, charlie: 1 });
+  });
+
+  test('anti-immortality: a high-scored lesson never re-voted ages out over repeated adds', async () => {
+    process.env.NB_MAX_LINES = '2';
+    await addEntry(dir, 'r', 'stale high lesson');
+    for (let i = 0; i < 4; i++) await vote(dir, 'r', 'stale high', 1); // -> +5
+    await addEntry(dir, 'r', 'filler lesson'); // notebook now full at +5 / +1
+    // Under plain eviction a +5 lesson is immortal (newcomers enter at +1 and are
+    // always the lowest). The per-add staleness dock on the stalest survivor pulls
+    // it down one point each add until it finally reaches the bottom and is evicted.
+    let evictedStale = false;
+    for (let i = 0; i < 6 && !evictedStale; i++) {
+      const r = await addEntry(dir, 'r', `newcomer number ${i}`);
+      if (r.evicted?.text === 'stale high lesson') evictedStale = true;
+    }
+    expect(evictedStale).toBe(true);
+    expect(readEntries(dir, 'r').some((e) => e.text === 'stale high lesson')).toBe(false);
+  });
+
+  test('aging targets the stalest survivor, sparing a recently-voted lesson (G5)', async () => {
+    process.env.NB_MAX_LINES = '3';
+    await addEntry(dir, 'g', 'aaa');
+    await addEntry(dir, 'g', 'bbb');
+    await addEntry(dir, 'g', 'ccc');
+    await vote(dir, 'g', 'aaa', 1); // aaa -> +2, moved to the fresh end; bbb,ccc stay quiet
+    await addEntry(dir, 'g', 'ddd'); // full → evict lowest, then age the stalest survivor
+    const byText = Object.fromEntries(readEntries(dir, 'g').map((e) => [e.text, e.score]));
+    // bbb (stalest, +1) is evicted; ccc (next stalest survivor) is aged +1 → 0;
+    // aaa was just voted so it is fresher than ccc and is NOT the one aged.
+    expect(byText.bbb).toBeUndefined();
+    expect(byText.ccc).toBe(0);
+    expect(byText.aaa).toBe(2);
+    expect(byText.ddd).toBe(1);
   });
 });
 
@@ -244,14 +288,15 @@ describe('serialization round-trip', () => {
   });
 
   test('re-formatting a parsed notebook is a byte-for-byte fixed point', async () => {
-    // A true fixed point is parse→format→parse→format, not just two reads.
-    // Drive a no-op mutation (vote up, then back down) so the whole file is
-    // re-serialised twice, then assert the bytes and entries never drifted.
+    // A true fixed point is parse→format→parse→format, not just two reads. Drive
+    // two whole-file rewrites that do NOT touch the entries — set then clear a
+    // description (a vote is no longer order-neutral: it moves its line to the
+    // fresh end) — then assert the bytes and entries never drifted.
     await addEntry(dir, 'fp', 'alpha lesson');
     await addEntry(dir, 'fp', 'beta lesson');
     const before = readFileSync(join(dir, 'fp.md'), 'utf-8');
-    await vote(dir, 'fp', entryId('alpha lesson'), 1); // rewrites the whole file via formatLine
-    await vote(dir, 'fp', entryId('alpha lesson'), -1); // back to the original scores
+    await setDescription(dir, 'fp', 'temporary'); // rewrites the file (adds a meta line)
+    await setDescription(dir, 'fp', ''); // clears it — entries-only, as before
     expect(readFileSync(join(dir, 'fp.md'), 'utf-8')).toBe(before); // format(parse(x)) === x
     expect(readEntries(dir, 'fp')).toEqual([
       { score: 1, text: 'alpha lesson' },
@@ -1582,16 +1627,22 @@ describe('display ordering ("moving" an entry)', () => {
     expect(displayed('ex').map((x) => x.score)).toEqual([4, 3, 2, 2, 1]);
   });
 
-  test('voting reorders only the DISPLAY; the stored file order is unchanged', async () => {
-    await seed('store', [['a', 4], ['b', 2], ['c', 2], ['d', 2], ['e', 1]]);
-    const fileBefore = readEntries(dir, 'store').map((e) => e.text);
-    expect(fileBefore).toEqual(['a', 'b', 'c', 'd', 'e']); // insertion order
+  test('a vote MOVES its entry to the fresh end of storage (recency order); display ranks by score', async () => {
+    // Storage is now recency order (least-recently-touched first), so a touch
+    // moves its line to the end. Build [a,b,c] by plain adds (no reorder yet).
+    await addEntry(dir, 'store', 'a');
+    await addEntry(dir, 'store', 'b');
+    await addEntry(dir, 'store', 'c');
+    expect(readEntries(dir, 'store').map((e) => e.text)).toEqual(['a', 'b', 'c']);
 
-    await vote(dir, 'store', entryId('d'), 1); // d moves UP in the view...
+    await vote(dir, 'store', entryId('a'), 1); // touch a -> it moves to the END on disk
+    expect(readEntries(dir, 'store').map((e) => e.text)).toEqual(['b', 'c', 'a']);
+    expect(readEntries(dir, 'store').find((e) => e.text === 'a')!.score).toBe(2);
+    // a is now the highest score, so it still displays on top regardless of position.
+    expect(displayed('store')[0]).toEqual({ score: 2, text: 'a' });
 
-    // ...but the file is still in insertion order: 'd' did not move on disk.
-    expect(readEntries(dir, 'store').map((e) => e.text)).toEqual(['a', 'b', 'c', 'd', 'e']);
-    expect(readEntries(dir, 'store').find((e) => e.text === 'd')!.score).toBe(3);
+    await vote(dir, 'store', entryId('b'), -1); // a DOWNVOTE is a touch too -> b to the end
+    expect(readEntries(dir, 'store').map((e) => e.text)).toEqual(['c', 'a', 'b']);
   });
 
   test('an upvote INTO a tie lands at the BOTTOM of its new tier (insertion-order tie-break, not newest-on-top)', async () => {
@@ -1608,21 +1659,23 @@ describe('display ordering ("moving" an entry)', () => {
     ]);
   });
 
-  test('a downvote moves an entry DOWN past lower-scored neighbors', async () => {
+  test('a downvote moves an entry DOWN past lower-scored neighbors, and (being freshly touched) sits at the BOTTOM of its new tier', async () => {
     await seed('down', [['a', 4], ['b', 3], ['c', 2], ['d', 1]]);
-    await vote(dir, 'down', entryId('b'), -1); // b: +3 -> +2, ties with c (b older -> above c)
+    await vote(dir, 'down', entryId('b'), -1); // b: +3 -> +2, ties with c
+    // Ties now break by recency: b was just touched (freshest), so it sits BELOW
+    // the untouched c within the +2 tier (not above it as insertion order would).
     expect(displayed('down')).toEqual([
       { score: 4, text: 'a' },
-      { score: 2, text: 'b' },
       { score: 2, text: 'c' },
+      { score: 2, text: 'b' },
       { score: 1, text: 'd' },
     ]);
-    await vote(dir, 'down', entryId('b'), -1); // b: +2 -> +1, now below c and ties with d (b older)
+    await vote(dir, 'down', entryId('b'), -1); // b: +2 -> +1, ties with d; b freshest -> below d
     expect(displayed('down')).toEqual([
       { score: 4, text: 'a' },
       { score: 2, text: 'c' },
-      { score: 1, text: 'b' },
       { score: 1, text: 'd' },
+      { score: 1, text: 'b' },
     ]);
   });
 

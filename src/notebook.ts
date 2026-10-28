@@ -3,13 +3,18 @@
 // The design in one breath: each role keeps a notebook file of one-line
 // lessons, hard-capped so it can never rot. One entry = one line
 // `<score>\t<lesson>`; at most MAX_LINES entries; each lesson at most
-// MAX_CHARS characters. The agent votes +1/-1 at task end; when the file is
-// full the LOWEST-scored line is evicted (ties → oldest), so harmful lines
-// leave first. No embeddings, no decay curve, no scheduler — the cap and the
-// vote are the whole mechanism.
+// MAX_CHARS characters. The agent votes +1/-1 at task end. A touch (a vote of
+// either sign, an add, or a merge/split's new lesson) moves its line to the END
+// of the file, so storage order is least-recently-touched first — the top line
+// is the stalest. When the file is full and takes a new lesson, the newcomer is
+// always admitted, the stalest line is docked one point (the aging that frees
+// once-useful-now-quiet lessons without needing a downvote to arrive), and the
+// LOWEST-scored line is evicted (ties → stalest), so harmful and stale lines
+// leave first while hard-earned ones stay. No embeddings, no scheduler, no
+// decay curve over wall-clock time — see docs/eviction-and-aging.md.
 //
 // Everything here is plain fs over one small file under a mkdir spinlock, so
-// a call is a millisecond, deterministic, and offline.
+// a call is a millisecond and offline.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, rmdirSync, unlinkSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -324,7 +329,8 @@ export function readEntries(dir: string, role: string): Entry[] {
  * new block; every other mutation omits it, so the existing block is re-read
  * from disk under the lock and re-emitted unchanged — which is how the
  * description round-trips through `add`/`vote`/`merge`/`split`/`rm`. The metadata
- * leads the file; the entries follow in insertion order ([DP-3]). A file with
+ * leads the file; the entries follow in recency order — least-recently-touched
+ * first, a touch moving its entry to the end ([DP-3]). A file with
  * metadata but no entries is still written (its block survives an emptied
  * notebook), and only a notebook with neither becomes the empty string.
  */
@@ -380,16 +386,78 @@ function fsyncDir(dir: string): void {
   }
 }
 
-/** Evict down to MAX_LINES by removing the lowest-scored entries (ties → oldest/earliest). */
-function trim(entries: Entry[]): Entry[] {
+/** The outcome of applying the cap to an over-full entry list. */
+interface CapResult {
+  /** The surviving entries, in their original (recency) order. */
+  kept: Entry[];
+  /** Entries removed to get back to `maxLines` (empty when nothing was evicted). */
+  evicted: Entry[];
+  /** The stalest entry whose score was docked by the aging step, or `null` when no eviction occurred. Same object as in `kept`/`evicted`, already mutated. */
+  decayed: Entry | null;
+}
+
+/**
+ * Enforce the `maxLines` cap after `entries` has grown past it, applying the
+ * recency-ordered aging policy (see docs/eviction-and-aging.md). `entries` is in
+ * storage order — least-recently-touched first, so index 0 is the stalest — and
+ * the last `protectedCount` entries are the lesson(s) this call just created/
+ * touched (a new add, a merge's result, a split's two halves).
+ *
+ * Fires ONLY when over cap; a sub-cap list is returned untouched, so a notebook
+ * that has never filled behaves exactly as before. When over cap:
+ *   1. NEWCOMERS ALWAYS STAY — a protected entry is never evicted or decayed.
+ *   2. EVICTION (quality first) — remove the lowest-scored entries, ties →
+ *      stalest (lowest index), evicting a protected entry only if the cap cannot
+ *      be met otherwise. Doing this BEFORE the decay matters: it keeps the dock
+ *      in step 3 from ever pushing a merely-stale line below an explicitly
+ *      worse-scored (e.g. downvoted) one and evicting the wrong lesson.
+ *   3. STALENESS DECAY (anti-immortality) — dock 1 from the stalest surviving
+ *      evictable entry (the topmost non-protected line that was NOT evicted). A
+ *      lesson that stops being re-voted drifts to the top as others are touched
+ *      and loses a point each time the full notebook takes a new lesson, until it
+ *      is re-voted (which moves it back to the fresh end, full protection) or
+ *      finally evicted — the self-supplied downward pressure that replaces the
+ *      downvotes that rarely arrive, aimed at the stale, not the active. Without
+ *      it a once-upvoted line could never fall (nothing below it ever leaves).
+ */
+function enforceCap(entries: Entry[], protectedCount: number): CapResult {
   const cap = maxLines();
-  if (entries.length <= cap) return entries;
-  // Tag with original index so we can break score ties by age (lower index = older).
-  const tagged = entries.map((e, i) => ({ e, i }));
-  tagged.sort((a, b) => (a.e.score - b.e.score) || (a.i - b.i)); // worst first
+  if (entries.length <= cap) return { kept: entries, evicted: [], decayed: null };
+
+  const protectedStart = entries.length - protectedCount; // last `protectedCount` are newcomers
+  const isProtected = (i: number): boolean => i >= protectedStart;
+
+  // 2) Evict worst-first: non-protected before protected, then lowest score,
+  // then stalest (lowest index). Drop as many as needed to reach the cap.
   const dropCount = entries.length - cap;
-  const dropIdx = new Set(tagged.slice(0, dropCount).map((t) => t.i));
-  return entries.filter((_, i) => !dropIdx.has(i));
+  const order = entries
+    .map((_, i) => i)
+    .sort((a, b) => {
+      const pa = isProtected(a) ? 1 : 0;
+      const pb = isProtected(b) ? 1 : 0;
+      return pa - pb || entries[a].score - entries[b].score || a - b;
+    });
+  const dropIdx = new Set(order.slice(0, dropCount));
+  const kept: Entry[] = [];
+  const keptIdx: number[] = [];
+  const evicted: Entry[] = [];
+  entries.forEach((e, i) => {
+    if (dropIdx.has(i)) evicted.push(e);
+    else {
+      kept.push(e);
+      keptIdx.push(i);
+    }
+  });
+
+  // 3) Dock the stalest SURVIVING evictable line — the first kept entry whose
+  // original index was non-protected (topmost = least-recently-touched survivor).
+  let decayed: Entry | null = null;
+  const pos = keptIdx.findIndex((i) => i < protectedStart);
+  if (pos !== -1) {
+    kept[pos].score -= 1;
+    decayed = kept[pos];
+  }
+  return { kept, evicted, decayed };
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +466,7 @@ function trim(entries: Entry[]): Entry[] {
 
 export interface AddResult {
   added: boolean;
-  reason: 'added' | 'duplicate' | 'empty' | 'too-long' | 'rejected-full';
+  reason: 'added' | 'duplicate' | 'empty' | 'too-long';
   evicted: Entry | null;
   size: number;
   /** For 'too-long': the length of the submitted lesson, so the caller can report it. */
@@ -428,27 +496,16 @@ export function addEntry(dir: string, role: string, lesson: string): Promise<Add
       return { added: false, reason: 'duplicate', evicted: null, size: entries.length, id, collidedId: entryId(collider.text) };
     }
     const newEntry: Entry = { score: 1, text };
-    entries.push(newEntry);
-    const before = entries.length;
-    const kept = trim(entries);
-    if (!kept.includes(newEntry)) {
-      // Notebook full and every existing entry outranks this one — the new
-      // lesson was the lowest-scored, so it is not stored. Report honestly so
-      // the agent's retrospective doesn't believe it saved something.
-      writeEntries(dir, role, kept); // === the prior set; no net change
-      return { added: false, reason: 'rejected-full', evicted: null, size: kept.length, id };
-    }
-    let evicted: Entry | null = null;
-    if (kept.length < before) {
-      const keptSet = new Set(kept);
-      evicted = entries.find((e) => !keptSet.has(e)) ?? null;
-    }
+    entries.push(newEntry); // newcomer lands at the fresh end — storage is recency order
+    // Newcomer is protected: a full notebook admits it, ages its stalest line,
+    // and evicts the lowest-scored one (never the newcomer). See enforceCap.
+    const { kept, evicted } = enforceCap(entries, 1);
     writeEntries(dir, role, kept);
-    return { added: true, reason: 'added', evicted, size: kept.length, id };
+    return { added: true, reason: 'added', evicted: evicted[0] ?? null, size: kept.length, id };
   });
 }
 
-/** Entries in DISPLAY order (score desc, then file order), each tagged with its file-order index. */
+/** Entries in DISPLAY order (score desc, then file order — stalest first within a score tie), each tagged with its file-order index. */
 function ordered(entries: Entry[]): { e: Entry; idx: number }[] {
   return entries.map((e, idx) => ({ e, idx })).sort((a, b) => b.e.score - a.e.score || a.idx - b.idx);
 }
@@ -522,8 +579,14 @@ export function vote(dir: string, role: string, selector: string, delta: number)
     if (entries.length === 0) throw new Error(`notebook for role "${role}" is empty`);
     const idx = selectIndex(entries, selector);
     entries[idx].score += delta;
+    // A vote is a touch: move the entry to the fresh END so storage stays in
+    // recency order (least-recently-touched first). Both signs count — a
+    // downvote is engagement too; the low score, not the position, is what makes
+    // a lesson an eviction target, so moving it to fresh never shields it.
+    const [touched] = entries.splice(idx, 1);
+    entries.push(touched);
     writeEntries(dir, role, entries);
-    return { text: entries[idx].text, score: entries[idx].score };
+    return { text: touched.text, score: touched.score };
   });
 }
 
@@ -545,10 +608,13 @@ export function merge(dir: string, role: string, selA: string, selB: string, mer
     // Drop an existing duplicate of the merged text so merge never creates one.
     const key = dedupKey(text);
     const deduped = remaining.filter((e) => dedupKey(e.text) !== key);
-    deduped.push({ score, text });
-    const kept = trim(deduped);
+    deduped.push({ score, text }); // merged lesson is a fresh touch → fresh end
+    // merge consolidates (2 → 1) so it never grows past the cap; enforceCap is a
+    // harmless no-op here unless the cap was lowered, in which case the merged
+    // lesson is protected like any newcomer.
+    const { kept, evicted } = enforceCap(deduped, 1);
     writeEntries(dir, role, kept);
-    return { added: true, reason: 'added', evicted: null, size: kept.length, id: entryId(text), sources };
+    return { added: true, reason: 'added', evicted: evicted[0] ?? null, size: kept.length, id: entryId(text), sources };
   });
 }
 
@@ -609,8 +675,10 @@ export function split(
         );
       }
     }
-    remaining.push({ score, text: textA }, { score, text: textB });
-    const kept = trim(remaining);
+    remaining.push({ score, text: textA }, { score, text: textB }); // both halves fresh → fresh end
+    // split grows by one (1 → 2); if that overflows a full notebook both halves
+    // are protected (admitted) and the stalest OTHER line ages/evicts.
+    const { kept } = enforceCap(remaining, 2);
     writeEntries(dir, role, kept);
     return { size: kept.length, source: entryId(original.text), ids: [entryId(textA), entryId(textB)] };
   });
@@ -1151,10 +1219,10 @@ export interface DiagnosticSignal {
 
 /**
  * One role's notebook occupancy. `lines` is the stored lesson count (what the
- * cap counts and `trim` evicts against); `cap` is `maxLines()` at call time. A
- * role is "about to evict" when `lines` approaches `cap`; `lines === cap` means
- * the next distinct add evicts the lowest-scored lesson, so a supervisor can see
- * memory pressure without listing files.
+ * cap counts and `enforceCap` evicts against); `cap` is `maxLines()` at call
+ * time. A role is "about to evict" when `lines` approaches `cap`; `lines === cap`
+ * means the next distinct add evicts the lowest-scored lesson (and ages the
+ * stalest survivor), so a supervisor can see memory pressure without listing files.
  */
 export interface NotebookStat {
   role: string;
@@ -1190,7 +1258,7 @@ export interface NotebookTotals {
 export interface SurfacingMetrics {
   /** Sessions that showed engagement — at least one `up`/`down` vote. The gate under every rate below; `0` means nothing here is scored (e.g. `NB_SESSION` was never set). */
   engagedSessions: number;
-  /** Genuine add attempts in engaged sessions: `accepted` + `dedup-blocked` + `rejected-full` (a real, within-cap, non-empty lesson whose fate the notebook decided; `empty`/`too-long` are malformed input, excluded). The denominator for `coverage` and `recallMiss`. */
+  /** Genuine add attempts in engaged sessions: `accepted` + `dedup-blocked` + `rejected-full` (a real, within-cap, non-empty lesson whose fate the notebook decided; `empty`/`too-long` are malformed input, excluded). `rejected-full` is historical — the always-admit policy no longer emits it, but it stays counted so pre-upgrade logs still read correctly. The denominator for `coverage` and `recallMiss`. */
   addAttempts: number;
   /** **Coverage** — novel-add rate = accepted adds ÷ `addAttempts`. High early (a young notebook filling gaps) is expected, not a fault. `null` when `addAttempts` is 0. */
   coverage: number | null;

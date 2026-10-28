@@ -70,6 +70,7 @@ New here, or wiring it into a real agent? These pick up where the reference belo
 - **[Getting started](docs/getting-started.md)** — the plain-language intro (no AI/DevOps background needed), with diagrams. There's also a one-page [visual explainer](docs/visual-explainer.html).
 - **[Harness setup](docs/harness-setup.md)** — make your agent use the notebook: the one "list the notebooks, open what fits, retrospect at the end" instruction that does it, plus optional convenience hooks, per-change git-versioning, daily backup, and a diagnostics janitor — for **Claude Code** and **Codex CLI**, on Linux/macOS/Windows.
 - **[Enterprise integration](docs/enterprise.md)** — rolling it out under data-sovereignty, security, and compliance constraints.
+- **[Eviction & aging](docs/eviction-and-aging.md)** — how a *full* notebook decides what to keep: recency-ordered storage and the staleness decay that keeps a once-useful lesson from becoming immortal.
 - **[AGENTS.md](AGENTS.md)** — the operating contract an agent follows (also the `CLAUDE.md` your harness loads). Copy-pasteable integration pieces live in [`examples/`](examples/).
 
 ## Usage
@@ -264,11 +265,12 @@ const dir = notebooksDir();
 // addEntry never throws on a *content* rejection and never silently truncates:
 // it resolves to an AddResult. Check `added`; when it is false, `reason` says
 // why — 'duplicate' (an equivalent line already exists), 'empty' (nothing left
-// after sanitizing), 'too-long' (over NB_MAX_CHARS; `length` carries the
-// submitted size so you can report it), or 'rejected-full' (the notebook is at
-// NB_MAX_LINES and every stored line outranks this one). The fifth reason,
-// 'added', is the success case. (An invalid role name or an I/O error still
-// throws — those are faults, not rejected content.)
+// after sanitizing), or 'too-long' (over NB_MAX_CHARS; `length` carries the
+// submitted size so you can report it). The success case is 'added' — a newcomer
+// is ALWAYS admitted, even into a full notebook (the stalest line is aged and the
+// lowest-scored one evicted; see docs/eviction-and-aging.md), so `evicted` may
+// name a removed entry. (An invalid role name or an I/O error still throws —
+// those are faults, not rejected content.)
 const r: AddResult = await addEntry(dir, 'reviewer', 'run lint before claiming done');
 if (!r.added) console.warn(`not stored: ${r.reason}`);
 await addEntry(dir, 'reviewer', 'run the linter first'); // a near-duplicate
@@ -320,7 +322,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build and test (note: `npm tes
 
 The entire point is that this stays small. A PR that adds a feature should make the case for why the bounded/voted/one-line model needs it, not just that it would be nice to have. Bug fixes, docs, and test coverage are always welcome.
 
-The essential features, design choices, and the rationale behind them are specified in [docs/requirements.md](docs/requirements.md) — read it before proposing a change, and keep it in sync (the PR template has a checklist item for this). It's also the place to find out why something works the way it does (for example, why the notebook file is stored in insertion order rather than sorted).
+The essential features, design choices, and the rationale behind them are specified in [docs/requirements.md](docs/requirements.md) — read it before proposing a change, and keep it in sync (the PR template has a checklist item for this). It's also the place to find out why something works the way it does (for example, why the notebook file is stored in recency order rather than sorted — see also [docs/eviction-and-aging.md](docs/eviction-and-aging.md)).
 
 Please add a one-line entry under the `Unreleased` section of [CHANGELOG.md](CHANGELOG.md) for any user-facing change.
 

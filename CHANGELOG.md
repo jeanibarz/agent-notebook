@@ -10,6 +10,17 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Changed
+- **Eviction is now recency-aware, and a full notebook always admits a newcomer.**
+  Storage order became *recency* order (least-recently-touched first): a touch — a vote
+  of either sign, an add, or a merge/split's new lesson — moves its entry to the end of
+  the file. When a full notebook takes a new lesson it is always stored (the old
+  `rejected-full` outcome is gone); the lowest-scored line is evicted (ties → stalest) and
+  then the stalest *surviving* line is docked one point. That gentle, targeted "aging" is
+  what lets a once-upvoted lesson that has gone quiet eventually fall, instead of being
+  immortal, without needing a downvote to arrive. It fires only when a notebook is full, so
+  every sub-cap notebook is unaffected except that a vote now moves its line (a ~2-line git
+  diff instead of a 1-line one). Rationale and the full design in `docs/eviction-and-aging.md`;
+  this reverses the old DP-3 "storage is insertion order, never reordered on vote".
 - The default per-notebook cap (`NB_MAX_LINES`) is now **50**, down from 200. A tighter
   default keeps eviction pressure meaningful and a notebook focused on the lessons that
   earn their place; most roles need far fewer than 200. Raise it any time with
