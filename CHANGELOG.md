@@ -9,6 +9,12 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Changed
+- The default per-notebook cap (`NB_MAX_LINES`) is now **50**, down from 200. A tighter
+  default keeps eviction pressure meaningful and a notebook focused on the lessons that
+  earn their place; most roles need far fewer than 200. Raise it any time with
+  `NB_MAX_LINES` (range unchanged, 1–5000). The character cap (`NB_MAX_CHARS`) stays 200.
+
 ## [0.2.1] - 2026-10-28
 
 ### Added

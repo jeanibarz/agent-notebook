@@ -1288,7 +1288,7 @@ describe('locking (mkdir spinlock)', () => {
   test('cross-process: concurrent `nb add` invocations on one role all land (no lost update)', async () => {
     const N = 8; // small, deterministic; ~N*20ms serialization ≪ each child's 2s acquire budget
     const env = { ...process.env, NB_DIR: dir };
-    delete env.NB_MAX_LINES; // keep the default 200-line cap so none of the N is evicted
+    delete env.NB_MAX_LINES; // keep the default cap (50); N is well under it, so none is evicted
     // Fire N separate processes at the same role simultaneously. Without the
     // lock each reads the same base file and its atomic rename clobbers the
     // others' — a classic lost update, leaving fewer than N lines. The lock

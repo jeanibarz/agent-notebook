@@ -24,7 +24,7 @@ The point of durable memory isn't to answer the questions an agent knows to ask 
 `agent-notebook` is the whole mechanism, nothing more:
 
 - **One entry = one line.** `<score>\t<lesson>`, at most 200 characters, no multi-paragraph notes.
-- **Bounded.** At most 200 lines per role. When full, the lowest-scored line is evicted first — harmful or useless lessons leave, useful ones survive.
+- **Bounded.** At most 50 lines per role by default (raise with `NB_MAX_LINES`). When full, the lowest-scored line is evicted first — harmful or useless lessons leave, useful ones survive.
 - **Voted, not aged.** An agent votes +1/-1 on a lesson it used. No decay curve, no relevance scoring, no scheduler.
 - **Plain text.** `~/.agent-notebook/notebooks/<role>.md`. Readable, diffable, greppable, backed up by whatever already backs up your home directory.
 
@@ -126,7 +126,7 @@ It reads exactly one line: a single trailing newline is stripped, and **multi-li
 
 **Storage order vs. display order.** `nb show` sorts highest-scored first, but the `<role>.md` file on disk is stored in *insertion order*, not sorted — so a raw `cat` of the file looks unordered, and that is intentional, not a bug. Sorting happens only at display time: ids are content-derived (stable across reordering), the lowest-scored line is evicted regardless of position, and keeping insertion order means a `vote` rewrites exactly one line in place — the smallest, most stable git diff — and preserves the "ties → oldest" tie-break that both display and eviction rely on. Read a notebook with `nb show`, not by eyeballing the file.
 
-`NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than 200/200. You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory and `nb path <role>` the resolved file, so `cat "$(nb path reviewer)"` or `git diff "$(nb path reviewer)"` just works.
+`NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than the 50-line / 200-char defaults. You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory and `nb path <role>` the resolved file, so `cat "$(nb path reviewer)"` or `git diff "$(nb path reviewer)"` just works.
 
 ### Discovering notebooks — `nb list`
 
