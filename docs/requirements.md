@@ -12,6 +12,7 @@ change the requirement and its test together (see [Keeping this document honest]
 
 - **Source of truth for behavior:** `src/notebook.ts` (library) and `src/cli.ts` (CLI).
 - **Tests:** `src/notebook.test.ts`, `src/cli.test.ts`.
+- **Design rationale (signals & self-observation):** [`self-observing-notebook.md`](./self-observing-notebook.md) — why the tool instruments itself and how engagement / coverage / recall / precision / serendipity are told apart.
 
 ---
 

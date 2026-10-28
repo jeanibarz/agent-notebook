@@ -10,6 +10,10 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- `docs/self-observing-notebook.md` — the design rationale for the self-observing
+  signal layer: why the tool instruments itself, what each operation signals, and how
+  engagement, coverage, surfacing recall, surfacing precision, and serendipity are
+  distinguished. Linked from `docs/requirements.md`.
 - Free diagnostic signals in `nb stats` (#72). Three memory-quality observations read
   straight from the usage ring — no new agent action, no field added to a lesson: 
   **browse-without-use** (a notebook `show`n in a session with no `vote` on it that
