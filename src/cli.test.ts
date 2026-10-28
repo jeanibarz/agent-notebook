@@ -1104,6 +1104,20 @@ describe('nb search — the demoted keyword fallback (issue #82)', () => {
     expect(r.err).toContain('missing <query>');
   });
 
+  test('a whitespace-only query logs no-terms (not no-match), so it is never a false coverage gap', async () => {
+    process.env.NB_SESSION = 'cli-blank';
+    const r = await run(['search', '   ']);
+    expect(r.code).toBe(0);
+    const row = parseUsage(dir).filter((x) => x.command === 'search').at(-1)!;
+    expect(row.outcome).toBe('no-terms'); // not 'no-match' — the gap-sensor keys on no-match
+    // A following add in the same session must NOT be flagged as a failed-search gap.
+    await run(['add', 'reviewer', 'a lesson added after an empty search']);
+    await run(['vote', 'reviewer', 'added after', '+1']);
+    const stats = await run(['stats', '--json']);
+    const signals = JSON.parse(stats.out).signals as { kind: string }[];
+    expect(signals.some((s) => s.kind === 'failed-search')).toBe(false);
+  });
+
   test('end-to-end: a failed CLI search then an add in the same session surfaces a failed-search signal', async () => {
     process.env.NB_SESSION = 'cli-gap';
     await run(['search', 'retry backoff']); // no notebooks yet → no-match

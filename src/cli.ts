@@ -376,8 +376,11 @@ export async function runNbCli(
         // Log the search so the `failed-search → add` gap-sensor can read it back:
         // outcome `match`/`no-match` plus the query in `note` (no new log column).
         // A no-match is NOT an error — the command succeeded, it just found
-        // nothing (exit 0, like a dedup-blocked add), so `ok` is set below.
-        meta.outcome = result.groups.length > 0 ? 'match' : 'no-match';
+        // nothing (exit 0, like a dedup-blocked add), so `ok` is set below. A query
+        // with no searchable terms (e.g. all whitespace) is logged as `no-terms`,
+        // NOT `no-match`, so an empty query can never masquerade as a coverage gap
+        // (the `failed-search` signal keys on `no-match`) — DP-5, never mislead.
+        meta.outcome = result.terms.length === 0 ? 'no-terms' : result.groups.length > 0 ? 'match' : 'no-match';
         meta.note = query;
         if (json) {
           process.stdout.write(JSON.stringify(result) + '\n');

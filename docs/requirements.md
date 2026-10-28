@@ -605,14 +605,17 @@ and `cli.test.ts` → `describe('nb search …')`.
 ([FR-USAGE-002](#fr-usage-002)) with outcome `match` or `no-match` and the query in the
 `note` field (reusing existing columns — no new column), under `role` `-` since it spans
 notebooks. `stats` SHALL then derive a **`failed-search`** `DiagnosticSignal`
-([FR-STATS-003](#fr-stats-003)): within one engaged session, a `no-match` search followed
+([FR-STATS-003](#fr-stats-003)): within one session, a `no-match` search followed
 by an `accepted` `add` SHALL be flagged as a **coverage gap** the notebook did not hold,
 labelled by the agent's own query (one signal per session + added-entry; a blank session
-is skipped). **Rationale:** This is the `failed-search → add` gap-sensor — the coverage
-signal deferred from #72. A search that keeps failing for a topic is exactly where
-presentation is failing for that topic, and the agent labels it for free ([DP-8](#dp-8)).
-The search `note` carries an agent-supplied query, sanitized like every usage field so it
-cannot split the row ([FR-USAGE-002](#fr-usage-002)).
+is skipped, and a terms-less query logs `no-terms`, never `no-match`, so it cannot be a
+false gap). Because the `search` row is logged under role `-` (it spans notebooks), the
+signal is observable only in an **unscoped** `stats` report — `nb stats <role>` filters to
+one role and cannot pair the cross-notebook search with the add. **Rationale:** This is the
+`failed-search → add` gap-sensor — the coverage signal deferred from #72. A search that
+keeps failing for a topic is exactly where presentation is failing for that topic, and the
+agent labels it for free ([DP-8](#dp-8)). The search `note` carries an agent-supplied query,
+sanitized like every usage field so it cannot split the row ([FR-USAGE-002](#fr-usage-002)).
 *Proven by:* `notebook.test.ts` → `describe('failed-search → add gap signal (issue #82)')`
 and the `nb search` logging / end-to-end CLI tests.
 

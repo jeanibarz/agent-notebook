@@ -864,7 +864,7 @@ export interface UsageRow {
   session: string;
   /** Stable id(s) of the entry/entries the call touched; `[]` when none. */
   entries: string[];
-  /** Outcome token: `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` (add), `up`/`down` (vote), `removed` (rm), `merged` (merge), `match`/`no-match` (search, with the query in `note`); `''` otherwise. */
+  /** Outcome token: `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` (add), `up`/`down` (vote), `removed` (rm), `merged` (merge), `match`/`no-match`/`no-terms` (search, with the query in `note`; `no-terms` = the query had no searchable tokens, so it is NOT a coverage gap); `''` otherwise. */
   outcome: string;
   /** For a `dedup-blocked` add: the id of the existing entry that blocked it; `''` otherwise. */
   collided: string;
@@ -1082,7 +1082,10 @@ export interface Anomaly {
  *   - `failed-search`: a `search` returned nothing and a lesson was then added in the
  *     same session (issue #82) → a coverage gap the notebook lacked, labelled by the
  *     agent's own query. This is the `failed-search → add` gap-sensor the demoted
- *     `nb search` fallback unlocks (the coverage signal deferred from #72).
+ *     `nb search` fallback unlocks (the coverage signal deferred from #72). The
+ *     `search` row is logged under role `-` (it spans notebooks), so this signal is
+ *     observable only in an UNSCOPED `stats` report — `stats({role})` filters to one
+ *     role and cannot pair the cross-notebook search with the add.
  */
 export interface DiagnosticSignal {
   kind: 'browse-without-use' | 'eviction-while-still-voted' | 'vote-reversal' | 'failed-search';
