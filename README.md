@@ -88,7 +88,14 @@ $ nb split reviewer build "run the build first" "run vitest after the build" --r
 split one entry into two — 2 lines
 ```
 
-The optional `--reason <code>` (and `--note "<text>"`) is recorded in the usage log only — never in the notebook — so the split rate and its reason become a diagnostic signal. The starter vocabulary for `split` is `overloaded` (the entry crammed two distinct lessons into one line) and `other` (any other motive; add a `--note`). An unrecognized code is accepted as `other` with the code kept in the note, never rejected — the `other` rate is the thermostat that tells us when a new reason code should be minted.
+The optional `--reason <code>` (and `--note "<text>"`) is recorded in the usage log only — never in the notebook — so each op's rate-by-reason becomes a diagnostic signal. It is accepted by **every** mutating op, each with its own *seed-and-grow* vocabulary:
+
+- `merge` — `duplicate` (the two entries say the same thing — one is a reworded copy of the other) · `other`
+- `rm` — `wrong` (the lesson is incorrect or misleading) · `obsolete` (it was true but no longer applies) · `other`
+- `split` — `overloaded` (the entry crammed two distinct lessons into one line) · `other`
+- `add` — no enum yet: free text only via `--note`, so `add`'s codes can emerge from mined notes rather than be guessed up front
+
+The reason is always optional (omit it rather than invent one). An unrecognized code is accepted as `other` with the code kept in the note, never rejected — the `other` rate is the thermostat that tells us when a new reason code should be minted. Codes are per-op: a code valid for one op buckets to `other` on another.
 
 **Piping a lesson in.** Pass `-` as the lesson to read it from stdin, so an agent that just wrote a lesson into a pipe can hand it over without shell-quoting:
 
@@ -114,7 +121,7 @@ Every `nb` call appends one tab-delimited row to the usage ring (`.nb-usage.log`
 - the **entry id(s)** the call touched — the added/voted/removed entry, (for `merge`) the two sources plus the merged result, or (for `split`) the source plus the two produced entries;
 - a **session id** read from the `NB_SESSION` environment variable (a hook or supervising agent sets it so calls can be grouped; absent → blank, and co-access simply isn't computed);
 - the **outcome** — for `add`, `accepted` or `dedup-blocked` (and on a block, the colliding entry's id); for `vote`, `up` or `down`; `removed` / `merged` / `split` for `rm` / `merge` / `split`; plus, when an `add` evicts, which entry left and its final score;
-- the optional **operation reason** — a per-op enum code and free-text note attached to a mutating op (currently `split`, via `--reason`/`--note`); it lives in the log, never in a lesson.
+- the optional **operation reason** — a per-op enum code and free-text note attached to any mutating op (`add`/`merge`/`rm`/`split`, via `--reason`/`--note`); it lives in the log, never in a lesson.
 
 This is richer *logging* only — the notebook file and the one-line lesson are untouched (it adds no field to an entry). Older rows written before this change are still read correctly; their extra columns are simply blank. Logging stays best-effort: a logging failure never fails a real `nb` operation, and the ring stays bounded by `NB_USAGE_RING`.
 

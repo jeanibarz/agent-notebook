@@ -597,10 +597,16 @@ export interface UsageMeta {
  * starts with only the distinction we already need plus an `other` escape hatch,
  * and the vocabulary grows from mined `other` free text rather than from
  * predefined speculative categories (the `other` rate is the growth thermostat).
- * This issue seeds `split`; the `merge`/`rm`/`add` enums arrive with the
- * operation-reasons issue that generalizes the mechanism to every mutating op.
+ * The mechanism now spans every mutating op: `merge` and `rm` carry their own
+ * seeds, `split` keeps its original one, and `add` is intentionally ABSENT — it
+ * is free-text-only for now (`--note`) so its enum can emerge from mined notes
+ * rather than be guessed. An op with no entry here has an empty vocabulary, so
+ * any code it is given is bucketed as `other` (keeping the code in the note),
+ * which is exactly the emergent-vocabulary path `normalizeReason` takes.
  */
 export const REASON_ENUMS: Record<string, readonly string[]> = {
+  merge: ['duplicate', 'other'],
+  rm: ['wrong', 'obsolete', 'other'],
   split: ['overloaded', 'other'],
 };
 

@@ -320,11 +320,13 @@ print `<NB_DIR>/<role>.md` as a bare path (pipe-friendly, no decoration).
 
 <a id="fr-cli-001"></a>
 **FR-CLI-001 (Must).** `nb` SHALL implement: `show`, `add <role> ("<lesson>"|-)`,
-`vote`, `merge`, `split <role> <id|query> "<a>" "<b>" [--reason <code>] [--note "<text>"]`,
+`vote`, `merge`, `split <role> <id|query> "<a>" "<b>"`,
 `rm`, `stats [<role>] [--since <N{d,h,m}>] [--json]`, `path [<role>]`,
 `roles`, `--help`, `--version`. The `-` lesson operand of `add` reads from stdin per
-[FR-ADD-007](#fr-add-007). The `--reason`/`--note` flags are consumed by `split` (the
-operation-reasons mechanism, [FR-REASON-001](#fr-reason-001)).
+[FR-ADD-007](#fr-add-007). The optional `[--reason <code>] [--note "<text>"]` flags are
+consumed by every mutating op — `add`, `merge`, `rm`, and `split` — (the operation-reasons
+mechanism, [FR-REASON-001](#fr-reason-001)); they are stripped before positional parsing so
+they are never mistaken for a lesson/operand.
 
 <a id="fr-cli-002"></a>
 **FR-CLI-002 (Must).** Exit codes SHALL be: `0` success; `1` a handled operation
@@ -415,16 +417,20 @@ reason — forcing it would breed filler, the anti-Goodhart rule of [DP-8](#dp-8
 An **unrecognized** code SHALL be accepted as `other` (keeping the original code at the
 front of the note), never rejected — the `other` rate is the growth thermostat that an
 offline process mines to promote recurring reasons into real enum codes. The enum is
-**seed-and-grow**: `split` seeds `overloaded · other`; the remaining mutating ops
-(`merge`/`rm`/`add`) gain their enums when the mechanism is generalized to them. Each
-enum value SHALL be given a crisp, example-anchored definition in `nb --help` so
-different agents code the same case consistently.
+**seed-and-grow** and now spans every mutating op: `merge` seeds `duplicate · other`,
+`rm` seeds `wrong · obsolete · other`, and `split` seeds `overloaded · other`; `add` is
+intentionally enum-less (free text only via `--note`) so its vocabulary emerges from
+mined notes rather than being guessed up front. A code valid for one op is NOT valid for
+another (it buckets to `other` there), since the vocabularies are per-op. Each enum value
+SHALL be given a crisp, example-anchored definition in `nb --help` so different agents
+code the same case consistently.
 **Rationale:** An operation's surface form hides its intent (an agent may `merge` to save
 calls, not because of a true duplicate); a reason disambiguates it and becomes a typed
 label for later self-improvement, while staying monitoring-only so the notebook keeps its
 one-line / no-schema contract.
 *Proven by:* `notebook.test.ts` → `describe('operation reasons (seed-and-grow enum)')`
-and `cli.test.ts` → `describe('split (issue #68)')`.
+and `cli.test.ts` → `describe('split (issue #68)')` and
+`describe('operation reasons on add/merge/rm (issue #69)')`.
 
 <a id="fr-stats-001"></a>
 **FR-STATS-001 (Should).** `stats` SHALL roll up per-command calls/errors/p50/p95/last-used
