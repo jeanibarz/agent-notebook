@@ -9,6 +9,8 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-28
+
 ### Added
 - The **`.` namespace convention** for grouping notebooks (#83) — a documented,
   recommended way to cluster related notebooks by a `.`-delimited role-name prefix
@@ -134,5 +136,6 @@ versions are listed plainly.
 ### Added
 - Initial release: a bounded, voted, plain-text memory for AI agents. Commands: `nb add`, `show`, `vote`, `merge`, `rm`, `stats`. Each role's notebook holds at most 200 lines, each at most 200 characters, and the lowest-scored line is evicted first when full. The library has zero runtime dependencies.
 
-[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/jeanibarz/agent-notebook/releases/tag/v0.1.3
