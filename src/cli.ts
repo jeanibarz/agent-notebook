@@ -4,7 +4,7 @@
 // offline file edit.
 //
 // Commands:
-//   nb show   <role>                       print the notebook
+//   nb show   <role> [--json]              print the notebook (--json → structured {role,description,entries})
 //   nb add    <role> "<lesson>"            dedup-skip, score +1, write, trim (lowest-score out)
 //   nb add    <role> -                     read the one-line lesson from stdin (multi-line refused)
 //   nb vote   <role> <id|query> +1|-1      adjust an entry's score
@@ -45,6 +45,7 @@ import {
   render,
   search,
   setDescription,
+  showJson,
   split,
   stats,
   vote,
@@ -63,7 +64,7 @@ const LIST_DEFAULT_LIMIT = 50;
 const HELP = `nb — the Agent Notebook (bounded, voted, per-role memory)
 
 usage:
-  nb show   <role>                        print the notebook (highest-scored first)
+  nb show   <role> [--json]               print the notebook (highest-scored first; --json emits {role,description,entries})
   nb add    <role> "<lesson>"             add a lesson (dedup-skipped; rejected if too long, never truncated)
   nb add    <role> -                      read the lesson from stdin (one line; multi-line is refused)
   nb vote   <role> <id|query> +1|-1       upvote/downvote an entry you used
@@ -202,10 +203,10 @@ export async function runNbCli(
   const meta: UsageMeta = {};
   // `--json` on a mutation (add/vote/rm/merge) emits the library's structured
   // result object on stdout and nothing else, so a supervisor can branch on
-  // `reason`/`score` without regex-parsing the English line. Strip it before
-  // positional parsing (like `stats`, it is a flag, not a role/lesson), and keep
-  // it only on the commands that return a result object — `show`/`path`/`roles`
-  // ignore it. Exit codes are unchanged (a too-long add still exits 1).
+  // `reason`/`score` without regex-parsing the English line. `show` also honors
+  // it (emitting a ShowResult); `stats` reads it from its own arg slice. Strip it
+  // before positional parsing (like `stats`, it is a flag, not a role/lesson);
+  // `path`/`roles` ignore it. Exit codes are unchanged (a too-long add still exits 1).
   const json = argv.includes('--json');
   let args = json ? argv.filter((a) => a !== '--json') : argv;
   // `--reason <code>` / `--note "<text>"` attach an optional, never-required
@@ -226,12 +227,21 @@ export async function runNbCli(
     }
     switch (cmd) {
       case 'show': {
-        role = need(argv[1], 'role');
-        // Print the one-line description (if any) as a header above the lessons,
-        // so a reader sees what the notebook is *for* before its contents.
-        const desc = getDescription(dir, role);
-        if (desc) process.stdout.write(`# desc: ${desc}\n`);
-        process.stdout.write(render(dir, role) + '\n');
+        // Resolve the role from the --json-stripped args so `nb show <role> --json`
+        // and `nb show --json <role>` both work and the flag is never taken as the role.
+        role = need(args[1], 'role');
+        if (json) {
+          // `--json` emits the structured ShowResult ({ role, description, entries })
+          // and nothing else, so an agent reads each entry's id/score/text without
+          // regex-parsing the human output. Same ordering as `render()`.
+          process.stdout.write(JSON.stringify(showJson(dir, role)) + '\n');
+        } else {
+          // Print the one-line description (if any) as a header above the lessons,
+          // so a reader sees what the notebook is *for* before its contents.
+          const desc = getDescription(dir, role);
+          if (desc) process.stdout.write(`# desc: ${desc}\n`);
+          process.stdout.write(render(dir, role) + '\n');
+        }
         break;
       }
       case 'add': {
