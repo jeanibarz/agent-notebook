@@ -955,6 +955,33 @@ export interface Anomaly {
 }
 
 /**
+ * A *free diagnostic signal* (issue #72): a memory-quality observation read
+ * straight from the usage ring, costing no new agent action. Unlike `Anomaly`
+ * (command health) this is about the notebook itself — its descriptions, cap
+ * pressure, and whether a lesson is aimed right — so it carries a `role` (the
+ * notebook) and optionally the `entry` id or `session` the signal concerns.
+ *
+ * The three kinds, all implied by behavior the agent already performs:
+ *   - `browse-without-use`: a notebook was `show`n in a session but nothing in it
+ *     was voted that session → its description may over-promise.
+ *   - `eviction-while-still-voted`: the cap evicted an entry that had been voted
+ *     on → the cap may be too tight for that role (a candidate to split).
+ *   - `vote-reversal`: the same entry was upvoted in one session and downvoted in
+ *     another → the lesson may be correct but mis-aimed.
+ */
+export interface DiagnosticSignal {
+  kind: 'browse-without-use' | 'eviction-while-still-voted' | 'vote-reversal';
+  /** The notebook role the signal concerns. */
+  role: string;
+  /** Human-readable one-line explanation. */
+  detail: string;
+  /** `browse-without-use`: the session the notebook was browsed in. */
+  session?: string;
+  /** `eviction-while-still-voted` / `vote-reversal`: the entry id involved. */
+  entry?: string;
+}
+
+/**
  * One role's notebook occupancy. `lines` is the stored lesson count (what the
  * cap counts and `trim` evicts against); `cap` is `maxLines()` at call time. A
  * role is "about to evict" when `lines` approaches `cap`; `lines === cap` means
@@ -986,6 +1013,14 @@ export interface StatsReport {
    */
   notebooks: NotebookStat[];
   notebookTotals: NotebookTotals;
+  /**
+   * Free diagnostic signals (issue #72): memory-quality observations derived
+   * from the same windowed, role-scoped usage rows as `anomalies`, but about the
+   * notebook (descriptions, cap pressure, mis-aimed lessons) rather than command
+   * health. Additive to the report — `window`/`perCommand`/`anomalies`/
+   * `notebooks`/`notebookTotals` are unchanged. See `DiagnosticSignal`.
+   */
+  signals: DiagnosticSignal[];
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -1113,6 +1148,112 @@ export function stats(
     }
   }
 
+  // Free diagnostic signals (issue #72): three memory-quality observations read
+  // straight from the windowed, role-scoped `recent` rows — no new agent action.
+  // Each is implied by behavior the agent already performs for its own reasons.
+  const signals: DiagnosticSignal[] = [];
+
+  // (A) browse-without-use: a notebook `show`n in a session with no `vote` on any
+  //     of its entries that session → the description may over-promise. The unit
+  //     is the (session, role) pair, so it needs NB_SESSION — rows with a blank
+  //     session can't be grouped and are skipped (FR-USAGE-002: "co-access is
+  //     then not computed"). A vote anywhere in the session counts as use.
+  {
+    const browsed = new Map<string, { shown: boolean; voted: boolean }>(); // session \u0000 role
+    for (const r of recent) {
+      if (r.session === '') continue;
+      if (r.command !== 'show' && !(r.command === 'vote' && (r.outcome === 'up' || r.outcome === 'down'))) continue;
+      const k = `${r.session}\u0000${r.role}`;
+      const cur = browsed.get(k) ?? { shown: false, voted: false };
+      if (r.command === 'show') cur.shown = true;
+      else cur.voted = true;
+      browsed.set(k, cur);
+    }
+    for (const [k, v] of browsed) {
+      if (!v.shown || v.voted) continue;
+      const [session, role] = k.split('\u0000');
+      signals.push({
+        kind: 'browse-without-use',
+        role,
+        session,
+        detail: `shown in session "${session}" but no entry was voted that session — the notebook's description may over-promise`,
+      });
+    }
+  }
+
+  // (B) eviction-while-still-voted: an `add` evicted an entry (its `evicted`
+  //     column is `<id>:<score>`) whose id was voted on → the cap may be too
+  //     tight for that role (a candidate to split the role).
+  {
+    const votedIds = new Set<string>();
+    for (const r of recent) {
+      if (r.command === 'vote' && (r.outcome === 'up' || r.outcome === 'down')) {
+        for (const id of r.entries) votedIds.add(id);
+      }
+    }
+    const seen = new Set<string>(); // dedup repeat evictions of the same role+id
+    for (const r of recent) {
+      if (r.command !== 'add' || r.evicted === '') continue;
+      const evictedId = r.evicted.split(':')[0];
+      if (!evictedId || !votedIds.has(evictedId)) continue;
+      const k = `${r.role}\u0000${evictedId}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      signals.push({
+        kind: 'eviction-while-still-voted',
+        role: r.role,
+        entry: evictedId,
+        detail: `entry ${evictedId} was evicted by the cap but had been voted on — the cap may be too tight for role "${r.role}" (consider splitting it)`,
+      });
+    }
+  }
+
+  // (C) vote-reversal across sessions: the same entry upvoted in one session and
+  //     downvoted in a DIFFERENT session → correct but mis-aimed. Needs a session
+  //     on both votes; same-session reversals don't count (not "across sessions").
+  {
+    const ups = new Map<string, Set<string>>(); // id → sessions it was upvoted in
+    const downs = new Map<string, Set<string>>(); // id → sessions it was downvoted in
+    const roleOf = new Map<string, string>(); // id → role, for reporting
+    for (const r of recent) {
+      if (r.command !== 'vote' || r.session === '') continue;
+      const target = r.outcome === 'up' ? ups : r.outcome === 'down' ? downs : null;
+      if (!target) continue;
+      for (const id of r.entries) {
+        let s = target.get(id);
+        if (!s) { s = new Set(); target.set(id, s); }
+        s.add(r.session);
+        roleOf.set(id, r.role);
+      }
+    }
+    for (const [id, upSessions] of ups) {
+      const downSessions = downs.get(id);
+      if (!downSessions) continue;
+      // Reversal "across sessions" ⇔ some up-session differs from some down-session.
+      const crossSession = [...upSessions].some((u) => [...downSessions].some((d) => d !== u));
+      if (!crossSession) continue;
+      signals.push({
+        kind: 'vote-reversal',
+        role: roleOf.get(id) ?? '',
+        entry: id,
+        detail: `entry ${id} was upvoted and downvoted in different sessions — it may be correct but mis-aimed`,
+      });
+    }
+  }
+
+  // Deterministic order so renderers and tests see a stable sequence.
+  const sigOrder: Record<DiagnosticSignal['kind'], number> = {
+    'browse-without-use': 0,
+    'eviction-while-still-voted': 1,
+    'vote-reversal': 2,
+  };
+  signals.sort(
+    (a, b) =>
+      sigOrder[a.kind] - sigOrder[b.kind] ||
+      a.role.localeCompare(b.role) ||
+      (a.entry ?? a.session ?? '').localeCompare(b.entry ?? b.session ?? ''),
+  );
+
   const window =
     windowMs % 86_400_000 === 0
       ? `${windowMs / 86_400_000}d`
@@ -1137,5 +1278,5 @@ export function stats(
     cap,
   };
 
-  return { window, totalCalls: recent.length, perCommand, anomalies, notebooks, notebookTotals };
+  return { window, totalCalls: recent.length, perCommand, anomalies, notebooks, notebookTotals, signals };
 }

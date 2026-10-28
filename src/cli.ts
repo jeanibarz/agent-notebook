@@ -13,7 +13,7 @@
 //   nb rm     <role> <id|query>            delete an entry judged useless
 //   (add/vote/rm/merge take --json: one structured result object on stdout)
 //   nb describe <role> ["<text>"]          set the notebook's one-line description (or print it)
-//   nb stats  [<role>] [--since 7d] [--json]  usage analytics + anomaly flags (--json = raw StatsReport)
+//   nb stats  [<role>] [--since 7d] [--json]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport)
 //   nb path   [<role>]                     print the notebooks dir, or a role's file path
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
 //   nb ls / nb roles                       aliases of `nb list`
@@ -68,7 +68,7 @@ usage:
   nb split  <role> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
   nb rm     <role> <id|query>             delete an entry
   nb describe <role> ["<text>"]           set the notebook's one-line description (no text → print the current one)
-  nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly flags (--json emits the raw StatsReport)
+  nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
   nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
@@ -120,6 +120,13 @@ notes:
     convention, e.g. \`nb list review.\`); \`--limit N\` bounds the rows (default ${LIST_DEFAULT_LIMIT}) so discovery
     cost stays flat as notebooks grow; \`--json\` emits the raw NotebookListing. An empty (zero-lesson,
     no-description) notebook is hidden — it is phantom debris with nothing to discover.
+  - \`nb stats\` also surfaces free *diagnostic signals* read straight from the usage log (no
+    extra agent action): browse-without-use (a notebook shown in a session but no entry voted
+    that session — the description may over-promise), eviction-while-still-voted (the cap
+    evicted an entry that had been voted on — the cap may be too tight for that role), and
+    vote-reversal (the same entry upvoted in one session and downvoted in another — correct but
+    mis-aimed). They need \`NB_SESSION\` set to attribute calls to a session; \`--json\` includes
+    them as \`signals[]\` in the StatsReport.
   - a notebook holds at most 200 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
@@ -540,6 +547,19 @@ function renderStats(dir: string, role: string | undefined, windowMs: number | u
     }
   } else {
     lines.push('  anomalies: none');
+  }
+  // Free diagnostic signals (issue #72): memory-quality observations read from
+  // the usage ring (over-promised descriptions, too-tight caps, mis-aimed
+  // lessons). Distinct from anomalies (command health), so they get their own
+  // section; each line names the role (and entry/session where relevant).
+  if (rep.signals.length > 0) {
+    lines.push('  signals:');
+    for (const s of rep.signals) {
+      const where = s.entry ? ` entry ${s.entry}` : s.session ? ` session "${s.session}"` : '';
+      lines.push(`    [${s.kind}] role ${s.role}${where}: ${s.detail}`);
+    }
+  } else {
+    lines.push('  signals: none');
   }
   // Notebook inventory (issue #40): make memory pressure visible — a role at
   // `lines/cap` where the two are equal is one distinct add from an eviction,

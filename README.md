@@ -142,7 +142,17 @@ Notebooks are ordered **richest-first** (most lessons first — the ones most wo
 
 ### Machine-readable `nb stats`
 
-`nb stats --json` prints the raw `StatsReport` to stdout as a single JSON object instead of the human table, so a supervising agent can act on a `loop` / `went-silent` / `high-error-rate` anomaly without regex-parsing formatted text. The shape is the exported `StatsReport` interface (`{ window, totalCalls, perCommand[], anomalies[], notebooks[], notebookTotals }`) and is a stable, additive-only contract. `notebooks` is the per-role inventory — `{ role, lines, cap }` for each role's notebook, where `lines` is the stored-lesson count and `cap` is `maxLines()` — so a supervisor can see that a role is at (or near) its cap and about to evict a lesson; `notebookTotals` aggregates it as `{ roles, lines, cap }`. The inventory is the current on-disk state, not a slice of the usage window. It composes with `[<role>]` and `--since`; a bad `--since` window still warns on stderr (stdout stays pure JSON) and falls back to 7d.
+`nb stats --json` prints the raw `StatsReport` to stdout as a single JSON object instead of the human table, so a supervising agent can act on a `loop` / `went-silent` / `high-error-rate` anomaly without regex-parsing formatted text. The shape is the exported `StatsReport` interface (`{ window, totalCalls, perCommand[], anomalies[], notebooks[], notebookTotals, signals[] }`) and is a stable, additive-only contract. `notebooks` is the per-role inventory — `{ role, lines, cap }` for each role's notebook, where `lines` is the stored-lesson count and `cap` is `maxLines()` — so a supervisor can see that a role is at (or near) its cap and about to evict a lesson; `notebookTotals` aggregates it as `{ roles, lines, cap }`. The inventory is the current on-disk state, not a slice of the usage window. It composes with `[<role>]` and `--since`; a bad `--since` window still warns on stderr (stdout stays pure JSON) and falls back to 7d.
+
+### Free diagnostic signals
+
+`nb stats` also surfaces a handful of **free diagnostic signals** — memory-quality observations read straight from the usage log, costing no new agent action because each is already implied by behaviour the agent performs for its own reasons. They appear in the human table under a `signals:` section and in `--json` as `signals[]` (each a `DiagnosticSignal` = `{ kind, role, detail, session?, entry? }`). The three kinds:
+
+- **browse-without-use** — a notebook was `show`n in a session but nothing in it was voted that session → its description may over-promise (it drew a look that didn't pay off).
+- **eviction-while-still-voted** — the cap evicted an entry (`add`'s `evicted` column) whose id had been voted on → the cap may be too tight for that role, a candidate to split the role.
+- **vote-reversal** — the same entry was upvoted in one session and downvoted in another → the lesson may be correct but *mis-aimed* (right in one context, wrong in another).
+
+All three are **session-aware**, so set `NB_SESSION` (a hook or supervising agent does this) for them to attribute calls to a session — browse-without-use and vote-reversal need it, and skip calls with a blank session. Like the anomalies, they are computed over the windowed, role-scoped usage rows (so `--since` and `[<role>]` apply). They are deliberately heuristic *hints*, not verdicts: a glance that didn't lead to a vote isn't proof a description is bad, just a place worth a look.
 
 ### What the usage log records
 

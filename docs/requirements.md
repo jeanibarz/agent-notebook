@@ -483,6 +483,28 @@ within a window (`parseWindowMs`, default 7d) and flag three anomalies: **loop**
 **FR-STATS-002 (Should).** A malformed anomaly-tuning value SHALL fall back to the
 documented default (never `NaN`, which would disable detection).
 
+<a id="fr-stats-003"></a>
+**FR-STATS-003 (Should).** `stats` SHALL additionally derive **free diagnostic signals**
+from the same windowed, role-scoped usage rows and return them as `StatsReport.signals`
+(a list of `DiagnosticSignal = { kind, role, detail, session?, entry? }`), computed from
+the usage ring alone — the entry-level columns of [FR-USAGE-002](#fr-usage-002) — with no
+new agent action and no field added to a lesson ([NG-004](#ng-004)). The three kinds:
+**browse-without-use** (a `show` of a notebook in a session with no `vote` on any of its
+entries that same session → the description may over-promise), **eviction-while-still-voted**
+(an `add` whose `evicted` id had been voted on → the cap may be too tight for that role),
+and **vote-reversal** (one entry id with an `up` vote in one session and a `down` vote in a
+**different** session → correct but mis-aimed). browse-without-use and vote-reversal are
+session-scoped and SHALL skip rows with a blank session ([FR-USAGE-002](#fr-usage-002):
+"co-access is then not computed"). The field is additive — the report from
+[FR-STATS-001](#fr-stats-001) and the issue-#40 inventory is otherwise unchanged. The
+`failed-search→add` coverage-gap signal is intentionally deferred to a future `nb search`
+command and is NOT part of this set.
+**Rationale:** These signals diagnose description quality, cap pressure, and mis-targeting
+from behaviour the agent already performs; reading them costs nothing and keeps the
+one-line / no-schema lesson contract intact. They are heuristic hints, not verdicts.
+*Proven by:* `notebook.test.ts` → `describe('diagnostic signals (issue #72)')` and
+`cli.test.ts` → `describe('diagnostic signals (issue #72)')`.
+
 ### 4.13 Notebook descriptions & metadata
 
 <a id="fr-desc-001"></a>

@@ -844,6 +844,87 @@ describe('usage log + stats', () => {
   }, 30_000);
 });
 
+describe('diagnostic signals (issue #72)', () => {
+  // All three signals are read from the usage ring (no new agent action). Rows
+  // are logged with explicit sessions so the tests are deterministic regardless
+  // of whether NB_SESSION happens to be set in the host environment.
+
+  test('browse-without-use: a show with no vote in the same session is flagged', () => {
+    logUsage(dir, 'reviewer', 'show', true, 2, { session: 's1' });
+    const rep = stats(dir, { now: Date.now() });
+    const sig = rep.signals.find((s) => s.kind === 'browse-without-use' && s.role === 'reviewer');
+    expect(sig).toBeDefined();
+    expect(sig!.session).toBe('s1');
+  });
+
+  test('browse-without-use: a vote anywhere in the session suppresses it', () => {
+    logUsage(dir, 'reviewer', 'show', true, 2, { session: 's1' });
+    logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's1', entries: ['abc123'], outcome: 'up' });
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.signals.some((s) => s.kind === 'browse-without-use' && s.session === 's1')).toBe(false);
+  });
+
+  test('browse-without-use: a show with a blank session is skipped (needs NB_SESSION)', () => {
+    logUsage(dir, 'reviewer', 'show', true, 2, { session: '' });
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.signals.some((s) => s.kind === 'browse-without-use')).toBe(false);
+  });
+
+  test('eviction-while-still-voted: the cap evicted an entry that had been voted on', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', entries: ['vic777'], outcome: 'up' });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's2', entries: ['new999'], outcome: 'accepted', evicted: 'vic777:0' });
+    const rep = stats(dir, { now: Date.now() });
+    const sig = rep.signals.find((s) => s.kind === 'eviction-while-still-voted');
+    expect(sig).toMatchObject({ role: 'patcher', entry: 'vic777' });
+  });
+
+  test('eviction-while-still-voted: evicting a never-voted entry is NOT flagged', () => {
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's1', entries: ['new999'], outcome: 'accepted', evicted: 'unv000:0' });
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.signals.some((s) => s.kind === 'eviction-while-still-voted')).toBe(false);
+  });
+
+  test('vote-reversal: upvoted in one session, downvoted in another', () => {
+    logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's1', entries: ['xy12ab'], outcome: 'up' });
+    logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's2', entries: ['xy12ab'], outcome: 'down' });
+    const rep = stats(dir, { now: Date.now() });
+    const sig = rep.signals.find((s) => s.kind === 'vote-reversal' && s.entry === 'xy12ab');
+    expect(sig).toMatchObject({ role: 'reviewer', entry: 'xy12ab' });
+  });
+
+  test('vote-reversal: up and down in the SAME session is not a cross-session reversal', () => {
+    logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's1', entries: ['xy12ab'], outcome: 'up' });
+    logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's1', entries: ['xy12ab'], outcome: 'down' });
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.signals.some((s) => s.kind === 'vote-reversal')).toBe(false);
+  });
+
+  test('quiet, healthy usage produces no signals', () => {
+    logUsage(dir, 'reviewer', 'show', true, 2, { session: 's1' });
+    logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's1', entries: ['abc123'], outcome: 'up' });
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.signals).toHaveLength(0);
+  });
+
+  test('signals are scoped to the role when stats is called with one', () => {
+    logUsage(dir, 'alpha', 'show', true, 2, { session: 's1' });
+    logUsage(dir, 'beta', 'show', true, 2, { session: 's2' });
+    const rep = stats(dir, { now: Date.now(), role: 'alpha' });
+    expect(rep.signals.length).toBeGreaterThan(0);
+    expect(rep.signals.every((s) => s.role === 'alpha')).toBe(true);
+  });
+
+  test('a signal older than the window is excluded', () => {
+    const now = Date.parse('2026-10-23T10:00:00Z');
+    const old = new Date(now - 100 * 3600_000).toISOString(); // 100h ago
+    // A show row 100h back, with a session but no vote — would be browse-without-use
+    // if it were in the window. Twelve columns: base five + session + the rest blank.
+    writeFileSync(join(dir, '.nb-usage.log'), `${old}\treviewer\tshow\tok\t2ms\ts1\t\t\t\t\t\t\n`, 'utf-8');
+    const rep = stats(dir, { now, windowMs: 48 * 3600_000 });
+    expect(rep.signals).toHaveLength(0);
+  });
+});
+
 describe('entry-level + outcome logging (issue #67)', () => {
   test('parseUsage reads back the five richer columns a call records', () => {
     logUsage(dir, 'patcher', 'add', true, 5, {

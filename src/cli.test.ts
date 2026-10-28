@@ -254,6 +254,34 @@ describe('runNbCli', () => {
     // new inventory fields
     expect(report.notebooks).toEqual([{ role: 'patcher', lines: 2, cap: 5 }]);
     expect(report.notebookTotals).toEqual({ roles: 1, lines: 2, cap: 5 });
+    expect(Array.isArray(report.signals)).toBe(true); // diagnostic signals (issue #72), additive
+  });
+
+  test('the human stats table renders a browse-without-use signal (issue #72)', async () => {
+    // A show of a notebook in a session with no vote on it that session is the
+    // browse-without-use signal. Drive it through the CLI with NB_SESSION set, so
+    // the rendered `signals:` section (not the "none" line) is exercised.
+    process.env.NB_SESSION = 'sess-A';
+    await run(['add', 'reviewer', 'a lesson worth reading']);
+    await run(['show', 'reviewer']); // browsed, but never voted this session
+    const s = await run(['stats', 'reviewer']);
+    expect(s.code).toBe(0);
+    expect(s.out).toContain('  signals:'); // the header branch, not the "none" line
+    expect(s.out).toContain('[browse-without-use] role reviewer');
+    expect(s.out).not.toContain('signals: none');
+  });
+
+  test('stats --json carries the browse-without-use signal (issue #72)', async () => {
+    process.env.NB_SESSION = 'sess-B';
+    await run(['show', 'solo']); // browse with no vote
+    const s = await run(['stats', '--json']);
+    const rep = JSON.parse(s.out);
+    expect(rep.signals.some((x: { kind: string; role: string }) => x.kind === 'browse-without-use' && x.role === 'solo')).toBe(true);
+  });
+
+  test('the human stats table says "signals: none" when there is nothing to report', async () => {
+    const s = await run(['stats']); // only the stats call itself is logged
+    expect(s.out).toContain('signals: none');
   });
 
   test('unknown command exits 2', async () => {
