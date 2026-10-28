@@ -16,9 +16,13 @@ NB="${NB_BIN:-nb}"   # point NB_BIN at the git-versioning wrapper if you use one
 command -v "$NB" >/dev/null 2>&1 || exit 0
 
 echo "## Your agent-notebook index"
-echo "These are your saved notebooks (bounded, voted, one-line lessons per role)."
-echo "Open the one(s) whose description fits this task with \`nb show <role>\`, use"
-echo "their lessons, and at the end run the retrospective (vote / prune / add ≤1)."
+echo "These are the available notebooks (bounded, voted, one-line lessons per role),"
+echo "written by you and by other agents. Open the one(s) whose description fits this"
+echo "task with \`nb show <role>\` — and open more the moment the task reveals a need"
+echo "you didn't see coming (a snag another role has already learned). Use their"
+echo "lessons. At the end, run the retrospective: vote +1 on what helped and -1 on"
+echo "what misled, prune / merge / split to keep each notebook sharp (as many as"
+echo "apply), and add at most one new durable lesson."
 echo
 "$NB" list 2>/dev/null | sed 's/^/  /' || echo "  (no notebooks yet — you'll start one at task end)"
 exit 0
