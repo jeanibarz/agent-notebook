@@ -180,12 +180,14 @@ What is implemented today (merged):
   eviction-while-still-voted, vote-reversal) — #72.
 - The named **recall-miss / precision-miss rates** and the coverage×surfacing
   readout in `nb stats`, with the vote-liveness engagement gate — #81.
+- `nb search` — the demoted keyword fallback and `failed-search → add`
+  gap-sensor, explicitly secondary to surfacing per
+  [NG-007](./requirements.md#ng-007). A `no-match` search is logged (query in the
+  usage note) so a subsequent `add` in the same session reads back as a
+  `failed-search` coverage-gap signal — the signal deferred from #72 — #82.
 
 Planned (Phase 2 of the umbrella):
 
-- `nb search` — a demoted keyword fallback and gap-sensor (the `failed-search
-  → add` signal), explicitly secondary to surfacing per
-  [NG-007](./requirements.md#ng-007).
 - The session-start injection contract (inject the index alongside the agent's
   own notebook) — lives in the runtime hook, not this package.
 - Grouping by a `.` namespace convention.

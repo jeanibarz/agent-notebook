@@ -1026,3 +1026,94 @@ describe('nb describe (issue #70)', () => {
     expect(rows.at(-1)!.ok).toBe(true);
   });
 });
+
+describe('nb search — the demoted keyword fallback (issue #82)', () => {
+  test('groups hits by notebook and prints each lesson id so the agent can vote it later', async () => {
+    await run(['add', 'reviewer', 'run the build before vitest']);
+    await run(['add', 'patcher', 'build the sandbox image first']);
+    const r = await run(['search', 'build']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('reviewer');
+    expect(r.out).toContain('patcher');
+    expect(r.out).toContain('run the build before vitest');
+    // Each hit line leads with the entry's stable id, as `nb show` does.
+    expect(r.out).toMatch(/^\s+[0-9a-f]{6}\s+\[\+1\]\s+run the build before vitest/m);
+  });
+
+  test('the output names itself the secondary path (surfacing is primary)', async () => {
+    await run(['add', 'reviewer', 'a lesson about locks']);
+    const r = await run(['search', 'locks']);
+    expect(r.out.toLowerCase()).toContain('secondary');
+  });
+
+  test('AND by default; --any switches to OR', async () => {
+    await run(['add', 'reviewer', 'fresh worktree off origin main']);
+    await run(['add', 'patcher', 'a mkdir spinlock guards the file']);
+    const and = await run(['search', 'worktree spinlock']);
+    expect(and.err).toContain('no lessons match'); // no single entry has both
+    const or = await run(['search', 'worktree spinlock', '--any']);
+    expect(or.code).toBe(0);
+    expect(or.out).toContain('reviewer');
+    expect(or.out).toContain('patcher');
+  });
+
+  test('a bare prefix operand scopes the search by role name', async () => {
+    await run(['add', 'review.security', 'sanitize the lock input']);
+    await run(['add', 'patcher', 'the lock is a spinlock']);
+    const scoped = await run(['search', 'lock', 'review.']);
+    expect(scoped.out).toContain('review.security');
+    expect(scoped.out).not.toContain('\n  patcher');
+  });
+
+  test('a no-match search exits 0 (not an error), writes nothing to stdout, and notes the gap on stderr', async () => {
+    await run(['add', 'reviewer', 'a stored lesson']);
+    const r = await run(['search', 'absent-keyword']);
+    expect(r.code).toBe(0); // found nothing is success, like a dedup-blocked add
+    expect(r.out).toBe('');
+    expect(r.err).toContain('no lessons match');
+    expect(r.err.toLowerCase()).toContain('coverage gap');
+  });
+
+  test('--json emits the raw SearchResult', async () => {
+    await run(['add', 'reviewer', 'run the build before vitest']);
+    const r = await run(['search', 'vitest', '--json']);
+    expect(r.code).toBe(0);
+    const parsed = JSON.parse(r.out);
+    expect(parsed.terms).toEqual(['vitest']);
+    expect(parsed.groups).toHaveLength(1);
+    expect(parsed.groups[0].role).toBe('reviewer');
+    expect(parsed.groups[0].hits[0].id).toBe(entryId('run the build before vitest'));
+  });
+
+  test('the search is logged with a match/no-match outcome and the query in note (the gap-sensor row)', async () => {
+    await run(['add', 'reviewer', 'a lesson about caching']);
+    await run(['search', 'caching']);
+    await run(['search', 'nothing-here']);
+    const rows = parseUsage(dir).filter((r) => r.command === 'search');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].outcome).toBe('match');
+    expect(rows[0].note).toBe('caching');
+    expect(rows[1].outcome).toBe('no-match');
+    expect(rows[1].note).toBe('nothing-here');
+    expect(rows[0].role).toBe('-'); // spans notebooks, like `list`
+  });
+
+  test('a missing query argument is a handled error (exit 1)', async () => {
+    const r = await run(['search']);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('missing <query>');
+  });
+
+  test('end-to-end: a failed CLI search then an add in the same session surfaces a failed-search signal', async () => {
+    process.env.NB_SESSION = 'cli-gap';
+    await run(['search', 'retry backoff']); // no notebooks yet → no-match
+    await run(['add', 'reviewer', 'use exponential backoff on retries']);
+    await run(['vote', 'reviewer', 'backoff', '+1']); // engagement, and exercises the normal path
+    const stats = await run(['stats', '--json']);
+    const report = JSON.parse(stats.out);
+    const gap = report.signals.find((s: { kind: string }) => s.kind === 'failed-search');
+    expect(gap).toBeDefined();
+    expect(gap.role).toBe('reviewer');
+    expect(gap.detail).toContain('retry backoff');
+  });
+});

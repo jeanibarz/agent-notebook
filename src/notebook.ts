@@ -750,6 +750,107 @@ export function listNotebooks(dir: string, opts: ListOptions = {}): NotebookList
 }
 
 // ---------------------------------------------------------------------------
+// search — the demoted keyword fallback (issue #82)
+// ---------------------------------------------------------------------------
+
+/** One matching lesson in a `search` result: its stable id, score, text, and how many query terms it matched. */
+export interface SearchHit {
+  /** Stable entry id — printed so the agent can `vote`/`rm` it later. */
+  id: string;
+  /** The entry's current vote score. */
+  score: number;
+  /** The lesson text. */
+  text: string;
+  /** How many DISTINCT query terms appear in this entry's text (the first rank key). */
+  matched: number;
+}
+
+/** One notebook's slice of a `search` result: its matching lessons (and whether the query hit its description). */
+export interface SearchGroup {
+  role: string;
+  /** The notebook's `# desc:` description (also searched), or `null` when none is set. */
+  desc: string | null;
+  /** True when the query matched the notebook's description — so a notebook surfaces even with zero entry hits. */
+  descMatched: boolean;
+  /** Matching entries, best-first: more terms matched, then higher score, then file order. */
+  hits: SearchHit[];
+}
+
+export interface SearchOptions {
+  /** Scope to notebooks whose role name starts with this prefix (the `.` namespace convention). Empty/absent → all. */
+  prefix?: string;
+  /** OR-over-terms instead of the default AND (a hit needs every term). */
+  any?: boolean;
+}
+
+export interface SearchResult {
+  /** The lowercased, whitespace-split query terms actually searched; empty when the query had no word tokens. */
+  terms: string[];
+  /** Matching notebooks, most-relevant-first (by their best hit); description-only matches sort last. Empty on no match. */
+  groups: SearchGroup[];
+}
+
+/**
+ * Keyword scan across every notebook's entries and description — the **demoted
+ * fallback** of [NG-007]: surfacing (injection + the index) is the primary path,
+ * and this exists for genuine known-item lookup and, just as valuably, as a
+ * *gap-sensor* (a `no-match` search the CLI logs so a `failed-search → add` can be
+ * read back as a coverage gap). Deliberately keyword-only — plain lowercased
+ * substring over terms, no embeddings or similarity ranking ([NG-001]); a whole
+ * notebook is ≤`maxLines` short lines, so scanning them all is instant ([DP-6]).
+ *
+ * The query is split on whitespace into terms; a term matches as a case-insensitive
+ * substring. Default is AND (an entry must contain every term); `any` makes it OR.
+ * An entry is a hit on its own text; the description is matched separately, so a
+ * notebook whose description matches surfaces (with any entry hits) even when no
+ * single entry contains the terms. Hits rank by terms-matched, then score, then
+ * file order; groups rank by their best hit (description-only matches last), ties
+ * by role name — all deterministic.
+ */
+export function search(dir: string, query: string, opts: SearchOptions = {}): SearchResult {
+  const terms = query.toLowerCase().split(/\s+/).filter((t) => t !== '');
+  if (terms.length === 0) return { terms: [], groups: [] };
+  const prefix = opts.prefix ?? '';
+  const needAll = !opts.any;
+  const isHit = (matched: number): boolean => (needAll ? matched === terms.length : matched >= 1);
+  const countTerms = (hay: string): number => {
+    const low = hay.toLowerCase();
+    return terms.reduce((n, t) => (low.includes(t) ? n + 1 : n), 0);
+  };
+
+  const groups: SearchGroup[] = [];
+  for (const role of listRoles(dir).filter((r) => r.startsWith(prefix))) {
+    const entries = readEntries(dir, role);
+    const desc = getDescription(dir, role);
+    // Tag each hit with its file-order index so equal (matched, score) hits keep a
+    // stable, insertion-order sequence ([DP-3]); the index is dropped from output.
+    const tagged = entries
+      .map((e, idx) => ({ e, idx, matched: countTerms(e.text) }))
+      .filter((x) => isHit(x.matched));
+    const descMatched = desc !== null && isHit(countTerms(desc));
+    if (tagged.length === 0 && !descMatched) continue;
+    tagged.sort((a, b) => b.matched - a.matched || b.e.score - a.e.score || a.idx - b.idx);
+    groups.push({
+      role,
+      desc,
+      descMatched,
+      hits: tagged.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text, matched: x.matched })),
+    });
+  }
+
+  // Most-relevant notebook first: best hit's term-match count, then its score; a
+  // description-only match (no hits) ranks as 0 and sorts last. Ties by role name.
+  groups.sort((a, b) => {
+    const am = a.hits[0]?.matched ?? 0;
+    const bm = b.hits[0]?.matched ?? 0;
+    const as = a.hits.length ? a.hits[0].score : -Infinity;
+    const bs = b.hits.length ? b.hits[0].score : -Infinity;
+    return bm - am || bs - as || a.role.localeCompare(b.role);
+  });
+  return { terms, groups };
+}
+
+// ---------------------------------------------------------------------------
 // usage log + monitoring
 // ---------------------------------------------------------------------------
 
@@ -763,7 +864,7 @@ export interface UsageRow {
   session: string;
   /** Stable id(s) of the entry/entries the call touched; `[]` when none. */
   entries: string[];
-  /** Outcome token: `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` (add), `up`/`down` (vote), `removed` (rm), `merged` (merge); `''` otherwise. */
+  /** Outcome token: `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` (add), `up`/`down` (vote), `removed` (rm), `merged` (merge), `match`/`no-match` (search, with the query in `note`); `''` otherwise. */
   outcome: string;
   /** For a `dedup-blocked` add: the id of the existing entry that blocked it; `''` otherwise. */
   collided: string;
@@ -978,9 +1079,13 @@ export interface Anomaly {
  *     on → the cap may be too tight for that role (a candidate to split).
  *   - `vote-reversal`: the same entry was upvoted in one session and downvoted in
  *     another → the lesson may be correct but mis-aimed.
+ *   - `failed-search`: a `search` returned nothing and a lesson was then added in the
+ *     same session (issue #82) → a coverage gap the notebook lacked, labelled by the
+ *     agent's own query. This is the `failed-search → add` gap-sensor the demoted
+ *     `nb search` fallback unlocks (the coverage signal deferred from #72).
  */
 export interface DiagnosticSignal {
-  kind: 'browse-without-use' | 'eviction-while-still-voted' | 'vote-reversal';
+  kind: 'browse-without-use' | 'eviction-while-still-voted' | 'vote-reversal' | 'failed-search';
   /** The notebook role the signal concerns. */
   role: string;
   /** Human-readable one-line explanation. */
@@ -1040,7 +1145,7 @@ export interface SurfacingMetrics {
   recallMiss: number | null;
   /** Vote actions (`up` + `down`) on pushed lessons in engaged sessions — the denominator for `precisionMiss`. */
   votesActedOn: number;
-  /** **Surfacing precision-miss** — downvote rate on *pushed* lessons = downvotes ÷ `votesActedOn`. Read beside `recallMiss` so "surface everything" cannot look free. Until `nb search` exists, every delivered lesson is treated as pushed (per [NG-007]); when search lands this narrows to non-search-delivered lessons. `null` when `votesActedOn` is 0. */
+  /** **Surfacing precision-miss** — downvote rate on *pushed* lessons = downvotes ÷ `votesActedOn`. Read beside `recallMiss` so "surface everything" cannot look free. Every delivered lesson is currently treated as pushed (per [NG-007]); now that `nb search` exists, narrowing this to non-search-delivered lessons is a possible future refinement, not yet implemented. `null` when `votesActedOn` is 0. */
   precisionMiss: number | null;
   /** The coverage×surfacing 2×2 readout — `healthy` / `surfacing-failure` / `coverage-building` / `churny` — a heuristic hint, not a verdict. `null` when there is not enough data (no add attempts) to place it. */
   readout: 'healthy' | 'surfacing-failure' | 'coverage-building' | 'churny' | null;
@@ -1294,11 +1399,51 @@ export function stats(
     }
   }
 
+  // (D) failed-search → add: within one session a `search` returned nothing
+  //     (`no-match`, its query kept in `note`) and a lesson was then ACCEPTED by
+  //     `add` → the agent searched, found nothing, and had to add it: a coverage
+  //     gap the notebook lacked, labelled by the agent's own query (issue #82 —
+  //     the gap-sensor the demoted `nb search` fallback unlocks). Needs a session
+  //     on both rows; `recent` is not guaranteed ts-sorted, so order within a
+  //     session before pairing. One signal per (session, added-entry) pair.
+  {
+    const bySession = new Map<string, UsageRow[]>();
+    for (const r of recent) {
+      if (r.session === '') continue;
+      const arr = bySession.get(r.session) ?? [];
+      arr.push(r);
+      bySession.set(r.session, arr);
+    }
+    const seen = new Set<string>(); // dedup repeat (session, added-entry) pairs
+    for (const [session, rowsRaw] of bySession) {
+      const rows = [...rowsRaw].sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+      let lastFailedQuery: string | null = null;
+      for (const r of rows) {
+        if (r.command === 'search' && r.outcome === 'no-match') {
+          lastFailedQuery = r.note !== '' ? r.note : '(query not recorded)';
+        } else if (r.command === 'add' && r.outcome === 'accepted' && lastFailedQuery !== null) {
+          const addId = r.entries[0] ?? '';
+          const k = `${session}\u0000${addId}`;
+          if (seen.has(k)) continue;
+          seen.add(k);
+          signals.push({
+            kind: 'failed-search',
+            role: r.role,
+            session,
+            entry: addId !== '' ? addId : undefined,
+            detail: `a search for "${lastFailedQuery}" returned nothing, then a lesson was added to "${r.role}" in the same session — a coverage gap the notebook did not hold`,
+          });
+        }
+      }
+    }
+  }
+
   // Deterministic order so renderers and tests see a stable sequence.
   const sigOrder: Record<DiagnosticSignal['kind'], number> = {
     'browse-without-use': 0,
     'eviction-while-still-voted': 1,
     'vote-reversal': 2,
+    'failed-search': 3,
   };
   signals.sort(
     (a, b) =>

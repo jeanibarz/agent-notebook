@@ -57,6 +57,7 @@ import {
   remove,
   render,
   sanitizeLesson,
+  search,
   setDescription,
   setMetaValue,
   split,
@@ -1811,5 +1812,132 @@ describe('listNotebooks — the notebook index (issue #71)', () => {
     const listing = listNotebooks(join(dir, 'does-not-exist'));
     expect(listing.total).toBe(0);
     expect(listing.rows).toEqual([]);
+  });
+});
+
+describe('search — the demoted keyword fallback (issue #82)', () => {
+  test('AND over terms: an entry must contain every term (case-insensitive)', async () => {
+    await addEntry(dir, 'reviewer', 'run the Build before vitest');
+    await addEntry(dir, 'reviewer', 'build the docs separately');
+    const r = search(dir, 'build vitest');
+    expect(r.terms).toEqual(['build', 'vitest']);
+    expect(r.groups).toHaveLength(1);
+    expect(r.groups[0].role).toBe('reviewer');
+    expect(r.groups[0].hits.map((h) => h.text)).toEqual(['run the Build before vitest']);
+    expect(r.groups[0].hits[0].matched).toBe(2);
+    expect(r.groups[0].hits[0].id).toBe(entryId('run the Build before vitest'));
+  });
+
+  test('--any is OR: an entry matching a single term is a hit', async () => {
+    await addEntry(dir, 'reviewer', 'use a fresh worktree');
+    await addEntry(dir, 'patcher', 'files need a lock');
+    const and = search(dir, 'worktree lock');
+    expect(and.groups).toHaveLength(0); // no single entry has both terms
+    const or = search(dir, 'worktree lock', { any: true });
+    expect(or.groups.map((g) => g.role).sort()).toEqual(['patcher', 'reviewer']);
+  });
+
+  test('ranks hits by terms-matched, then score, then file order', async () => {
+    await addEntry(dir, 'r', 'alpha beta gamma'); // 3 terms (added first)
+    await addEntry(dir, 'r', 'alpha beta'); // 2 terms
+    await addEntry(dir, 'r', 'alpha only'); // 1 term, will be upvoted
+    await vote(dir, 'r', 'alpha only', 1); // score +2, but fewer terms matched
+    const r = search(dir, 'alpha beta gamma', { any: true });
+    expect(r.groups[0].hits.map((h) => h.text)).toEqual([
+      'alpha beta gamma', // 3 matched — wins despite score +1
+      'alpha beta', // 2 matched
+      'alpha only', // 1 matched, even though its score is higher
+    ]);
+  });
+
+  test('matches the description too, and surfaces a notebook on a description-only hit', async () => {
+    await addEntry(dir, 'patcher', 'prefer execFileSync over execSync');
+    await setDescription(dir, 'patcher', 'concurrency and locking gotchas');
+    const r = search(dir, 'concurrency');
+    expect(r.groups).toHaveLength(1);
+    expect(r.groups[0].descMatched).toBe(true);
+    expect(r.groups[0].hits).toHaveLength(0); // no entry contains "concurrency"
+    expect(r.groups[0].desc).toBe('concurrency and locking gotchas');
+  });
+
+  test('a description hit AND an entry hit both show (descMatched true with hits)', async () => {
+    await addEntry(dir, 'patcher', 'the lock is a mkdir spinlock');
+    await setDescription(dir, 'patcher', 'locking gotchas');
+    const r = search(dir, 'lock');
+    expect(r.groups[0].descMatched).toBe(true);
+    expect(r.groups[0].hits).toHaveLength(1);
+  });
+
+  test('prefix scopes to the `.` namespace; description-only groups sort after groups with hits', async () => {
+    await addEntry(dir, 'review.security', 'sanitize every lock input');
+    await addEntry(dir, 'review.perf', 'cache the lock lookup');
+    await addEntry(dir, 'patcher', 'lock files need a spinlock');
+    const scoped = search(dir, 'lock', { prefix: 'review.' });
+    expect(scoped.groups.map((g) => g.role).sort()).toEqual(['review.perf', 'review.security']);
+    expect(scoped.groups.some((g) => g.role === 'patcher')).toBe(false);
+  });
+
+  test('description-only matches rank after entry-hit matches', async () => {
+    await addEntry(dir, 'withhit', 'this lesson mentions deadlock twice: deadlock');
+    await setDescription(dir, 'desconly', 'deadlock recovery notes');
+    const r = search(dir, 'deadlock');
+    expect(r.groups.map((g) => g.role)).toEqual(['withhit', 'desconly']); // hits first, desc-only last
+  });
+
+  test('an empty / whitespace query yields no terms and no groups (never throws)', async () => {
+    await addEntry(dir, 'r', 'something');
+    expect(search(dir, '   ')).toEqual({ terms: [], groups: [] });
+    expect(search(dir, '')).toEqual({ terms: [], groups: [] });
+  });
+
+  test('no match returns an empty group list (the gap-sensor case)', async () => {
+    await addEntry(dir, 'r', 'a stored lesson');
+    const r = search(dir, 'absent-keyword');
+    expect(r.terms).toEqual(['absent-keyword']);
+    expect(r.groups).toEqual([]);
+  });
+});
+
+describe('failed-search → add gap signal (issue #82)', () => {
+  // The gap-sensor: a no-match search followed by an accepted add in the SAME
+  // session is a coverage gap. logUsage writes the rows a real run would; stats
+  // reads them back as a `failed-search` DiagnosticSignal.
+  test('a no-match search then an accepted add in one session flags a gap, labelled by the query', () => {
+    logUsage(dir, '-', 'search', true, 1, { session: 's1', outcome: 'no-match', note: 'rate limiting' });
+    logUsage(dir, 'reviewer', 'add', true, 1, { session: 's1', outcome: 'accepted', entries: ['abc123'] });
+    const sig = stats(dir).signals.find((s) => s.kind === 'failed-search');
+    expect(sig).toBeDefined();
+    expect(sig!.role).toBe('reviewer');
+    expect(sig!.session).toBe('s1');
+    expect(sig!.entry).toBe('abc123');
+    expect(sig!.detail).toContain('rate limiting');
+  });
+
+  test('a MATCHED search then an add is NOT a gap', () => {
+    logUsage(dir, 's2', 'search', true, 1, { session: 's2', outcome: 'match', note: 'build' });
+    logUsage(dir, 'reviewer', 'add', true, 1, { session: 's2', outcome: 'accepted', entries: ['def456'] });
+    expect(stats(dir).signals.some((s) => s.kind === 'failed-search')).toBe(false);
+  });
+
+  test('an add BEFORE the failed search (not after) is not attributed as a gap', () => {
+    const base = Date.parse('2026-01-01T00:00:00.000Z');
+    // Write rows then rewrite timestamps so the add precedes the search in-session.
+    logUsage(dir, 'reviewer', 'add', true, 1, { session: 's3', outcome: 'accepted', entries: ['aaa111'] });
+    logUsage(dir, '-', 'search', true, 1, { session: 's3', outcome: 'no-match', note: 'late query' });
+    const file = join(dir, '.nb-usage.log');
+    const rows = readFileSync(file, 'utf-8').trimEnd().split('\n');
+    // Force add (row 0) earlier than search (row 1).
+    const withTs = [
+      rows[0].replace(/^[^\t]+/, new Date(base).toISOString()),
+      rows[1].replace(/^[^\t]+/, new Date(base + 1000).toISOString()),
+    ];
+    writeFileSync(file, withTs.join('\n') + '\n');
+    expect(stats(dir).signals.some((s) => s.kind === 'failed-search')).toBe(false);
+  });
+
+  test('the gap signal needs a session on both rows (blank session is skipped)', () => {
+    logUsage(dir, '-', 'search', true, 1, { session: '', outcome: 'no-match', note: 'q' });
+    logUsage(dir, 'reviewer', 'add', true, 1, { session: '', outcome: 'accepted', entries: ['zzz999'] });
+    expect(stats(dir).signals.some((s) => s.kind === 'failed-search')).toBe(false);
   });
 });

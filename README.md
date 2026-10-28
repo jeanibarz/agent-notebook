@@ -74,6 +74,7 @@ nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
 nb split  <role> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
 nb rm     <role> <id|query>             delete an entry
 nb describe <role> ["<text>"]           set the notebook's one-line description (no text → print it)
+nb search <query> [prefix] [--any]      SECONDARY keyword fallback — scan all notebooks (surfacing is primary)
 nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly/diagnostic flags + surfacing metrics (--json emits the raw StatsReport)
 nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lessons, description)
@@ -140,19 +141,37 @@ agent-notebook notebooks — 3 in /home/you/.agent-notebook/notebooks
 
 Notebooks are ordered **richest-first** (most lessons first — the ones most worth reusing), ties broken by name. A notebook with no `# desc:` falls back to its top-scored lesson, marked `(auto)`. A bare `prefix` filters by name using the `.` namespace convention (`nb list review.` shows just `review.*`), and `--limit N` bounds the rows (default 50) so the index stays a flat, cheap read as notebooks accumulate — the header then reads `showing N of total`. `nb list --json` emits the raw `NotebookListing` (`{ dir, total, rows[] }`) for a supervising agent. An empty (zero-lesson, no-description) notebook is hidden — it is phantom debris with nothing to discover — while a described-but-empty notebook is kept, because its description is still a deliberate trigger. It prints a friendly note to stderr and exits 0 when no notebook (or none matching the prefix) exists yet.
 
+### Searching — the demoted fallback
+
+`nb search <query>` exists, but it is deliberately the **secondary** path. The point of this tool is that a notebook is *shown* to you — injected at session start, picked from the [`nb list`](#discovering-notebooks--nb-list) index — because the lesson you most need is the one you would never think to search for ([DP-8](docs/requirements.md), [NG-007](docs/requirements.md#ng-007)). Reach for `search` only for a genuine known-item lookup.
+
+It is **keyword-only** — a plain case-insensitive substring over the query's terms, no embeddings or similarity ranking — and scans every notebook's lessons *and* descriptions. By default it is AND-over-terms (an entry must contain every term); `--any` makes it OR. Hits group by notebook, most-relevant-first, and each lesson line leads with its stable id so you can `vote` it afterwards:
+
+```
+$ nb search "build vitest"
+agent-notebook search — "build vitest" (AND over 2 terms): 1 hit in 1 notebook (secondary fallback — lessons are normally surfaced to you, not searched)
+  reviewer
+    d7497d  [+1]  run the build before vitest
+```
+
+A bare `prefix` scopes by name (`nb search lock review.`), and `--json` emits the raw `SearchResult` (`{ terms, groups[] }`).
+
+**A failed search is itself a signal.** When a search finds nothing it is not an error (exit 0) — it is logged (with your query), so that if you then `add` a lesson in the same session, `nb stats` reads the pair back as a **`failed-search`** diagnostic signal: a coverage gap the notebook did not hold, labelled by your own query. High search volume for a topic is exactly where *surfacing* is failing for that topic, and you flag it for free just by using the tool.
+
 ### Machine-readable `nb stats`
 
 `nb stats --json` prints the raw `StatsReport` to stdout as a single JSON object instead of the human table, so a supervising agent can act on a `loop` / `went-silent` / `high-error-rate` anomaly without regex-parsing formatted text. The shape is the exported `StatsReport` interface (`{ window, totalCalls, perCommand[], anomalies[], notebooks[], notebookTotals, signals[], surfacing }`) and is a stable, additive-only contract. `notebooks` is the per-role inventory — `{ role, lines, cap }` for each role's notebook, where `lines` is the stored-lesson count and `cap` is `maxLines()` — so a supervisor can see that a role is at (or near) its cap and about to evict a lesson; `notebookTotals` aggregates it as `{ roles, lines, cap }`. The inventory is the current on-disk state, not a slice of the usage window. It composes with `[<role>]` and `--since`; a bad `--since` window still warns on stderr (stdout stays pure JSON) and falls back to 7d.
 
 ### Free diagnostic signals
 
-`nb stats` also surfaces a handful of **free diagnostic signals** — memory-quality observations read straight from the usage log, costing no new agent action because each is already implied by behaviour the agent performs for its own reasons. They appear in the human table under a `signals:` section and in `--json` as `signals[]` (each a `DiagnosticSignal` = `{ kind, role, detail, session?, entry? }`). The three kinds:
+`nb stats` also surfaces a handful of **free diagnostic signals** — memory-quality observations read straight from the usage log, costing no new agent action because each is already implied by behaviour the agent performs for its own reasons. They appear in the human table under a `signals:` section and in `--json` as `signals[]` (each a `DiagnosticSignal` = `{ kind, role, detail, session?, entry? }`). The kinds:
 
 - **browse-without-use** — a notebook was `show`n in a session but nothing in it was voted that session → its description may over-promise (it drew a look that didn't pay off).
 - **eviction-while-still-voted** — the cap evicted an entry (`add`'s `evicted` column) whose id had been voted on → the cap may be too tight for that role, a candidate to split the role.
 - **vote-reversal** — the same entry was upvoted in one session and downvoted in another → the lesson may be correct but *mis-aimed* (right in one context, wrong in another).
+- **failed-search** — a [`nb search`](#searching--the-demoted-fallback) returned nothing and a lesson was then `add`ed in the same session → a coverage gap the notebook did not hold, labelled by the agent's own query.
 
-All three are **session-aware**, so set `NB_SESSION` (a hook or supervising agent does this) for them to attribute calls to a session — browse-without-use and vote-reversal need it, and skip calls with a blank session. Like the anomalies, they are computed over the windowed, role-scoped usage rows (so `--since` and `[<role>]` apply). They are deliberately heuristic *hints*, not verdicts: a glance that didn't lead to a vote isn't proof a description is bad, just a place worth a look.
+All four are **session-aware**, so set `NB_SESSION` (a hook or supervising agent does this) for them to attribute calls to a session — browse-without-use, vote-reversal, and failed-search need it, and skip calls with a blank session. Like the anomalies, they are computed over the windowed, role-scoped usage rows (so `--since` and `[<role>]` apply). They are deliberately heuristic *hints*, not verdicts: a glance that didn't lead to a vote isn't proof a description is bad, just a place worth a look.
 
 ### Surfacing metrics
 
@@ -163,7 +182,7 @@ Beside the free signals, `nb stats` reports the named **surfacing metrics** (`St
 - **precision-miss** — downvotes ÷ votes on *pushed* lessons, read right beside recall-miss so chasing recall ("surface everything") can't look free.
 - **readout** — where (coverage, recall-miss) lands on a 2×2: `healthy` (covers and surfaces), `surfacing-failure` (content present but not reaching the agent), `coverage-building` (a young notebook filling gaps), or `churny` (gaps *and* poor surfacing). A heuristic hint, not a verdict.
 
-Two properties keep the rates honest. They are conditioned on **attempts** (add/vote *events*), so a lazy agent is just a small sample, never a deflated "healthy 0%". And they are gated on **engagement**: only sessions that show a vote are scored — a vote-less session is a setup/plumbing gap, excluded rather than mistaken for "healthy quiet". A rate with no data is `null` (shown `—` in the table), never a misleading `0`. They need `NB_SESSION` set to attribute calls to sessions. (Until an `nb search` command exists, every delivered lesson is treated as *pushed* for precision-miss.)
+Two properties keep the rates honest. They are conditioned on **attempts** (add/vote *events*), so a lazy agent is just a small sample, never a deflated "healthy 0%". And they are gated on **engagement**: only sessions that show a vote are scored — a vote-less session is a setup/plumbing gap, excluded rather than mistaken for "healthy quiet". A rate with no data is `null` (shown `—` in the table), never a misleading `0`. They need `NB_SESSION` set to attribute calls to sessions. (Every delivered lesson is currently treated as *pushed* for precision-miss; now that [`nb search`](#searching--the-demoted-fallback) exists, narrowing this to non-search-delivered lessons is a possible future refinement.)
 
 ### What the usage log records
 
@@ -171,7 +190,7 @@ Every `nb` call appends one tab-delimited row to the usage ring (`.nb-usage.log`
 
 - the **entry id(s)** the call touched — the added/voted/removed entry, (for `merge`) the two sources plus the merged result, or (for `split`) the source plus the two produced entries;
 - a **session id** read from the `NB_SESSION` environment variable (a hook or supervising agent sets it so calls can be grouped; absent → blank, and co-access simply isn't computed);
-- the **outcome** — for `add`, `accepted` or `dedup-blocked` (and on a block, the colliding entry's id); for `vote`, `up` or `down`; `removed` / `merged` / `split` for `rm` / `merge` / `split`; plus, when an `add` evicts, which entry left and its final score;
+- the **outcome** — for `add`, `accepted` or `dedup-blocked` (and on a block, the colliding entry's id); for `vote`, `up` or `down`; `removed` / `merged` / `split` for `rm` / `merge` / `split`; `match` / `no-match` for `search` (with the query kept in the note, so a failed search becomes a gap signal); plus, when an `add` evicts, which entry left and its final score;
 - the optional **operation reason** — a per-op enum code and free-text note attached to any mutating op (`add`/`merge`/`rm`/`split`, via `--reason`/`--note`); it lives in the log, never in a lesson.
 
 This is richer *logging* only — the notebook file and the one-line lesson are untouched (it adds no field to an entry). Older rows written before this change are still read correctly; their extra columns are simply blank. Logging stays best-effort: a logging failure never fails a real `nb` operation, and the ring stays bounded by `NB_USAGE_RING`.
@@ -200,10 +219,12 @@ import {
   split,
   remove,
   render,
+  search,
   listRoles,
   listNotebooks,
   notebooksDir,
   type AddResult,
+  type SearchResult,
 } from 'agent-notebook';
 
 // `dir` is the storage directory. Any path works; notebooksDir() resolves the
