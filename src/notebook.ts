@@ -61,6 +61,16 @@ const SAFE_ROLE = /^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$/;
  */
 const MAX_ROLE_LEN = 128;
 
+/**
+ * Role names we refuse to own, case-insensitively. `README` is reserved because
+ * a `README.md` is the conventional backup/git artifact in a notebook folder, not
+ * a notebook — treating it as a role would list, search, count and (worse) let a
+ * write command rewrite it (issue #90). Reserving the name here rejects a direct
+ * `<role>` target (`nb add README …`, `nb vote README …`); `listRoles` separately
+ * filters a `README.md` already on disk out of the index.
+ */
+const RESERVED_ROLES = new Set(['readme']);
+
 export function assertSafeRole(role: string): void {
   if (role.length > MAX_ROLE_LEN) {
     throw new Error(
@@ -69,6 +79,9 @@ export function assertSafeRole(role: string): void {
   }
   if (!SAFE_ROLE.test(role) || role.includes('..')) {
     throw new Error(`invalid role name: ${JSON.stringify(role)} (allowed: letters, digits, . _ @ -)`);
+  }
+  if (RESERVED_ROLES.has(role.toLowerCase())) {
+    throw new Error(`invalid role name: ${JSON.stringify(role)} (reserved: a README.md is not a notebook)`);
   }
 }
 
@@ -708,8 +721,11 @@ export function render(dir: string, role: string): string {
  * `<role>.md`; the sidecar `.nb-usage.log` and `.nb.lock` share the directory
  * and are excluded by keeping only non-dotfile `*.md` entries (dotfiles like a
  * hypothetical `.foo.md` are skipped too — a role name never starts with `.`,
- * per `assertSafeRole`). An absent/empty notebooks dir yields `[]` (not an
- * error), so `nb roles` can report "no roles yet" and exit 0 on a clean machine.
+ * per `assertSafeRole`). A `README.md` (case-insensitive) is excluded too: it is
+ * the conventional git/backup artifact in a notebook folder, not a notebook
+ * (issue #90) — the reserved name keeps a write command from ever creating one.
+ * An absent/empty notebooks dir yields `[]` (not an error), so `nb roles` can
+ * report "no roles yet" and exit 0 on a clean machine.
  */
 export function listRoles(dir: string): string[] {
   let names: string[];
@@ -719,7 +735,7 @@ export function listRoles(dir: string): string[] {
     return []; // dir does not exist yet (nothing has been written)
   }
   return names
-    .filter((n) => !n.startsWith('.') && n.endsWith('.md'))
+    .filter((n) => !n.startsWith('.') && n.endsWith('.md') && n.toLowerCase() !== 'readme.md')
     .map((n) => n.slice(0, -'.md'.length))
     .sort();
 }

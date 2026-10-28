@@ -157,6 +157,7 @@ agent-notebook notebooks — 2 matching "review." in /home/you/.agent-notebook/n
 - **Keep the trailing dot.** `review.` matches the namespace but *not* a bare sibling that merely shares the stem (`reviewer`), so the group stays exactly what you meant.
 - **No new storage.** A namespaced role is still one flat `<role>.md` file — `review.tests.md`, `review.correctness.md` — never a directory. `.` is already a legal role character, so there is nothing to enable.
 - **`@` is separate.** It stays reserved for the existing `role@project` scoping and composes with a namespace (`review.tests@your-repo`).
+- **`README` is reserved.** A `README.md` in the notebooks dir (common when the dir is a git repo that backs up your notebooks) is *not* a notebook — it is never listed, searched, counted, or writable as a role (case-insensitive). Name a real notebook something else (`readme-notes` is fine).
 
 See [FR-NAMESPACE-001](docs/requirements.md#fr-namespace-001).
 
