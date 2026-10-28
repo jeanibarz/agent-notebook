@@ -127,6 +127,14 @@ notes:
     vote-reversal (the same entry upvoted in one session and downvoted in another — correct but
     mis-aimed). They need \`NB_SESSION\` set to attribute calls to a session; \`--json\` includes
     them as \`signals[]\` in the StatsReport.
+  - \`nb stats\` also reports the named *surfacing metrics* (as \`surfacing\` in the StatsReport):
+    coverage (novel-add rate), recall-miss (dedup-block rate — the headline alarm: a stored lesson
+    was re-derived, not surfaced), precision-miss (downvote rate on pushed lessons, read beside
+    recall so "surface everything" can't look free), and a coverage×surfacing readout
+    (healthy / surfacing-failure / coverage-building / churny). Every rate is conditioned on add/vote
+    *attempts* (robust to a lazy agent) and gated on *engagement* — only sessions with a vote are
+    scored, so an uninstrumented session isn't mistaken for "healthy quiet". A rate is \`null\` (shown
+    \`—\`) when there's no data. Needs \`NB_SESSION\` set to attribute calls to a session.
   - a notebook holds at most 200 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
@@ -494,6 +502,19 @@ function fmt(score: number): string {
   return score >= 0 ? `+${score}` : `${score}`;
 }
 
+/** Render a surfacing rate as a right-aligned whole percent, or `—` when it is `null` (no data — never a misleading 0%, DP-5). */
+function pct(rate: number | null): string {
+  return (rate === null ? '—' : `${Math.round(rate * 100)}%`).padStart(4);
+}
+
+/** One-line gloss per coverage×surfacing readout quadrant (issue #81, §4 of the design rationale). */
+const READOUT_GLOSS: Record<'healthy' | 'surfacing-failure' | 'coverage-building' | 'churny', string> = {
+  healthy: 'covers and surfaces',
+  'surfacing-failure': 'content present but not reaching the agent',
+  'coverage-building': 'a young notebook filling gaps',
+  churny: 'gaps and poor surfacing',
+};
+
 /**
  * Render the notebook index for `nb list`/`ls`/`roles`. Returns `{out, err}` so
  * the caller writes the body to stdout (pipe-clean) and a friendly empty-state
@@ -560,6 +581,21 @@ function renderStats(dir: string, role: string | undefined, windowMs: number | u
     }
   } else {
     lines.push('  signals: none');
+  }
+  // Surfacing metrics (issue #81): the named recall-miss / precision-miss rates
+  // and the coverage×surfacing readout, engagement-gated. The recall-miss rate is
+  // the headline (re-deriving a stored lesson is the clearest surfacing failure);
+  // precision-miss is shown beside it so "surface everything" cannot look free.
+  const sf = rep.surfacing;
+  if (sf.engagedSessions === 0) {
+    lines.push('  surfacing: no engaged sessions in this window (set NB_SESSION and vote to measure)');
+  } else {
+    const sess = `${sf.engagedSessions} engaged session${sf.engagedSessions === 1 ? '' : 's'}`;
+    lines.push(`  surfacing: ${sess}`);
+    lines.push(`    coverage        ${pct(sf.coverage)}  (${sf.addAttempts ? `${Math.round((sf.coverage ?? 0) * sf.addAttempts)}/${sf.addAttempts} attempts novel` : 'no add attempts'})`);
+    lines.push(`    recall-miss     ${pct(sf.recallMiss)}  (${sf.addAttempts ? `${Math.round((sf.recallMiss ?? 0) * sf.addAttempts)}/${sf.addAttempts} re-derived — stored lesson not surfaced; the headline alarm` : 'no add attempts'})`);
+    lines.push(`    precision-miss  ${pct(sf.precisionMiss)}  (${sf.votesActedOn ? `${Math.round((sf.precisionMiss ?? 0) * sf.votesActedOn)}/${sf.votesActedOn} downvotes on pushed lessons` : 'no votes'})`);
+    if (sf.readout) lines.push(`    readout: ${sf.readout} — ${READOUT_GLOSS[sf.readout]}`);
   }
   // Notebook inventory (issue #40): make memory pressure visible — a role at
   // `lines/cap` where the two are equal is one distinct add from an eviction,

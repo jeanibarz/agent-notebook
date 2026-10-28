@@ -178,11 +178,11 @@ What is implemented today (merged):
 - `nb list` discovery — #71.
 - The free diagnostic signals in `nb stats` (browse-without-use,
   eviction-while-still-voted, vote-reversal) — #72.
+- The named **recall-miss / precision-miss rates** and the coverage×surfacing
+  readout in `nb stats`, with the vote-liveness engagement gate — #81.
 
 Planned (Phase 2 of the umbrella):
 
-- The named **recall-miss / precision-miss rates** and the coverage×surfacing
-  readout in `nb stats`, with the vote-liveness engagement gate.
 - `nb search` — a demoted keyword fallback and gap-sensor (the `failed-search
   → add` signal), explicitly secondary to surfacing per
   [NG-007](./requirements.md#ng-007).

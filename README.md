@@ -74,7 +74,7 @@ nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
 nb split  <role> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
 nb rm     <role> <id|query>             delete an entry
 nb describe <role> ["<text>"]           set the notebook's one-line description (no text → print it)
-nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly flags (--json emits the raw StatsReport)
+nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly/diagnostic flags + surfacing metrics (--json emits the raw StatsReport)
 nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lessons, description)
 nb ls / nb roles                        aliases of `nb list`
@@ -142,7 +142,7 @@ Notebooks are ordered **richest-first** (most lessons first — the ones most wo
 
 ### Machine-readable `nb stats`
 
-`nb stats --json` prints the raw `StatsReport` to stdout as a single JSON object instead of the human table, so a supervising agent can act on a `loop` / `went-silent` / `high-error-rate` anomaly without regex-parsing formatted text. The shape is the exported `StatsReport` interface (`{ window, totalCalls, perCommand[], anomalies[], notebooks[], notebookTotals, signals[] }`) and is a stable, additive-only contract. `notebooks` is the per-role inventory — `{ role, lines, cap }` for each role's notebook, where `lines` is the stored-lesson count and `cap` is `maxLines()` — so a supervisor can see that a role is at (or near) its cap and about to evict a lesson; `notebookTotals` aggregates it as `{ roles, lines, cap }`. The inventory is the current on-disk state, not a slice of the usage window. It composes with `[<role>]` and `--since`; a bad `--since` window still warns on stderr (stdout stays pure JSON) and falls back to 7d.
+`nb stats --json` prints the raw `StatsReport` to stdout as a single JSON object instead of the human table, so a supervising agent can act on a `loop` / `went-silent` / `high-error-rate` anomaly without regex-parsing formatted text. The shape is the exported `StatsReport` interface (`{ window, totalCalls, perCommand[], anomalies[], notebooks[], notebookTotals, signals[], surfacing }`) and is a stable, additive-only contract. `notebooks` is the per-role inventory — `{ role, lines, cap }` for each role's notebook, where `lines` is the stored-lesson count and `cap` is `maxLines()` — so a supervisor can see that a role is at (or near) its cap and about to evict a lesson; `notebookTotals` aggregates it as `{ roles, lines, cap }`. The inventory is the current on-disk state, not a slice of the usage window. It composes with `[<role>]` and `--since`; a bad `--since` window still warns on stderr (stdout stays pure JSON) and falls back to 7d.
 
 ### Free diagnostic signals
 
@@ -153,6 +153,17 @@ Notebooks are ordered **richest-first** (most lessons first — the ones most wo
 - **vote-reversal** — the same entry was upvoted in one session and downvoted in another → the lesson may be correct but *mis-aimed* (right in one context, wrong in another).
 
 All three are **session-aware**, so set `NB_SESSION` (a hook or supervising agent does this) for them to attribute calls to a session — browse-without-use and vote-reversal need it, and skip calls with a blank session. Like the anomalies, they are computed over the windowed, role-scoped usage rows (so `--since` and `[<role>]` apply). They are deliberately heuristic *hints*, not verdicts: a glance that didn't lead to a vote isn't proof a description is bad, just a place worth a look.
+
+### Surfacing metrics
+
+Beside the free signals, `nb stats` reports the named **surfacing metrics** (`StatsReport.surfacing`, a `SurfacingMetrics` object) — the rates that say whether the notebook is *covering* and *surfacing* at all. They turn the usage log into the numbers the [design rationale](docs/self-observing-notebook.md) §4 defines:
+
+- **coverage** (novel-add rate) — `accepted` adds ÷ add attempts. High early (a young notebook filling gaps) is expected, not a fault.
+- **recall-miss** (the headline alarm) — `dedup-blocked` adds ÷ add attempts: the agent re-derived something the notebook *already held*, so a stored lesson failed to reach it.
+- **precision-miss** — downvotes ÷ votes on *pushed* lessons, read right beside recall-miss so chasing recall ("surface everything") can't look free.
+- **readout** — where (coverage, recall-miss) lands on a 2×2: `healthy` (covers and surfaces), `surfacing-failure` (content present but not reaching the agent), `coverage-building` (a young notebook filling gaps), or `churny` (gaps *and* poor surfacing). A heuristic hint, not a verdict.
+
+Two properties keep the rates honest. They are conditioned on **attempts** (add/vote *events*), so a lazy agent is just a small sample, never a deflated "healthy 0%". And they are gated on **engagement**: only sessions that show a vote are scored — a vote-less session is a setup/plumbing gap, excluded rather than mistaken for "healthy quiet". A rate with no data is `null` (shown `—` in the table), never a misleading `0`. They need `NB_SESSION` set to attribute calls to sessions. (Until an `nb search` command exists, every delivered lesson is treated as *pushed* for precision-miss.)
 
 ### What the usage log records
 
@@ -175,6 +186,8 @@ The anomaly detection in `nb stats` (loop / went-silent / high-error-rate flags)
 - `NB_SILENT_H` — hours since a command's last call before it is flagged went-silent (default `48`, range `1`–`8760`).
 - `NB_ERR_MIN` — minimum calls before a command's error rate is judged (default `5`, range `1`–`10000`).
 - `NB_ERR_RATE` — fraction of a command's calls that failed, above which it is flagged (default `0.3` = 30%, range `0`–`1`).
+- `NB_COVERAGE_HI` — coverage at/above which the surfacing readout reads novel-adds as HIGH (default `0.5`, range `0`–`1`).
+- `NB_RECALL_MISS_HI` — recall-miss at/above which the surfacing readout reads dedup-blocks as HIGH (default `0.2`, range `0`–`1`).
 
 ## Programmatic use
 

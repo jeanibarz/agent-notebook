@@ -34,6 +34,16 @@ function clampInt(raw: string | undefined, dflt: number, lo: number, hi: number)
   return Math.min(hi, Math.max(lo, n));
 }
 
+/** Clamp an env-supplied rate to [0, 1]; a missing/non-numeric value falls back to the default (never NaN, which would break the LOW/HIGH comparison). Mirrors the NB_ERR_RATE handling. */
+function clampRate(raw: string | undefined, dflt: number): number {
+  const n = raw === undefined ? NaN : Number(raw);
+  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : dflt;
+}
+
+/** The coverage×surfacing readout thresholds (issue #81). A rate ≥ its HIGH cutoff reads as "HIGH" on that axis; both default to a deliberately blunt split, tunable via env. */
+export const DEFAULT_COVERAGE_HI = 0.5;
+export const DEFAULT_RECALL_MISS_HI = 0.2;
+
 /** One notebook line. `score` is a running vote sum; `text` is a single ≤MAX_CHARS lesson. */
 export interface Entry {
   score: number;
@@ -1000,6 +1010,42 @@ export interface NotebookTotals {
   cap: number;
 }
 
+/**
+ * The named **surfacing metrics** (issue #81): the recall-miss / precision-miss
+ * rates and the coverage×surfacing readout that §4 of the design rationale
+ * defines, turned into numbers `nb stats` reports. Every rate is derived from
+ * the usage ring alone — the entry-level columns of [FR-USAGE-002] — so it adds
+ * no field to a lesson ([NG-004]) and costs the agent no extra action.
+ *
+ * Two robustness properties make the rates trustworthy:
+ *   - **Conditioned on *attempts*, not sessions.** Each rate's denominator is a
+ *     count of add/vote *events*, so a lazy agent that rarely writes is simply a
+ *     small sample, never a deflated "healthy 0%".
+ *   - **Gated on *engagement*.** Only sessions that show a vote (the agent both
+ *     has the tool wired up AND is instructed to use it) feed the rates; a
+ *     session with no vote is excluded as a setup/plumbing problem rather than
+ *     scored as "healthy quiet" (the engagement gate of §4).
+ *
+ * A rate is `null` — never a misleading `0` ([DP-5]) — when its denominator is
+ * empty (no engaged sessions, or no add attempts / votes within them).
+ */
+export interface SurfacingMetrics {
+  /** Sessions that showed engagement — at least one `up`/`down` vote. The gate under every rate below; `0` means nothing here is scored (e.g. `NB_SESSION` was never set). */
+  engagedSessions: number;
+  /** Genuine add attempts in engaged sessions: `accepted` + `dedup-blocked` + `rejected-full` (a real, within-cap, non-empty lesson whose fate the notebook decided; `empty`/`too-long` are malformed input, excluded). The denominator for `coverage` and `recallMiss`. */
+  addAttempts: number;
+  /** **Coverage** — novel-add rate = accepted adds ÷ `addAttempts`. High early (a young notebook filling gaps) is expected, not a fault. `null` when `addAttempts` is 0. */
+  coverage: number | null;
+  /** **Surfacing recall-miss** (the headline alarm) — dedup-block rate = blocked adds ÷ `addAttempts`: the agent re-derived something already stored. `null` when `addAttempts` is 0. */
+  recallMiss: number | null;
+  /** Vote actions (`up` + `down`) on pushed lessons in engaged sessions — the denominator for `precisionMiss`. */
+  votesActedOn: number;
+  /** **Surfacing precision-miss** — downvote rate on *pushed* lessons = downvotes ÷ `votesActedOn`. Read beside `recallMiss` so "surface everything" cannot look free. Until `nb search` exists, every delivered lesson is treated as pushed (per [NG-007]); when search lands this narrows to non-search-delivered lessons. `null` when `votesActedOn` is 0. */
+  precisionMiss: number | null;
+  /** The coverage×surfacing 2×2 readout — `healthy` / `surfacing-failure` / `coverage-building` / `churny` — a heuristic hint, not a verdict. `null` when there is not enough data (no add attempts) to place it. */
+  readout: 'healthy' | 'surfacing-failure' | 'coverage-building' | 'churny' | null;
+}
+
 export interface StatsReport {
   window: string;
   totalCalls: number;
@@ -1021,6 +1067,13 @@ export interface StatsReport {
    * `notebooks`/`notebookTotals` are unchanged. See `DiagnosticSignal`.
    */
   signals: DiagnosticSignal[];
+  /**
+   * The named surfacing metrics (issue #81): recall-miss / precision-miss rates
+   * and the coverage×surfacing readout, engagement-gated, computed from the same
+   * windowed, role-scoped usage rows. Additive to the report — every field above
+   * is unchanged. See `SurfacingMetrics`.
+   */
+  surfacing: SurfacingMetrics;
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -1254,6 +1307,61 @@ export function stats(
       (a.entry ?? a.session ?? '').localeCompare(b.entry ?? b.session ?? ''),
   );
 
+  // Surfacing metrics (issue #81): the NAMED recall-miss / precision-miss rates
+  // and the coverage×surfacing readout of §4, engagement-gated. The gate: a
+  // session counts only once it shows a vote (the agent is both wired up AND
+  // instructed), so a vote-less session — a setup/plumbing gap — is excluded
+  // rather than mis-scored as "healthy quiet". Rows with a blank session can't be
+  // attributed to a session and are skipped (same as the session-scoped signals).
+  const engaged = new Set<string>();
+  for (const r of recent) {
+    if (r.command === 'vote' && r.session !== '' && (r.outcome === 'up' || r.outcome === 'down')) {
+      engaged.add(r.session);
+    }
+  }
+  let accepted = 0;
+  let dedupBlocked = 0;
+  let rejectedFull = 0;
+  let up = 0;
+  let down = 0;
+  for (const r of recent) {
+    if (r.session === '' || !engaged.has(r.session)) continue;
+    if (r.command === 'add') {
+      if (r.outcome === 'accepted') accepted++;
+      else if (r.outcome === 'dedup-blocked') dedupBlocked++;
+      else if (r.outcome === 'rejected-full') rejectedFull++;
+    } else if (r.command === 'vote') {
+      if (r.outcome === 'up') up++;
+      else if (r.outcome === 'down') down++;
+    }
+  }
+  const addAttempts = accepted + dedupBlocked + rejectedFull;
+  const votesActedOn = up + down;
+  // Rates are null (not a misleading 0 — DP-5) when their denominator is empty.
+  const coverage = addAttempts ? accepted / addAttempts : null;
+  const recallMiss = addAttempts ? dedupBlocked / addAttempts : null;
+  const precisionMiss = votesActedOn ? down / votesActedOn : null;
+  const coverageHi = clampRate(process.env.NB_COVERAGE_HI, DEFAULT_COVERAGE_HI);
+  const recallMissHi = clampRate(process.env.NB_RECALL_MISS_HI, DEFAULT_RECALL_MISS_HI);
+  // The 2×2: novel-adds (coverage) LOW/HIGH × dedup-blocks (recall-miss) LOW/HIGH.
+  let readout: SurfacingMetrics['readout'] = null;
+  if (coverage !== null && recallMiss !== null) {
+    const coverageHigh = coverage >= coverageHi;
+    const recallHigh = recallMiss >= recallMissHi;
+    readout = coverageHigh
+      ? (recallHigh ? 'churny' : 'coverage-building')
+      : (recallHigh ? 'surfacing-failure' : 'healthy');
+  }
+  const surfacing: SurfacingMetrics = {
+    engagedSessions: engaged.size,
+    addAttempts,
+    coverage,
+    recallMiss,
+    votesActedOn,
+    precisionMiss,
+    readout,
+  };
+
   const window =
     windowMs % 86_400_000 === 0
       ? `${windowMs / 86_400_000}d`
@@ -1278,5 +1386,5 @@ export function stats(
     cap,
   };
 
-  return { window, totalCalls: recent.length, perCommand, anomalies, notebooks, notebookTotals, signals };
+  return { window, totalCalls: recent.length, perCommand, anomalies, notebooks, notebookTotals, signals, surfacing };
 }
