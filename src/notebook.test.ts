@@ -621,6 +621,29 @@ describe('role safety', () => {
     expect(() => assertSafeRole('cartographer@some-repo')).not.toThrow();
   });
 
+  test('a `.`-namespaced role is first-class (issue #83): it validates and round-trips to one flat file', async () => {
+    // The `.` namespace convention groups related notebooks lexically
+    // (`review.tests`, `review.correctness`) with no change to `assertSafeRole`:
+    // `.` is already a permitted interior character, so a namespaced role is an
+    // ordinary role, not a special case.
+    expect(() => assertSafeRole('review.tests')).not.toThrow();
+    expect(() => assertSafeRole('review.correctness')).not.toThrow();
+    expect(() => assertSafeRole('a.b.c')).not.toThrow(); // multi-level nesting is fine
+    // `@` stays reserved for the existing `role@project` scoping and is distinct
+    // from the `.` grouping delimiter — the two can coexist in one name.
+    expect(() => assertSafeRole('review.tests@some-repo')).not.toThrow();
+    // Still no storage layout change: the namespace lives entirely in the name,
+    // so the notebook is a single flat `<role>.md` file (no directories).
+    await addEntry(dir, 'review.tests', 'a namespaced lesson');
+    expect(existsSync(join(dir, 'review.tests.md'))).toBe(true);
+    expect(readEntries(dir, 'review.tests').map((e) => e.text)).toEqual(['a namespaced lesson']);
+    // The boundary cases the pattern still rejects: a name cannot begin or end
+    // with the `.` delimiter, and `..` is barred (path-traversal guard).
+    expect(() => assertSafeRole('.review')).toThrow();
+    expect(() => assertSafeRole('review.')).toThrow();
+    expect(() => assertSafeRole('review..tests')).toThrow();
+  });
+
   test('bounds role-name length with a friendly error before it becomes a filename', () => {
     // A 300-char alphanumeric name passes the character pattern but would hit
     // ENAMETOOLONG as `<role>.md`; it must throw the friendly length error.
@@ -1772,6 +1795,24 @@ describe('listNotebooks — the notebook index (issue #71)', () => {
     const listing = listNotebooks(dir, { prefix: 'review.' });
     expect(listing.total).toBe(2);
     expect(listing.rows.map((r) => r.role).sort()).toEqual(['review.perf', 'review.security']);
+  });
+
+  test('the `.` delimiter clusters a namespace and excludes a non-namespaced sibling (issue #83)', async () => {
+    // The whole point of the `.` convention: `review.` groups the cluster while
+    // the bare `reviewer` notebook — which shares the `review` stem but not the
+    // `.` boundary — is correctly left out. This is why the recommended prefix
+    // carries the trailing dot.
+    await addEntry(dir, 'review.tests', 'a');
+    await addEntry(dir, 'review.correctness', 'b');
+    await addEntry(dir, 'reviewer', 'c'); // shares "review" but is NOT in the namespace
+    await addEntry(dir, 'patcher', 'd');
+    const group = listNotebooks(dir, { prefix: 'review.' });
+    expect(group.total).toBe(2);
+    // Lexical clustering ⇒ a predictable, sorted group (ties broken by name).
+    expect(group.rows.map((r) => r.role)).toEqual(['review.correctness', 'review.tests']);
+    // A sub-namespace prefix scopes further still, no new mechanism needed.
+    const sub = listNotebooks(dir, { prefix: 'review.t' });
+    expect(sub.rows.map((r) => r.role)).toEqual(['review.tests']);
   });
 
   test('limit bounds the rows (richest-first) but total counts every match', async () => {

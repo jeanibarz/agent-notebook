@@ -34,6 +34,7 @@ One definition per term, used identically in requirements, code, and tests.
 | Term | Definition |
 |------|------------|
 | **Role** | An agent identity that owns one notebook. A path-safe name (see [FR-SAFE-001](#fr-safe-001)). Stored at `<NB_DIR>/<role>.md`. |
+| **Namespace** | A recommended *convention*, not a storage layer: a `.`-delimited role-name prefix (e.g. `review.tests`, `review.correctness`) that clusters related notebooks lexically so `nb list <prefix>` / `nb search … <prefix>` can scope to a group. A namespaced role is still one flat `<role>.md` file (see [FR-NAMESPACE-001](#fr-namespace-001)). |
 | **Notebook** | The file for one role: a bounded, newline-separated list of entries. |
 | **Entry** | One lesson = one line `"<score>\t<text>"`. The in-memory shape is `{ score: number; text: string }`. |
 | **Lesson** / **text** | The single-line content of an entry, at most `maxChars` characters, no tab/newline. |
@@ -338,6 +339,26 @@ integer; an unparseable value SHALL warn on stderr and fall back to the default,
 never reject), while `NotebookListing.total` SHALL still count every match so the
 header can read `shown of total`. `--json` SHALL emit the raw `NotebookListing`
 as the only thing on stdout.
+
+<a id="fr-namespace-001"></a>
+**FR-NAMESPACE-001 (Should).** Related notebooks SHOULD be grouped with a `.`-delimited
+role-name prefix — the **namespace convention** (e.g. `review.tests`,
+`review.correctness`) — so they cluster lexically and `nb list <prefix>`
+([FR-LIST-002](#fr-list-002)) / `nb search … <prefix>` ([FR-SEARCH-001](#fr-search-001))
+can scope to the group. This is a *naming convention only*: a namespaced role is a
+first-class role requiring **no** change to [FR-SAFE-001](#fr-safe-001) (`.` is
+already a permitted interior character) and **no** new storage layout — the notebook
+stays one flat `<role>.md` file, never a directory. The grouping prefix SHOULD carry
+the trailing `.` so a namespace (`review.`) does not also match a bare sibling that
+merely shares the stem (`reviewer`). `@` is NOT the grouping delimiter; it stays
+reserved for the existing `role@project` scoping and MAY combine with a namespace
+(`review.tests@some-repo`).
+**Rationale:** "Group by concept" done the minimal, brand-safe way — lexically, by
+name, not by a similarity engine ([NG-001](#ng-001)). It lets an agent see and open a
+related cluster at the index level ([FR-LIST-001](#fr-list-001)) while adding no
+schema, no field, and no filesystem structure. `.` is filesystem-safe cross-platform.
+Part of epic [#73](https://github.com/jeanibarz/agent-notebook/issues/73) (Phase 2).
+*Proven by:* `notebook.test.ts` → "a `.`-namespaced role is first-class (issue #83)"; "the `.` delimiter clusters a namespace and excludes a non-namespaced sibling (issue #83)"; `cli.test.ts` → "a bare prefix filters by name (the `.` namespace convention)".
 
 <a id="fr-list-003"></a>
 **FR-LIST-003 (Should).** When a notebook has no `# desc:` description, `list` SHALL
