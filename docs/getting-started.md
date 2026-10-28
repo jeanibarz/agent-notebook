@@ -96,17 +96,33 @@ Four things to notice about the file:
 2. **The number is a score.** Every time the assistant finds a lesson useful, it
    gives it a **+1**; if a lesson misled it, a **−1**. Good lessons float to the
    top.
-3. **It's capped.** A notebook holds at most 50 lessons by default (you can raise
-   the cap). When it's full, the
-   *lowest-scored* line is dropped to make room — so useless or harmful notes
-   fall out, and the hard-won ones survive. It can never turn into a junk drawer.
+3. **It's capped — and self-cleaning.** A notebook holds at most 50 lessons by
+   default (you can raise the cap). A new lesson *always* gets in; when the shelf
+   is full, the *lowest-scored* line is dropped to make room — so useless or
+   harmful notes fall out and the hard-won ones survive. And a lesson that was
+   useful once but hasn't been used in a long time slowly loses a point until it,
+   too, makes way — unless the assistant uses it again, which instantly refreshes
+   it. So the shelf keeps what still earns its place and never becomes a junk
+   drawer. ([The exact rule, and why.](eviction-and-aging.md))
 4. **The top line is a label**, the *description*: one sentence saying "open me
    when you're doing X", so the assistant can tell at a glance whether this
    notebook is relevant.
 
-(The three lessons above are shown highest-score-first; on disk they sit in the
-order they were added, and `nb show` sorts them for you — so the most useful one
-is always on top.)
+(The three lessons above are shown highest-score-first; on disk they sit in
+*most-recently-used-last* order, and `nb show` sorts them by score for you — so
+the most useful one is always on top. Read a notebook with `nb show`, not by
+eyeballing the raw file.)
+
+**A quick picture.** Say the shelf is full and the assistant learns something new:
+
+- the new lesson goes on — **always**;
+- the single **lowest-scored** lesson falls off the bottom;
+- the lesson **nobody has used for the longest** loses one point — so if it keeps
+  going unused, it will eventually fall off too.
+
+A lesson the assistant keeps finding useful keeps earning **+1**s and stays near
+the top. One that quietly stops being useful fades out on its own. That is the
+whole "memory that forgets the right things" story — no timers, no cleanup job.
 
 ---
 
