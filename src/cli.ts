@@ -93,7 +93,7 @@ notes:
     each inheriting the original's score. Each half is rejected (not truncated) if too
     long, and a split never creates a duplicate (the two halves must differ from each
     other and from every surviving entry, else the split is refused and nothing changes).
-  - add/merge/rm/split accept an optional \`--reason <code>\` (+ \`--note "<text>"\`), logged
+  - add/merge/rm/split/describe accept an optional \`--reason <code>\` (+ \`--note "<text>"\`), logged
     (never stored in the notebook) so each op's rate-by-reason becomes a diagnostic
     signal. The reason is always OPTIONAL (omit it rather than invent one — forcing it
     breeds filler), and an unrecognized code is accepted as \`other\` (kept in the note),
@@ -112,6 +112,8 @@ notes:
              other      any other motive; add \`--note\` so a recurring one can emerge
       add    (no enum yet — free text only: use \`--note "<text>"\`; add's codes will emerge
              from mined notes rather than be guessed up front)
+      describe (no enum yet — free text only, like add; the flags are accepted and logged so
+             a code learned from the other write commands is never stored as the description)
   - \`nb describe <role> "<text>"\` sets the notebook's one-line description, stored as a
     leading \`# desc: <text>\` comment in the file; \`nb describe <role>\` (no text) prints the
     current one. The description is a *trigger* — "the situation in which you should open me" —
@@ -212,14 +214,16 @@ export async function runNbCli(
   // `--reason <code>` / `--note "<text>"` attach an optional, never-required
   // reason to a mutating op, logged (never stored in the notebook). Every
   // mutating op consumes them — `merge` (duplicate · other), `rm` (wrong ·
-  // obsolete · other), `split` (overloaded · other), and `add` (free text only,
-  // no enum yet). Pulling them out of `args` BEFORE positional parsing keeps
-  // them from being mistaken for a lesson/operand; `normalizeReason` validates
-  // the code against the op's seed-and-grow enum.
+  // obsolete · other), `split` (overloaded · other), `add` (free text only,
+  // no enum yet), and `describe` (free text only, like `add`). Pulling them out
+  // of `args` BEFORE positional parsing keeps them from being mistaken for a
+  // lesson/operand — otherwise `nb describe <role> --reason x "text"` would
+  // silently store `--reason` as the description (issue #91, a DP-5 violation);
+  // `normalizeReason` validates the code against the op's seed-and-grow enum.
   let reasonArg: string | undefined;
   let noteArg: string | undefined;
   try {
-    if (cmd === 'add' || cmd === 'merge' || cmd === 'rm' || cmd === 'split') {
+    if (cmd === 'add' || cmd === 'merge' || cmd === 'rm' || cmd === 'split' || cmd === 'describe') {
       // Inside the try so a malformed flag (e.g. `--reason` with no value)
       // becomes a handled exit-1 error, not an uncaught rejection.
       ({ value: reasonArg, rest: args } = extractOption(args, '--reason'));
@@ -362,6 +366,15 @@ export async function runNbCli(
         if (args.length > 2) {
           const r = await setDescription(dir, role, args[2]);
           meta.outcome = r.desc === null ? 'desc-cleared' : 'described';
+          // `--reason`/`--note` are stripped above (so they can't be mistaken
+          // for the description text); record them in the usage log, never in
+          // the notebook — `describe` has no seeded enum, so a stray code
+          // buckets to `other` with its text kept in the note (like `add`).
+          {
+            const { reason, note } = normalizeReason('describe', reasonArg, noteArg);
+            if (reason) meta.reason = reason;
+            if (note) meta.note = note;
+          }
           if (json) process.stdout.write(JSON.stringify(r) + '\n');
           else if (r.desc === null) process.stdout.write(`description cleared for role "${role}"\n`);
           else process.stdout.write(`description set for role "${role}": ${r.desc}\n`);
