@@ -16,6 +16,12 @@ versions are listed plainly.
   as the description and the intended text dropped, exiting 0 — a DP-5 violation. The
   flags are now logged to the usage log (never the notebook); `describe` has no seeded
   enum, so a stray code buckets to `other` with its text kept in the note, like `add`.
+- A `README.md` in `NB_DIR` is no longer treated as a notebook (#90). A README is
+  common when the notebook folder is a git repo that backs up your notebooks; it was
+  being listed, searched, counted in `nb stats`, and — worst — voteable/removable,
+  letting a write command rewrite it. `README.md` (case-insensitive) is now excluded
+  from `listRoles` and the `README` role name is reserved in `assertSafeRole`, so no
+  read or write command touches it. Documented beside the `.` namespace convention.
 
 ## [0.2.0] - 2026-10-28
 

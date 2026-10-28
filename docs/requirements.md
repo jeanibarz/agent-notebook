@@ -304,19 +304,25 @@ message naming the role.
 
 <a id="fr-safe-001"></a>
 **FR-SAFE-001 (Must).** A role name SHALL match `^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$`,
-SHALL NOT contain `..`, and SHALL be at most 128 characters long. `assertSafeRole`
-SHALL throw otherwise.
+SHALL NOT contain `..`, SHALL NOT be a reserved name (`README`, case-insensitive),
+and SHALL be at most 128 characters long. `assertSafeRole` SHALL throw otherwise.
 **Rationale:** The role is a path segment; the pattern and `..` check prevent
 traversal outside `NB_DIR`, and the 128-character bound keeps `<role>.md` under
 typical filename limits so an over-long name throws a friendly `invalid role name`
 error instead of a bare `ENAMETOOLONG` stack. 128 fits `role@owner-repo` plus a suffix.
-*Proven by:* `notebook.test.ts` → "rejects path-traversal and unsafe role names"; "bounds role-name length with a friendly error before it becomes a filename".
+`README` is reserved because a `README.md` is the conventional git/backup artifact
+in a notebook folder, not a notebook — reserving the name stops a write command
+(`nb add README …`, `nb vote README …`) from ever creating or rewriting one.
+*Proven by:* `notebook.test.ts` → "rejects path-traversal and unsafe role names"; "bounds role-name length with a friendly error before it becomes a filename"; "`README` is a reserved role name (issue #90): a write command cannot target it".
 
 <a id="fr-roles-001"></a>
 **FR-ROLES-001 (Should).** `listRoles` SHALL return the sorted stems of `*.md` files
-in `NB_DIR`, excluding dotfile sidecars (`.nb-usage.log`, `.nb.lock`). It is the
-primitive the `list` index ([FR-LIST-001](#fr-list-001)) is built on; the `nb roles`
-*command* is now an alias of `nb list`, not a bare-stems printer.
+in `NB_DIR`, excluding dotfile sidecars (`.nb-usage.log`, `.nb.lock`) and a
+`README.md` (case-insensitive — it is a backup artifact, not a notebook; see
+[FR-SAFE-001](#fr-safe-001)). It is the primitive the `list` index
+([FR-LIST-001](#fr-list-001)) is built on; the `nb roles` *command* is now an alias
+of `nb list`, not a bare-stems printer.
+*Proven by:* `notebook.test.ts` → "excludes a README.md so it is not a notebook (issue #90)"; "excludes README.md case-insensitively".
 
 <a id="fr-path-001"></a>
 **FR-PATH-001 (Should).** `nb path` SHALL print `NB_DIR`; `nb path <role>` SHALL

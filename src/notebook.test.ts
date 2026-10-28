@@ -46,6 +46,7 @@ import {
   getMetaValue,
   isMetaLine,
   listNotebooks,
+  listRoles,
   logUsage,
   maxChars,
   maxLines,
@@ -664,6 +665,39 @@ describe('role safety', () => {
     const tooLong = 'a'.repeat(300);
     await expect(addEntry(dir, tooLong, 'x')).rejects.toThrow(/invalid role name/);
     expect(existsSync(join(dir, `${tooLong}.md`))).toBe(false);
+  });
+
+  test('`README` is a reserved role name (issue #90): a write command cannot target it', async () => {
+    // A `README.md` is the conventional git/backup artifact in a notebook folder,
+    // not a notebook — so a write command must never create or rewrite one. The
+    // reserve is case-insensitive, matching the `README.md` the filesystem holds.
+    expect(() => assertSafeRole('README')).toThrow(/reserved: a README\.md is not a notebook/);
+    expect(() => assertSafeRole('readme')).toThrow(/reserved/);
+    expect(() => assertSafeRole('ReadMe')).toThrow(/reserved/);
+    // The reserve blocks a real write (`nb add README …`) before any file touch.
+    await expect(addEntry(dir, 'README', 'x')).rejects.toThrow(/reserved/);
+    expect(existsSync(join(dir, 'README.md'))).toBe(false);
+    // A role that merely contains "readme" is still a legitimate notebook.
+    expect(() => assertSafeRole('readme-notes')).not.toThrow();
+  });
+});
+
+describe('listRoles', () => {
+  test('excludes a README.md so it is not a notebook (issue #90)', () => {
+    // A README that backs up the notebook folder (common when the dir is a git
+    // repo) must not surface as a role — not listed, searched, counted or voted.
+    writeFileSync(join(dir, 'README.md'), '# notes\n\nThis folder is backed up with git.\n', 'utf-8');
+    writeFileSync(join(dir, 'tips.md'), '+1\trun lint before claiming done\n', 'utf-8');
+    expect(listRoles(dir)).toEqual(['tips']);
+  });
+
+  test('excludes README.md case-insensitively', () => {
+    // On a case-insensitive filesystem (macOS, per the report) the file may be
+    // `readme.md`; the exclusion matches regardless of case.
+    writeFileSync(join(dir, 'readme.md'), 'lower-case readme\n', 'utf-8');
+    writeFileSync(join(dir, 'Readme.md'), 'mixed-case readme\n', 'utf-8');
+    writeFileSync(join(dir, 'reviewer.md'), '+1\treal notebook\n', 'utf-8');
+    expect(listRoles(dir)).toEqual(['reviewer']);
   });
 });
 
