@@ -657,6 +657,40 @@ export function setDescription(dir: string, role: string, text: string): Promise
   });
 }
 
+/** One entry in a {@link ShowResult}: its stable id, current score, and lesson text. */
+export interface ShowEntry {
+  id: string;
+  score: number;
+  text: string;
+}
+
+/**
+ * The structured form of `nb show`: the role, its one-line description (or
+ * `null` when none is set), and its entries highest-score-first with an
+ * insertion-order tie-break — the exact order `render()` prints.
+ */
+export interface ShowResult {
+  role: string;
+  description: string | null;
+  entries: ShowEntry[];
+}
+
+/**
+ * The machine-readable sibling of `render()`, for `nb show <role> --json`. It
+ * reuses the same `ordered(readEntries(...))` ordering and the same stable
+ * `entryId`, so an agent recovers each entry's id/score/text without
+ * regex-parsing the human output `render()` produces. An empty notebook yields
+ * an empty `entries` array and a `null` description — never an error.
+ */
+export function showJson(dir: string, role: string): ShowResult {
+  const ord = ordered(readEntries(dir, role));
+  return {
+    role,
+    description: getDescription(dir, role),
+    entries: ord.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text })),
+  };
+}
+
 /** Render a notebook for injection / `show`: a stable id + score, highest score first (most useful on top). */
 export function render(dir: string, role: string): string {
   const ord = ordered(readEntries(dir, role));

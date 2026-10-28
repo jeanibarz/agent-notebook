@@ -67,6 +67,43 @@ describe('runNbCli', () => {
     expect(show.out).toMatch(/^[0-9a-f]{6}\s+\[\+1\]\s+prefer execFileSync/m); // stable id + score
   });
 
+  test('show --json emits { role, description, entries } ordered highest-score-first (issue #87)', async () => {
+    // Two lessons; vote the second one up so score ordering differs from insertion order.
+    await run(['add', 'patcher', 'alpha lesson']);
+    await run(['add', 'patcher', 'beta lesson']);
+    const betaId = entryId('beta lesson');
+    await run(['vote', 'patcher', betaId, '+1']); // beta: +2, alpha: +1
+    await run(['describe', 'patcher', 'bug-fix lessons']);
+
+    const r = await run(['show', 'patcher', '--json']);
+    expect(r.code).toBe(0);
+    // Exactly one JSON object on stdout, nothing else.
+    expect(r.out.trim().split('\n')).toHaveLength(1);
+    const parsed = JSON.parse(r.out);
+    expect(parsed.role).toBe('patcher');
+    expect(parsed.description).toBe('bug-fix lessons');
+    // Highest score first (beta +2 before alpha +1); each entry carries id/score/text.
+    expect(parsed.entries).toEqual([
+      { id: betaId, score: 2, text: 'beta lesson' },
+      { id: entryId('alpha lesson'), score: 1, text: 'alpha lesson' },
+    ]);
+    // The ids match what the human `show` prints, and the order matches render()
+    // (skipping the leading `# desc:` header line that the human output carries).
+    const plain = await run(['show', 'patcher']);
+    const plainIds = plain.out
+      .trim()
+      .split('\n')
+      .filter((l) => /^[0-9a-f]{6}\s/.test(l))
+      .map((l) => l.split(/\s+/)[0]);
+    expect(plainIds).toEqual(parsed.entries.map((e: { id: string }) => e.id));
+  });
+
+  test('show --json on an empty notebook yields { description: null, entries: [] } and exits 0 (issue #87)', async () => {
+    const r = await run(['show', 'solo', '--json']);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual({ role: 'solo', description: null, entries: [] });
+  });
+
   test('vote by the id shown in `show` succeeds', async () => {
     await run(['add', 'patcher', 'alpha one']);
     await run(['add', 'patcher', 'beta two']);
