@@ -506,6 +506,41 @@ one-line / no-schema lesson contract intact. They are heuristic hints, not verdi
 *Proven by:* `notebook.test.ts` → `describe('diagnostic signals (issue #72)')` and
 `cli.test.ts` → `describe('diagnostic signals (issue #72)')`.
 
+<a id="fr-stats-004"></a>
+**FR-STATS-004 (Should).** `stats` SHALL additionally report the named **surfacing
+metrics** (`StatsReport.surfacing`, a `SurfacingMetrics` object) that turn the usage
+ring into the rates [`self-observing-notebook.md`](./self-observing-notebook.md) §4
+defines, computed from the same windowed, role-scoped rows with no new agent action and
+no field added to a lesson ([NG-004](#ng-004)):
+- **coverage** (novel-add rate) = `accepted` adds ÷ `addAttempts`;
+- **recallMiss** (dedup-block rate — the headline alarm: a stored lesson was re-derived) =
+  `dedup-blocked` adds ÷ `addAttempts`;
+- **precisionMiss** (downvote rate on *pushed* lessons) = downvotes ÷ `votesActedOn`,
+  read beside `recallMiss` so chasing recall cannot look free;
+- a **readout** placing (coverage, recallMiss) on the coverage×surfacing 2×2 —
+  `healthy` / `surfacing-failure` / `coverage-building` / `churny` (a heuristic hint,
+  not a verdict), with the LOW/HIGH cutoffs `NB_COVERAGE_HI` (default 0.5) and
+  `NB_RECALL_MISS_HI` (default 0.2).
+
+Each rate SHALL be conditioned on **attempts** (`addAttempts` = `accepted` +
+`dedup-blocked` + `rejected-full`, excluding the malformed `empty`/`too-long`;
+`votesActedOn` = `up` + `down`), so a lazy agent is a small sample rather than a
+deflated `0`. Each rate SHALL be **gated on engagement**: only sessions that show a
+vote are scored (a vote-less or blank-session row is excluded as a setup/plumbing gap,
+not read as "healthy quiet"). A rate with an empty denominator (no engaged sessions, or
+no attempts within them) SHALL be `null`, never a misleading `0` ([DP-5](#dp-5)); the
+human table shows `null` as `—`. Until `nb search` exists, every delivered lesson is
+treated as *pushed* for `precisionMiss` (per [NG-007](#ng-007)); when search lands this
+narrows to non-search-delivered lessons. The field is additive — the rest of the report
+is unchanged. `--json` SHALL emit it inside the `StatsReport`.
+**Rationale:** The free signals ([FR-STATS-003](#fr-stats-003)) point at *which* entry
+or description needs attention; these named rates say whether the notebook is covering
+and surfacing at all. The recall-miss rate is the clearest failure (re-learning what you
+already stored); precision-miss is its counterweight so "surface everything" is not free
+([DP-8](#dp-8)). All derived from behaviour the agent already performs.
+*Proven by:* `notebook.test.ts` → `describe('surfacing metrics (issue #81)')` and
+`cli.test.ts` → the surfacing-metrics table/`--json` tests.
+
 ### 4.13 Notebook descriptions & metadata
 
 <a id="fr-desc-001"></a>
@@ -628,6 +663,8 @@ to the default (integer vars also fall back on a non-numeric string).
 | `NB_SILENT_H` | 48 | 1–8760 | Went-silent anomaly: silence threshold (hours). |
 | `NB_ERR_MIN` | 5 | 1–10000 | High-error-rate anomaly: min calls. |
 | `NB_ERR_RATE` | 0.3 | 0–1 | High-error-rate anomaly: min failure fraction. |
+| `NB_COVERAGE_HI` | 0.5 | 0–1 | Surfacing readout ([FR-STATS-004](#fr-stats-004)): coverage ≥ this reads as novel-adds HIGH. |
+| `NB_RECALL_MISS_HI` | 0.2 | 0–1 | Surfacing readout ([FR-STATS-004](#fr-stats-004)): recall-miss ≥ this reads as dedup-blocks HIGH. |
 
 ---
 

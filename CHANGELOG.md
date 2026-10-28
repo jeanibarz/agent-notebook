@@ -10,6 +10,19 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- Named **surfacing metrics** in `nb stats` (#81). `StatsReport.surfacing`
+  (`SurfacingMetrics`) turns the usage ring into the rates the design rationale §4
+  defines: **coverage** (novel-add rate = accepted ÷ attempts), **recall-miss** (the
+  headline alarm — dedup-block rate = blocked ÷ attempts, a stored lesson re-derived),
+  **precision-miss** (downvotes ÷ votes on pushed lessons, read beside recall so
+  "surface everything" can't look free), and a coverage×surfacing **readout**
+  (`healthy` / `surfacing-failure` / `coverage-building` / `churny`). Every rate is
+  conditioned on *attempts* (robust to a lazy agent) and gated on *engagement* — only
+  sessions with a vote are scored, so an uninstrumented session isn't read as "healthy
+  quiet"; a rate with no data is `null` (shown `—`), never a misleading `0`. Surfaces in
+  the human table under a `surfacing:` section and in `--json` as `StatsReport.surfacing`.
+  Readout cutoffs are tunable via `NB_COVERAGE_HI` (default `0.5`) and `NB_RECALL_MISS_HI`
+  (default `0.2`). Needs `NB_SESSION` set to attribute calls to sessions.
 - `docs/self-observing-notebook.md` — the design rationale for the self-observing
   signal layer: why the tool instruments itself, what each operation signals, and how
   engagement, coverage, surfacing recall, surfacing precision, and serendipity are

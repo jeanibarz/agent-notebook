@@ -71,7 +71,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'agent-notebook-'));
 });
 afterEach(() => {
-  for (const k of ['NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_USAGE_RING', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ERR_RATE', 'NB_SESSION']) {
+  for (const k of ['NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_USAGE_RING', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ERR_RATE', 'NB_SESSION', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI']) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
@@ -922,6 +922,143 @@ describe('diagnostic signals (issue #72)', () => {
     writeFileSync(join(dir, '.nb-usage.log'), `${old}\treviewer\tshow\tok\t2ms\ts1\t\t\t\t\t\t\n`, 'utf-8');
     const rep = stats(dir, { now, windowMs: 48 * 3600_000 });
     expect(rep.signals).toHaveLength(0);
+  });
+});
+
+describe('surfacing metrics (issue #81)', () => {
+  // The named recall-miss / precision-miss rates and the coverage×surfacing
+  // readout from §4 of the design rationale. Rows are logged with explicit
+  // sessions: every rate is engagement-gated (a session counts only once it
+  // shows a vote), so the tests seed a vote to make a session "engaged".
+
+  test('recall-miss, coverage, and precision-miss are the rates §4 defines', () => {
+    // Engaged session s1: 2 accepted adds, 1 dedup-blocked add, 1 up + 1 down vote.
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's1', outcome: 'accepted', entries: ['a1'] });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's1', outcome: 'accepted', entries: ['a2'] });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's1', outcome: 'dedup-blocked', entries: ['a3'], collided: 'a1' });
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['a1'] });
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'down', entries: ['a2'] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.engagedSessions).toBe(1);
+    expect(sf.addAttempts).toBe(3);
+    expect(sf.coverage).toBeCloseTo(2 / 3);
+    expect(sf.recallMiss).toBeCloseTo(1 / 3); // the headline alarm
+    expect(sf.votesActedOn).toBe(2);
+    expect(sf.precisionMiss).toBeCloseTo(0.5); // 1 downvote of 2 votes
+  });
+
+  test('the engagement gate excludes a session with no vote (not scored as healthy quiet)', () => {
+    // s1 has adds but NO vote → not engaged → its adds are not scored.
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's1', outcome: 'dedup-blocked', entries: ['x'] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.engagedSessions).toBe(0);
+    expect(sf.addAttempts).toBe(0);
+    expect(sf.recallMiss).toBeNull(); // no engaged data → null, never a misleading 0
+    expect(sf.readout).toBeNull();
+  });
+
+  test('a blank session is skipped (needs NB_SESSION), so no engaged sessions', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: '', outcome: 'up', entries: ['x'] });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: '', outcome: 'dedup-blocked', entries: ['y'] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.engagedSessions).toBe(0);
+    expect(sf.coverage).toBeNull();
+    expect(sf.precisionMiss).toBeNull();
+  });
+
+  test('empty and too-long adds are malformed input, excluded from attempts', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['a1'] }); // engages s1
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's1', outcome: 'accepted', entries: ['a1'] });
+    logUsage(dir, 'patcher', 'add', false, 1, { session: 's1', outcome: 'empty' });
+    logUsage(dir, 'patcher', 'add', false, 1, { session: 's1', outcome: 'too-long' });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.addAttempts).toBe(1); // only the accepted one
+    expect(sf.coverage).toBe(1);
+  });
+
+  test('rejected-full is a genuine attempt (slack between coverage and recall-miss)', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['a1'] });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's1', outcome: 'accepted', entries: ['a1'] });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's1', outcome: 'rejected-full', entries: ['a2'] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.addAttempts).toBe(2);
+    expect(sf.coverage).toBe(0.5);
+    expect(sf.recallMiss).toBe(0); // no dedup-blocks, yet coverage < 1 — the rejected-full slack
+  });
+
+  test('coverage×surfacing readout maps the four quadrants (default thresholds)', () => {
+    // Default thresholds: coverage HIGH ≥ 0.5, recall-miss HIGH ≥ 0.2.
+    const readoutFor = (accepted: number, blocked: number): string | null => {
+      const d = mkdtempSync(join(tmpdir(), 'agent-notebook-sf-'));
+      try {
+        logUsage(d, 'r', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['v'] });
+        for (let i = 0; i < accepted; i++) logUsage(d, 'r', 'add', true, 1, { session: 's1', outcome: 'accepted', entries: [`a${i}`] });
+        for (let i = 0; i < blocked; i++) logUsage(d, 'r', 'add', true, 1, { session: 's1', outcome: 'dedup-blocked', entries: [`b${i}`] });
+        return stats(d, { now: Date.now() }).surfacing.readout;
+      } finally {
+        rmSync(d, { recursive: true, force: true });
+      }
+    };
+    expect(readoutFor(1, 9)).toBe('surfacing-failure'); // coverage .1 LOW, recall .9 HIGH
+    expect(readoutFor(9, 0)).toBe('coverage-building'); // coverage 1.0 HIGH, recall 0 LOW
+    expect(readoutFor(6, 4)).toBe('churny'); // coverage .6 HIGH, recall .4 HIGH
+  });
+
+  test('healthy quadrant: low coverage AND low recall-miss', () => {
+    // 10 attempts: 3 accepted (.3 coverage LOW), 1 dedup-blocked (.1 recall LOW), 6 rejected-full slack.
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['v'] });
+    for (let i = 0; i < 3; i++) logUsage(dir, 'patcher', 'add', true, 1, { session: 's1', outcome: 'accepted', entries: [`a${i}`] });
+    logUsage(dir, 'patcher', 'add', true, 1, { session: 's1', outcome: 'dedup-blocked', entries: ['b0'] });
+    for (let i = 0; i < 6; i++) logUsage(dir, 'patcher', 'add', true, 1, { session: 's1', outcome: 'rejected-full', entries: [`f${i}`] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.coverage).toBeCloseTo(0.3);
+    expect(sf.recallMiss).toBeCloseTo(0.1);
+    expect(sf.readout).toBe('healthy');
+  });
+
+  test('NB_COVERAGE_HI / NB_RECALL_MISS_HI tune the readout thresholds', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['v'] });
+    logUsage(dir, 'patcher', 'add', true, 1, { session: 's1', outcome: 'accepted', entries: ['a0'] });
+    logUsage(dir, 'patcher', 'add', true, 1, { session: 's1', outcome: 'dedup-blocked', entries: ['b0'] });
+    // coverage .5, recall .5. Defaults → both HIGH → churny.
+    expect(stats(dir, { now: Date.now() }).surfacing.readout).toBe('churny');
+    // Raise both cutoffs above .5 → both LOW → healthy.
+    process.env.NB_COVERAGE_HI = '0.9';
+    process.env.NB_RECALL_MISS_HI = '0.9';
+    expect(stats(dir, { now: Date.now() }).surfacing.readout).toBe('healthy');
+  });
+
+  test('a malformed NB_RECALL_MISS_HI falls back to the default (not NaN)', () => {
+    process.env.NB_RECALL_MISS_HI = 'abc';
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['v'] });
+    logUsage(dir, 'patcher', 'add', true, 1, { session: 's1', outcome: 'dedup-blocked', entries: ['b0'] });
+    // recall-miss 1.0 ≥ default 0.2 → HIGH; a NaN cutoff would make every comparison false.
+    expect(stats(dir, { now: Date.now() }).surfacing.readout).toBe('surfacing-failure');
+  });
+
+  test('surfacing is scoped to the role when stats is called with one', () => {
+    logUsage(dir, 'alpha', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['v'] });
+    logUsage(dir, 'alpha', 'add', true, 1, { session: 's1', outcome: 'dedup-blocked', entries: ['a'] });
+    logUsage(dir, 'beta', 'vote', true, 1, { session: 's2', outcome: 'up', entries: ['w'] });
+    logUsage(dir, 'beta', 'add', true, 1, { session: 's2', outcome: 'accepted', entries: ['c'] });
+    const sf = stats(dir, { now: Date.now(), role: 'alpha' }).surfacing;
+    expect(sf.engagedSessions).toBe(1);
+    expect(sf.recallMiss).toBe(1); // only alpha's dedup-block counted
+  });
+
+  test('a surfacing row older than the window is excluded', () => {
+    const now = Date.parse('2026-10-23T10:00:00Z');
+    const old = new Date(now - 100 * 3600_000).toISOString();
+    // An engaged (voted) session 100h back — excluded by a 48h window.
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      `${old}\tpatcher\tvote\tok\t1ms\ts1\tv\tup\t\t\t\t\n` +
+        `${old}\tpatcher\tadd\tok\t1ms\ts1\ta\tdedup-blocked\t\t\t\t\n`,
+      'utf-8',
+    );
+    const sf = stats(dir, { now, windowMs: 48 * 3600_000 }).surfacing;
+    expect(sf.engagedSessions).toBe(0);
+    expect(sf.recallMiss).toBeNull();
   });
 });
 

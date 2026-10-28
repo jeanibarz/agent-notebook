@@ -17,7 +17,7 @@ beforeEach(() => {
   process.env.NB_DIR = dir;
 });
 afterEach(() => {
-  for (const k of ['NB_DIR', 'NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_ROLE', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SESSION']) {
+  for (const k of ['NB_DIR', 'NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_ROLE', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SESSION', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI']) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
@@ -282,6 +282,50 @@ describe('runNbCli', () => {
   test('the human stats table says "signals: none" when there is nothing to report', async () => {
     const s = await run(['stats']); // only the stats call itself is logged
     expect(s.out).toContain('signals: none');
+  });
+
+  test('the human stats table renders the surfacing metrics and readout (issue #81)', async () => {
+    process.env.NB_SESSION = 's1';
+    await run(['add', 'patcher', 'alpha lesson']); // accepted
+    await run(['vote', 'patcher', 'alpha', '+1']); // engages s1
+    await run(['add', 'patcher', 'alpha lesson']); // dedup-blocked (same dedup key)
+    const s = await run(['stats', 'patcher']);
+    expect(s.code).toBe(0);
+    expect(s.out).toContain('surfacing: 1 engaged session');
+    expect(s.out).toContain('coverage');
+    expect(s.out).toContain('recall-miss');
+    expect(s.out).toContain('precision-miss');
+    // 1 accepted + 1 dedup-blocked ⇒ coverage .5 (HIGH) × recall .5 (HIGH) ⇒ churny.
+    expect(s.out).toContain('readout: churny');
+  });
+
+  test('stats --json carries the surfacing metrics object (issue #81)', async () => {
+    process.env.NB_SESSION = 's1';
+    await run(['add', 'patcher', 'alpha lesson']); // accepted
+    await run(['vote', 'patcher', 'alpha', '+1']); // engages s1, one upvote
+    await run(['add', 'patcher', 'alpha lesson']); // dedup-blocked
+    const s = await run(['stats', 'patcher', '--json']);
+    expect(s.code).toBe(0);
+    const rep = JSON.parse(s.out);
+    expect(rep.surfacing).toEqual({
+      engagedSessions: 1,
+      addAttempts: 2,
+      coverage: 0.5,
+      recallMiss: 0.5,
+      votesActedOn: 1,
+      precisionMiss: 0, // one upvote, zero downvotes
+      readout: 'churny',
+    });
+  });
+
+  test('the human stats table reports no engaged sessions when NB_SESSION is unset (issue #81)', async () => {
+    delete process.env.NB_SESSION; // no session → the engagement gate finds nothing to score
+    await run(['add', 'patcher', 'a lesson']);
+    const s = await run(['stats', 'patcher']);
+    expect(s.out).toContain('surfacing: no engaged sessions in this window');
+    const json = JSON.parse((await run(['stats', 'patcher', '--json'])).out);
+    expect(json.surfacing.engagedSessions).toBe(0);
+    expect(json.surfacing.recallMiss).toBeNull(); // null, shown as — in the table, never a misleading 0%
   });
 
   test('unknown command exits 2', async () => {
