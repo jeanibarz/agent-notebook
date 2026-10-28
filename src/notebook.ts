@@ -18,7 +18,7 @@ import { dirname, join } from 'node:path';
 
 /** Hard caps, read at call time so they can be tuned by env without a code change (and set per-test). */
 export function maxLines(): number {
-  return clampInt(process.env.NB_MAX_LINES, 200, 1, 5000);
+  return clampInt(process.env.NB_MAX_LINES, 50, 1, 5000);
 }
 export function maxChars(): number {
   return clampInt(process.env.NB_MAX_CHARS, 200, 20, 2000);

@@ -271,8 +271,8 @@ describe('runNbCli', () => {
     const s = await run(['stats', 'patcher']);
     expect(s.code).toBe(0);
     const out = s.out.split('\n').map((l) => l.trim());
-    expect(out).toContain('notebooks: 1 role, 1 lines (cap 200/role)'); // singular "role"
-    expect(out.some((l) => /^patcher\s+1\/200$/.test(l))).toBe(true);
+    expect(out).toContain('notebooks: 1 role, 1 lines (cap 50/role)'); // singular "role"
+    expect(out.some((l) => /^patcher\s+1\/50$/.test(l))).toBe(true);
     expect(out.some((l) => /^scout\b/.test(l))).toBe(false); // the other role is not listed
   });
 

@@ -731,7 +731,7 @@ to the default (integer vars also fall back on a non-numeric string).
 |---|---|---|---|
 | `NB_DIR` | `~/.agent-notebook/notebooks` | — | Notebooks directory. |
 | `NB_SESSION` | _(unset → blank)_ | — | Session id a caller/hook sets; recorded per usage row ([FR-USAGE-002](#fr-usage-002)) to group a session's calls. |
-| `NB_MAX_LINES` | 200 | 1–5000 | `maxLines` — entries per notebook. |
+| `NB_MAX_LINES` | 50 | 1–5000 | `maxLines` — entries per notebook (a deliberately tight default so eviction pressure stays meaningful and a notebook keeps only what earns its place; raise it for a role that genuinely needs more). |
 | `NB_MAX_CHARS` | 200 | 20–2000 | `maxChars` — characters per lesson. |
 | `NB_USAGE_RING` | 5000 | 100–100000 | `usageRing` — rows in the usage log. |
 | `NB_LOOP_N` | 10 | 2–1000 | Loop anomaly: call count threshold. |
