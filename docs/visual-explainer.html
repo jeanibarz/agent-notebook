@@ -179,7 +179,7 @@
   <div class="cards" style="margin-top:0.6rem">
     <div class="card"><div class="n">01</div><h3>One lesson, one line</h3><p>At most 200 characters. Not a document — a single hard-won reminder you could read aloud.</p></div>
     <div class="card"><div class="n">02</div><h3>Voted, not aged</h3><p>+1 when a lesson helped, −1 when it misled. Good lessons float up; no decay curve, no scheduler.</p></div>
-    <div class="card"><div class="n">03</div><h3>Bounded, and configurable</h3><p>A small capped list — keep it tight (around 50 lines is plenty; the cap is one setting you tune). When full, the <em>lowest-scored</em> line is evicted, so it self-cleans and never rots into a junk drawer.</p></div>
+    <div class="card"><div class="n">03</div><h3>Bounded, and configurable</h3><p>A capped list — 200 lessons by default, and the cap is one setting you tune (many roles stay happily under 50). When full, the <em>lowest-scored</em> line is evicted, so it self-cleans and never rots into a junk drawer.</p></div>
     <div class="card"><div class="n">04</div><h3>Plain text</h3><p>One file per role. You can <code style="font-family:var(--font-mono)">cat</code> it, <code style="font-family:var(--font-mono)">grep</code> it, and <code style="font-family:var(--font-mono)">git diff</code> it. You cannot do that to a vector database.</p></div>
   </div>
 </div></section>
@@ -187,10 +187,10 @@
 <section><div class="wrap stack reveal">
   <p class="eyebrow">the counter-intuitive part</p>
   <h2>Surfaced to the agent — not searched.</h2>
-  <p class="muted" style="max-width:62ch">The most valuable lesson is the one the agent would never think to search for: the trap it forgot exists. A search only returns what you can already name. So the notebook is <em>surfaced</em> instead — and surfacing is more than dumping a file in front of the agent. Each notebook carries a plain-language description of when to open it, and signals from real use — which lessons get used, which get used <em>together</em> — are mined offline to keep notebooks well-described and well-organized. So when the agent opens one, it meets the lessons relevant to the task, including the ones it didn't know it would need.</p>
+  <p class="muted" style="max-width:62ch">The most valuable lesson is the one the agent would never think to search for: the trap it forgot exists. A search only returns what you can already name. So the notebook is <em>surfaced</em> instead — put in front of the agent whether it asks or not. And it is more than dumping a file: each notebook carries a plain-language description of when to open it, and every use leaves a signal — which lessons got used, and which got used <em>together</em> — that you can mine offline to keep notebooks well-described and well-organized over time. So the agent meets the lessons that fit the task, including the ones it didn't know it would need.</p>
   <div class="two" style="margin-top:0.6rem">
     <div class="panel"><p class="tag dim">A search engine · pull</p><p style="margin-top:0.6rem" class="muted">The agent must ask the right question to get an answer back. If it forgot the trap exists, it never asks — so the lesson never surfaces.</p></div>
-    <div class="panel good"><p class="tag hot">A notebook · push</p><p style="margin-top:0.6rem">The relevant notebook is put in front of the agent — chosen by its description, organized by how its lessons are actually used — so the forgotten lesson arrives unasked. That's the serendipity other tools miss.</p></div>
+    <div class="panel good"><p class="tag hot">A notebook · push</p><p style="margin-top:0.6rem">The role's notebook is put in front of the agent, and its description says when it fits — so the forgotten lesson arrives unasked. That's the serendipity other tools miss.</p></div>
   </div>
 </div></section>
 
@@ -198,7 +198,7 @@
   <p class="eyebrow">the rhythm of a task</p>
   <h2>Four small moments.</h2>
   <div class="steps" style="margin-top:0.6rem">
-    <div class="step"><h3>Read</h3><p>At task start, the notebook is shown so the agent begins informed. <code>nb show</code></p></div>
+    <div class="step"><h3>Read</h3><p>At task start, the notebook is surfaced so the agent begins informed. <code>nb show</code></p></div>
     <div class="step"><h3>Consult</h3><p>Mid-task, check if a past job already covers this. <code>nb list</code></p></div>
     <div class="step"><h3>Delegate</h3><p>A helper agent gets its own notebook for its own role.</p></div>
     <div class="step"><h3>Retrospect</h3><p>At the end, vote on what helped, add one new lesson. <code>nb vote</code></p></div>

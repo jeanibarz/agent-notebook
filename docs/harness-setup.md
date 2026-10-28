@@ -1,115 +1,145 @@
 # Harness setup guide
 
-*How to wire `agent-notebook` into your AI coding harness so it is used
-automatically — for Claude Code and Codex CLI, on Linux, macOS, and Windows.*
+*How to make your AI coding agent use `agent-notebook` — for Claude Code and
+Codex CLI, on Linux, macOS, and Windows.*
 
 New to the tool? Read the [plain-language intro](getting-started.md) first. The
 behaviour you are turning on is specified in [AGENTS.md](../AGENTS.md).
 
+The whole setup is one idea: **tell the agent to list the notebooks, open the
+ones that fit, and run a retrospective at the end.** That instruction is
+harness-agnostic — there is no per-notebook wiring and no "which notebook is this
+agent?" logic to maintain. Everything else on this page (git history, backup, a
+janitor, convenience hooks) is optional.
+
 ---
 
-## Mental model: a dumb core, a harness around it
+## Mental model: a dumb core, a thin layer around it
 
 Keep these two layers straight and everything else follows:
 
 ```mermaid
 flowchart TB
     subgraph core["The package (never changes, never networks)"]
-        NB["nb — a fast, offline file edit<br/>show · add · vote · merge · split · rm · list · search · stats"]
+        NB["nb — a fast, offline file edit<br/>list · show · add · vote · merge · split · rm · describe · search · stats · path"]
     end
-    subgraph harness["The harness layer (what you set up here — all optional)"]
-        H1["Injection hook<br/>(show the notebook at task start)"]
-        H2["Retrospective hook<br/>(vote / prune / add at task end)"]
-        H3["git wrapper<br/>(a commit per change)"]
-        H4["backup job<br/>(daily push to a remote)"]
-        H5["janitor<br/>(offline diagnostics)"]
+    subgraph layer["The layer you set up (all optional except the instruction)"]
+        I["the instruction<br/>(list & open; retrospect) — in AGENTS.md / CLAUDE.md"]
+        H1["index hook (optional)<br/>inject nb list at session start"]
+        H2["retrospective hook (optional)<br/>nudge vote / prune / add at task end"]
+        H3["git wrapper (optional)<br/>a commit per change"]
+        H4["backup job (optional)<br/>daily push to a remote"]
+        H5["janitor (optional)<br/>offline diagnostics"]
     end
-    H1 & H2 --> NB
-    H3 --> NB
-    NB --> H4 --> H5
+    I & H1 & H2 & H3 --> NB
+    NB --> H4
+    NB --> H5
 ```
 
-Nothing in the harness layer runs *inside* an `nb` call; all of it reads or wraps
-the plain files. You can adopt one piece and ignore the rest.
+Nothing in this layer runs *inside* an `nb` call; all of it reads or wraps the
+plain files. The one thing that matters is the instruction; adopt the rest piece
+by piece, or not at all.
 
 ---
 
-## Step 0 — prerequisites and install
+## Install
 
 | Need | How |
 |---|---|
 | **Node.js ≥ 18** | <https://nodejs.org> (`node --version`). The only hard dependency. |
 | **`nb` on your PATH** | `npm install -g agent-notebook`, then `nb --help`. |
-| **git** (optional) | Only for versioning + backup (§[Git-versioning](#git-versioning)). |
-| **bash** (optional) | For the example shell scripts. Built-in on Linux/macOS; on Windows use WSL or Git Bash (§[Windows](#windows)). |
+| **git** (optional) | Only for versioning + backup ([Git-versioning](#git-versioning)). |
+| **bash** (optional) | For the example shell scripts. Built-in on Linux/macOS; on Windows use WSL or Git Bash ([Windows](#windows)). |
 
 The example scripts referenced below live in [`examples/`](../examples/). Clone
 the repo or copy the files you want.
 
 ---
 
-## Step 1 — wire the four moments into your harness
+## Give your agent the instruction
 
-The [AGENTS.md contract](../AGENTS.md#2-the-four-moments--what-to-do-and-when)
-defines four moments. Here is how each maps to a real mechanism.
+This is the only required step. The agent needs to know to run the
+[four moments](../AGENTS.md#2-the-four-moments--what-to-do-and-when): **① `nb list`
+→ ② open the notebooks that fit → ③ a subagent does the same → ④ retrospective.**
+Put that instruction wherever your harness reads standing instructions.
 
 ### Claude Code
 
-Claude Code has real lifecycle hooks, so the wiring is direct. Copy the
-[`examples/hooks/claude-code/`](../examples/hooks/claude-code/) scripts and merge
-the provided `settings.json` block (full steps in that folder's README):
+Claude Code auto-loads a `CLAUDE.md` from the project (and `~/.claude/CLAUDE.md`
+for every project), so the instruction just needs to live there. The simplest
+way is to reuse this repo's [AGENTS.md](../AGENTS.md) as the contract:
 
-| Moment | Mechanism |
-|---|---|
-| ① read | `SessionStart` hook runs `nb-session-start.sh` → injects `nb show <role>` + `nb list` into context. |
-| ② consult | covered by the injection + the AGENTS.md instruction; optionally a `UserPromptSubmit` nudge. |
-| ③ subagent | give each subagent its own role (see [Subagents](#subagents)). |
-| ④ retrospective | `Stop` / `SubagentStop` hook runs `nb-retrospective.sh` → blocks the stop once with the vote/prune/add checklist. |
+```sh
+# In your project (or your home dir for a global default):
+cp /path/to/agent-notebook/AGENTS.md ./AGENTS.md
+ln -s AGENTS.md CLAUDE.md          # one file, loaded by Claude Code and read by Codex
+```
+
+Or paste the shorter [Codex snippet](../examples/hooks/codex-cli/AGENTS.snippet.md)
+into an existing `CLAUDE.md`. That is enough: the agent will run `nb list` itself
+at the start of a task and open what fits.
+
+**Optional convenience hooks** (Claude Code has real lifecycle hooks; see
+[`examples/hooks/claude-code/`](../examples/hooks/claude-code/)):
+
+| Hook | What it adds | Moment |
+|---|---|---|
+| `SessionStart` → `nb-session-start.sh` | injects the `nb list` **index** into context so the agent sees it without spending a call — no role logic, same for every project | ① |
+| `Stop` / `SubagentStop` → `nb-retrospective.sh` | nudges the retrospective once per session so it isn't forgotten | ④ |
+
+The index hook injects the *index of descriptions*, not a guessed "role" notebook
+— so it stays generic across every project and never has to answer "which notebook
+is this?". It saves the agent one `nb list` call; the agent still chooses what to
+open. Skip it and nothing breaks — the instruction already tells the agent to list.
 
 ### Codex CLI
 
-Codex CLI has no per-event hooks, so the contract rides in `AGENTS.md`, which
-Codex loads automatically every session. Append the snippet and you have moments
-① ② ④; add the PATH wrapper for history. Full steps in
-[`examples/hooks/codex-cli/`](../examples/hooks/codex-cli/).
+Codex has no lifecycle hooks, so the instruction is the whole integration — and
+Codex already auto-loads `AGENTS.md` (the global `~/.codex/AGENTS.md`, the repo
+root, and the working dir, merged). Append the snippet once:
 
 ```sh
 cat examples/hooks/codex-cli/AGENTS.snippet.md >> ~/.codex/AGENTS.md
 ```
 
-> **One file for both tools.** If you use Claude Code *and* Codex, make `CLAUDE.md`
-> a symlink to `AGENTS.md` (as this repo does: `ln -s AGENTS.md CLAUDE.md`). One
-> protocol, both harnesses.
+Now every Codex session starts with the list-and-open contract in context. Add
+the [git wrapper](#git-versioning) if you want per-change history. Full notes in
+[`examples/hooks/codex-cli/`](../examples/hooks/codex-cli/).
+
+> **One file for both tools.** `CLAUDE.md` can be a symlink to `AGENTS.md` (as
+> this repo does: `ln -s AGENTS.md CLAUDE.md`). One contract, both harnesses.
 
 ### Subagents
 
-Claude Code has no "subagent started" event, so moment ③ is handled by *role
-assignment*, not a hook. When you spawn a specialised subagent (reviewer,
-patcher, repro-builder), give it its own role so it loads its own lessons and
-writes new ones back:
+When your agent spawns a specialised subagent (reviewer, patcher, repro-builder),
+the subagent does the **same ① → ② → ④** for its own task — there is no
+per-subagent role to assign and no "subagent started" hook to rely on. Just point
+the subagent at the same contract (its definition, or the prompt you spawn it
+with, references `AGENTS.md`), and it will:
 
-1. In the subagent's definition or spawn prompt, tell it to run `nb show <role>`
-   first — e.g. `reviewer`, `patcher@my-repo`.
-2. Run `nb list` before spawning and **reuse an existing role** rather than
-   minting a near-duplicate — role matching is exact, so `reviewer` and `review`
-   become two unrelated memories (the [janitor](#the-janitor) flags this).
-3. The `SubagentStop` hook drives that subagent's retrospective automatically.
+1. run `nb list`, open the notebooks that fit *its* job, and use them;
+2. **reuse an existing notebook** rather than mint a near-duplicate — role
+   matching is exact, so `reviewer` and `review` become two unrelated memories
+   (the [janitor](#the-janitor) flags this);
+3. run its own retrospective at the end.
 
-This is the "notebook role reuse" pattern: the orchestrator discovers roles with
-`nb list`, hands one to each subagent, and memory accumulates per role across
-many tasks instead of being lost when the subagent exits.
+If you installed the retrospective hook, note it fires **once per session**, keyed
+on the session id — so the first stop (a subagent's or the main agent's) gets the
+nudge and later stops are suppressed. It is a backstop, not a per-subagent driver;
+the reliable place for the subagent's retrospective is the contract it was given.
 
 ---
 
 ## Git-versioning
 
 By default a notebook is a plain file that your normal home-directory backup
-already covers. Turning `NB_DIR` into a git repository upgrades that to a
-**reviewable, revertible history of memory forming** — every added lesson is a
-green `+`, every vote a score change you can `git diff` and `git revert`.
+already covers. Turning the notebooks directory `NB_DIR` (the folder `nb path`
+prints) into a git repository upgrades that to a **reviewable, revertible history
+of memory forming** — every added lesson is a green `+`, every vote a score change
+you can `git diff` and `git revert`.
 
 ```sh
-cd "$(nb path)"          # the notebooks directory
+cd "$(nb path)"          # the notebooks directory (NB_DIR)
 git init
 printf '%s\n' '.nb-usage.log' '.nb.lock' '*.tmp' '.retro-*' '.nb-backup.log*' > .gitignore
 git add -A && git commit -m "init agent-notebook store"
@@ -160,7 +190,7 @@ Then schedule the daily push:
 **macOS (launchd)** — if you prefer it to cron, wrap the same command in a
 `launchd` plist with a `StartCalendarInterval` of hour 3, minute 10.
 
-**Windows** — see [§Windows](#windows).
+**Windows** — see [Windows](#windows).
 
 The authoritative choice of remote (GitHub/GitLab, self-hosted, or an internal
 mirror) is a sovereignty/security decision — see the
@@ -175,6 +205,12 @@ mirror) is a sovereignty/security decision — see the
 `nb stats` cannot — reading every file, the usage log, and the git history — and
 prints concrete suggestions. Run it occasionally (weekly, or as its own scheduled
 job), read the four sections, and apply the `nb` commands it proposes.
+
+> The **usage log** (`.nb-usage.log`, in `NB_DIR`) is an append-only record of
+> which lessons `nb` touched and how — the entry voted/added, the outcome
+> (`accepted` / `dedup-blocked` / `up` / `down` …), and the session — written by
+> every `nb` call. It is the raw signal behind the janitor's sections 3 and 4 and
+> behind `nb stats`; set `NB_SESSION` so calls group by session.
 
 ```sh
 node examples/nb-janitor.mjs            # human report over $NB_DIR
@@ -236,9 +272,10 @@ git -C "$(nb path)" log --oneline    # (if versioning) a commit appeared
 nb rm smoke "setup check"            # clean up the smoke lesson
 ```
 
-In your harness, start a fresh session: you should see the notebook injected at
-the top (Claude Code) or the protocol honoured from `AGENTS.md` (Codex), and a
-retrospective prompt when the task ends (Claude Code).
+In your harness, start a fresh session and give it a task: the agent should run
+`nb list` and open a relevant notebook on its own (the contract is in context),
+and — if you added the optional hooks — you'll also see the index injected at the
+top and a retrospective nudge when the task ends.
 
 Rolling this out across a team or under compliance constraints? Continue to the
 **[enterprise integration guide](enterprise.md)**.

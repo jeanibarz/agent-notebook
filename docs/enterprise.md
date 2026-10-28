@@ -11,9 +11,8 @@ footprint is a directory of plain-text files you already know how to govern.
 
 ## Why this is easy to approve
 
-Most "AI memory" products are a hosted service: your data leaves the machine,
-lands in a vendor's vector database, and you inherit their security posture.
-`agent-notebook` is the opposite of that by design
+Hosted "AI memory" means your data leaves the machine for a vendor's store, and
+you inherit their security posture. `agent-notebook` is the opposite by design
 ([non-goals](requirements.md#6-non-goals-shall-not)):
 
 ```mermaid
@@ -135,6 +134,9 @@ flowchart TB
         R["internal git remote<br/>(team lessons)"]
         D3["dev pulls daily,<br/>writes locally,<br/>curates before push"]
         R --> D3 --> R
+    end
+    subgraph proj["Project-scoped"]
+        P["notebooks committed<br/>into the project repo<br/>(reviewed with the code)"]
     end
 ```
 

@@ -1,13 +1,14 @@
 # Claude Code hooks for agent-notebook
 
-These three files wire the [AGENTS.md contract](../../../AGENTS.md) into Claude
-Code so the notebook is used automatically, at the right moments, without you
-having to remember.
+These hooks are **optional conveniences**. The required integration is just the
+[AGENTS.md / CLAUDE.md contract](../../../AGENTS.md) — once that is in context,
+the agent runs `nb list` and opens the notebooks it needs on its own. These two
+scripts save it a call and keep the retrospective from being forgotten.
 
-| File | Hook event | AGENTS.md moment |
+| File | Hook event | What it adds |
 |---|---|---|
-| `nb-session-start.sh` | `SessionStart` | ① **read** — shows the role's notebook + `nb list` as context before the agent plans. |
-| `nb-retrospective.sh` | `Stop` / `SubagentStop` | ④ **retrospective** — once per session, asks the agent to vote / prune / add ≤1 before finishing. |
+| `nb-session-start.sh` | `SessionStart` | injects the `nb list` **index** (every notebook + its "open me when…" description) into context, so the agent sees it without a call. No role logic — the same script in every project. |
+| `nb-retrospective.sh` | `Stop` / `SubagentStop` | once per session, nudges the agent to vote / prune / add on the notebooks it used before finishing. |
 | `settings.json` | — | the config that registers the two scripts. |
 
 ## Install (per project, recommended first)
@@ -31,28 +32,30 @@ per-project `.claude/settings.json`.
 
 | Var | Default | Purpose |
 |---|---|---|
-| `NB_ROLE` | the project directory name | which notebook to show / maintain |
 | `NB_DIR` | `~/.agent-notebook/notebooks` | where notebooks (and retro sentinels) live |
 | `NB_SESSION` | — | set it (e.g. to Claude Code's session id) to unlock the per-session [surfacing metrics](../../../README.md#surfacing-metrics) in `nb stats` |
 | `NB_BIN` | `nb` | point at the [git-versioning wrapper](../../nb-git-wrapper.mjs) to commit each change |
 
-## The two moments a hook can't cleanly cover — and what to do
+(There is no `NB_ROLE`: the index hook injects *all* notebooks' descriptions and
+the agent chooses — nothing has to guess a per-project role.)
 
-- **② mid-task "this looks familiar".** There is no "the agent is about to start a
-  sub-task" event. The session-start injection plus the instruction in AGENTS.md
-  ("reach for `nb search` only for a known-item lookup") covers it. If you want a
-  nudge on *every* user turn, add a `UserPromptSubmit` hook that echoes a one-line
-  reminder — but it is usually noise; prefer the session-start injection.
-- **③ subagent start.** Claude Code has no `SubagentStart` hook. Give each
-  specialised subagent its own *role* instead: in its agent definition (or the
-  prompt you spawn it with) tell it to `nb show <its-role>` first and run the
-  retrospective at the end. The `SubagentStop` hook above then drives *its*
-  retrospective the same way. See the `notebook-role-reuse` pattern in the
-  [harness guide](../../../docs/harness-setup.md#subagents).
+## The two moments the hooks don't drive — and why that's fine
 
-## How the retrospective gate avoids looping
+- **② "this looks familiar" mid-task.** There is no "the agent is about to start a
+  sub-task" event. The session-start index plus the AGENTS.md instruction cover it;
+  the agent re-checks `nb list` or `nb search` on its own. A `UserPromptSubmit`
+  nudge is possible but usually just noise.
+- **③ subagent start.** Claude Code has no `SubagentStart` hook, and none is needed:
+  a subagent reads the same contract and runs `nb list` for its own task. See
+  [harness-setup › Subagents](../../../docs/harness-setup.md#subagents).
+
+## How the retrospective nudge avoids looping
 
 `nb-retrospective.sh` fires on `Stop`, writes a `.retro-<session_id>` sentinel in
 `NB_DIR`, and blocks the stop exactly once with the retrospective checklist as the
 reason. On the next stop the sentinel exists (and `stop_hook_active` is set), so it
-lets the agent finish. One retrospective per session, no loop.
+lets the agent finish. Because `SubagentStop` fires with the *parent* session id,
+the first stop in a session — whether a subagent's or the main agent's — claims the
+sentinel: **one nudge per whole session**, not one per subagent. Treat it as a
+backstop; the reliable driver of each subagent's retrospective is the contract it
+was given.

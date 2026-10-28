@@ -1,7 +1,8 @@
 # Getting started — `agent-notebook` explained simply
 
 *For anyone — no AI or DevOps background needed. If you are comfortable in a
-terminal, you can also jump to the [harness setup guide](harness-setup.md).*
+terminal, you can also jump to the [harness setup guide](harness-setup.md).
+Just want to try it? → [Try it in two minutes](#try-it-in-two-minutes).*
 
 ---
 
@@ -59,17 +60,18 @@ Here is the key insight, and it is a little counter-intuitive:
 If the assistant already knew to ask *"wait, does the build need a special
 step?"*, it would mostly be fine already. The danger is the trap it has
 *forgotten exists*. A search engine can only find what you know to look for. A
-notebook works the other way around: it is **shown** to the assistant at the
-start of every task, whether it asks or not — so the forgotten lesson lands back
-in front of it automatically.
+notebook works the other way around: the assistant is told to **list its
+notebooks** at the start of every task and open the ones that fit — and because
+it sees *every* notebook's one-line "open me when…" description, not just what it
+thought to search for, the forgotten lesson's notebook surfaces on its own.
 
 ```mermaid
 flowchart LR
     subgraph search["A search engine (pull)"]
-        S1["Assistant must ASK<br/>the right question"] --> S2["Gets back<br/>what it asked for"]
+        S1["Assistant must ASK<br/>the right question"] --> S2["Gets back<br/>only what it asked for"]
     end
-    subgraph notebook["A notebook (push)"]
-        N1["Notebook is SHOWN<br/>at task start"] --> N2["Forgotten lesson<br/>arrives unasked"]
+    subgraph notebook["A notebook (surfaced)"]
+        N1["Assistant LISTS every notebook<br/>and reads each description"] --> N2["Opens the ones that fit —<br/>the forgotten lesson surfaces"]
     end
 ```
 
@@ -87,7 +89,7 @@ open it in any editor; nothing is hidden or encoded.
 +1   a brand-new copy of the repo has no dependencies — install them first
 ```
 
-Four things to notice, because they *are* the whole design:
+Four things to notice about the file:
 
 1. **One lesson = one line.** No essays. If it doesn't fit on a line, it's not a
    lesson, it's a document — and documents belong elsewhere.
@@ -101,30 +103,24 @@ Four things to notice, because they *are* the whole design:
    when you're doing X", so the assistant can tell at a glance whether this
    notebook is relevant.
 
-```mermaid
-flowchart TB
-    T["📓 One notebook = one role"] --> L1["+5  most useful lesson (top)"]
-    T --> L2["+3  …"]
-    T --> L3["+1  …"]
-    T --> L4["−1  misleading lesson (sinks, evicted first when full)"]
-    style L1 fill:#dcfce7,stroke:#16a34a
-    style L4 fill:#fee2e2,stroke:#dc2626
-```
+(The three lessons above are shown highest-score-first; on disk they sit in the
+order they were added, and `nb show` sorts them for you — so the most useful one
+is always on top.)
 
 ---
 
 ## The rhythm of a task — four small moments
 
-Once it's set up, your assistant uses the notebook at four natural moments. You
-don't drive this by hand; the setup wires it in. But it helps to know what's
-happening.
+Once your assistant has the instruction (one line in its system prompt or
+`AGENTS.md`), it uses the notebooks at four natural moments. It drives these
+itself — there is nothing per-notebook to wire up.
 
 ```mermaid
 flowchart LR
-    A["① Start<br/>reads the notebook<br/>so it begins informed"]
-    B["② Mid-task<br/>checks if a past job<br/>covers this"]
-    C["③ Delegates<br/>hands a helper its<br/>own notebook"]
-    D["④ Finish<br/>votes on what helped,<br/>writes one new lesson"]
+    A["① Start<br/>lists the notebooks,<br/>opens the ones that fit"]
+    B["② While working<br/>re-checks if another<br/>notebook covers a sub-task"]
+    C["③ Delegates<br/>a helper lists & opens<br/>for its own task"]
+    D["④ Finish<br/>votes on what helped,<br/>adds one new lesson"]
     A --> B --> C --> D
     D -. "tomorrow it starts<br/>with today's lesson" .-> A
 ```
@@ -176,8 +172,9 @@ You need [Node.js](https://nodejs.org) 18 or newer. Then:
 npm install -g agent-notebook      # installs the `nb` command
 
 nb add reviewer "run the build before the tests"
-nb show reviewer
-nb vote reviewer "run the build" +1
+nb list                            # the index: every notebook + its description
+nb show reviewer                   # each line starts with a short id, e.g.  3f9a2c  [+1]  run the build…
+nb vote reviewer 3f9a2c +1         # vote by that id — a unique snippet ("run the build") works too
 ```
 
 That's a working notebook. You just taught an assistant something it will keep.
@@ -186,7 +183,8 @@ That's a working notebook. You just taught an assistant something it will keep.
 
 ## Where to go next
 
-- **Set it up for real** so your assistant uses it automatically →
+- **Set it up for real** — give your assistant the "list and open" instruction
+  (plus optional convenience hooks) →
   [Harness setup guide](harness-setup.md) (Claude Code, Codex CLI; Windows, macOS,
   Linux).
 - **Roll it out in a company** with security or data-sovereignty rules →

@@ -26,17 +26,18 @@ Then the design in four facts — this *is* the whole mechanism:
    lessons float up.
 3. **Bounded (≤200 lines).** When full, the *lowest-scored* line is evicted — so
    it self-cleans and never becomes a junk drawer.
-4. **Plain text, shown not searched.** It's a file you can read, edit, and
-   `git diff`; the harness *injects* it at task start rather than making the
-   agent query it.
+4. **Plain text, surfaced not searched.** It's a file you can read, edit, and
+   `git diff`; the agent lists its notebooks and opens the ones that fit (seeing
+   every description, not just what it thought to search for) rather than querying.
 
 ## The one insight worth landing
 
 The point of memory isn't to answer questions the agent knows to ask — it's to
 put back in front of it the trap it *forgot exists*. A search engine only returns
-what you can already name; a notebook is pushed to the agent unasked. That's why
-"no embeddings / no vector DB" is a feature, not a limitation — for a handful of
-durable lessons, pushing beats searching.
+what you can already name; a notebook surfaces unasked — the agent lists the whole
+index and sees every notebook's "open me when…" description, so the forgotten one
+still reaches it. That's why "no embeddings / no vector DB" is a feature, not a
+limitation — for a handful of durable lessons, surfacing beats searching.
 
 Name the honest boundary too: if they need recall over thousands of documents,
 that's genuine large-scale retrieval — use a vector store. This does one small

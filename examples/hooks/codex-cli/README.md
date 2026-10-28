@@ -3,12 +3,14 @@
 Codex CLI does not expose per-event lifecycle hooks the way Claude Code does, so
 the integration leans on the two levers Codex *does* give you. Both are simple.
 
-## 1. The contract → `AGENTS.md` (this is the "session-start injection")
+## 1. The contract → `AGENTS.md` (this is the whole integration)
 
 Codex automatically reads `AGENTS.md` files at the start of every session and
 merges them: the global `~/.codex/AGENTS.md`, your repository root, and the
 current working directory. Putting the notebook protocol there means every
-session starts with it in context — the exact goal of moment ① and ④.
+session starts with the "list the notebooks, open what fits, retrospect at the
+end" contract in context — which is all Codex needs; the agent runs `nb list`
+itself.
 
 ```sh
 # Global: applies to every project.

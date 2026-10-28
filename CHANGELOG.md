@@ -18,11 +18,14 @@ versions are listed plainly.
 ### Added
 - Onboarding and harness-integration documentation (docs-only; no package behaviour change).
   - `AGENTS.md` (with `CLAUDE.md` as a symlink to it) — the agent operating contract: the
-    four moments (read / consult / subagent / retrospective) and how to write a lesson.
+    four moments (list / open / subagent / retrospective) and how to write a lesson. The
+    core behaviour is harness-agnostic: the agent lists the notebooks and opens the ones
+    that fit, rather than a role-specific notebook being auto-injected.
   - `docs/getting-started.md` (plain-language intro with diagrams), `docs/harness-setup.md`
-    (wire the notebook into Claude Code / Codex CLI on Linux/macOS/Windows: session-start
-    injection, retrospective hook, git-versioning, backup, janitor), `docs/enterprise.md`
-    (data-sovereignty / security / compliance rollout), and `docs/visual-explainer.html`.
+    (make Claude Code / Codex CLI use it on Linux/macOS/Windows via the list-&-open
+    instruction, plus optional convenience hooks, git-versioning, backup, janitor),
+    `docs/enterprise.md` (data-sovereignty / security / compliance rollout), and
+    `docs/visual-explainer.html`.
   - `examples/` — the optional harness layer: `nb-git-wrapper.mjs` (a commit per change),
     `nb-backup.sh` (daily push), `nb-janitor.mjs` (read-only cross-notebook diagnostics:
     paraphrase-duplicate and near-duplicate-role detection, cap pressure, growth trends),
