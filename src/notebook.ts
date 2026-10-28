@@ -434,6 +434,70 @@ export function merge(dir: string, role: string, selA: string, selB: string, mer
   });
 }
 
+export interface SplitResult {
+  /** Notebook size after the split (post-trim). */
+  size: number;
+  /** Stable id of the original (overloaded) entry that was split out and removed. */
+  source: string;
+  /** Stable ids of the two entries the split produced, in A,B order. */
+  ids: [string, string];
+}
+
+/**
+ * The reverse of `merge`: replace one overloaded entry with two, each inheriting
+ * the original entry's score. Symmetric with `merge` — it reuses the same
+ * selector resolution and the same reject-don't-truncate cap discipline, and it
+ * never creates a duplicate: the two halves must differ from each other and from
+ * every surviving entry, otherwise the whole split is refused (so the original
+ * stays intact). The split is atomic — on any rejection nothing is written.
+ */
+export function split(
+  dir: string,
+  role: string,
+  selector: string,
+  lessonA: string,
+  lessonB: string,
+): Promise<SplitResult> {
+  return withLock(dir, () => {
+    const entries = readEntries(dir, role);
+    if (entries.length === 0) throw new Error(`notebook for role "${role}" is empty`);
+    const idx = selectIndex(entries, selector);
+    const original = entries[idx];
+    const score = original.score; // both halves inherit the overloaded entry's score
+
+    const textA = sanitizeLesson(lessonA);
+    const textB = sanitizeLesson(lessonB);
+    for (const [which, text] of [['A', textA], ['B', textB]] as const) {
+      if (text === '') throw new Error(`split lesson ${which} is empty`);
+      if (text.length > maxChars()) {
+        // Reject rather than truncate, exactly as merge/add do: a cut-off lesson
+        // is often useless, so the agent retries with a shorter *complete* one.
+        throw new Error(`split lesson ${which} is ${text.length} chars; max is ${maxChars()} — shorten it`);
+      }
+    }
+    const keyA = dedupKey(textA);
+    const keyB = dedupKey(textB);
+    if (keyA === keyB) {
+      throw new Error('the two split lessons are duplicates of each other — split into two distinct lessons');
+    }
+    // Everything except the entry being split; the split must not duplicate any
+    // of these. The original is leaving, so a half may legitimately echo it.
+    const remaining = entries.filter((_, i) => i !== idx);
+    for (const [which, key, text] of [['A', keyA, textA], ['B', keyB, textB]] as const) {
+      const collider = remaining.find((e) => dedupKey(e.text) === key);
+      if (collider) {
+        throw new Error(
+          `split lesson ${which} ("${text}") duplicates an existing entry (${entryId(collider.text)}) — a split never creates a duplicate`,
+        );
+      }
+    }
+    remaining.push({ score, text: textA }, { score, text: textB });
+    const kept = trim(remaining);
+    writeEntries(dir, role, kept);
+    return { size: kept.length, source: entryId(original.text), ids: [entryId(textA), entryId(textB)] };
+  });
+}
+
 export function remove(dir: string, role: string, selector: string): Promise<VoteResult> {
   return withLock(dir, () => {
     const entries = readEntries(dir, role);
@@ -498,6 +562,10 @@ export interface UsageRow {
   collided: string;
   /** For an add that evicted: `<id>:<finalScore>` of the entry that left; `''` otherwise. */
   evicted: string;
+  /** Per-operation reason code (e.g. `overloaded`/`other` for split); `''` when none was given. */
+  reason: string;
+  /** Optional free-text note accompanying the reason; `''` when none. */
+  note: string;
 }
 
 /**
@@ -518,6 +586,46 @@ export interface UsageMeta {
   collided?: string;
   /** `<id>:<finalScore>` of an evicted entry. */
   evicted?: string;
+  /** Per-operation reason code (validated/normalized via `normalizeReason`). */
+  reason?: string;
+  /** Optional free-text note accompanying the reason. */
+  note?: string;
+}
+
+/**
+ * Per-operation reason vocabularies — a *seed-and-grow* enum: each mutating op
+ * starts with only the distinction we already need plus an `other` escape hatch,
+ * and the vocabulary grows from mined `other` free text rather than from
+ * predefined speculative categories (the `other` rate is the growth thermostat).
+ * This issue seeds `split`; the `merge`/`rm`/`add` enums arrive with the
+ * operation-reasons issue that generalizes the mechanism to every mutating op.
+ */
+export const REASON_ENUMS: Record<string, readonly string[]> = {
+  split: ['overloaded', 'other'],
+};
+
+/**
+ * Normalize an optional (operation, reason-code, note) into the `{reason, note}`
+ * pair the usage log records. The reason is OPTIONAL — an empty code yields an
+ * empty reason (forcing it would breed filler, the same anti-Goodhart rule as
+ * "never force writes"). An UNRECOGNIZED code is accepted as `other` rather than
+ * rejected, preserving the original code at the front of the note so an offline
+ * process can mine recurring `other`s and promote them into real enum codes.
+ */
+export function normalizeReason(
+  op: string,
+  rawCode: string | undefined,
+  rawNote: string | undefined,
+): { reason: string; note: string } {
+  const note = sanitizeLesson(rawNote ?? '');
+  const code = (rawCode ?? '').trim().toLowerCase();
+  if (code === '') return { reason: '', note }; // no reason supplied — optional
+  const vocab = REASON_ENUMS[op] ?? [];
+  if (vocab.includes(code)) return { reason: code, note };
+  // Unrecognized → bucket as `other`, keeping the original code so it is not lost.
+  const keep = code === 'other' ? '' : code;
+  const merged = keep ? (note ? `${keep}: ${note}` : keep) : note;
+  return { reason: 'other', note: merged };
 }
 
 /**
@@ -553,9 +661,11 @@ export function logUsage(
     const outcome = sanitizeUsageField(meta.outcome ?? '');
     const collided = sanitizeUsageField(meta.collided ?? '');
     const evicted = sanitizeUsageField(meta.evicted ?? '');
+    const reason = sanitizeUsageField(meta.reason ?? '');
+    const note = sanitizeUsageField(meta.note ?? '');
     const line =
       `${new Date().toISOString()}\t${sanitizeUsageField(role)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
-      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}`;
+      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}`;
     const existing = existsSync(file) ? readFileSync(file, 'utf-8') : '';
     const lines = existing.split('\n').filter((l) => l !== '');
     const ring = usageRing();
@@ -603,7 +713,7 @@ export function parseUsage(dir: string): UsageRow[] {
     // Positional parse, tolerant of old five-column rows: the richer columns
     // (session…evicted) are undefined on a pre-upgrade row and default to
     // blank/empty, so a ring written before this change still reads cleanly.
-    const [ts, role, command, status, msRaw, session, entriesRaw, outcome, collided, evicted] =
+    const [ts, role, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note] =
       line.split('\t');
     if (!ts || !command) continue;
     rows.push({
@@ -617,6 +727,8 @@ export function parseUsage(dir: string): UsageRow[] {
       outcome: outcome ?? '',
       collided: collided ?? '',
       evicted: evicted ?? '',
+      reason: reason ?? '',
+      note: note ?? '',
     });
   }
   return rows;

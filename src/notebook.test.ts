@@ -46,11 +46,13 @@ import {
   maxChars,
   maxLines,
   merge,
+  normalizeReason,
   parseUsage,
   readEntries,
   remove,
   render,
   sanitizeLesson,
+  split,
   stats,
   vote,
 } from './notebook.js';
@@ -442,6 +444,122 @@ describe('merge', () => {
   });
 });
 
+describe('split', () => {
+  test('replaces one entry with two, each inheriting the original score (reverse of merge)', async () => {
+    await addEntry(dir, 's', 'run build, then run vitest');
+    await vote(dir, 's', 'build', 1); // original -> +2
+    const r = await split(dir, 's', 'build', 'run the build first', 'run vitest after the build');
+    expect(r.size).toBe(2);
+    expect(r.source).toBe(entryId('run build, then run vitest'));
+    expect(r.ids).toEqual([entryId('run the build first'), entryId('run vitest after the build')]);
+
+    const entries = readEntries(dir, 's');
+    expect(entries).toHaveLength(2);
+    expect(entries.map((e) => e.text).sort()).toEqual(['run the build first', 'run vitest after the build']);
+    // Both halves inherit the overloaded entry's +2 — no score is invented or lost.
+    expect(entries.every((e) => e.score === 2)).toBe(true);
+    // The original is gone.
+    expect(entries.some((e) => e.text === 'run build, then run vitest')).toBe(false);
+  });
+
+  test('rejects an over-length half and leaves the original intact (reject, never truncate)', async () => {
+    process.env.NB_MAX_CHARS = '30';
+    await addEntry(dir, 's', 'overloaded line');
+    await expect(split(dir, 's', 'overloaded', 'short half', 'z'.repeat(50))).rejects.toThrow(/lesson B is 50 chars; max is 30/);
+    expect(readEntries(dir, 's').map((e) => e.text)).toEqual(['overloaded line']); // nothing mutated
+  });
+
+  test('refuses an empty half, leaving the original intact', async () => {
+    await addEntry(dir, 's', 'overloaded line');
+    await expect(split(dir, 's', 'overloaded', 'keeps something', '   ')).rejects.toThrow(/lesson B is empty/);
+    expect(readEntries(dir, 's').map((e) => e.text)).toEqual(['overloaded line']);
+  });
+
+  test('refuses two halves that are duplicates of each other', async () => {
+    await addEntry(dir, 's', 'overloaded line');
+    // Same dedup key (case/punctuation-insensitive) — a split into two identical lessons.
+    await expect(split(dir, 's', 'overloaded', 'same lesson', 'Same lesson!!')).rejects.toThrow(/duplicates of each other/);
+    expect(readEntries(dir, 's')).toHaveLength(1);
+  });
+
+  test('refuses a half that duplicates an existing OTHER entry (never creates a dup)', async () => {
+    await addEntry(dir, 's', 'overloaded line');
+    await addEntry(dir, 's', 'already present');
+    await expect(split(dir, 's', 'overloaded', 'brand new half', 'Already present!!')).rejects.toThrow(/duplicates an existing entry/);
+    // Atomic: nothing changed — the original and the existing entry both survive.
+    expect(readEntries(dir, 's').map((e) => e.text).sort()).toEqual(['already present', 'overloaded line']);
+  });
+
+  test('a half may legitimately echo the entry being split (the original is leaving)', async () => {
+    // Splitting "A; B" into "A" + "B" where "A" dedupKey-equals the original is
+    // fine, because the original is removed — the result holds no duplicate.
+    await addEntry(dir, 's', 'overloaded line');
+    const r = await split(dir, 's', 'overloaded', 'overloaded line', 'the freshly separated half');
+    expect(r.size).toBe(2);
+    expect(readEntries(dir, 's').map((e) => e.text).sort()).toEqual(['overloaded line', 'the freshly separated half']);
+  });
+
+  test('an empty notebook throws', async () => {
+    await expect(split(dir, 's', 'anything', 'a', 'b')).rejects.toThrow(/empty/);
+  });
+
+  test('obeys the cap: splitting at maxLines trims back down (one net addition evicts one)', async () => {
+    process.env.NB_MAX_LINES = '3';
+    await addEntry(dir, 's', 'keep one');
+    await addEntry(dir, 's', 'keep two');
+    await addEntry(dir, 's', 'overloaded three'); // notebook now full (3/3)
+    await vote(dir, 's', 'keep one', 1); // +2 so it outranks the split halves
+    await vote(dir, 's', 'keep two', 1); // +2 so it outranks the split halves
+    // Split the +1 entry into two +1 halves → 4 entries → trim back to 3.
+    const r = await split(dir, 's', 'overloaded three', 'half a', 'half b');
+    expect(r.size).toBe(3);
+    expect(readEntries(dir, 's')).toHaveLength(3); // cap honored
+  });
+});
+
+describe('operation reasons (seed-and-grow enum)', () => {
+  test('a recognized split code passes through unchanged', () => {
+    expect(normalizeReason('split', 'overloaded', undefined)).toEqual({ reason: 'overloaded', note: '' });
+  });
+
+  test('an empty/absent code yields an empty reason (reasons are optional)', () => {
+    expect(normalizeReason('split', undefined, undefined)).toEqual({ reason: '', note: '' });
+    expect(normalizeReason('split', '', 'free text only')).toEqual({ reason: '', note: 'free text only' });
+  });
+
+  test('an unrecognized code is accepted as other, keeping the original code in the note', () => {
+    // Never rejected: the `other` rate is the growth thermostat, and the kept
+    // code lets an offline miner promote a recurring one into a real enum.
+    expect(normalizeReason('split', 'redundant', undefined)).toEqual({ reason: 'other', note: 'redundant' });
+    expect(normalizeReason('split', 'redundant', 'with detail')).toEqual({ reason: 'other', note: 'redundant: with detail' });
+  });
+
+  test('an explicit other with a note passes through as other', () => {
+    expect(normalizeReason('split', 'OTHER', 'mixed two concerns')).toEqual({ reason: 'other', note: 'mixed two concerns' });
+  });
+
+  test('the usage log round-trips the reason and note columns', () => {
+    logUsage(dir, 's', 'split', true, 3, { entries: ['aaa', 'bbb', 'ccc'], outcome: 'split', reason: 'overloaded', note: 'cut apart' });
+    const [row] = parseUsage(dir);
+    expect(row.outcome).toBe('split');
+    expect(row.reason).toBe('overloaded');
+    expect(row.note).toBe('cut apart');
+  });
+
+  test('an old row without the reason columns parses with them blank (backward compatible)', () => {
+    // A ten-column row written before the reason columns existed.
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      `2026-10-23T10:00:00.000Z\tp\tsplit\tok\t4ms\tsess\taaa,bbb\tsplit\t\t\n`,
+      'utf-8',
+    );
+    const [row] = parseUsage(dir);
+    expect(row.outcome).toBe('split');
+    expect(row.reason).toBe('');
+    expect(row.note).toBe('');
+  });
+});
+
 describe('rm', () => {
   test('removes an entry by substring', async () => {
     await addEntry(dir, 'd', 'keep me');
@@ -516,7 +634,7 @@ describe('usage log + stats', () => {
     const rows = raw.split('\n').filter((l) => l !== '');
     expect(rows.length).toBe(1); // the CR/LF did not spawn extra rows
     const cols = rows[0].split('\t');
-    expect(cols.length).toBe(10); // five base + five richer columns, all tabs collapsed
+    expect(cols.length).toBe(12); // five base + five richer + two reason columns, all tabs collapsed
     expect(cols[1]).toBe('evil role drop table'); // role: tab+CR+LF all collapsed to single spaces
     // stats still parses it as one call attributed to the sanitized command.
     const rep = stats(dir, { now: Date.now() });
@@ -685,8 +803,8 @@ describe('usage log + stats', () => {
     // Every surviving line is a complete, well-formed usage row — no torn/partial
     // line (the corruption a shared temp path could leave).
     for (const l of lines) {
-      // Five base columns followed by the five richer ones (empty for a `show`).
-      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){5}$/);
+      // Five base columns, the five richer ones, then the two reason columns (all empty for a `show`).
+      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){7}$/);
     }
     // No stray temp file lingered: every writer's rename consumed its own temp.
     expect(readdirSync(dir).filter((f) => f.startsWith('.nb-usage.log.') && f.endsWith('.tmp'))).toEqual([]);

@@ -71,6 +71,7 @@ nb add    <role> "<lesson>"             add a lesson (dedup-skipped; rejected if
 nb add    <role> -                      read the lesson from stdin (one line; multi-line is refused)
 nb vote   <role> <id|query> +1|-1       upvote/downvote an entry you used
 nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
+nb split  <role> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
 nb rm     <role> <id|query>             delete an entry
 nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly flags (--json emits the raw StatsReport)
 nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
@@ -78,7 +79,16 @@ nb roles                                list the roles that have a notebook (one
 nb --help                               show this help
 ```
 
-Every `show` line starts with a short stable id — pass that id (or a unique prefix, or a unique text substring) to `vote`/`rm`/`merge`. An over-long `add` is rejected outright, never silently truncated, so you rewrite it shorter instead of storing a cut-off, useless lesson.
+Every `show` line starts with a short stable id — pass that id (or a unique prefix, or a unique text substring) to `vote`/`rm`/`merge`/`split`. An over-long `add` is rejected outright, never silently truncated, so you rewrite it shorter instead of storing a cut-off, useless lesson.
+
+**Splitting an overloaded entry.** `nb split` is the reverse of `merge`: it replaces one entry with two, each inheriting the original's score — for when a line turned out to be two lessons crammed together. Each half is rejected (not truncated) if too long, and a split never creates a duplicate: the two halves must differ from each other and from every surviving entry, or the split is refused and nothing changes.
+
+```
+$ nb split reviewer build "run the build first" "run vitest after the build" --reason overloaded
+split one entry into two — 2 lines
+```
+
+The optional `--reason <code>` (and `--note "<text>"`) is recorded in the usage log only — never in the notebook — so the split rate and its reason become a diagnostic signal. The starter vocabulary for `split` is `overloaded` (the entry crammed two distinct lessons into one line) and `other` (any other motive; add a `--note`). An unrecognized code is accepted as `other` with the code kept in the note, never rejected — the `other` rate is the thermostat that tells us when a new reason code should be minted.
 
 **Piping a lesson in.** Pass `-` as the lesson to read it from stdin, so an agent that just wrote a lesson into a pipe can hand it over without shell-quoting:
 
@@ -101,9 +111,10 @@ It reads exactly one line: a single trailing newline is stripped, and **multi-li
 
 Every `nb` call appends one tab-delimited row to the usage ring (`.nb-usage.log`). Beyond the base `timestamp · role · command · ok|err · duration`, each row also records, per call:
 
-- the **entry id(s)** the call touched — the added/voted/removed entry, or (for `merge`) the two sources plus the merged result;
+- the **entry id(s)** the call touched — the added/voted/removed entry, (for `merge`) the two sources plus the merged result, or (for `split`) the source plus the two produced entries;
 - a **session id** read from the `NB_SESSION` environment variable (a hook or supervising agent sets it so calls can be grouped; absent → blank, and co-access simply isn't computed);
-- the **outcome** — for `add`, `accepted` or `dedup-blocked` (and on a block, the colliding entry's id); for `vote`, `up` or `down`; `removed` / `merged` for `rm` / `merge`; plus, when an `add` evicts, which entry left and its final score.
+- the **outcome** — for `add`, `accepted` or `dedup-blocked` (and on a block, the colliding entry's id); for `vote`, `up` or `down`; `removed` / `merged` / `split` for `rm` / `merge` / `split`; plus, when an `add` evicts, which entry left and its final score;
+- the optional **operation reason** — a per-op enum code and free-text note attached to a mutating op (currently `split`, via `--reason`/`--note`); it lives in the log, never in a lesson.
 
 This is richer *logging* only — the notebook file and the one-line lesson are untouched (it adds no field to an entry). Older rows written before this change are still read correctly; their extra columns are simply blank. Logging stays best-effort: a logging failure never fails a real `nb` operation, and the ring stays bounded by `NB_USAGE_RING`.
 
@@ -126,6 +137,7 @@ import {
   readEntries,
   vote,
   merge,
+  split,
   remove,
   render,
   listRoles,
@@ -161,6 +173,13 @@ await vote(dir, 'reviewer', 'run lint before', +1);
 // two scores; remove deletes one. Both rewrite the notebook under the same lock
 // as addEntry and vote.
 await merge(dir, 'reviewer', 'run lint before', 'linter first', 'run lint before every commit');
+
+// split is the reverse of merge: it replaces one overloaded entry with two,
+// each inheriting the original's score. It throws (writing nothing) on an empty
+// or over-long half, on two halves that are duplicates of each other, or on a
+// half that would duplicate a surviving entry — so a split never creates a dup.
+await split(dir, 'reviewer', 'run lint before every commit', 'run lint before every commit', 'also run the type-checker before every commit');
+
 await remove(dir, 'reviewer', 'obsolete note');
 
 listRoles(dir); // string[] — roles that already have a notebook, sorted

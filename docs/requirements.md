@@ -41,7 +41,8 @@ One definition per term, used identically in requirements, code, and tests.
 | **Display order** | The order `nb show` / `render` presents entries: score descending, ties broken by ascending file order (oldest first). |
 | **Stable id** | A 6-hex-character identifier derived from an entry's deduped text (`entryId`), not its position. |
 | **Dedup key** | The case-, punctuation-, and whitespace-insensitive normal form of a text (`dedupKey`), used for duplicate detection and the stable id. |
-| **Selector** | The argument to `vote`/`rm`/`merge` that identifies an entry: a stable id (exact or unique prefix) or a unique case-insensitive text substring. |
+| **Selector** | The argument to `vote`/`rm`/`merge`/`split` that identifies an entry: a stable id (exact or unique prefix) or a unique case-insensitive text substring. |
+| **Operation reason** | An optional, per-operation enum code (seed-and-grow, plus an `other` escape hatch and optional free-text note) recorded for a mutating op in the usage log — never in the notebook (see [FR-REASON-001](#fr-reason-001)). |
 | **Cap** | `maxLines` (max entries per notebook) and `maxChars` (max characters per lesson). |
 | **Eviction** | Removing the lowest-scored entry (ties: oldest) when the notebook exceeds `maxLines`. |
 | **Usage ring** | A bounded append-only log of CLI calls (`.nb-usage.log`) that `nb stats` reads. |
@@ -231,7 +232,7 @@ place and SHALL NOT change file order. *(See [DP-3](#dp-3).)*
 **FR-VOTE-003 (Should).** Scores MAY go negative (a repeatedly downvoted lesson), and
 such entries SHALL be evicted first under [FR-ADD-005](#fr-add-005).
 
-### 4.4 Selector resolution (shared by vote/rm/merge)
+### 4.4 Selector resolution (shared by vote/rm/merge/split)
 
 <a id="fr-sel-001"></a>
 **FR-SEL-001 (Must).** Resolution SHALL try, in order: (1) if the selector is hex,
@@ -258,13 +259,34 @@ single entry whose text is the sanitized `merged`, and give it `max(scoreA, scor
 lesson (throw, leaving both sources intact), and SHALL drop any pre-existing entry
 whose dedup key equals the merged text so the merge never creates a duplicate.
 
-### 4.6 `rm`
+### 4.6 `split`
+
+<a id="fr-split-001"></a>
+**FR-SPLIT-001 (Must).** `split(dir, role, selector, lessonA, lessonB)` — the reverse
+of `merge` — SHALL replace the uniquely selected entry with two entries whose texts are
+the sanitized `lessonA` and `lessonB`, each inheriting the original entry's score. It
+SHALL return `{ size, source, ids: [idA, idB] }` and SHALL obey the `maxLines` cap
+(trimming the lowest-scored entry after the net addition, per the **Eviction** rule). An
+empty notebook SHALL throw.
+**Rationale:** An agent that recorded two lessons crammed into one line should be able
+to cut it cleanly; `merge` had no inverse. The split rate is also a diagnostic — rising
+splits mean entries are getting too coarse / the one-line discipline is strained.
+
+<a id="fr-split-002"></a>
+**FR-SPLIT-002 (Must).** `split` SHALL be atomic and SHALL NOT create a duplicate: it
+SHALL reject (throw, leaving the original intact, nothing written) an empty or
+over-`maxChars` half, two halves that share a dedup key, or a half whose dedup key
+equals a *surviving* entry's. A half MAY equal the entry being split, since that entry
+is removed. Over-long halves are rejected, never truncated ([DP-5](#dp-5)).
+*Proven by:* `notebook.test.ts` → `describe('split')` and `cli.test.ts` → `describe('split (issue #68)')`.
+
+### 4.7 `rm`
 
 <a id="fr-rm-001"></a>
 **FR-RM-001 (Must).** `remove(dir, role, selector)` SHALL delete the uniquely
 selected entry and return its text and score. An empty notebook SHALL throw.
 
-### 4.7 `show` / `render`
+### 4.8 `show` / `render`
 
 <a id="fr-show-001"></a>
 **FR-SHOW-001 (Must).** `render` SHALL output one line per entry as
@@ -274,7 +296,7 @@ selected entry and return its text and score. An empty notebook SHALL throw.
 **FR-SHOW-002 (Should).** An empty notebook SHALL render a friendly, non-error
 message naming the role.
 
-### 4.8 Roles & paths
+### 4.9 Roles & paths
 
 <a id="fr-safe-001"></a>
 **FR-SAFE-001 (Must).** A role name SHALL match `^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$`,
@@ -294,13 +316,15 @@ in `NB_DIR`, excluding dotfile sidecars (`.nb-usage.log`, `.nb.lock`).
 **FR-PATH-001 (Should).** `nb path` SHALL print `NB_DIR`; `nb path <role>` SHALL
 print `<NB_DIR>/<role>.md` as a bare path (pipe-friendly, no decoration).
 
-### 4.9 CLI contract
+### 4.10 CLI contract
 
 <a id="fr-cli-001"></a>
 **FR-CLI-001 (Must).** `nb` SHALL implement: `show`, `add <role> ("<lesson>"|-)`,
-`vote`, `merge`, `rm`, `stats [<role>] [--since <N{d,h,m}>] [--json]`, `path [<role>]`,
+`vote`, `merge`, `split <role> <id|query> "<a>" "<b>" [--reason <code>] [--note "<text>"]`,
+`rm`, `stats [<role>] [--since <N{d,h,m}>] [--json]`, `path [<role>]`,
 `roles`, `--help`, `--version`. The `-` lesson operand of `add` reads from stdin per
-[FR-ADD-007](#fr-add-007).
+[FR-ADD-007](#fr-add-007). The `--reason`/`--note` flags are consumed by `split` (the
+operation-reasons mechanism, [FR-REASON-001](#fr-reason-001)).
 
 <a id="fr-cli-002"></a>
 **FR-CLI-002 (Must).** Exit codes SHALL be: `0` success; `1` a handled operation
@@ -316,10 +340,10 @@ the only thing on stdout (warnings stay on stderr), as a stable machine contract
 **Rationale:** Regression guard — a prior release silently did nothing through the
 npm bin symlink.
 
-### 4.10 Durability & concurrency
+### 4.11 Durability & concurrency
 
 <a id="fr-lock-001"></a>
-**FR-LOCK-001 (Must).** Every notebook mutation (`add`/`vote`/`merge`/`rm`) SHALL run
+**FR-LOCK-001 (Must).** Every notebook mutation (`add`/`vote`/`merge`/`split`/`rm`) SHALL run
 under a `mkdir`-based spinlock on `.nb.lock`, with an acquire budget of ~2s; a lock
 older than ~10s SHALL be treated as stale and stolen. (The usage log is appended
 outside this lock — see [FR-USAGE-001](#fr-usage-001).)
@@ -336,14 +360,15 @@ monitoring row is acceptable; losing a lesson is not.)
 lose a lesson the CLI already reported as added. *(Directory-fsync failure is
 tolerated for platforms that disallow it.)*
 
-### 4.11 Usage log & stats
+### 4.12 Usage log & stats
 
 <a id="fr-usage-001"></a>
 **FR-USAGE-001 (Must).** Each CLI invocation other than `--help`/`--version` (which
 return before any work) SHALL append one tab-delimited row to the usage ring,
 bounded to `usageRing` rows (oldest dropped). The row's first five columns SHALL be
 `"<iso-ts>\t<role>\t<command>\t<ok|err>\t<ms>ms"`, followed by the five entry-level
-columns of [FR-USAGE-002](#fr-usage-002). A failure to log SHALL NOT fail the
+columns of [FR-USAGE-002](#fr-usage-002) and the two reason columns of
+[FR-USAGE-003](#fr-usage-003). A failure to log SHALL NOT fail the
 operation, and every field SHALL be sanitized (tab/CR/LF collapsed to spaces) so a
 value cannot inject an extra column or row.
 **Rationale:** Monitoring must itself be bounded and must never break a real call.
@@ -356,7 +381,8 @@ base columns, five entry-level/outcome columns:
 `session` is the value of `NB_SESSION` at call time (blank when unset — co-access is
 then not computed), `entry-ids` is the comma-joined stable id(s) the call touched,
 `outcome` is `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` for `add`,
-`up`/`down` for `vote`, `removed` for `rm`, `merged` for `merge`, and blank for a
+`up`/`down` for `vote`, `removed` for `rm`, `merged` for `merge`, `split` for `split`,
+and blank for a
 read-only command, `collided-id` is the id of the existing entry that blocked a
 `dedup-blocked` add, and `evicted-id:score` is the entry an `add` evicted and its
 final score. The parser SHALL tolerate an old five-column row written before this
@@ -366,6 +392,39 @@ change, reading the missing columns as blank/empty.
 no field to a lesson ([NG-004](#ng-004)), keeping the one-line / no-schema contract.
 *Proven by:* `notebook.test.ts` → `describe('entry-level + outcome logging (issue #67)')`
 and `cli.test.ts` → `describe('usage log records entry ids + outcome (issue #67)')`.
+
+<a id="fr-usage-003"></a>
+**FR-USAGE-003 (Should).** Each usage row SHALL additionally record, after the
+entry-level columns of [FR-USAGE-002](#fr-usage-002), two reason columns:
+`"\t<reason>\t<note>"`, where `reason` is the normalized operation-reason code
+([FR-REASON-001](#fr-reason-001)) and `note` its optional free text, both blank when
+none was given. The parser SHALL tolerate a row written before these columns existed,
+reading them as blank.
+**Rationale:** The reason is monitoring data, so it belongs in the log columns, not in a
+lesson ([NG-004](#ng-004)). Appending after the existing columns keeps an older reader
+and older rows working, exactly as [FR-USAGE-002](#fr-usage-002) was appended after the
+base five.
+*Proven by:* `notebook.test.ts` → `describe('operation reasons (seed-and-grow enum)')`.
+
+<a id="fr-reason-001"></a>
+**FR-REASON-001 (Should).** A mutating op MAY carry an optional **operation reason**:
+a per-operation enum code plus optional free-text note, validated and normalized by
+`normalizeReason(op, code, note)` and written to the usage log ([FR-USAGE-003](#fr-usage-003)),
+never to the notebook. The reason SHALL be **optional** (an absent code yields an empty
+reason — forcing it would breed filler, the anti-Goodhart rule of [DP-8](#dp-8)/non-goals).
+An **unrecognized** code SHALL be accepted as `other` (keeping the original code at the
+front of the note), never rejected — the `other` rate is the growth thermostat that an
+offline process mines to promote recurring reasons into real enum codes. The enum is
+**seed-and-grow**: `split` seeds `overloaded · other`; the remaining mutating ops
+(`merge`/`rm`/`add`) gain their enums when the mechanism is generalized to them. Each
+enum value SHALL be given a crisp, example-anchored definition in `nb --help` so
+different agents code the same case consistently.
+**Rationale:** An operation's surface form hides its intent (an agent may `merge` to save
+calls, not because of a true duplicate); a reason disambiguates it and becomes a typed
+label for later self-improvement, while staying monitoring-only so the notebook keeps its
+one-line / no-schema contract.
+*Proven by:* `notebook.test.ts` → `describe('operation reasons (seed-and-grow enum)')`
+and `cli.test.ts` → `describe('split (issue #68)')`.
 
 <a id="fr-stats-001"></a>
 **FR-STATS-001 (Should).** `stats` SHALL roll up per-command calls/errors/p50/p95/last-used
