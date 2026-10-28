@@ -76,7 +76,8 @@ nb rm     <role> <id|query>             delete an entry
 nb describe <role> ["<text>"]           set the notebook's one-line description (no text → print it)
 nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly flags (--json emits the raw StatsReport)
 nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
-nb roles                                list the roles that have a notebook (one per line, sorted)
+nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lessons, description)
+nb ls / nb roles                        aliases of `nb list`
 nb --help                               show this help
 ```
 
@@ -123,7 +124,21 @@ It reads exactly one line: a single trailing newline is stripped, and **multi-li
 
 **Storage order vs. display order.** `nb show` sorts highest-scored first, but the `<role>.md` file on disk is stored in *insertion order*, not sorted — so a raw `cat` of the file looks unordered, and that is intentional, not a bug. Sorting happens only at display time: ids are content-derived (stable across reordering), the lowest-scored line is evicted regardless of position, and keeping insertion order means a `vote` rewrites exactly one line in place — the smallest, most stable git diff — and preserves the "ties → oldest" tie-break that both display and eviction rely on. Read a notebook with `nb show`, not by eyeballing the file.
 
-`NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than 200/200. You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory and `nb path <role>` the resolved file, so `cat "$(nb path reviewer)"` or `git diff "$(nb path reviewer)"` just works. `nb roles` lists the roles that already have a notebook (one stem per line, sorted, with the `.nb-usage.log`/`.nb.lock` sidecars filtered out) so the set of memories is discoverable from the tool instead of an `ls`; it prints a friendly note to stderr and exits 0 when none exist yet.
+`NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than 200/200. You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory and `nb path <role>` the resolved file, so `cat "$(nb path reviewer)"` or `git diff "$(nb path reviewer)"` just works.
+
+### Discovering notebooks — `nb list`
+
+`nb list` is the **notebook index**: one richest-first line per notebook — its name, lesson count, and one-line description — so an agent can decide *which* notebook to open without reading any of them (level 1 of progressive disclosure). `ls` and `roles` are aliases.
+
+```
+$ nb list
+agent-notebook notebooks — 3 in /home/you/.agent-notebook/notebooks
+  reviewer   12  build / test / worktree gotchas for this repo
+  patcher     8  when fixing a reproduced bug in this codebase
+  scout       3  mapping an unfamiliar repo: build/test entry points   (auto)
+```
+
+Notebooks are ordered **richest-first** (most lessons first — the ones most worth reusing), ties broken by name. A notebook with no `# desc:` falls back to its top-scored lesson, marked `(auto)`. A bare `prefix` filters by name using the `.` namespace convention (`nb list review.` shows just `review.*`), and `--limit N` bounds the rows (default 50) so the index stays a flat, cheap read as notebooks accumulate — the header then reads `showing N of total`. `nb list --json` emits the raw `NotebookListing` (`{ dir, total, rows[] }`) for a supervising agent. An empty (zero-lesson, no-description) notebook is hidden — it is phantom debris with nothing to discover — while a described-but-empty notebook is kept, because its description is still a deliberate trigger. It prints a friendly note to stderr and exits 0 when no notebook (or none matching the prefix) exists yet.
 
 ### Machine-readable `nb stats`
 
@@ -163,6 +178,7 @@ import {
   remove,
   render,
   listRoles,
+  listNotebooks,
   notebooksDir,
   type AddResult,
 } from 'agent-notebook';
@@ -205,6 +221,12 @@ await split(dir, 'reviewer', 'run lint before every commit', 'run lint before ev
 await remove(dir, 'reviewer', 'obsolete note');
 
 listRoles(dir); // string[] — roles that already have a notebook, sorted
+
+// listNotebooks is the richest-first index behind `nb list` (name, lesson count,
+// description, with a top-lesson `auto` fallback). Phantom empty notebooks are
+// hidden; `total` counts every match so a caller can render "shown of total".
+listNotebooks(dir, { prefix: 'review.', limit: 50 });
+// → { dir, total, rows: [{ role, lessons, desc, auto }, ...] }
 
 console.log(render(dir, 'reviewer')); // highest-scored first
 ```

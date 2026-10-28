@@ -381,40 +381,142 @@ describe('runNbCli', () => {
     expect(r.err).toMatch(/invalid role name/);
   });
 
-  test('roles on an empty/absent notebooks dir prints a friendly note and exits 0', async () => {
-    const r = await run(['roles']);
-    expect(r.code).toBe(0);
-    expect(r.out).toBe(''); // stdout stays empty so the list pipes cleanly
-    expect(r.err).toMatch(/no roles yet/);
-  });
+  describe('list / ls / roles — the notebook index (issue #71)', () => {
+    test('empty/absent notebooks dir prints a friendly note on stderr, empty stdout, exit 0', async () => {
+      const r = await run(['list']);
+      expect(r.code).toBe(0);
+      expect(r.out).toBe(''); // stdout stays empty so a pipe sees nothing
+      expect(r.err).toMatch(/no notebooks yet/);
+    });
 
-  test('roles lists each role file stem, sorted, one per line', async () => {
-    await run(['add', 'reviewer', 'a lesson']);
-    await run(['add', 'patcher', 'b lesson']);
-    await run(['add', 'planner', 'c lesson']);
-    const r = await run(['roles']);
-    expect(r.code).toBe(0);
-    expect(r.out).toBe('patcher\nplanner\nreviewer\n'); // sorted, stems only, one per line
-  });
+    test('one richest-first line per notebook: name, lesson count, description', async () => {
+      await run(['add', 'reviewer', 'a lesson']);
+      await run(['add', 'reviewer', 'another lesson']);
+      await run(['add', 'patcher', 'b lesson']);
+      await run(['describe', 'patcher', 'when fixing a reproduced bug']);
+      const r = await run(['list']);
+      expect(r.code).toBe(0);
+      const lines = r.out.trimEnd().split('\n');
+      expect(lines[0]).toBe(`agent-notebook notebooks — 2 in ${dir}`);
+      // reviewer (2 lessons) outranks patcher (1) — richest first.
+      expect(lines[1]).toContain('reviewer');
+      expect(lines[1]).toMatch(/reviewer\s+2\s+/);
+      expect(lines[2]).toContain('patcher');
+      expect(lines[2]).toContain('when fixing a reproduced bug'); // explicit desc, no (auto)
+      expect(lines[2]).not.toContain('(auto)');
+    });
 
-  test('roles excludes the .nb-usage.log and .nb.lock sidecars', async () => {
-    // `add` writes the role file AND appends a usage row (creating .nb-usage.log),
-    // and takes the mkdir spinlock (.nb.lock) while writing — so both sidecars
-    // are present in the dir and must not appear as roles.
-    await run(['add', 'reviewer', 'a lesson']);
-    const r = await run(['roles']);
-    expect(r.code).toBe(0);
-    expect(r.out).toBe('reviewer\n');
-    expect(r.out).not.toContain('nb-usage');
-    expect(r.out).not.toContain('nb.lock');
-  });
+    test('ties in lesson count are broken by name, ascending', async () => {
+      await run(['add', 'planner', 'x']);
+      await run(['add', 'patcher', 'y']);
+      await run(['add', 'reviewer', 'z']);
+      const r = await run(['list']);
+      const roles = r.out.trimEnd().split('\n').slice(1).map((l) => l.trim().split(/\s+/)[0]);
+      expect(roles).toEqual(['patcher', 'planner', 'reviewer']);
+    });
 
-  test('roles excludes other non-.md entries that share the dir', async () => {
-    await run(['add', 'reviewer', 'a lesson']);
-    writeFileSync(join(dir, 'notes.txt'), 'not a notebook'); // a stray non-.md file
-    const r = await run(['roles']);
-    expect(r.code).toBe(0);
-    expect(r.out).toBe('reviewer\n'); // only the .md stem, not "notes"
+    test('a notebook with no description falls back to its top-scored lesson, marked (auto)', async () => {
+      await run(['add', 'reviewer', 'low priority lesson']);
+      await run(['add', 'reviewer', 'the important one']);
+      await run(['vote', 'reviewer', 'important', '+1']); // make it the top-scored lesson
+      const r = await run(['list']);
+      const row = r.out.trimEnd().split('\n')[1];
+      expect(row).toContain('the important one');
+      expect(row).toContain('(auto)');
+      expect(row).not.toContain('low priority lesson');
+    });
+
+    test('ls and roles are aliases of list (identical output)', async () => {
+      await run(['add', 'reviewer', 'a lesson']);
+      await run(['add', 'patcher', 'b lesson']);
+      const list = await run(['list']);
+      const ls = await run(['ls']);
+      const roles = await run(['roles']);
+      expect(ls.out).toBe(list.out);
+      expect(roles.out).toBe(list.out);
+    });
+
+    test('a bare prefix filters by name (the `.` namespace convention)', async () => {
+      await run(['add', 'review.security', 'a']);
+      await run(['add', 'review.perf', 'b']);
+      await run(['add', 'patcher', 'c']);
+      const r = await run(['list', 'review.']);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain(`2 matching "review." in ${dir}`);
+      expect(r.out).toContain('review.security');
+      expect(r.out).toContain('review.perf');
+      expect(r.out).not.toContain('patcher');
+    });
+
+    test('a prefix that matches nothing prints a friendly note on stderr, exit 0', async () => {
+      await run(['add', 'patcher', 'c']);
+      const r = await run(['list', 'review.']);
+      expect(r.code).toBe(0);
+      expect(r.out).toBe('');
+      expect(r.err).toMatch(/no notebooks matching "review\."/);
+    });
+
+    test('--limit bounds the rows and the header reads "shown of total"', async () => {
+      await run(['add', 'aaa', '1']);
+      await run(['add', 'bbb', '1']);
+      await run(['add', 'ccc', '1']);
+      const r = await run(['list', '--limit', '2']);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain(`2 of 3 in ${dir}`);
+      expect(r.out.trimEnd().split('\n')).toHaveLength(3); // header + 2 rows
+    });
+
+    test('an unparseable --limit warns on stderr and falls back to the default', async () => {
+      await run(['add', 'reviewer', 'a']);
+      const r = await run(['list', '--limit', 'abc']);
+      expect(r.code).toBe(0);
+      expect(r.err).toMatch(/unrecognized --limit 'abc'/);
+      expect(r.out).toContain('reviewer'); // still listed with the default limit
+    });
+
+    test('--json emits the raw NotebookListing and nothing else on stdout', async () => {
+      await run(['add', 'reviewer', 'a lesson']);
+      await run(['describe', 'reviewer', 'the trigger']);
+      const r = await run(['list', '--json']);
+      expect(r.code).toBe(0);
+      const parsed = JSON.parse(r.out);
+      expect(parsed.dir).toBe(dir);
+      expect(parsed.total).toBe(1);
+      expect(parsed.rows[0]).toEqual({ role: 'reviewer', lessons: 1, desc: 'the trigger', auto: null });
+    });
+
+    test('a zero-lesson, no-description notebook is hidden (phantom debris)', async () => {
+      // `nb describe <role> ""` on a fresh role writes an empty file with no
+      // metadata and no entries — nothing to discover. It must not appear.
+      await run(['describe', 'phantom', '']);
+      await run(['add', 'real', 'a lesson']);
+      const r = await run(['list']);
+      expect(r.out).toContain('real');
+      expect(r.out).not.toContain('phantom');
+      expect(r.out).toContain(`1 in ${dir}`); // only the real notebook counts
+    });
+
+    test('a described-but-empty notebook IS shown (a deliberate trigger)', async () => {
+      await run(['describe', 'placeholder', 'open me when onboarding a new repo']);
+      const r = await run(['list']);
+      expect(r.code).toBe(0);
+      const row = r.out.trimEnd().split('\n')[1];
+      expect(row).toContain('placeholder');
+      expect(row).toMatch(/placeholder\s+0\s+/); // zero lessons, still listed
+      expect(row).toContain('open me when onboarding a new repo');
+      expect(row).not.toContain('(auto)'); // the trigger is the explicit description
+    });
+
+    test('excludes the .nb-usage.log / .nb.lock sidecars and stray non-.md files', async () => {
+      await run(['add', 'reviewer', 'a lesson']);
+      writeFileSync(join(dir, 'notes.txt'), 'not a notebook');
+      const r = await run(['list']);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('reviewer');
+      expect(r.out).not.toContain('nb-usage');
+      expect(r.out).not.toContain('nb.lock');
+      expect(r.out).not.toContain('notes');
+    });
   });
 
   describe('add <role> - reads the lesson from stdin (issue #38)', () => {

@@ -10,6 +10,16 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- `nb list` — the notebook index (#71). One richest-first line per notebook — name,
+  lesson count, and description — so an agent can decide *which* notebook to open
+  without reading any of them (level 1 of progressive disclosure for epic #73). `ls`
+  and `roles` are aliases. Ordered by lesson count (ties by name); a notebook with no
+  `# desc:` falls back to its top-scored lesson, marked `(auto)`. A bare `prefix`
+  filters by name (the `.` namespace convention, e.g. `nb list review.`), `--limit N`
+  bounds the rows (default 50; the header then reads "shown of total") so discovery
+  cost stays flat, and `--json` emits the raw `NotebookListing`. An empty (zero-lesson,
+  no-description) notebook is hidden as phantom debris; a described-but-empty notebook
+  is kept. New library export `listNotebooks(dir, {prefix?, limit?})`.
 - Notebook descriptions: `# key: value` metadata + `nb describe` (#70). A notebook file
   may now begin with a leading `# key: value` comment block; `readEntries` skips it (a
   `#`-leading `key:` line never becomes a score-0 lesson) and every mutation round-trips
@@ -38,6 +48,10 @@ versions are listed plainly.
   item that keeps `docs/requirements.md` in sync with code changes.
 
 ### Changed
+- `nb roles` is now an alias of `nb list` (#71): instead of a bare sorted list of role
+  stems, it prints the richest-first index (header + one `name  count  description` row
+  per notebook). Use `nb list --json` or the `listRoles` library function for the plain
+  sorted stems. (This matches the richer format the kookr `nb` shim already provided.)
 - The README now documents the `nb stats` anomaly-tuning environment variables (#8).
 - The README now has animated SVG explainers (#13).
 
