@@ -386,9 +386,9 @@ existing `# desc:` metadata, adding no field to a lesson.
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `roles`), `--help`, `--version`.
 The `-` lesson operand of `add` reads from stdin per
 [FR-ADD-007](#fr-add-007). The optional `[--reason <code>] [--note "<text>"]` flags are
-consumed by every mutating op — `add`, `merge`, `rm`, and `split` — (the operation-reasons
-mechanism, [FR-REASON-001](#fr-reason-001)); they are stripped before positional parsing so
-they are never mistaken for a lesson/operand.
+consumed by every mutating op — `add`, `merge`, `rm`, `split`, and `describe` — (the
+operation-reasons mechanism, [FR-REASON-001](#fr-reason-001)); they are stripped before
+positional parsing so they are never mistaken for a lesson/operand/description text.
 
 <a id="fr-cli-002"></a>
 **FR-CLI-002 (Must).** Exit codes SHALL be: `0` success; `1` a handled operation
@@ -480,9 +480,9 @@ An **unrecognized** code SHALL be accepted as `other` (keeping the original code
 front of the note), never rejected — the `other` rate is the growth thermostat that an
 offline process mines to promote recurring reasons into real enum codes. The enum is
 **seed-and-grow** and now spans every mutating op: `merge` seeds `duplicate · other`,
-`rm` seeds `wrong · obsolete · other`, and `split` seeds `overloaded · other`; `add` is
-intentionally enum-less (free text only via `--note`) so its vocabulary emerges from
-mined notes rather than being guessed up front. A code valid for one op is NOT valid for
+`rm` seeds `wrong · obsolete · other`, and `split` seeds `overloaded · other`; `add` and
+`describe` are intentionally enum-less (free text only via `--note`) so their vocabulary
+emerges from mined notes rather than being guessed up front. A code valid for one op is NOT valid for
 another (it buckets to `other` there), since the vocabularies are per-op. Each enum value
 SHALL be given a crisp, example-anchored definition in `nb --help` so different agents
 code the same case consistently.
@@ -584,7 +584,11 @@ comment lines in the *file*, not a field on a lesson.
 one-line **description** (the `# desc:` metadata value); `nb describe <role>` with no
 text SHALL print the current description (bare, pipe-friendly) or warn on stderr and
 exit 0 when none is set. `setDescription`/`getDescription` are the library form.
-An empty (post-sanitize) text SHALL clear the description.
+An empty (post-sanitize) text SHALL clear the description. The `[--reason] [--note]`
+flags ([FR-CLI-001](#fr-cli-001)) SHALL be stripped before the text operand is read, so
+an option placed before the text is never silently stored as the description ([DP-5](#dp-5)).
+
+*Proven by:* `cli.test.ts` → `describe('nb describe (issue #70)')`.
 
 <a id="fr-desc-003"></a>
 **FR-DESC-003 (Should).** A description SHALL be sanitized to one line

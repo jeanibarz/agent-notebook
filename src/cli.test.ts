@@ -1062,6 +1062,42 @@ describe('nb describe (issue #70)', () => {
     expect(rows.at(-1)!.outcome).toBe('described');
     expect(rows.at(-1)!.ok).toBe(true);
   });
+
+  // Issue #91: `describe` must strip `--reason`/`--note` before reading its text
+  // operand, like the other mutating commands — otherwise an option placed before
+  // the text is silently stored as the description (a DP-5 violation).
+  test('a --reason before the text is stripped, never stored as the description', async () => {
+    const set = await run(['describe', 'patcher', '--reason', 'other', 'real text']);
+    expect(set.code).toBe(0);
+    expect(set.out).toContain('description set for role "patcher": real text');
+    expect((await run(['describe', 'patcher'])).out).toBe('real text\n'); // the real text, not "--reason"
+  });
+
+  test('describe logs a stripped --reason/--note (bucketed to other, code kept in note)', async () => {
+    await run(['describe', 'patcher', '--reason', 'triage', '--note', 'from a hook', 'the trigger']);
+    const row = parseUsage(dir).filter((r) => r.command === 'describe').at(-1)!;
+    expect(row.outcome).toBe('described');
+    expect(row.reason).toBe('other'); // describe has no enum yet, so any code buckets to other
+    expect(row.note).toBe('triage: from a hook'); // original code preserved for mining
+  });
+
+  test('--reason/--note after the text are also consumed, not treated as a second operand', async () => {
+    const set = await run(['describe', 'patcher', 'the trigger', '--note', 'why']);
+    expect(set.code).toBe(0);
+    expect((await run(['describe', 'patcher'])).out).toBe('the trigger\n');
+  });
+
+  test('describe --reason without a value exits 1 (never silently dropped)', async () => {
+    const r = await run(['describe', 'patcher', 'some text', '--reason']);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('--reason needs a value');
+  });
+
+  test('only a --reason and no text operand still reads, not sets (description stays unset)', async () => {
+    const r = await run(['describe', 'patcher', '--reason', 'other']);
+    expect(r.code).toBe(0);
+    expect(r.err).toContain('no description set for role "patcher"'); // read path, nothing stored
+  });
 });
 
 describe('nb search — the demoted keyword fallback (issue #82)', () => {
