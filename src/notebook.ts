@@ -680,6 +680,65 @@ export function listRoles(dir: string): string[] {
     .sort();
 }
 
+/** One row of the notebook index (`nb list`): a notebook's name, lesson count, and the one-line trigger used to decide whether to open it. */
+export interface NotebookSummary {
+  role: string;
+  /** Stored lesson count (what the cap counts and `trim` evicts against); `0` for a described-but-empty notebook. */
+  lessons: number;
+  /** The explicit `# desc:` description, or `null` when none is set. */
+  desc: string | null;
+  /** When `desc` is `null`, the top-scored lesson used as an `(auto)` fallback trigger; `null` when the notebook has no lessons. */
+  auto: string | null;
+}
+
+export interface ListOptions {
+  /** Keep only notebooks whose role name starts with this prefix (the `.` namespace convention, e.g. `review.`). An empty/absent prefix keeps all. */
+  prefix?: string;
+  /** Cap the number of rows returned (richest-first), so discovery cost stays flat as notebooks grow. `undefined` → no cap; a negative cap is treated as `0`. */
+  limit?: number;
+}
+
+export interface NotebookListing {
+  dir: string;
+  /** Matching notebooks after the prefix + empty-notebook filters, BEFORE `limit` — so a caller can render "showing N of total". */
+  total: number;
+  /** The rows actually returned: richest-first (by lesson count), ties by name, truncated to `limit`. */
+  rows: NotebookSummary[];
+}
+
+/**
+ * The notebook index (issue #71): one richest-first summary row per notebook —
+ * name, lesson count, and a one-line description (the `# desc:` trigger, or the
+ * top-scored lesson as an `(auto)` fallback). This is level 1 of progressive
+ * disclosure: an agent reads it to decide WHICH notebook to open without reading
+ * any notebook's lessons. Richest-first (more lessons ⇒ more worth reusing),
+ * ties broken by name for determinism. `prefix` filters by the `.`-namespace
+ * convention; `limit` bounds the output.
+ *
+ * A zero-lesson notebook with NO description is hidden: it is phantom debris (an
+ * `nb describe <role> ""` that left an empty file, or an `rm` of the last
+ * lesson) with nothing to discover. A described-but-empty notebook is a
+ * deliberate trigger and is kept, so an agent can see a placeholder it set up.
+ */
+export function listNotebooks(dir: string, opts: ListOptions = {}): NotebookListing {
+  const prefix = opts.prefix ?? '';
+  const matches = listRoles(dir)
+    .filter((role) => role.startsWith(prefix))
+    .map((role): NotebookSummary => {
+      const entries = readEntries(dir, role);
+      const desc = getDescription(dir, role);
+      // Fall back to the top-scored lesson only when there is no explicit
+      // description; `ordered` is score-desc with an insertion-order tie-break.
+      const auto = desc === null && entries.length > 0 ? ordered(entries)[0].e.text : null;
+      return { role, lessons: entries.length, desc, auto };
+    })
+    .filter((n) => n.lessons > 0 || n.desc !== null);
+  matches.sort((a, b) => b.lessons - a.lessons || a.role.localeCompare(b.role));
+  const { limit } = opts;
+  const rows = limit != null ? matches.slice(0, Math.max(0, limit)) : matches;
+  return { dir, total: matches.length, rows };
+}
+
 // ---------------------------------------------------------------------------
 // usage log + monitoring
 // ---------------------------------------------------------------------------

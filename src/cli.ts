@@ -15,7 +15,8 @@
 //   nb describe <role> ["<text>"]          set the notebook's one-line description (or print it)
 //   nb stats  [<role>] [--since 7d] [--json]  usage analytics + anomaly flags (--json = raw StatsReport)
 //   nb path   [<role>]                     print the notebooks dir, or a role's file path
-//   nb roles                               list the roles that have a notebook, one per line
+//   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
+//   nb ls / nb roles                       aliases of `nb list`
 //   nb --help                              this help
 //
 // Every call appends one line to the usage ring so `nb stats` can surface
@@ -32,7 +33,7 @@ import {
   entryId,
   getDescription,
   isValidWindow,
-  listRoles,
+  listNotebooks,
   logUsage,
   maxChars,
   merge,
@@ -48,6 +49,14 @@ import {
   type UsageMeta,
 } from './notebook.js';
 
+/**
+ * Default row cap for `nb list` when `--limit` is not given. The index is meant
+ * to be read (even injected) whole, so the default is generous enough to show a
+ * normal working set in full, while still bounding a pathologically large
+ * notebooks dir — the header then reads "showing N of total".
+ */
+const LIST_DEFAULT_LIMIT = 50;
+
 const HELP = `nb — the Agent Notebook (bounded, voted, per-role memory)
 
 usage:
@@ -61,7 +70,9 @@ usage:
   nb describe <role> ["<text>"]           set the notebook's one-line description (no text → print the current one)
   nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly flags (--json emits the raw StatsReport)
   nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
-  nb roles                                list the roles that have a notebook (one per line, sorted)
+  nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
+  nb ls     [prefix] [--limit N]          alias of \`nb list\`
+  nb roles  [prefix] [--limit N]          alias of \`nb list\`
   nb --help                               show this help
   nb --version                            print the tool version
 
@@ -102,6 +113,13 @@ notes:
     so \`nb show\` and a bare list can tell what a notebook is for without reading its lessons.
     It is capped like a lesson (rejected, not truncated, if too long); an empty text clears it.
     The \`# key: value\` block round-trips through every mutation and never becomes a lesson.
+  - \`nb list\` (aliases \`ls\`, \`roles\`) is the notebook index: one richest-first line per notebook —
+    name, lesson count, and description — so you can pick which notebook to open WITHOUT reading any
+    of them. Richest-first = most lessons first (ties by name). A notebook with no \`# desc:\` falls back
+    to its top-scored lesson, marked \`(auto)\`. A bare \`prefix\` filters by name (the \`.\` namespace
+    convention, e.g. \`nb list review.\`); \`--limit N\` bounds the rows (default ${LIST_DEFAULT_LIMIT}) so discovery
+    cost stays flat as notebooks grow; \`--json\` emits the raw NotebookListing. An empty (zero-lesson,
+    no-description) notebook is hidden — it is phantom debris with nothing to discover.
   - a notebook holds at most 200 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
@@ -359,17 +377,39 @@ export async function runNbCli(
         }
         break;
       }
+      case 'list':
+      case 'ls':
       case 'roles': {
-        // Read-only inventory of the notebooks dir (like `path`, it still appends
-        // one usage row via the shared `finally`): make the set of memories
-        // self-describing instead of forcing an `ls` + mental filtering of the
-        // `.nb-usage.log`/`.nb.lock` sidecars. Plain list (names only, one per
-        // line, sorted) so it pipes into `wc -l`/`xargs`/`$(...)`.
-        const roles = listRoles(dir);
-        if (roles.length === 0) {
-          process.stderr.write('no roles yet — add one with `nb add <role> "<lesson>"`\n');
+        // The notebook index (issue #71): one richest-first line per notebook —
+        // name, lesson count, and description — so a caller can pick WHICH
+        // notebook to open without reading any of them. `ls` and `roles` are
+        // aliases (`roles` replaces the old plain-stems listing, matching the
+        // richer format the kookr `nb` shim already bolted on). Read-only — it
+        // still appends one usage row via the shared `finally`; `role` stays `-`
+        // because the command spans notebooks rather than acting on one.
+        // `--json` is already stripped from `args`; pull out `--limit`, leaving
+        // an optional positional name prefix as args[1].
+        const { value: limitRaw, rest: listArgs } = extractOption(args, '--limit');
+        let limit = LIST_DEFAULT_LIMIT;
+        if (limitRaw !== undefined) {
+          // Forgiving like `stats --since`: an unparseable --limit warns on
+          // stderr (stdout/JSON stays clean) and falls back to the default,
+          // rather than rejecting — the least-surprising path.
+          if (/^\d+$/.test(limitRaw.trim())) {
+            limit = Number.parseInt(limitRaw, 10);
+          } else {
+            process.stderr.write(
+              `nb ${cmd}: unrecognized --limit '${limitRaw}' (use a non-negative integer); showing ${LIST_DEFAULT_LIMIT}\n`,
+            );
+          }
+        }
+        const prefix = listArgs[1]; // optional positional name prefix (undefined → all)
+        if (json) {
+          process.stdout.write(JSON.stringify(listNotebooks(dir, { prefix, limit })) + '\n');
         } else {
-          process.stdout.write(roles.join('\n') + '\n');
+          const { out, err } = renderList(dir, prefix, limit);
+          if (out) process.stdout.write(out);
+          if (err) process.stderr.write(err);
         }
         break;
       }
@@ -445,6 +485,37 @@ async function readStdinDefault(): Promise<string> {
 
 function fmt(score: number): string {
   return score >= 0 ? `+${score}` : `${score}`;
+}
+
+/**
+ * Render the notebook index for `nb list`/`ls`/`roles`. Returns `{out, err}` so
+ * the caller writes the body to stdout (pipe-clean) and a friendly empty-state
+ * note to stderr, exactly like `nb roles` did. One header line, then one row per
+ * notebook: `  <name>  <count>  <description>`, name left-padded and count
+ * right-aligned so the columns line up. A notebook with no `# desc:` shows its
+ * top-scored lesson instead, suffixed `(auto)`. The header reads `N` when every
+ * match is shown, or `shown of total` when `--limit` truncated the list.
+ */
+function renderList(dir: string, prefix: string | undefined, limit: number): { out: string; err: string } {
+  const listing = listNotebooks(dir, { prefix, limit });
+  if (listing.total === 0) {
+    const err = prefix
+      ? `no notebooks matching "${prefix}" — run \`nb list\` to see them all\n`
+      : 'no notebooks yet — add one with `nb add <role> "<lesson>"`\n';
+    return { out: '', err };
+  }
+  const shown = listing.rows.length;
+  const countClause = shown < listing.total ? `${shown} of ${listing.total}` : `${listing.total}`;
+  const match = prefix ? ` matching "${prefix}"` : '';
+  const lines = [`agent-notebook notebooks — ${countClause}${match} in ${dir}`];
+  const nameWidth = listing.rows.reduce((w, r) => Math.max(w, r.role.length), 0);
+  const countWidth = listing.rows.reduce((w, r) => Math.max(w, String(r.lessons).length), 0);
+  for (const r of listing.rows) {
+    const trigger = r.desc ?? r.auto; // explicit description, else the (auto) top lesson
+    const descPart = trigger ? `  ${trigger}${r.desc === null ? '  (auto)' : ''}` : '';
+    lines.push(`  ${r.role.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`);
+  }
+  return { out: lines.join('\n') + '\n', err: '' };
 }
 
 function renderStats(dir: string, role: string | undefined, windowMs: number | undefined): string {

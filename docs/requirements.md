@@ -312,11 +312,48 @@ error instead of a bare `ENAMETOOLONG` stack. 128 fits `role@owner-repo` plus a 
 
 <a id="fr-roles-001"></a>
 **FR-ROLES-001 (Should).** `listRoles` SHALL return the sorted stems of `*.md` files
-in `NB_DIR`, excluding dotfile sidecars (`.nb-usage.log`, `.nb.lock`).
+in `NB_DIR`, excluding dotfile sidecars (`.nb-usage.log`, `.nb.lock`). It is the
+primitive the `list` index ([FR-LIST-001](#fr-list-001)) is built on; the `nb roles`
+*command* is now an alias of `nb list`, not a bare-stems printer.
 
 <a id="fr-path-001"></a>
 **FR-PATH-001 (Should).** `nb path` SHALL print `NB_DIR`; `nb path <role>` SHALL
 print `<NB_DIR>/<role>.md` as a bare path (pipe-friendly, no decoration).
+
+<a id="fr-list-001"></a>
+**FR-LIST-001 (Should).** `listNotebooks(dir, {prefix?, limit?})` SHALL return the
+notebook index — one `NotebookSummary {role, lessons, desc, auto}` per notebook —
+ordered **richest-first** (descending `lessons`), ties broken by `role` name
+ascending. `nb list` SHALL render it as a header line plus one aligned row per
+notebook (name, lesson count, description); `ls` and `roles` are aliases.
+**Rationale:** Level 1 of progressive disclosure for epic [#73](https://github.com/jeanibarz/agent-notebook/issues/73) — the always-readable index an agent consults to decide *which* notebook to open without reading any notebook's lessons. More lessons ⇒ more worth reusing, so it leads.
+*Proven by:* `notebook.test.ts` → "listNotebooks — the notebook index (issue #71)"; `cli.test.ts` → "list / ls / roles — the notebook index (issue #71)".
+
+<a id="fr-list-002"></a>
+**FR-LIST-002 (Should).** A bare `prefix` operand SHALL keep only notebooks whose
+role name starts with it (the `.` namespace convention, e.g. `nb list review.`).
+`--limit <N>` SHALL bound the rows to the richest `N` (default 50; a non-negative
+integer; an unparseable value SHALL warn on stderr and fall back to the default,
+never reject), while `NotebookListing.total` SHALL still count every match so the
+header can read `shown of total`. `--json` SHALL emit the raw `NotebookListing`
+as the only thing on stdout.
+
+<a id="fr-list-003"></a>
+**FR-LIST-003 (Should).** When a notebook has no `# desc:` description, `list` SHALL
+fall back to its **top-scored lesson** (the `render`/`ordered` top row) as the
+displayed trigger, marked `(auto)`; the `NotebookSummary.auto` field carries that
+text and `desc` is `null`. A notebook WITH a description SHALL show it verbatim and
+unmarked.
+
+<a id="fr-list-004"></a>
+**FR-LIST-004 (Should).** `listNotebooks` SHALL HIDE a notebook that has zero lessons
+AND no description (phantom debris — e.g. `nb describe <role> ""` that left an empty
+file, or an `rm` of the last lesson). A described-but-empty notebook (zero lessons,
+a `# desc:` set) SHALL be kept — it is a deliberate trigger an agent set up.
+**Rationale:** The index exists to point at notebooks worth opening; an empty,
+undescribed file has nothing to discover and would only be noise. Stays within the
+no-schema non-goal ([NG-004](#ng-004)) — the decision reads existing entries and the
+existing `# desc:` metadata, adding no field to a lesson.
 
 ### 4.10 CLI contract
 
@@ -324,7 +361,8 @@ print `<NB_DIR>/<role>.md` as a bare path (pipe-friendly, no decoration).
 **FR-CLI-001 (Must).** `nb` SHALL implement: `show`, `add <role> ("<lesson>"|-)`,
 `vote`, `merge`, `split <role> <id|query> "<a>" "<b>"`,
 `rm`, `describe <role> ["<text>"]`, `stats [<role>] [--since <N{d,h,m}>] [--json]`, `path [<role>]`,
-`roles`, `--help`, `--version`. The `-` lesson operand of `add` reads from stdin per
+`list [prefix] [--limit <N>] [--json]` (aliases `ls`, `roles`), `--help`, `--version`.
+The `-` lesson operand of `add` reads from stdin per
 [FR-ADD-007](#fr-add-007). The optional `[--reason <code>] [--note "<text>"]` flags are
 consumed by every mutating op — `add`, `merge`, `rm`, and `split` — (the operation-reasons
 mechanism, [FR-REASON-001](#fr-reason-001)); they are stripped before positional parsing so

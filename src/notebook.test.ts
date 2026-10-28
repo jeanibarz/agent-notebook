@@ -45,6 +45,7 @@ import {
   getDescription,
   getMetaValue,
   isMetaLine,
+  listNotebooks,
   logUsage,
   maxChars,
   maxLines,
@@ -1513,5 +1514,84 @@ describe('notebook metadata / descriptions (issue #70)', () => {
       '# owner: jean',
     ]);
     expect(setMetaValue(['# desc: old', '# owner: jean'], 'desc', '')).toEqual(['# owner: jean']);
+  });
+});
+
+describe('listNotebooks — the notebook index (issue #71)', () => {
+  test('summarizes each notebook richest-first, ties broken by name', async () => {
+    await addEntry(dir, 'reviewer', 'a');
+    await addEntry(dir, 'reviewer', 'b'); // 2 lessons
+    await addEntry(dir, 'patcher', 'c'); // 1 lesson
+    await addEntry(dir, 'planner', 'd'); // 1 lesson
+    const listing = listNotebooks(dir);
+    expect(listing.dir).toBe(dir);
+    expect(listing.total).toBe(3);
+    expect(listing.rows.map((r) => r.role)).toEqual(['reviewer', 'patcher', 'planner']); // 2, then 1/1 by name
+    expect(listing.rows[0]).toMatchObject({ role: 'reviewer', lessons: 2 });
+  });
+
+  test('uses the explicit description when set; auto is null', async () => {
+    await addEntry(dir, 'r', 'a lesson');
+    await setDescription(dir, 'r', 'the trigger');
+    const [row] = listNotebooks(dir).rows;
+    expect(row).toEqual({ role: 'r', lessons: 1, desc: 'the trigger', auto: null });
+  });
+
+  test('falls back to the top-scored lesson (auto) when there is no description', async () => {
+    await addEntry(dir, 'r', 'low');
+    await addEntry(dir, 'r', 'high');
+    await vote(dir, 'r', 'high', 1); // high -> +2, the top-scored lesson
+    const [row] = listNotebooks(dir).rows;
+    expect(row.desc).toBeNull();
+    expect(row.auto).toBe('high');
+  });
+
+  test('a bare prefix filters by role name (the `.` namespace convention)', async () => {
+    await addEntry(dir, 'review.security', 'a');
+    await addEntry(dir, 'review.perf', 'b');
+    await addEntry(dir, 'patcher', 'c');
+    const listing = listNotebooks(dir, { prefix: 'review.' });
+    expect(listing.total).toBe(2);
+    expect(listing.rows.map((r) => r.role).sort()).toEqual(['review.perf', 'review.security']);
+  });
+
+  test('limit bounds the rows (richest-first) but total counts every match', async () => {
+    await addEntry(dir, 'aaa', '1');
+    await addEntry(dir, 'bbb', '1');
+    await addEntry(dir, 'ccc', '1');
+    const listing = listNotebooks(dir, { limit: 2 });
+    expect(listing.total).toBe(3);
+    expect(listing.rows).toHaveLength(2);
+    const negative = listNotebooks(dir, { limit: -5 });
+    expect(negative.rows).toHaveLength(0); // a negative cap is clamped to 0
+    expect(negative.total).toBe(3);
+  });
+
+  test('hides a zero-lesson, no-description notebook (phantom debris)', async () => {
+    // `nb describe <role> ""` on a fresh role, or `rm` of the last lesson, leaves
+    // an empty file with no metadata and no entries — nothing to discover.
+    await setDescription(dir, 'phantom', ''); // clears nothing → empty file, no desc
+    await addEntry(dir, 'real', 'a lesson');
+    const listing = listNotebooks(dir);
+    expect(listing.rows.map((r) => r.role)).toEqual(['real']);
+    expect(listing.total).toBe(1);
+  });
+
+  test('keeps a described-but-empty notebook (a deliberate trigger)', async () => {
+    await setDescription(dir, 'placeholder', 'open me when onboarding');
+    const listing = listNotebooks(dir);
+    expect(listing.total).toBe(1);
+    expect(listing.rows[0]).toEqual({
+      role: 'placeholder',
+      lessons: 0,
+      desc: 'open me when onboarding',
+      auto: null,
+    });
+  });
+
+  test('an absent notebooks dir yields an empty listing, not an error', () => {
+    const listing = listNotebooks(join(dir, 'does-not-exist'));
+    expect(listing.total).toBe(0);
+    expect(listing.rows).toEqual([]);
   });
 });
