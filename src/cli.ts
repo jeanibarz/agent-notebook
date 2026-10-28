@@ -9,6 +9,7 @@
 //   nb add    <role> -                     read the one-line lesson from stdin (multi-line refused)
 //   nb vote   <role> <id|query> +1|-1      adjust an entry's score
 //   nb merge  <role> <idA> <idB> "<merged>"  consolidate two entries into one
+//   nb split  <role> <id|query> "<a>" "<b>"   cut one overloaded entry into two
 //   nb rm     <role> <id|query>            delete an entry judged useless
 //   (add/vote/rm/merge take --json: one structured result object on stdout)
 //   nb stats  [<role>] [--since 7d] [--json]  usage analytics + anomaly flags (--json = raw StatsReport)
@@ -33,10 +34,12 @@ import {
   logUsage,
   maxChars,
   merge,
+  normalizeReason,
   notebooksDir,
   parseWindowMs,
   remove,
   render,
+  split,
   stats,
   vote,
   type UsageMeta,
@@ -50,6 +53,7 @@ usage:
   nb add    <role> -                      read the lesson from stdin (one line; multi-line is refused)
   nb vote   <role> <id|query> +1|-1       upvote/downvote an entry you used
   nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
+  nb split  <role> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
   nb rm     <role> <id|query>             delete an entry
   nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly flags (--json emits the raw StatsReport)
   nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
@@ -65,6 +69,16 @@ notes:
     can pipe it in without shell-quoting). It reads exactly one line: a trailing
     newline is stripped and multi-line input is REFUSED (exit 1), never flattened —
     one entry = one line. To store a literal single hyphen, use the library addEntry.
+  - \`nb split\` is the reverse of \`merge\`: it replaces one overloaded entry with two,
+    each inheriting the original's score. Each half is rejected (not truncated) if too
+    long, and a split never creates a duplicate (the two halves must differ from each
+    other and from every surviving entry, else the split is refused and nothing changes).
+    It accepts an optional \`--reason <code>\` (+ \`--note "<text>"\`), logged (never stored
+    in the notebook) so the split rate and its reason become a diagnostic signal:
+      overloaded  the entry crammed two distinct lessons into one line — cut them apart
+                  (e.g. "run build, then vitest" → "run build first" + "run vitest after build")
+      other       any other motive; add \`--note\` so a recurring one can become its own code
+    An unrecognized code is accepted as \`other\` (kept in the note), never rejected.
   - a notebook holds at most 200 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
@@ -123,8 +137,22 @@ export async function runNbCli(
   // it only on the commands that return a result object — `show`/`path`/`roles`
   // ignore it. Exit codes are unchanged (a too-long add still exits 1).
   const json = argv.includes('--json');
-  const args = json ? argv.filter((a) => a !== '--json') : argv;
+  let args = json ? argv.filter((a) => a !== '--json') : argv;
+  // `--reason <code>` / `--note "<text>"` attach an optional, never-required
+  // reason to a mutating op, logged (never stored in the notebook). Only `split`
+  // consumes them in this release (its enum: overloaded · other); pulling them
+  // out of `args` BEFORE positional parsing keeps them from being mistaken for a
+  // lesson operand. (The operation-reasons issue generalizes this to the other
+  // mutating ops.)
+  let reasonArg: string | undefined;
+  let noteArg: string | undefined;
   try {
+    if (cmd === 'split') {
+      // Inside the try so a malformed flag (e.g. `--reason` with no value)
+      // becomes a handled exit-1 error, not an uncaught rejection.
+      ({ value: reasonArg, rest: args } = extractOption(args, '--reason'));
+      ({ value: noteArg, rest: args } = extractOption(args, '--note'));
+    }
     switch (cmd) {
       case 'show': {
         role = need(argv[1], 'role');
@@ -188,6 +216,23 @@ export async function runNbCli(
         meta.outcome = 'merged';
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else process.stdout.write(`merged two entries into one — ${r.size} lines\n`);
+        break;
+      }
+      case 'split': {
+        role = need(args[1], 'role');
+        const selector = need(args[2], 'id|query');
+        const lessonA = need(args[3], 'lessonA');
+        const lessonB = need(args[4], 'lessonB');
+        const r = await split(dir, role, selector, lessonA, lessonB);
+        const { reason, note } = normalizeReason('split', reasonArg, noteArg);
+        // Log the source + both produced ids, the outcome, and the reason/note —
+        // the reason lives in the usage log only, never in the notebook.
+        meta.entries = [r.source, ...r.ids];
+        meta.outcome = 'split';
+        if (reason) meta.reason = reason;
+        if (note) meta.note = note;
+        if (json) process.stdout.write(JSON.stringify(r) + '\n');
+        else process.stdout.write(`split one entry into two — ${r.size} lines\n`);
         break;
       }
       case 'rm': {
@@ -275,6 +320,19 @@ export async function runNbCli(
 function need(v: string | undefined, name: string): string {
   if (v == null || v === '') throw new Error(`missing <${name}> argument`);
   return v;
+}
+
+/**
+ * Pull a `--flag <value>` pair out of an argv slice, returning the value (if the
+ * flag was present) and the remaining args with the pair removed. A flag at the
+ * very end with no following token throws, so a missing value is a loud error
+ * rather than a silently dropped reason (DP-5: never silently mislead).
+ */
+function extractOption(args: string[], flag: string): { value?: string; rest: string[] } {
+  const i = args.indexOf(flag);
+  if (i === -1) return { rest: args };
+  if (i + 1 >= args.length) throw new Error(`${flag} needs a value`);
+  return { value: args[i + 1], rest: args.slice(0, i).concat(args.slice(i + 2)) };
 }
 
 // Reduce piped stdin to the single lesson line it must be. One trailing line

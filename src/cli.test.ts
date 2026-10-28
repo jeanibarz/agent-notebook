@@ -601,6 +601,75 @@ describe('runNbCli', () => {
       expect(row.session).toBe('');
     });
   });
+
+  describe('split (issue #68)', () => {
+    test('splits one entry into two, reflected by show', async () => {
+      await run(['add', 'patcher', 'build then test the change']);
+      const s = await run(['split', 'patcher', 'build', 'build the change', 'test the change after building']);
+      expect(s.code).toBe(0);
+      expect(s.out).toContain('split one entry into two');
+      const show = await run(['show', 'patcher']);
+      expect(show.out).toContain('build the change');
+      expect(show.out).toContain('test the change after building');
+      expect(show.out).not.toContain('build then test the change');
+    });
+
+    test('a missing lesson argument exits 1', async () => {
+      await run(['add', 'patcher', 'overloaded entry here']);
+      const r = await run(['split', 'patcher', 'overloaded', 'only one half']); // no second lesson
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('missing <lessonB>');
+    });
+
+    test('an over-length half exits 1 and leaves the notebook unchanged', async () => {
+      process.env.NB_MAX_CHARS = '30';
+      await run(['add', 'patcher', 'overloaded entry']);
+      const r = await run(['split', 'patcher', 'overloaded', 'short half', 'z'.repeat(50)]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('max is 30');
+      const show = await run(['show', 'patcher']);
+      expect(show.out).toContain('overloaded entry'); // original intact
+    });
+
+    test('--json prints the SplitResult (source + two ids)', async () => {
+      await run(['add', 'patcher', 'alpha and beta crammed in']);
+      const r = await run(['split', 'patcher', 'alpha', 'alpha half of it', 'beta half of it', '--json']);
+      expect(r.code).toBe(0);
+      const obj = JSON.parse(r.out.trim());
+      expect(obj.size).toBe(2);
+      expect(obj.source).toBe(entryId('alpha and beta crammed in'));
+      expect(obj.ids).toEqual([entryId('alpha half of it'), entryId('beta half of it')]);
+    });
+
+    test('logs the split outcome, the source+produced ids, and a recognized reason', async () => {
+      await run(['add', 'patcher', 'two lessons in one line']);
+      await run(['split', 'patcher', 'two lessons', 'first lesson alone', 'second lesson alone', '--reason', 'overloaded']);
+      const row = parseUsage(dir).at(-1)!;
+      expect(row.command).toBe('split');
+      expect(row.outcome).toBe('split');
+      expect(row.reason).toBe('overloaded');
+      expect(row.entries).toEqual([
+        entryId('two lessons in one line'),
+        entryId('first lesson alone'),
+        entryId('second lesson alone'),
+      ]);
+    });
+
+    test('an unrecognized reason is logged as other with the code kept in the note', async () => {
+      await run(['add', 'patcher', 'overloaded compound lesson']);
+      await run(['split', 'patcher', 'overloaded', 'half one here', 'half two here', '--reason', 'redundant', '--note', 'felt mixed']);
+      const row = parseUsage(dir).at(-1)!;
+      expect(row.reason).toBe('other');
+      expect(row.note).toBe('redundant: felt mixed');
+    });
+
+    test('--reason without a value exits 1 (never silently dropped)', async () => {
+      await run(['add', 'patcher', 'overloaded compound lesson']);
+      const r = await run(['split', 'patcher', 'overloaded', 'half one here', 'half two here', '--reason']);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('--reason needs a value');
+    });
+  });
 });
 
 // The CLI entrypoint is `settleCliExit(runNbCli(...))`. `runNbCli` try/catches
