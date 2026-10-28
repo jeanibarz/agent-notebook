@@ -780,3 +780,75 @@ describe('settleCliExit', () => {
     expect(two.err).toBe('');
   });
 });
+
+describe('nb describe (issue #70)', () => {
+  test('sets a description, then prints it back with no text operand', async () => {
+    const set = await run(['describe', 'patcher', 'build / test gotchas for this repo']);
+    expect(set.code).toBe(0);
+    expect(set.out).toContain('description set for role "patcher"');
+    const get = await run(['describe', 'patcher']);
+    expect(get.code).toBe(0);
+    expect(get.out).toBe('build / test gotchas for this repo\n'); // bare line, pipe-friendly
+  });
+
+  test('`nb show` prints the description as a header above the lessons', async () => {
+    await run(['add', 'patcher', 'run build before test']);
+    await run(['describe', 'patcher', 'when debugging CI']);
+    const show = await run(['show', 'patcher']);
+    expect(show.code).toBe(0);
+    expect(show.out.split('\n')[0]).toBe('# desc: when debugging CI'); // header first
+    expect(show.out).toContain('run build before test');
+  });
+
+  test('a notebook with no description shows no header (unchanged output)', async () => {
+    await run(['add', 'patcher', 'a lesson']);
+    const show = await run(['show', 'patcher']);
+    expect(show.out.startsWith('#')).toBe(false);
+    expect(show.out).toContain('a lesson');
+  });
+
+  test('reading a description that is not set warns on stderr (exit 0)', async () => {
+    const get = await run(['describe', 'ghost']);
+    expect(get.code).toBe(0);
+    expect(get.out).toBe('');
+    expect(get.err).toContain('no description set for role "ghost"');
+  });
+
+  test('an over-long description is rejected (exit 1), never truncated', async () => {
+    process.env.NB_MAX_CHARS = '20';
+    const r = await run(['describe', 'patcher', 'x'.repeat(21)]);
+    expect(r.code).toBe(1);
+    expect(r.err).toMatch(/21 chars; max is 20/);
+    expect((await run(['describe', 'patcher'])).err).toContain('no description set'); // nothing stored
+  });
+
+  test('the description round-trips through a later `add`', async () => {
+    await run(['describe', 'patcher', 'the trigger']);
+    await run(['add', 'patcher', 'a lesson']);
+    expect((await run(['describe', 'patcher'])).out).toBe('the trigger\n');
+  });
+
+  test('an empty text operand clears the description', async () => {
+    await run(['describe', 'patcher', 'temporary']);
+    const clear = await run(['describe', 'patcher', '']);
+    expect(clear.code).toBe(0);
+    expect(clear.out).toContain('description cleared');
+    expect((await run(['describe', 'patcher'])).err).toContain('no description set');
+  });
+
+  test('--json emits a structured result for both set and read', async () => {
+    const set = await run(['describe', 'patcher', 'json trigger', '--json']);
+    expect(set.code).toBe(0);
+    expect(JSON.parse(set.out)).toEqual({ role: 'patcher', desc: 'json trigger', set: true });
+    const get = await run(['describe', 'patcher', '--json']);
+    expect(JSON.parse(get.out)).toEqual({ role: 'patcher', desc: 'json trigger', set: false });
+  });
+
+  test('describe set is recorded in the usage log with a described outcome', async () => {
+    await run(['describe', 'patcher', 'logged trigger']);
+    const rows = parseUsage(dir).filter((r) => r.command === 'describe');
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    expect(rows.at(-1)!.outcome).toBe('described');
+    expect(rows.at(-1)!.ok).toBe(true);
+  });
+});

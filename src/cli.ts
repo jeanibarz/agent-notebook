@@ -12,6 +12,7 @@
 //   nb split  <role> <id|query> "<a>" "<b>"   cut one overloaded entry into two
 //   nb rm     <role> <id|query>            delete an entry judged useless
 //   (add/vote/rm/merge take --json: one structured result object on stdout)
+//   nb describe <role> ["<text>"]          set the notebook's one-line description (or print it)
 //   nb stats  [<role>] [--since 7d] [--json]  usage analytics + anomaly flags (--json = raw StatsReport)
 //   nb path   [<role>]                     print the notebooks dir, or a role's file path
 //   nb roles                               list the roles that have a notebook, one per line
@@ -29,6 +30,7 @@ import {
   addEntry,
   assertSafeRole,
   entryId,
+  getDescription,
   isValidWindow,
   listRoles,
   logUsage,
@@ -39,6 +41,7 @@ import {
   parseWindowMs,
   remove,
   render,
+  setDescription,
   split,
   stats,
   vote,
@@ -55,6 +58,7 @@ usage:
   nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
   nb split  <role> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
   nb rm     <role> <id|query>             delete an entry
+  nb describe <role> ["<text>"]           set the notebook's one-line description (no text → print the current one)
   nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly flags (--json emits the raw StatsReport)
   nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
   nb roles                                list the roles that have a notebook (one per line, sorted)
@@ -92,6 +96,12 @@ notes:
              other      any other motive; add \`--note\` so a recurring one can emerge
       add    (no enum yet — free text only: use \`--note "<text>"\`; add's codes will emerge
              from mined notes rather than be guessed up front)
+  - \`nb describe <role> "<text>"\` sets the notebook's one-line description, stored as a
+    leading \`# desc: <text>\` comment in the file; \`nb describe <role>\` (no text) prints the
+    current one. The description is a *trigger* — "the situation in which you should open me" —
+    so \`nb show\` and a bare list can tell what a notebook is for without reading its lessons.
+    It is capped like a lesson (rejected, not truncated, if too long); an empty text clears it.
+    The \`# key: value\` block round-trips through every mutation and never becomes a lesson.
   - a notebook holds at most 200 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
@@ -170,6 +180,10 @@ export async function runNbCli(
     switch (cmd) {
       case 'show': {
         role = need(argv[1], 'role');
+        // Print the one-line description (if any) as a header above the lessons,
+        // so a reader sees what the notebook is *for* before its contents.
+        const desc = getDescription(dir, role);
+        if (desc) process.stdout.write(`# desc: ${desc}\n`);
         process.stdout.write(render(dir, role) + '\n');
         break;
       }
@@ -278,6 +292,28 @@ export async function runNbCli(
         }
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else process.stdout.write(`removed — [${fmt(r.score)}] ${r.text}\n`);
+        break;
+      }
+      case 'describe': {
+        role = need(args[1], 'role');
+        // With a text operand → set the description; without one → print the
+        // current description. Use `args` (the `--json` flag already stripped),
+        // so `nb describe <role> --json` reads rather than setting the
+        // description to the literal "--json". An empty string is still a
+        // *present* operand (clears the description), so we branch on presence
+        // (args.length), not on emptiness.
+        if (args.length > 2) {
+          const r = await setDescription(dir, role, args[2]);
+          meta.outcome = r.desc === null ? 'desc-cleared' : 'described';
+          if (json) process.stdout.write(JSON.stringify(r) + '\n');
+          else if (r.desc === null) process.stdout.write(`description cleared for role "${role}"\n`);
+          else process.stdout.write(`description set for role "${role}": ${r.desc}\n`);
+        } else {
+          const desc = getDescription(dir, role);
+          if (json) process.stdout.write(JSON.stringify({ role, desc, set: false }) + '\n');
+          else if (desc) process.stdout.write(desc + '\n');
+          else process.stderr.write(`no description set for role "${role}" — set one with \`nb describe ${role} "<text>"\`\n`);
+        }
         break;
       }
       case 'stats': {
