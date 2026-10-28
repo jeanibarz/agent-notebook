@@ -179,18 +179,18 @@
   <div class="cards" style="margin-top:0.6rem">
     <div class="card"><div class="n">01</div><h3>One lesson, one line</h3><p>At most 200 characters. Not a document — a single hard-won reminder you could read aloud.</p></div>
     <div class="card"><div class="n">02</div><h3>Voted, not aged</h3><p>+1 when a lesson helped, −1 when it misled. Good lessons float up; no decay curve, no scheduler.</p></div>
-    <div class="card"><div class="n">03</div><h3>Bounded at 200</h3><p>When full, the <em>lowest-scored</em> line is evicted — so it self-cleans and never rots into a junk drawer.</p></div>
+    <div class="card"><div class="n">03</div><h3>Bounded, and configurable</h3><p>A small capped list — keep it tight (around 50 lines is plenty; the cap is one setting you tune). When full, the <em>lowest-scored</em> line is evicted, so it self-cleans and never rots into a junk drawer.</p></div>
     <div class="card"><div class="n">04</div><h3>Plain text</h3><p>One file per role. You can <code style="font-family:var(--font-mono)">cat</code> it, <code style="font-family:var(--font-mono)">grep</code> it, and <code style="font-family:var(--font-mono)">git diff</code> it. You cannot do that to a vector database.</p></div>
   </div>
 </div></section>
 
 <section><div class="wrap stack reveal">
   <p class="eyebrow">the counter-intuitive part</p>
-  <h2>Shown to the agent — not searched.</h2>
-  <p class="muted" style="max-width:60ch">The most valuable lesson is the one the agent would never think to search for: the trap it forgot exists. A search only returns what you can already name. A notebook is pushed to the agent at the start of every task, so the forgotten lesson lands back in front of it — unasked.</p>
+  <h2>Surfaced to the agent — not searched.</h2>
+  <p class="muted" style="max-width:62ch">The most valuable lesson is the one the agent would never think to search for: the trap it forgot exists. A search only returns what you can already name. So the notebook is <em>surfaced</em> instead — and surfacing is more than dumping a file in front of the agent. Each notebook carries a plain-language description of when to open it, and signals from real use — which lessons get used, which get used <em>together</em> — are mined offline to keep notebooks well-described and well-organized. So when the agent opens one, it meets the lessons relevant to the task, including the ones it didn't know it would need.</p>
   <div class="two" style="margin-top:0.6rem">
-    <div class="panel"><p class="tag dim">A search engine · pull</p><p style="margin-top:0.6rem" class="muted">The agent must ask the right question to get the answer back. If it forgot the trap exists, it never asks.</p></div>
-    <div class="panel good"><p class="tag hot">A notebook · push</p><p style="margin-top:0.6rem">The notebook is shown at task start, whether or not the agent asks. The forgotten lesson arrives on its own.</p></div>
+    <div class="panel"><p class="tag dim">A search engine · pull</p><p style="margin-top:0.6rem" class="muted">The agent must ask the right question to get an answer back. If it forgot the trap exists, it never asks — so the lesson never surfaces.</p></div>
+    <div class="panel good"><p class="tag hot">A notebook · push</p><p style="margin-top:0.6rem">The relevant notebook is put in front of the agent — chosen by its description, organized by how its lessons are actually used — so the forgotten lesson arrives unasked. That's the serendipity other tools miss.</p></div>
   </div>
 </div></section>
 
