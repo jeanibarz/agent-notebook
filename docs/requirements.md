@@ -34,7 +34,7 @@ One definition per term, used identically in requirements, code, and tests.
 | Term | Definition |
 |------|------------|
 | **Shelf** | One `<name>.md` notebook file: a group of lessons an agent needs in the same situations. Lessons are grouped by co-access (needed together), not by agent role, so an agent that opens a shelf can get the lessons it looks for plus ones it might not think to search for (see [DP-8](#dp-8)). A path-safe name (see [FR-SAFE-001](#fr-safe-001)); stored at `<NB_DIR>/<name>.md`. Formerly called a "role" (when notebooks were one per agent role); `role`/`roles` JSON keys, `listRoles`, `assertSafeRole` and `nb roles` remain as deprecated aliases. "Notebook" may still name the tool or a shelf's file in general prose. |
-| **Namespace** | A recommended *convention*, not a storage layer: a `.`-delimited shelf-name prefix (e.g. `review.tests`, `review.correctness`) that clusters related notebooks lexically so `nb list <prefix>` / `nb search … <prefix>` can scope to a group. A namespaced shelf is still one flat `<shelf>.md` file (see [FR-NAMESPACE-001](#fr-namespace-001)). |
+| **Namespace** | A recommended *convention*, not a storage layer: a `.`-delimited shelf-name prefix (e.g. `review.tests`, `review.correctness`) that clusters related notebooks lexically so `nb list <prefix>` / `nb search … <prefix>` can scope to a group. Recommended depth: no prefix or one level. A namespaced shelf is still one flat `<shelf>.md` file (see [FR-NAMESPACE-001](#fr-namespace-001)). |
 | **Notebook** | The tool and its set of shelves; also the general word for a shelf's file (a bounded, newline-separated list of entries). Say *shelf* when you mean one file, one name or one argument. |
 | **Entry** | One lesson = one line `"<score>\t<text>"`. The in-memory shape is `{ score: number; text: string }`. |
 | **Lesson** / **text** | The single-line content of an entry, at most `maxChars` characters, no tab/newline. |
@@ -373,13 +373,18 @@ first-class shelf requiring **no** change to [FR-SAFE-001](#fr-safe-001) (`.` is
 already a permitted interior character) and **no** new storage layout — the notebook
 stays one flat `<shelf>.md` file, never a directory. The grouping prefix SHOULD carry
 the trailing `.` so a namespace (`review.`) does not also match a bare sibling that
-merely shares the stem (`reviews`). `@` is NOT the grouping delimiter; it stays
+merely shares the stem (`reviews`). A shelf name SHOULD carry no prefix or one
+level at most (`family.situation`): the convention is not a hierarchy, and no command
+groups, counts or opens a level. `@` is NOT the grouping delimiter; it stays
 reserved for the existing `shelf@project` scoping and MAY combine with a namespace
 (`review.tests@some-repo`).
 **Rationale:** "Group by concept" done the minimal, brand-safe way — lexically, by
 name, not by a similarity engine ([NG-001](#ng-001)). It lets an agent see and open a
 related cluster at the index level ([FR-LIST-001](#fr-list-001)) while adding no
 schema, no field, and no filesystem structure. `.` is filesystem-safe cross-platform.
+One level is enough to cluster the index; deeper names would split lessons that are
+needed together into small shelves ([DP-8](#dp-8)), lengthen the injected index, and make
+renames costly because shelf names match exactly.
 Part of epic [#73](https://github.com/jeanibarz/agent-notebook/issues/73) (Phase 2).
 *Proven by:* `notebook.test.ts` → "a `.`-namespaced shelf is first-class (issue #83)"; "the `.` delimiter clusters a namespace and excludes a non-namespaced sibling (issue #83)"; `cli.test.ts` → "a bare prefix filters by name (the `.` namespace convention)".
 

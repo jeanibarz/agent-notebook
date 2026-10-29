@@ -18,6 +18,10 @@ versions are listed plainly.
   AGENTS.md and docs now say shelf. Argument positions, the `shelf@project` scoping, every
   `NB_*` variable, the file layout and the usage-log format are unchanged.
 
+- The `.` namespace convention now recommends **no prefix or one level at most**
+  (`family.situation`). The dot builds no hierarchy, and deeper names split lessons that
+  are needed together into small shelves. Docs only; no behaviour change.
+
 ### Added
 - `shelf` key next to `role` (same value) on every JSON object that carried `role`:
   `nb show --json`, `nb list --json` rows, `nb search --json` groups, `nb describe --json`,

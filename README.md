@@ -166,6 +166,7 @@ agent-notebook notebooks — 2 matching "review." in /home/you/.agent-notebook/n
 ```
 
 - **Lexical clustering, no engine.** Related notebooks sort together and `nb list review.` / `nb search "flaky" review.` scope straight to the group — plain prefix matching on the name, never embeddings or similarity ([NG-001](docs/requirements.md#ng-001)).
+- **No prefix, or one level at most.** Most shelves need no prefix. When the index gets hard to scan, add one level (`family.situation`, e.g. `release.tagging`, `release.changelog`) and stop there. The dot builds no tree: no command groups, counts or opens a level. Deeper names (`ci.flaky.e2e.retries`) split lessons that are needed together across small shelves, lengthen the index every agent reads, and are hard to rename later because shelf names match exactly.
 - **Keep the trailing dot.** `review.` matches the namespace but *not* a bare sibling that merely shares the stem (`reviews`), so the group stays exactly what you meant.
 - **No new storage.** A namespaced shelf is still one flat `<shelf>.md` file — `review.tests.md`, `review.correctness.md` — never a directory. `.` is already a legal shelf character, so there is nothing to enable.
 - **`@` is separate.** It stays reserved for the existing `shelf@project` scoping and composes with a namespace (`review.tests@your-repo`).

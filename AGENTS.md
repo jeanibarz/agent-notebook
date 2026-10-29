@@ -147,7 +147,9 @@ Rules the tool enforces, so you don't have to guess:
   notebook.
 - **Namespace** a shelf that grows several concerns with a `.` prefix:
   `review.tests`, `review.correctness`, `review.security`. It is a naming
-  convention only — still one flat file each, no new storage.
+  convention only — still one flat file each, no new storage. Use no prefix or
+  one level at most (`family.situation`): a deeper tree scatters lessons that
+  are needed together across small shelves.
 - Scope a shelf **to a project** with `@` (`shelf@project`): `build-and-test@my-repo`. It composes with a
   namespace: `review.tests@my-repo`.
 
