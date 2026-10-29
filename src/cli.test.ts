@@ -26,7 +26,7 @@ afterEach(() => {
 
 /**
  * Run runNbCli with stdout/stderr captured. When `stdin` is provided, it is fed
- * to the CLI through the injectable stdin reader (used by `nb add <role> -`), so
+ * to the CLI through the injectable stdin reader (used by `nb add <shelf> -`), so
  * the stdin path is exercised without touching the real `process.stdin`.
  */
 async function run(
@@ -176,8 +176,8 @@ describe('runNbCli', () => {
   test('the human stats table renders a detected anomaly line (with the shelf suffix)', async () => {
     // The --json path and the library's anomaly detection are both covered, but
     // the HUMAN table's anomaly rendering in renderStats (the `anomalies:` header
-    // and the `[kind] command (role X): detail` line, including the conditional
-    // role suffix) had no test. Seed a tight loop of calls into the usage log,
+    // and the `[kind] command (shelf X): detail` line, including the conditional
+    // shelf suffix) had no test. Seed a tight loop of calls into the usage log,
     // then run `nb stats` WITHOUT --json and assert the rendered anomaly line, so
     // a regression in that user-facing formatting is caught.
     process.env.NB_LOOP_N = '3';
@@ -226,7 +226,7 @@ describe('runNbCli', () => {
 
   test('--json composes with --since and a shelf, warning on stderr while stdout stays pure JSON', async () => {
     await run(['add', 'patcher', 'x']);
-    const s = await run(['stats', 'patcher', '--since', '7days', '--json']); // bad window + role + json
+    const s = await run(['stats', 'patcher', '--since', '7days', '--json']); // bad window + shelf + json
     expect(s.code).toBe(0);
     expect(s.err).toContain("unrecognized --since '7days'"); // still warns on a bad window
     const rep = JSON.parse(s.out); // stdout is pure JSON despite the warning on stderr
@@ -267,13 +267,13 @@ describe('runNbCli', () => {
 
   test('stats <shelf> scopes the table inventory to that shelf (singular header)', async () => {
     await run(['add', 'patcher', 'a']);
-    await run(['add', 'scout', 'b']); // a second role that must be excluded
+    await run(['add', 'scout', 'b']); // a second shelf that must be excluded
     const s = await run(['stats', 'patcher']);
     expect(s.code).toBe(0);
     const out = s.out.split('\n').map((l) => l.trim());
     expect(out).toContain('notebooks: 1 shelf, 1 lines (cap 50/shelf)'); // singular "shelf"
     expect(out.some((l) => /^patcher\s+1\/50$/.test(l))).toBe(true);
-    expect(out.some((l) => /^scout\b/.test(l))).toBe(false); // the other role is not listed
+    expect(out.some((l) => /^scout\b/.test(l))).toBe(false); // the other shelf is not listed
   });
 
   test('stats --json includes per-shelf lines and the maxLines cap (issue #40)', async () => {
@@ -313,7 +313,7 @@ describe('runNbCli', () => {
     await run(['show', 'solo']); // browse with no vote
     const s = await run(['stats', '--json']);
     const rep = JSON.parse(s.out);
-    expect(rep.signals.some((x: { kind: string; role: string }) => x.kind === 'browse-without-use' && x.role === 'solo')).toBe(true);
+    expect(rep.signals.some((x: { kind: string; shelf: string }) => x.kind === 'browse-without-use' && x.shelf === 'solo')).toBe(true);
   });
 
   test('the human stats table says "signals: none" when there is nothing to report', async () => {
@@ -372,7 +372,7 @@ describe('runNbCli', () => {
   });
 
   test('a missing required argument exits 1', async () => {
-    const r = await run(['show']); // no role
+    const r = await run(['show']); // no shelf
     expect(r.code).toBe(1);
     expect(r.err).toContain('missing <shelf>');
   });
@@ -520,8 +520,8 @@ describe('runNbCli', () => {
       await run(['add', 'patcher', 'y']);
       await run(['add', 'reviewer', 'z']);
       const r = await run(['list']);
-      const roles = r.out.trimEnd().split('\n').slice(1).map((l) => l.trim().split(/\s+/)[0]);
-      expect(roles).toEqual(['patcher', 'planner', 'reviewer']);
+      const shelves = r.out.trimEnd().split('\n').slice(1).map((l) => l.trim().split(/\s+/)[0]);
+      expect(shelves).toEqual(['patcher', 'planner', 'reviewer']);
     });
 
     test('a notebook with no description falls back to its top-scored lesson, marked (auto)', async () => {
@@ -595,7 +595,7 @@ describe('runNbCli', () => {
     });
 
     test('a zero-lesson, no-description notebook is hidden (phantom debris)', async () => {
-      // `nb describe <role> ""` on a fresh role writes an empty file with no
+      // `nb describe <shelf> ""` on a fresh shelf writes an empty file with no
       // metadata and no entries — nothing to discover. It must not appear.
       await run(['describe', 'phantom', '']);
       await run(['add', 'real', 'a lesson']);
@@ -755,8 +755,8 @@ describe('runNbCli', () => {
     });
 
     test('the flag is positional-order-independent and leaves the shelf/lesson intact', async () => {
-      // --json between the role and the lesson must be stripped before positional
-      // parsing, so the lesson is not swallowed and the role still resolves.
+      // --json between the shelf and the lesson must be stripped before positional
+      // parsing, so the lesson is not swallowed and the shelf still resolves.
       const r = await run(['add', 'patcher', '--json', 'a lesson in the middle']);
       expect(r.code).toBe(0);
       expect(parseOnly(r.out)).toMatchObject({ added: true, reason: 'added', size: 1 });
@@ -1154,7 +1154,7 @@ describe('nb search — the demoted keyword fallback (issue #82)', () => {
     const parsed = JSON.parse(r.out);
     expect(parsed.terms).toEqual(['vitest']);
     expect(parsed.groups).toHaveLength(1);
-    expect(parsed.groups[0].role).toBe('reviewer');
+    expect(parsed.groups[0].shelf).toBe('reviewer');
     expect(parsed.groups[0].hits[0].id).toBe(entryId('run the build before vitest'));
   });
 
@@ -1200,7 +1200,7 @@ describe('nb search — the demoted keyword fallback (issue #82)', () => {
     const report = JSON.parse(stats.out);
     const gap = report.signals.find((s: { kind: string }) => s.kind === 'failed-search');
     expect(gap).toBeDefined();
-    expect(gap.role).toBe('reviewer');
+    expect(gap.shelf).toBe('reviewer');
     expect(gap.detail).toContain('retry backoff');
   });
 });

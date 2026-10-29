@@ -197,7 +197,7 @@ export async function runNbCli(
 
   const dir = notebooksDir();
   const started = Date.now();
-  let role = '-';
+  let shelf = '-';
   let ok = false;
   // Richer usage-log fields for this call (entry-level + outcome logging, #67).
   // Each command fills what it produced; `show`/`path`/`shelves`/`stats` leave it
@@ -234,23 +234,23 @@ export async function runNbCli(
       case 'show': {
         // Resolve the shelf from the --json-stripped args so `nb show <shelf> --json`
         // and `nb show --json <shelf>` both work and the flag is never taken as the shelf.
-        role = need(args[1], 'shelf');
+        shelf = need(args[1], 'shelf');
         if (json) {
-          // `--json` emits the structured ShowResult ({ role, description, entries })
+          // `--json` emits the structured ShowResult ({ shelf, description, entries })
           // and nothing else, so an agent reads each entry's id/score/text without
           // regex-parsing the human output. Same ordering as `render()`.
-          process.stdout.write(JSON.stringify(showJson(dir, role)) + '\n');
+          process.stdout.write(JSON.stringify(showJson(dir, shelf)) + '\n');
         } else {
           // Print the one-line description (if any) as a header above the lessons,
           // so a reader sees what the notebook is *for* before its contents.
-          const desc = getDescription(dir, role);
+          const desc = getDescription(dir, shelf);
           if (desc) process.stdout.write(`# desc: ${desc}\n`);
-          process.stdout.write(render(dir, role) + '\n');
+          process.stdout.write(render(dir, shelf) + '\n');
         }
         break;
       }
       case 'add': {
-        role = need(args[1], 'shelf');
+        shelf = need(args[1], 'shelf');
         // A lesson operand of `-` means "read the lesson from stdin" so a
         // supervising agent that wrote a lesson into a pipe can hand it over
         // without shell-quoting it. We read exactly one line (see
@@ -261,7 +261,7 @@ export async function runNbCli(
         // unchanged `addEntry`, so caps, dedup, and eviction behave identically.
         let lesson = need(args[2], 'lesson');
         if (lesson === '-') lesson = readOneLine(await readStdin());
-        const r = await addEntry(dir, role, lesson);
+        const r = await addEntry(dir, shelf, lesson);
         // Record which entry was touched and how it landed BEFORE the output
         // branch below, which can `throw`/`return` on 'too-long' — the finally
         // still logs, so meta must already be set.
@@ -294,10 +294,10 @@ export async function runNbCli(
         break;
       }
       case 'vote': {
-        role = need(args[1], 'shelf');
+        shelf = need(args[1], 'shelf');
         const selector = need(args[2], 'id|query');
         const delta = parseDelta(need(args[3], '+1|-1'));
-        const r = await vote(dir, role, selector, delta);
+        const r = await vote(dir, shelf, selector, delta);
         meta.entries = [entryId(r.text)];
         meta.outcome = delta > 0 ? 'up' : 'down';
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
@@ -305,11 +305,11 @@ export async function runNbCli(
         break;
       }
       case 'merge': {
-        role = need(args[1], 'shelf');
+        shelf = need(args[1], 'shelf');
         const a = need(args[2], 'idA');
         const b = need(args[3], 'idB');
         const merged = need(args[4], 'merged lesson');
-        const r = await merge(dir, role, a, b, merged);
+        const r = await merge(dir, shelf, a, b, merged);
         meta.entries = [...(r.sources ?? []), ...(r.id ? [r.id] : [])];
         meta.outcome = 'merged';
         // Reason lives in the usage log only (merge enum: duplicate · other).
@@ -323,11 +323,11 @@ export async function runNbCli(
         break;
       }
       case 'split': {
-        role = need(args[1], 'shelf');
+        shelf = need(args[1], 'shelf');
         const selector = need(args[2], 'id|query');
         const lessonA = need(args[3], 'lessonA');
         const lessonB = need(args[4], 'lessonB');
-        const r = await split(dir, role, selector, lessonA, lessonB);
+        const r = await split(dir, shelf, selector, lessonA, lessonB);
         const { reason, note } = normalizeReason('split', reasonArg, noteArg);
         // Log the source + both produced ids, the outcome, and the reason/note —
         // the reason lives in the usage log only, never in the notebook.
@@ -340,9 +340,9 @@ export async function runNbCli(
         break;
       }
       case 'rm': {
-        role = need(args[1], 'shelf');
+        shelf = need(args[1], 'shelf');
         const selector = need(args[2], 'id|query');
-        const r = await remove(dir, role, selector);
+        const r = await remove(dir, shelf, selector);
         meta.entries = [entryId(r.text)];
         meta.outcome = 'removed';
         // Reason lives in the usage log only (rm enum: wrong · obsolete · other).
@@ -356,7 +356,7 @@ export async function runNbCli(
         break;
       }
       case 'describe': {
-        role = need(args[1], 'shelf');
+        shelf = need(args[1], 'shelf');
         // With a text operand → set the description; without one → print the
         // current description. Use `args` (the `--json` flag already stripped),
         // so `nb describe <shelf> --json` reads rather than setting the
@@ -364,7 +364,7 @@ export async function runNbCli(
         // *present* operand (clears the description), so we branch on presence
         // (args.length), not on emptiness.
         if (args.length > 2) {
-          const r = await setDescription(dir, role, args[2]);
+          const r = await setDescription(dir, shelf, args[2]);
           meta.outcome = r.desc === null ? 'desc-cleared' : 'described';
           // `--reason`/`--note` are stripped above (so they can't be mistaken
           // for the description text); record them in the usage log, never in
@@ -376,13 +376,13 @@ export async function runNbCli(
             if (note) meta.note = note;
           }
           if (json) process.stdout.write(JSON.stringify(r) + '\n');
-          else if (r.desc === null) process.stdout.write(`description cleared for shelf "${role}"\n`);
-          else process.stdout.write(`description set for shelf "${role}": ${r.desc}\n`);
+          else if (r.desc === null) process.stdout.write(`description cleared for shelf "${shelf}"\n`);
+          else process.stdout.write(`description set for shelf "${shelf}": ${r.desc}\n`);
         } else {
-          const desc = getDescription(dir, role);
-          if (json) process.stdout.write(JSON.stringify({ role, shelf: role, desc, set: false }) + '\n');
+          const desc = getDescription(dir, shelf);
+          if (json) process.stdout.write(JSON.stringify({ role: shelf, shelf, desc, set: false }) + '\n');
           else if (desc) process.stdout.write(desc + '\n');
-          else process.stderr.write(`no description set for shelf "${role}" — set one with \`nb describe ${role} "<text>"\`\n`);
+          else process.stderr.write(`no description set for shelf "${shelf}" — set one with \`nb describe ${shelf} "<text>"\`\n`);
         }
         break;
       }
@@ -428,16 +428,16 @@ export async function runNbCli(
           );
         }
         const windowMs = sinceIdx >= 0 ? parseWindowMs(sinceVal) : undefined;
-        const maybeRole = rest.find((a, i) => !a.startsWith('--') && (sinceIdx < 0 || i !== sinceIdx + 1));
-        role = maybeRole ?? '-';
+        const maybeShelf = rest.find((a, i) => !a.startsWith('--') && (sinceIdx < 0 || i !== sinceIdx + 1));
+        shelf = maybeShelf ?? '-';
         // `--json` emits the raw StatsReport (stable, machine-readable) so a
         // supervising agent can act on a loop/went-silent/high-error-rate
         // anomaly without regex-parsing the human table. The --since warning
         // above stays on stderr, keeping stdout pure JSON.
         if (rest.includes('--json')) {
-          process.stdout.write(JSON.stringify(stats(dir, { role: maybeRole, windowMs })) + '\n');
+          process.stdout.write(JSON.stringify(stats(dir, { role: maybeShelf, windowMs })) + '\n');
         } else {
-          process.stdout.write(renderStats(dir, maybeRole, windowMs) + '\n');
+          process.stdout.write(renderStats(dir, maybeShelf, windowMs) + '\n');
         }
         break;
       }
@@ -447,13 +447,13 @@ export async function runNbCli(
         // plain-text promise relies on, so nobody has to hard-code
         // `$NB_DIR | ~/.agent-notebook/notebooks/<shelf>.md`. Output is a BARE path
         // (no decoration) so it pipes into `cat`/`$(...)`.
-        const maybeRole = argv[1];
-        if (maybeRole == null || maybeRole === '') {
+        const maybeShelf = argv[1];
+        if (maybeShelf == null || maybeShelf === '') {
           process.stdout.write(dir + '\n');
         } else {
-          role = maybeRole;
-          assertSafeShelf(role); // reuse the existing escape-proof shelf check
-          process.stdout.write(join(dir, `${role}.md`) + '\n');
+          shelf = maybeShelf;
+          assertSafeShelf(shelf); // reuse the existing escape-proof shelf check
+          process.stdout.write(join(dir, `${shelf}.md`) + '\n');
         }
         break;
       }
@@ -505,7 +505,7 @@ export async function runNbCli(
     return 1;
   } finally {
     // The `stats` read of the usage log happens above; logging it afterwards is fine.
-    logUsage(dir, role, cmd, ok, Date.now() - started, meta);
+    logUsage(dir, shelf, cmd, ok, Date.now() - started, meta);
   }
 }
 
@@ -602,12 +602,12 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
   const countClause = shown < listing.total ? `${shown} of ${listing.total}` : `${listing.total}`;
   const match = prefix ? ` matching "${prefix}"` : '';
   const lines = [`agent-notebook notebooks — ${countClause}${match} in ${dir}`];
-  const nameWidth = listing.rows.reduce((w, r) => Math.max(w, r.role.length), 0);
+  const nameWidth = listing.rows.reduce((w, r) => Math.max(w, r.shelf.length), 0);
   const countWidth = listing.rows.reduce((w, r) => Math.max(w, String(r.lessons).length), 0);
   for (const r of listing.rows) {
     const trigger = r.desc ?? r.auto; // explicit description, else the (auto) top lesson
     const descPart = trigger ? `  ${trigger}${r.desc === null ? '  (auto)' : ''}` : '';
-    lines.push(`  ${r.role.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`);
+    lines.push(`  ${r.shelf.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`);
   }
   return { out: lines.join('\n') + '\n', err: '' };
 }
@@ -644,7 +644,7 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
   for (const g of result.groups) {
     const descPart = g.desc ? `  — ${g.desc}` : '';
     const descOnly = g.hits.length === 0 ? '  (description match)' : g.descMatched ? '  (+description match)' : '';
-    lines.push(`  ${g.role}${descPart}${descOnly}`);
+    lines.push(`  ${g.shelf}${descPart}${descOnly}`);
     for (const h of g.hits) {
       lines.push(`    ${h.id}  [${fmt(h.score)}]  ${h.text}`);
     }
@@ -652,10 +652,10 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
   return { out: lines.join('\n') + '\n', err: '' };
 }
 
-function renderStats(dir: string, role: string | undefined, windowMs: number | undefined): string {
-  const rep = stats(dir, { role, windowMs });
+function renderStats(dir: string, shelf: string | undefined, windowMs: number | undefined): string {
+  const rep = stats(dir, { role: shelf, windowMs });
   const lines: string[] = [];
-  lines.push(`nb usage — ${role ? `shelf ${role}, ` : ''}window ${rep.window}, ${rep.totalCalls} calls`);
+  lines.push(`nb usage — ${shelf ? `shelf ${shelf}, ` : ''}window ${rep.window}, ${rep.totalCalls} calls`);
   if (rep.perCommand.length === 0) {
     lines.push('  (no usage recorded in this window)');
   } else {
@@ -670,7 +670,7 @@ function renderStats(dir: string, role: string | undefined, windowMs: number | u
   if (rep.anomalies.length > 0) {
     lines.push('  anomalies:');
     for (const a of rep.anomalies) {
-      lines.push(`    [${a.kind}] ${a.command}${a.role ? ` (shelf ${a.role})` : ''}: ${a.detail}`);
+      lines.push(`    [${a.kind}] ${a.command}${a.shelf ? ` (shelf ${a.shelf})` : ''}: ${a.detail}`);
     }
   } else {
     lines.push('  anomalies: none');
@@ -683,7 +683,7 @@ function renderStats(dir: string, role: string | undefined, windowMs: number | u
     lines.push('  signals:');
     for (const s of rep.signals) {
       const where = s.entry ? ` entry ${s.entry}` : s.session ? ` session "${s.session}"` : '';
-      lines.push(`    [${s.kind}] shelf ${s.role}${where}: ${s.detail}`);
+      lines.push(`    [${s.kind}] shelf ${s.shelf}${where}: ${s.detail}`);
     }
   } else {
     lines.push('  signals: none');
@@ -713,7 +713,7 @@ function renderStats(dir: string, role: string | undefined, windowMs: number | u
     lines.push(`  notebooks: ${nb.shelves} ${nb.shelves === 1 ? 'shelf' : 'shelves'}, ${nb.lines} lines (cap ${nb.cap}/shelf)`);
     for (const n of rep.notebooks) {
       const full = n.lines >= n.cap ? '  FULL' : '';
-      lines.push(`    ${n.role.padEnd(20)}  ${String(n.lines).padStart(4)}/${n.cap}${full}`);
+      lines.push(`    ${n.shelf.padEnd(20)}  ${String(n.lines).padStart(4)}/${n.cap}${full}`);
     }
   }
   return lines.join('\n');

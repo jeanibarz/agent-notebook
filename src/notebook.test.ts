@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 // The built CLI, used to drive REAL cross-process contention on the mkdir lock
-// (the actual hazard: several `nb` invocations mutating one role at once).
+// (the actual hazard: several `nb` invocations mutating one shelf at once).
 // `npm test` builds dist/ via the pretest script before vitest runs.
 const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 
@@ -272,16 +272,16 @@ describe('serialization round-trip', () => {
       expect(text).not.toMatch(/[\t\r\n]/); // sanitize never leaves our separators behind
       if (text === '' || text.length > maxChars()) continue; // addEntry would reject these
       for (const target of SCORES) {
-        const role = `rt-${n++}`;
-        const add = await addEntry(dir, role, text);
+        const shelf = `rt-${n++}`;
+        const add = await addEntry(dir, shelf, text);
         expect(add.added).toBe(true); // stored at the +1 default
         // Drive the score to `target`; each vote re-formats and re-parses the
         // whole file, so reaching a non-default score already round-trips it.
         const id = entryId(text);
         const steps = target - 1;
-        for (let i = 0; i < Math.abs(steps); i++) await vote(dir, role, id, steps >= 0 ? 1 : -1);
+        for (let i = 0; i < Math.abs(steps); i++) await vote(dir, shelf, id, steps >= 0 ? 1 : -1);
         // format -> parse recovers the exact entry.
-        expect(readEntries(dir, role)).toEqual([{ score: target, text }]);
+        expect(readEntries(dir, shelf)).toEqual([{ score: target, text }]);
         exercised++;
       }
     }
@@ -673,16 +673,16 @@ describe('shelf safety', () => {
   test('a `.`-namespaced shelf is first-class (issue #83): it validates and round-trips to one flat file', async () => {
     // The `.` namespace convention groups related notebooks lexically
     // (`review.tests`, `review.correctness`) with no change to `assertSafeShelf`:
-    // `.` is already a permitted interior character, so a namespaced role is an
-    // ordinary role, not a special case.
+    // `.` is already a permitted interior character, so a namespaced shelf is an
+    // ordinary shelf, not a special case.
     expect(() => assertSafeShelf('review.tests')).not.toThrow();
     expect(() => assertSafeShelf('review.correctness')).not.toThrow();
     expect(() => assertSafeShelf('a.b.c')).not.toThrow(); // multi-level nesting is fine
-    // `@` stays reserved for the existing `role@project` scoping and is distinct
+    // `@` stays reserved for the existing `shelf@project` scoping and is distinct
     // from the `.` grouping delimiter — the two can coexist in one name.
     expect(() => assertSafeShelf('review.tests@some-repo')).not.toThrow();
     // Still no storage layout change: the namespace lives entirely in the name,
-    // so the notebook is a single flat `<role>.md` file (no directories).
+    // so the notebook is a single flat `<shelf>.md` file (no directories).
     await addEntry(dir, 'review.tests', 'a namespaced lesson');
     expect(existsSync(join(dir, 'review.tests.md'))).toBe(true);
     expect(readEntries(dir, 'review.tests').map((e) => e.text)).toEqual(['a namespaced lesson']);
@@ -695,21 +695,21 @@ describe('shelf safety', () => {
 
   test('bounds shelf-name length with a friendly error before it becomes a filename', () => {
     // A 300-char alphanumeric name passes the character pattern but would hit
-    // ENAMETOOLONG as `<role>.md`; it must throw the friendly length error.
+    // ENAMETOOLONG as `<shelf>.md`; it must throw the friendly length error.
     // `129` passes the character pattern, so only the length guard can reject
     // it — asserting the distinct `too long` diagnostic pins which guard fired.
     expect(() => assertSafeShelf('a'.repeat(300))).toThrow(/invalid shelf name: .* \(too long: 300 chars, max 128\)/);
     // The boundary: 128 chars is allowed, 129 is not.
     expect(() => assertSafeShelf('a'.repeat(128))).not.toThrow();
     expect(() => assertSafeShelf('a'.repeat(129))).toThrow(/too long: 129 chars, max 128/);
-    // A realistic long role stays legal.
+    // A realistic long shelf stays legal.
     expect(() => assertSafeShelf('code-review@jeanibarz-agent-notebook')).not.toThrow();
   });
 
   test('an over-long shelf is rejected by a runtime write before any file is created', async () => {
-    // The acceptance criterion is end-to-end: driving an over-long role through
+    // The acceptance criterion is end-to-end: driving an over-long shelf through
     // a real entry point must surface the friendly error instead of a bare
-    // `ENAMETOOLONG`, and must not leave a `<role>.md` behind.
+    // `ENAMETOOLONG`, and must not leave a `<shelf>.md` behind.
     const tooLong = 'a'.repeat(300);
     await expect(addEntry(dir, tooLong, 'x')).rejects.toThrow(/invalid shelf name/);
     expect(existsSync(join(dir, `${tooLong}.md`))).toBe(false);
@@ -725,7 +725,7 @@ describe('shelf safety', () => {
     // The reserve blocks a real write (`nb add README …`) before any file touch.
     await expect(addEntry(dir, 'README', 'x')).rejects.toThrow(/reserved/);
     expect(existsSync(join(dir, 'README.md'))).toBe(false);
-    // A role that merely contains "readme" is still a legitimate notebook.
+    // A shelf that merely contains "readme" is still a legitimate notebook.
     expect(() => assertSafeShelf('readme-notes')).not.toThrow();
   });
 });
@@ -733,7 +733,7 @@ describe('shelf safety', () => {
 describe('listShelves', () => {
   test('excludes a README.md so it is not a notebook (issue #90)', () => {
     // A README that backs up the notebook folder (common when the dir is a git
-    // repo) must not surface as a role — not listed, searched, counted or voted.
+    // repo) must not surface as a shelf — not listed, searched, counted or voted.
     writeFileSync(join(dir, 'README.md'), '# notes\n\nThis folder is backed up with git.\n', 'utf-8');
     writeFileSync(join(dir, 'tips.md'), '+1\trun lint before claiming done\n', 'utf-8');
     expect(listShelves(dir)).toEqual(['tips']);
@@ -764,8 +764,8 @@ describe('usage log + stats', () => {
   });
 
   test('a tab/CR/LF in a field cannot split the row (rejected-unsafe-shelf regression)', () => {
-    // The CLI logs in a `finally` block even when `add` rejected an unsafe role,
-    // so a raw tab/newline in the role once became extra columns/rows and
+    // The CLI logs in a `finally` block even when `add` rejected an unsafe shelf,
+    // so a raw tab/newline in the shelf once became extra columns/rows and
     // mis-attributed the telemetry. Each field must stay structurally inert.
     const nasty = 'evil\trole\ndrop\rtable';
     logUsage(dir, nasty, 'add\tcmd', false, 4);
@@ -774,7 +774,7 @@ describe('usage log + stats', () => {
     expect(rows.length).toBe(1); // the CR/LF did not spawn extra rows
     const cols = rows[0].split('\t');
     expect(cols.length).toBe(12); // five base + five richer + two reason columns, all tabs collapsed
-    expect(cols[1]).toBe('evil role drop table'); // role: tab+CR+LF all collapsed to single spaces
+    expect(cols[1]).toBe('evil role drop table'); // shelf: tab+CR+LF all collapsed to single spaces
     // stats still parses it as one call attributed to the sanitized command.
     const rep = stats(dir, { now: Date.now() });
     expect(rep.totalCalls).toBe(1);
@@ -786,8 +786,8 @@ describe('usage log + stats', () => {
     logUsage(dir, 'patcher', 'add', true, 5);
     const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
     expect(raw.endsWith('\n')).toBe(true);
-    const [ts, role, command, status, ms] = raw.trimEnd().split('\t');
-    expect([role, command, status, ms]).toEqual(['patcher', 'add', 'ok', '5ms']);
+    const [ts, shelf, command, status, ms] = raw.trimEnd().split('\t');
+    expect([shelf, command, status, ms]).toEqual(['patcher', 'add', 'ok', '5ms']);
     expect(Number.isNaN(Date.parse(ts))).toBe(false); // ts untouched, still ISO
   });
 
@@ -925,7 +925,7 @@ describe('usage log + stats', () => {
     // A per-process temp keeps each rename atomic — the final file is always one
     // writer's complete content, and every writer's temp is consumed by its own
     // rename (no shared `.nb-usage.log.tmp` left dangling). `nb show` on an empty
-    // role exits 0 and still appends one usage row via the CLI's `finally`.
+    // shelf exits 0 and still appends one usage row via the CLI's `finally`.
     const RING = 100;
     process.env.NB_USAGE_RING = String(RING);
     for (let i = 0; i < RING; i++) logUsage(dir, 'seed', 'show', true, 1); // fill the ring so each writer trims+rewrites the whole file
@@ -958,7 +958,7 @@ describe('diagnostic signals (issue #72)', () => {
   test('browse-without-use: a show with no vote in the same session is flagged', () => {
     logUsage(dir, 'reviewer', 'show', true, 2, { session: 's1' });
     const rep = stats(dir, { now: Date.now() });
-    const sig = rep.signals.find((s) => s.kind === 'browse-without-use' && s.role === 'reviewer');
+    const sig = rep.signals.find((s) => s.kind === 'browse-without-use' && s.shelf === 'reviewer');
     expect(sig).toBeDefined();
     expect(sig!.session).toBe('s1');
   });
@@ -1017,7 +1017,7 @@ describe('diagnostic signals (issue #72)', () => {
     logUsage(dir, 'beta', 'show', true, 2, { session: 's2' });
     const rep = stats(dir, { now: Date.now(), role: 'alpha' });
     expect(rep.signals.length).toBeGreaterThan(0);
-    expect(rep.signals.every((s) => s.role === 'alpha')).toBe(true);
+    expect(rep.signals.every((s) => s.shelf === 'alpha')).toBe(true);
   });
 
   test('a signal older than the window is excluded', () => {
@@ -1337,7 +1337,7 @@ describe('locking (mkdir spinlock)', () => {
     const N = 8; // small, deterministic; ~N*20ms serialization ≪ each child's 2s acquire budget
     const env = { ...process.env, NB_DIR: dir };
     delete env.NB_MAX_LINES; // keep the default cap (50); N is well under it, so none is evicted
-    // Fire N separate processes at the same role simultaneously. Without the
+    // Fire N separate processes at the same shelf simultaneously. Without the
     // lock each reads the same base file and its atomic rename clobbers the
     // others' — a classic lost update, leaving fewer than N lines. The lock
     // serializes them so every distinct lesson survives.
@@ -1391,7 +1391,7 @@ describe('locking (mkdir spinlock)', () => {
     // withLock spins for its 2s budget, never steals the fresh lock, then throws.
     await expect(addEntry(dir, 'blocked', 'should never be written')).rejects.toThrow(/locked/);
     expect(Date.now() - started).toBeGreaterThanOrEqual(2000);
-    // The blocked op mutated nothing: no role file was created.
+    // The blocked op mutated nothing: no shelf file was created.
     expect(existsSync(join(dir, 'blocked.md'))).toBe(false);
   }, 10_000);
 
@@ -1407,17 +1407,17 @@ describe('locking (mkdir spinlock)', () => {
 });
 
 describe('reaps leftover *.md.tmp on lock acquire (issue #46)', () => {
-  // A crash between writeFileDurable's `<role>.md.tmp` and its rename leaves an
+  // A crash between writeFileDurable's `<shelf>.md.tmp` and its rename leaves an
   // orphaned temp in the notebooks dir that nothing else removes. The next locked
   // mutation sweeps it — only this writer's `*.md.tmp` convention, never a real
   // notebook or the usage log.
 
   test('a planted shelf.md.tmp is removed by the next locked mutation', async () => {
-    const orphan = join(dir, 'role.md.tmp');
+    const orphan = join(dir, 'shelf.md.tmp');
     writeFileSync(orphan, 'crash debris from an interrupted write', 'utf-8');
     expect(existsSync(orphan)).toBe(true);
-    // Any locked mutation triggers the reap — add on an UNRELATED role so we prove
-    // the sweep is dir-wide, not tied to the role being written.
+    // Any locked mutation triggers the reap — add on an UNRELATED shelf so we prove
+    // the sweep is dir-wide, not tied to the shelf being written.
     const r = await addEntry(dir, 'patcher', 'a fresh lesson');
     expect(r.added).toBe(true);
     expect(existsSync(orphan)).toBe(false);
@@ -1446,7 +1446,7 @@ describe('reaps leftover *.md.tmp on lock acquire (issue #46)', () => {
   });
 
   test('a dotfile *.md.tmp is NOT reaped (the dotfile guard, isolated)', async () => {
-    // A role name never starts with `.` (assertSafeShelf), so `.hidden.md.tmp` is
+    // A shelf name never starts with `.` (assertSafeShelf), so `.hidden.md.tmp` is
     // not our convention even though it ends in `.md.tmp`. This isolates the
     // `name.startsWith('.')` half of the guard: unlike the usage-log temp (which
     // is excluded by the suffix check too), only a dotfile that DOES end in
@@ -1493,7 +1493,7 @@ describe('stats notebook inventory (issue #40)', () => {
     for (const l of ['one', 'two', 'three']) await addEntry(dir, 'full', l); // 3/3 — at cap
     await addEntry(dir, 'spare', 'just one'); // 1/3 — below cap
     const rep = stats(dir, { now: Date.now() });
-    // Exact rows (sorted). The full role's lines equal its cap — the "about to
+    // Exact rows (sorted). The full shelf's lines equal its cap — the "about to
     // evict" signal — while the sibling, under the same global cap, stays below.
     expect(rep.notebooks).toEqual([
       { role: 'full', shelf: 'full', lines: 3, cap: 3 },
@@ -1531,7 +1531,7 @@ describe('stats notebook inventory (issue #40)', () => {
   });
 
   test('sidecar and stray non-shelf files are not counted as notebooks', async () => {
-    await addEntry(dir, 'patcher', 'x'); // a real role → patcher.md
+    await addEntry(dir, 'patcher', 'x'); // a real shelf → patcher.md
     logUsage(dir, 'patcher', 'add', true, 1); // writes the .nb-usage.log sidecar
     writeFileSync(join(dir, 'notes.txt'), 'not a role file', 'utf-8');
     writeFileSync(join(dir, '.hidden.md'), 'a dotfile, not a role', 'utf-8');
@@ -1577,8 +1577,8 @@ describe('core smoke (full learn cycle)', () => {
 describe('display ordering ("moving" an entry)', () => {
   // Parse `render` output back into a score+text sequence, in display order, so
   // a test can assert the exact ranking a user would see from `nb show`.
-  function displayed(role: string): { score: number; text: string }[] {
-    const out = render(dir, role);
+  function displayed(shelf: string): { score: number; text: string }[] {
+    const out = render(dir, shelf);
     if (out.includes('is empty')) return [];
     return out.split('\n').map((line) => {
       const m = /^\S+\s+\[([+-]\d+)\]\s+(.*)$/.exec(line);
@@ -1590,10 +1590,10 @@ describe('display ordering ("moving" an entry)', () => {
   // Seed a notebook so each [text, targetScore] reaches targetScore, inserted
   // in the given file order (so tie-break-by-insertion is deterministic).
   // targetScore must be >= 1 since `add` starts every entry at +1.
-  async function seed(role: string, specs: [string, number][]): Promise<void> {
-    for (const [text] of specs) await addEntry(dir, role, text);
+  async function seed(shelf: string, specs: [string, number][]): Promise<void> {
+    for (const [text] of specs) await addEntry(dir, shelf, text);
     for (const [text, score] of specs) {
-      for (let s = 1; s < score; s++) await vote(dir, role, entryId(text), 1);
+      for (let s = 1; s < score; s++) await vote(dir, shelf, entryId(text), 1);
     }
   }
 
@@ -1858,7 +1858,7 @@ describe('listNotebooks — the notebook index (issue #71)', () => {
     const listing = listNotebooks(dir);
     expect(listing.dir).toBe(dir);
     expect(listing.total).toBe(3);
-    expect(listing.rows.map((r) => r.role)).toEqual(['reviewer', 'patcher', 'planner']); // 2, then 1/1 by name
+    expect(listing.rows.map((r) => r.shelf)).toEqual(['reviewer', 'patcher', 'planner']); // 2, then 1/1 by name
     expect(listing.rows[0]).toMatchObject({ role: 'reviewer', lessons: 2 });
   });
 
@@ -1884,7 +1884,7 @@ describe('listNotebooks — the notebook index (issue #71)', () => {
     await addEntry(dir, 'patcher', 'c');
     const listing = listNotebooks(dir, { prefix: 'review.' });
     expect(listing.total).toBe(2);
-    expect(listing.rows.map((r) => r.role).sort()).toEqual(['review.perf', 'review.security']);
+    expect(listing.rows.map((r) => r.shelf).sort()).toEqual(['review.perf', 'review.security']);
   });
 
   test('the `.` delimiter clusters a namespace and excludes a non-namespaced sibling (issue #83)', async () => {
@@ -1899,10 +1899,10 @@ describe('listNotebooks — the notebook index (issue #71)', () => {
     const group = listNotebooks(dir, { prefix: 'review.' });
     expect(group.total).toBe(2);
     // Lexical clustering ⇒ a predictable, sorted group (ties broken by name).
-    expect(group.rows.map((r) => r.role)).toEqual(['review.correctness', 'review.tests']);
+    expect(group.rows.map((r) => r.shelf)).toEqual(['review.correctness', 'review.tests']);
     // A sub-namespace prefix scopes further still, no new mechanism needed.
     const sub = listNotebooks(dir, { prefix: 'review.t' });
-    expect(sub.rows.map((r) => r.role)).toEqual(['review.tests']);
+    expect(sub.rows.map((r) => r.shelf)).toEqual(['review.tests']);
   });
 
   test('limit bounds the rows (richest-first) but total counts every match', async () => {
@@ -1918,12 +1918,12 @@ describe('listNotebooks — the notebook index (issue #71)', () => {
   });
 
   test('hides a zero-lesson, no-description notebook (phantom debris)', async () => {
-    // `nb describe <role> ""` on a fresh role, or `rm` of the last lesson, leaves
+    // `nb describe <shelf> ""` on a fresh shelf, or `rm` of the last lesson, leaves
     // an empty file with no metadata and no entries — nothing to discover.
     await setDescription(dir, 'phantom', ''); // clears nothing → empty file, no desc
     await addEntry(dir, 'real', 'a lesson');
     const listing = listNotebooks(dir);
-    expect(listing.rows.map((r) => r.role)).toEqual(['real']);
+    expect(listing.rows.map((r) => r.shelf)).toEqual(['real']);
     expect(listing.total).toBe(1);
   });
 
@@ -1954,7 +1954,7 @@ describe('search — the demoted keyword fallback (issue #82)', () => {
     const r = search(dir, 'build vitest');
     expect(r.terms).toEqual(['build', 'vitest']);
     expect(r.groups).toHaveLength(1);
-    expect(r.groups[0].role).toBe('reviewer');
+    expect(r.groups[0].shelf).toBe('reviewer');
     expect(r.groups[0].hits.map((h) => h.text)).toEqual(['run the Build before vitest']);
     expect(r.groups[0].hits[0].matched).toBe(2);
     expect(r.groups[0].hits[0].id).toBe(entryId('run the Build before vitest'));
@@ -1966,7 +1966,7 @@ describe('search — the demoted keyword fallback (issue #82)', () => {
     const and = search(dir, 'worktree lock');
     expect(and.groups).toHaveLength(0); // no single entry has both terms
     const or = search(dir, 'worktree lock', { any: true });
-    expect(or.groups.map((g) => g.role).sort()).toEqual(['patcher', 'reviewer']);
+    expect(or.groups.map((g) => g.shelf).sort()).toEqual(['patcher', 'reviewer']);
   });
 
   test('ranks hits by terms-matched, then score, then file order', async () => {
@@ -2005,15 +2005,15 @@ describe('search — the demoted keyword fallback (issue #82)', () => {
     await addEntry(dir, 'review.perf', 'cache the lock lookup');
     await addEntry(dir, 'patcher', 'lock files need a spinlock');
     const scoped = search(dir, 'lock', { prefix: 'review.' });
-    expect(scoped.groups.map((g) => g.role).sort()).toEqual(['review.perf', 'review.security']);
-    expect(scoped.groups.some((g) => g.role === 'patcher')).toBe(false);
+    expect(scoped.groups.map((g) => g.shelf).sort()).toEqual(['review.perf', 'review.security']);
+    expect(scoped.groups.some((g) => g.shelf === 'patcher')).toBe(false);
   });
 
   test('description-only matches rank after entry-hit matches', async () => {
     await addEntry(dir, 'withhit', 'this lesson mentions deadlock twice: deadlock');
     await setDescription(dir, 'desconly', 'deadlock recovery notes');
     const r = search(dir, 'deadlock');
-    expect(r.groups.map((g) => g.role)).toEqual(['withhit', 'desconly']); // hits first, desc-only last
+    expect(r.groups.map((g) => g.shelf)).toEqual(['withhit', 'desconly']); // hits first, desc-only last
   });
 
   test('an empty / whitespace query yields no terms and no groups (never throws)', async () => {
@@ -2039,7 +2039,7 @@ describe('failed-search → add gap signal (issue #82)', () => {
     logUsage(dir, 'reviewer', 'add', true, 1, { session: 's1', outcome: 'accepted', entries: ['abc123'] });
     const sig = stats(dir).signals.find((s) => s.kind === 'failed-search');
     expect(sig).toBeDefined();
-    expect(sig!.role).toBe('reviewer');
+    expect(sig!.shelf).toBe('reviewer');
     expect(sig!.session).toBe('s1');
     expect(sig!.entry).toBe('abc123');
     expect(sig!.detail).toContain('rate limiting');

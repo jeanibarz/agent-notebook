@@ -62,7 +62,7 @@ function readNotebooks(dir) {
     return [];
   }
   return files.map((f) => {
-    const role = f.slice(0, -3);
+    const shelf = f.slice(0, -3);
     let lessons = [];
     try {
       lessons = readFileSync(join(dir, f), 'utf-8')
@@ -78,7 +78,7 @@ function readNotebooks(dir) {
     } catch {
       /* unreadable → report as empty rather than crash the whole scan */
     }
-    return { role, lessons };
+    return { shelf, lessons };
   });
 }
 
@@ -127,9 +127,9 @@ function readUsage(dir) {
   try {
     for (const line of readFileSync(file, 'utf-8').split('\n')) {
       if (line.trim() === '') continue;
-      const [ts, role, command, status] = line.split('\t');
+      const [ts, shelf, command, status] = line.split('\t');
       if (!ts || !command) continue;
-      rows.push({ ts, t: Date.parse(ts), role: role ?? '', command, ok: status === 'ok' });
+      rows.push({ ts, t: Date.parse(ts), shelf: shelf ?? '', command, ok: status === 'ok' });
     }
   } catch {
     /* ignore */
@@ -169,21 +169,21 @@ const now = Date.now();
 
 // 1) cap pressure & reorg
 const capPressure = notebooks
-  .map((nb) => ({ shelf: nb.role, role: nb.role, lessons: nb.lessons.length, pct: Math.round((nb.lessons.length / MAX_LINES) * 100) }))
+  .map((nb) => ({ shelf: nb.shelf, role: nb.shelf, lessons: nb.lessons.length, pct: Math.round((nb.lessons.length / MAX_LINES) * 100) }))
   .filter((r) => r.pct >= 80)
   .sort((a, b) => b.pct - a.pct);
 
 // 2) near-duplicate shelf names
-const roleDups = [];
-const roles = notebooks.map((n) => n.role);
-for (let i = 0; i < roles.length; i++)
-  for (let j = i + 1; j < roles.length; j++) {
-    const sim = editSim(roles[i], roles[j]);
+const shelfDups = [];
+const shelves = notebooks.map((n) => n.shelf);
+for (let i = 0; i < shelves.length; i++)
+  for (let j = i + 1; j < shelves.length; j++) {
+    const sim = editSim(shelves[i], shelves[j]);
     // same namespace stem (`review.tests` vs `review.correctness`) is intentional, not a dup
-    const sameNs = roles[i].split('.')[0] === roles[j].split('.')[0] && roles[i].includes('.') && roles[j].includes('.');
-    if (sim >= 0.8 && !sameNs) roleDups.push({ a: roles[i], b: roles[j], sim: Number(sim.toFixed(2)) });
+    const sameNs = shelves[i].split('.')[0] === shelves[j].split('.')[0] && shelves[i].includes('.') && shelves[j].includes('.');
+    if (sim >= 0.8 && !sameNs) shelfDups.push({ a: shelves[i], b: shelves[j], sim: Number(sim.toFixed(2)) });
   }
-roleDups.sort((x, y) => y.sim - x.sim);
+shelfDups.sort((x, y) => y.sim - x.sim);
 
 // 3) likely duplicate lessons (within a shelf)
 const lessonDups = [];
@@ -192,7 +192,7 @@ for (const nb of notebooks) {
   for (let i = 0; i < toks.length; i++)
     for (let j = i + 1; j < toks.length; j++) {
       const sim = jaccard(toks[i].tk, toks[j].tk);
-      if (sim >= SIM) lessonDups.push({ shelf: nb.role, role: nb.role, sim: Number(sim.toFixed(2)), a: toks[i].text, b: toks[j].text });
+      if (sim >= SIM) lessonDups.push({ shelf: nb.shelf, role: nb.shelf, sim: Number(sim.toFixed(2)), a: toks[i].text, b: toks[j].text });
     }
 }
 lessonDups.sort((x, y) => y.sim - x.sim);
@@ -211,24 +211,24 @@ if (history) {
 // silence: a shelf with lessons but no usage-log activity in the window
 const SILENT_DAYS = DAYS;
 const lastUse = {};
-for (const r of usage) lastUse[r.role] = Math.max(lastUse[r.role] ?? 0, r.t || 0);
-const silentRoles = notebooks
+for (const r of usage) lastUse[r.shelf] = Math.max(lastUse[r.shelf] ?? 0, r.t || 0);
+const silentShelves = notebooks
   .filter((nb) => nb.lessons.length > 0)
-  .map((nb) => ({ role: nb.role, lastUse: lastUse[nb.role] ?? 0 }))
+  .map((nb) => ({ shelf: nb.shelf, lastUse: lastUse[nb.shelf] ?? 0 }))
   .filter((r) => now - r.lastUse > SILENT_DAYS * 86400000)
-  .map((r) => ({ shelf: r.role, role: r.role, daysQuiet: r.lastUse ? Math.round((now - r.lastUse) / 86400000) : null }));
+  .map((r) => ({ shelf: r.shelf, role: r.shelf, daysQuiet: r.lastUse ? Math.round((now - r.lastUse) / 86400000) : null }));
 
 const report = {
   dir: NB_DIR,
   notebooks: notebooks.length,
   totalLessons: notebooks.reduce((s, n) => s + n.lessons.length, 0),
   capPressure,
-  shelfDups: roleDups,
-  roleDups, // deprecated alias of shelfDups
+  shelfDups,
+  roleDups: shelfDups, // deprecated alias of shelfDups
   lessonDups,
   volume,
-  silentShelves: silentRoles,
-  silentRoles, // deprecated alias of silentShelves
+  silentShelves,
+  silentRoles: silentShelves, // deprecated alias of silentShelves
   usageRows: usage.length,
 };
 
@@ -246,14 +246,14 @@ H('1. Cap pressure & reorg');
 if (capPressure.length === 0) out.push('  ✅ no notebook is near the cap.');
 else
   for (const r of capPressure) {
-    out.push(`  ⚠️  ${r.role}: ${r.lessons}/${MAX_LINES} (${r.pct}%) — about to evict lessons.`);
-    out.push(`      → split concerns into namespaces: nb split, or new shelves ${r.role}.<concern>`);
+    out.push(`  ⚠️  ${r.shelf}: ${r.lessons}/${MAX_LINES} (${r.pct}%) — about to evict lessons.`);
+    out.push(`      → split concerns into namespaces: nb split, or new shelves ${r.shelf}.<concern>`);
   }
 
 H('2. Near-duplicate shelf names (fragmented memory)');
-if (roleDups.length === 0) out.push('  ✅ no suspiciously similar shelf names.');
+if (shelfDups.length === 0) out.push('  ✅ no suspiciously similar shelf names.');
 else
-  for (const d of roleDups) {
+  for (const d of shelfDups) {
     out.push(`  ⚠️  "${d.a}" ~ "${d.b}" (name similarity ${d.sim}) — likely the same shelf, split in two.`);
     out.push(`      → consolidate: re-add ${d.b}'s lessons under "${d.a}" (or vice-versa), then retire the orphan.`);
   }
@@ -262,10 +262,10 @@ H(`3. Likely duplicate lessons (paraphrases, sim ≥ ${SIM})`);
 if (lessonDups.length === 0) out.push('  ✅ no paraphrase duplicates above threshold.');
 else
   for (const d of lessonDups.slice(0, 25)) {
-    out.push(`  ⚠️  [${d.role}] sim ${d.sim}`);
+    out.push(`  ⚠️  [${d.shelf}] sim ${d.sim}`);
     out.push(`        A: ${d.a}`);
     out.push(`        B: ${d.b}`);
-    out.push(`      → if they say the same thing: nb merge ${d.role} "<A-substr>" "<B-substr>" "<one line>" --reason duplicate`);
+    out.push(`      → if they say the same thing: nb merge ${d.shelf} "<A-substr>" "<B-substr>" "<one line>" --reason duplicate`);
   }
 if (lessonDups.length > 25) out.push(`  …(${lessonDups.length - 25} more pairs — run with --json)`);
 
@@ -279,10 +279,10 @@ if (volume)
   );
 else out.push('  (NB_DIR is not a git repo — enable git-versioning for growth trends: harness-setup.md#git-versioning)');
 if (report.usageRows === 0) out.push('  (no usage log yet — set NB_SESSION and use the notebooks to populate it)');
-if (silentRoles.length === 0) out.push('  ✅ no shelf has gone silent in the window.');
+if (silentShelves.length === 0) out.push('  ✅ no shelf has gone silent in the window.');
 else
-  for (const s of silentRoles)
-    out.push(`  💤 ${s.role}: ${s.daysQuiet == null ? 'never used in the log' : `quiet ${s.daysQuiet}d`} — stale, or no longer exercised?`);
+  for (const s of silentShelves)
+    out.push(`  💤 ${s.shelf}: ${s.daysQuiet == null ? 'never used in the log' : `quiet ${s.daysQuiet}d`} — stale, or no longer exercised?`);
 
 out.push('');
 process.stdout.write(out.join('\n') + '\n');

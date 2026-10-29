@@ -56,7 +56,7 @@ export interface Entry {
 }
 
 /** A shelf name is a path segment; reject anything that could escape the notebooks dir. */
-const SAFE_ROLE = /^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$/;
+const SAFE_SHELF = /^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$/;
 
 /**
  * Max shelf-name length. A shelf becomes the `<shelf>.md` filename, so an
@@ -64,7 +64,7 @@ const SAFE_ROLE = /^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$/;
  * instead of a notebook error. 128 fits `shelf@owner-repo` plus a suffix and
  * stays well under typical 255-byte filename limits.
  */
-const MAX_ROLE_LEN = 128;
+const MAX_SHELF_LEN = 128;
 
 /**
  * Shelf names we refuse to own, case-insensitively. `README` is reserved because
@@ -74,19 +74,19 @@ const MAX_ROLE_LEN = 128;
  * `<shelf>` target (`nb add README …`, `nb vote README …`); `listShelves` separately
  * filters a `README.md` already on disk out of the index.
  */
-const RESERVED_ROLES = new Set(['readme']);
+const RESERVED_SHELVES = new Set(['readme']);
 
-export function assertSafeShelf(role: string): void {
-  if (role.length > MAX_ROLE_LEN) {
+export function assertSafeShelf(shelf: string): void {
+  if (shelf.length > MAX_SHELF_LEN) {
     throw new Error(
-      `invalid shelf name: ${JSON.stringify(role)} (too long: ${role.length} chars, max ${MAX_ROLE_LEN})`,
+      `invalid shelf name: ${JSON.stringify(shelf)} (too long: ${shelf.length} chars, max ${MAX_SHELF_LEN})`,
     );
   }
-  if (!SAFE_ROLE.test(role) || role.includes('..')) {
-    throw new Error(`invalid shelf name: ${JSON.stringify(role)} (allowed: letters, digits, . _ @ -)`);
+  if (!SAFE_SHELF.test(shelf) || shelf.includes('..')) {
+    throw new Error(`invalid shelf name: ${JSON.stringify(shelf)} (allowed: letters, digits, . _ @ -)`);
   }
-  if (RESERVED_ROLES.has(role.toLowerCase())) {
-    throw new Error(`invalid shelf name: ${JSON.stringify(role)} (reserved: a README.md is not a notebook)`);
+  if (RESERVED_SHELVES.has(shelf.toLowerCase())) {
+    throw new Error(`invalid shelf name: ${JSON.stringify(shelf)} (reserved: a README.md is not a notebook)`);
   }
 }
 
@@ -100,9 +100,9 @@ export function notebooksDir(): string {
     : join(homedir(), '.agent-notebook', 'notebooks');
 }
 
-function roleFile(dir: string, role: string): string {
-  assertSafeShelf(role);
-  return join(dir, `${role}.md`);
+function shelfFile(dir: string, shelf: string): string {
+  assertSafeShelf(shelf);
+  return join(dir, `${shelf}.md`);
 }
 
 function usageFile(dir: string): string {
@@ -179,8 +179,8 @@ export function isMetaLine(line: string): boolean {
  * lines (not a parsed map) lets a mutation re-emit unknown keys byte-for-byte
  * (forward-compatible), rewriting only the key it actually changes.
  */
-export function readMetaLines(dir: string, role: string): string[] {
-  const file = roleFile(dir, role);
+export function readMetaLines(dir: string, shelf: string): string[] {
+  const file = shelfFile(dir, shelf);
   if (!existsSync(file)) return [];
   const out: string[] = [];
   for (const line of readFileSync(file, 'utf-8').split('\n')) {
@@ -307,8 +307,8 @@ function sleep(ms: number): Promise<void> {
 // read / write
 // ---------------------------------------------------------------------------
 
-export function readEntries(dir: string, role: string): Entry[] {
-  const file = roleFile(dir, role);
+export function readEntries(dir: string, shelf: string): Entry[] {
+  const file = shelfFile(dir, shelf);
   if (!existsSync(file)) return [];
   const out: Entry[] = [];
   // Skip the leading `# key: value` metadata block (notebook descriptions etc.):
@@ -337,9 +337,9 @@ export function readEntries(dir: string, role: string): Entry[] {
  * metadata but no entries is still written (its block survives an emptied
  * notebook), and only a notebook with neither becomes the empty string.
  */
-function writeEntries(dir: string, role: string, entries: Entry[], metaLines?: string[]): void {
-  const file = roleFile(dir, role);
-  const meta = metaLines ?? readMetaLines(dir, role);
+function writeEntries(dir: string, shelf: string, entries: Entry[], metaLines?: string[]): void {
+  const file = shelfFile(dir, shelf);
+  const meta = metaLines ?? readMetaLines(dir, shelf);
   const lines = [...meta, ...entries.map(formatLine)];
   const body = lines.join('\n');
   const tmp = `${file}.tmp`;
@@ -482,10 +482,10 @@ export interface AddResult {
   sources?: [string, string];
 }
 
-export function addEntry(dir: string, role: string, lesson: string): Promise<AddResult> {
+export function addEntry(dir: string, shelf: string, lesson: string): Promise<AddResult> {
   return withLock(dir, () => {
     const text = sanitizeLesson(lesson);
-    const entries = readEntries(dir, role);
+    const entries = readEntries(dir, shelf);
     if (text === '') return { added: false, reason: 'empty', evicted: null, size: entries.length };
     const id = entryId(text);
     if (text.length > maxChars()) {
@@ -503,7 +503,7 @@ export function addEntry(dir: string, role: string, lesson: string): Promise<Add
     // Newcomer is protected: a full notebook admits it, ages its stalest line,
     // and evicts the lowest-scored one (never the newcomer). See enforceCap.
     const { kept, evicted } = enforceCap(entries, 1);
-    writeEntries(dir, role, kept);
+    writeEntries(dir, shelf, kept);
     return { added: true, reason: 'added', evicted: evicted[0] ?? null, size: kept.length, id };
   });
 }
@@ -575,11 +575,11 @@ export interface VoteResult {
   score: number;
 }
 
-export function vote(dir: string, role: string, selector: string, delta: number): Promise<VoteResult> {
+export function vote(dir: string, shelf: string, selector: string, delta: number): Promise<VoteResult> {
   return withLock(dir, () => {
     if (delta !== 1 && delta !== -1) throw new Error('vote delta must be +1 or -1');
-    const entries = readEntries(dir, role);
-    if (entries.length === 0) throw new Error(`notebook for shelf "${role}" is empty`);
+    const entries = readEntries(dir, shelf);
+    if (entries.length === 0) throw new Error(`notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     entries[idx].score += delta;
     // A vote is a touch: move the entry to the fresh END so storage stays in
@@ -588,14 +588,14 @@ export function vote(dir: string, role: string, selector: string, delta: number)
     // a lesson an eviction target, so moving it to fresh never shields it.
     const [touched] = entries.splice(idx, 1);
     entries.push(touched);
-    writeEntries(dir, role, entries);
+    writeEntries(dir, shelf, entries);
     return { text: touched.text, score: touched.score };
   });
 }
 
-export function merge(dir: string, role: string, selA: string, selB: string, mergedLesson: string): Promise<AddResult> {
+export function merge(dir: string, shelf: string, selA: string, selB: string, mergedLesson: string): Promise<AddResult> {
   return withLock(dir, () => {
-    const entries = readEntries(dir, role);
+    const entries = readEntries(dir, shelf);
     const ia = selectIndex(entries, selA);
     const ib = selectIndex(entries, selB);
     if (ia === ib) throw new Error('merge needs two different entries');
@@ -616,7 +616,7 @@ export function merge(dir: string, role: string, selA: string, selB: string, mer
     // harmless no-op here unless the cap was lowered, in which case the merged
     // lesson is protected like any newcomer.
     const { kept, evicted } = enforceCap(deduped, 1);
-    writeEntries(dir, role, kept);
+    writeEntries(dir, shelf, kept);
     return { added: true, reason: 'added', evicted: evicted[0] ?? null, size: kept.length, id: entryId(text), sources };
   });
 }
@@ -640,14 +640,14 @@ export interface SplitResult {
  */
 export function split(
   dir: string,
-  role: string,
+  shelf: string,
   selector: string,
   lessonA: string,
   lessonB: string,
 ): Promise<SplitResult> {
   return withLock(dir, () => {
-    const entries = readEntries(dir, role);
-    if (entries.length === 0) throw new Error(`notebook for shelf "${role}" is empty`);
+    const entries = readEntries(dir, shelf);
+    if (entries.length === 0) throw new Error(`notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     const original = entries[idx];
     const score = original.score; // both halves inherit the overloaded entry's score
@@ -682,18 +682,18 @@ export function split(
     // split grows by one (1 → 2); if that overflows a full notebook both halves
     // are protected (admitted) and the stalest OTHER line ages/evicts.
     const { kept } = enforceCap(remaining, 2);
-    writeEntries(dir, role, kept);
+    writeEntries(dir, shelf, kept);
     return { size: kept.length, source: entryId(original.text), ids: [entryId(textA), entryId(textB)] };
   });
 }
 
-export function remove(dir: string, role: string, selector: string): Promise<VoteResult> {
+export function remove(dir: string, shelf: string, selector: string): Promise<VoteResult> {
   return withLock(dir, () => {
-    const entries = readEntries(dir, role);
-    if (entries.length === 0) throw new Error(`notebook for shelf "${role}" is empty`);
+    const entries = readEntries(dir, shelf);
+    if (entries.length === 0) throw new Error(`notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     const [gone] = entries.splice(idx, 1);
-    writeEntries(dir, role, entries);
+    writeEntries(dir, shelf, entries);
     return { text: gone.text, score: gone.score };
   });
 }
@@ -716,8 +716,8 @@ export interface DescribeResult {
  * `null` if none is set. Read-only and lock-free — it only inspects the leading
  * metadata block.
  */
-export function getDescription(dir: string, role: string): string | null {
-  return getMetaValue(readMetaLines(dir, role), DESC_KEY);
+export function getDescription(dir: string, shelf: string): string | null {
+  return getMetaValue(readMetaLines(dir, shelf), DESC_KEY);
 }
 
 /**
@@ -729,17 +729,17 @@ export function getDescription(dir: string, role: string): string | null {
  * metadata key and all entries are preserved verbatim (round-trip), and the
  * write goes through the same durable, locked path as any mutation.
  */
-export function setDescription(dir: string, role: string, text: string): Promise<DescribeResult> {
+export function setDescription(dir: string, shelf: string, text: string): Promise<DescribeResult> {
   return withLock(dir, () => {
     const clean = sanitizeLesson(text);
     if (clean.length > maxChars()) {
       // Reject rather than truncate, exactly as add/merge/split do.
       throw new Error(`description is ${clean.length} chars; max is ${maxChars()} — shorten it`);
     }
-    const entries = readEntries(dir, role);
-    const meta = setMetaValue(readMetaLines(dir, role), DESC_KEY, clean);
-    writeEntries(dir, role, entries, meta);
-    return { role, shelf: role, desc: clean === '' ? null : clean, set: true };
+    const entries = readEntries(dir, shelf);
+    const meta = setMetaValue(readMetaLines(dir, shelf), DESC_KEY, clean);
+    writeEntries(dir, shelf, entries, meta);
+    return { role: shelf, shelf, desc: clean === '' ? null : clean, set: true };
   });
 }
 
@@ -770,20 +770,20 @@ export interface ShowResult {
  * regex-parsing the human output `render()` produces. An empty notebook yields
  * an empty `entries` array and a `null` description — never an error.
  */
-export function showJson(dir: string, role: string): ShowResult {
-  const ord = ordered(readEntries(dir, role));
+export function showJson(dir: string, shelf: string): ShowResult {
+  const ord = ordered(readEntries(dir, shelf));
   return {
-    role,
-    shelf: role,
-    description: getDescription(dir, role),
+    role: shelf,
+    shelf,
+    description: getDescription(dir, shelf),
     entries: ord.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text })),
   };
 }
 
 /** Render a notebook for injection / `show`: a stable id + score, highest score first (most useful on top). */
-export function render(dir: string, role: string): string {
-  const ord = ordered(readEntries(dir, role));
-  if (ord.length === 0) return `(notebook for shelf "${role}" is empty)`;
+export function render(dir: string, shelf: string): string {
+  const ord = ordered(readEntries(dir, shelf));
+  if (ord.length === 0) return `(notebook for shelf "${shelf}" is empty)`;
   return ord
     .map((x) => {
       const s = x.e.score >= 0 ? `+${x.e.score}` : `${x.e.score}`;
@@ -864,17 +864,17 @@ export interface NotebookListing {
 export function listNotebooks(dir: string, opts: ListOptions = {}): NotebookListing {
   const prefix = opts.prefix ?? '';
   const matches = listShelves(dir)
-    .filter((role) => role.startsWith(prefix))
-    .map((role): NotebookSummary => {
-      const entries = readEntries(dir, role);
-      const desc = getDescription(dir, role);
+    .filter((shelf) => shelf.startsWith(prefix))
+    .map((shelf): NotebookSummary => {
+      const entries = readEntries(dir, shelf);
+      const desc = getDescription(dir, shelf);
       // Fall back to the top-scored lesson only when there is no explicit
       // description; `ordered` is score-desc with an insertion-order tie-break.
       const auto = desc === null && entries.length > 0 ? ordered(entries)[0].e.text : null;
-      return { role, shelf: role, lessons: entries.length, desc, auto };
+      return { role: shelf, shelf, lessons: entries.length, desc, auto };
     })
     .filter((n) => n.lessons > 0 || n.desc !== null);
-  matches.sort((a, b) => b.lessons - a.lessons || a.role.localeCompare(b.role));
+  matches.sort((a, b) => b.lessons - a.lessons || a.shelf.localeCompare(b.shelf));
   const { limit } = opts;
   const rows = limit != null ? matches.slice(0, Math.max(0, limit)) : matches;
   return { dir, total: matches.length, rows };
@@ -952,9 +952,9 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
   };
 
   const groups: SearchGroup[] = [];
-  for (const role of listShelves(dir).filter((r) => r.startsWith(prefix))) {
-    const entries = readEntries(dir, role);
-    const desc = getDescription(dir, role);
+  for (const shelf of listShelves(dir).filter((r) => r.startsWith(prefix))) {
+    const entries = readEntries(dir, shelf);
+    const desc = getDescription(dir, shelf);
     // Tag each hit with its file-order index so equal (matched, score) hits keep a
     // stable, insertion-order sequence ([DP-3]); the index is dropped from output.
     const tagged = entries
@@ -964,8 +964,8 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
     if (tagged.length === 0 && !descMatched) continue;
     tagged.sort((a, b) => b.matched - a.matched || b.e.score - a.e.score || a.idx - b.idx);
     groups.push({
-      role,
-      shelf: role,
+      role: shelf,
+      shelf,
       desc,
       descMatched,
       hits: tagged.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text, matched: x.matched })),
@@ -979,7 +979,7 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
     const bm = b.hits[0]?.matched ?? 0;
     const as = a.hits.length ? a.hits[0].score : -Infinity;
     const bs = b.hits.length ? b.hits[0].score : -Infinity;
-    return bm - am || bs - as || a.role.localeCompare(b.role);
+    return bm - am || bs - as || a.shelf.localeCompare(b.shelf);
   });
   return { terms, groups };
 }
@@ -1011,7 +1011,7 @@ export interface UsageRow {
 }
 
 /**
- * The richer per-call fields `logUsage` records beyond ts/role/command/ok/ms.
+ * The richer per-call fields `logUsage` records beyond ts/shelf/command/ok/ms.
  * All optional: the caller fills only what its command produced (a `show` fills
  * none), and `session` defaults to `NB_SESSION`. This is deliberately a log
  * schema, not a notebook one — it leaves the lesson a plain string ([NG-004]),
@@ -1089,7 +1089,7 @@ function sanitizeUsageField(raw: string): string {
 
 export function logUsage(
   dir: string,
-  role: string,
+  shelf: string,
   command: string,
   ok: boolean,
   ms: number,
@@ -1098,7 +1098,7 @@ export function logUsage(
   try {
     mkdirSync(dir, { recursive: true });
     const file = usageFile(dir);
-    // `role`, `command`, and every meta field are caller-supplied (and
+    // `shelf`, `command`, and every meta field are caller-supplied (and
     // `session` comes from an env var a hook sets); sanitize each so a tab/CR/LF
     // cannot split the row or shift a column and mis-align parseUsage. The five
     // richer columns are appended AFTER the original five, so an old reader that
@@ -1112,7 +1112,7 @@ export function logUsage(
     const reason = sanitizeUsageField(meta.reason ?? '');
     const note = sanitizeUsageField(meta.note ?? '');
     const line =
-      `${new Date().toISOString()}\t${sanitizeUsageField(role)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
+      `${new Date().toISOString()}\t${sanitizeUsageField(shelf)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
       `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}`;
     const existing = existsSync(file) ? readFileSync(file, 'utf-8') : '';
     const lines = existing.split('\n').filter((l) => l !== '');
@@ -1161,12 +1161,12 @@ export function parseUsage(dir: string): UsageRow[] {
     // Positional parse, tolerant of old five-column rows: the richer columns
     // (session…evicted) are undefined on a pre-upgrade row and default to
     // blank/empty, so a ring written before this change still reads cleanly.
-    const [ts, role, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note] =
+    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note] =
       line.split('\t');
     if (!ts || !command) continue;
     rows.push({
       ts,
-      role: role ?? '',
+      role: shelf ?? '',
       command: command ?? '',
       ok: status === 'ok',
       ms: Number.parseInt((msRaw ?? '0').replace(/ms$/, ''), 10) || 0,
@@ -1220,7 +1220,7 @@ export interface Anomaly {
  *     agent's own query. This is the `failed-search → add` gap-sensor the demoted
  *     `nb search` fallback unlocks (the coverage signal deferred from #72). The
  *     `search` row is logged under shelf `-` (it spans notebooks), so this signal is
- *     observable only in an UNSCOPED `stats` report — `stats({role})` filters to one
+ *     observable only in an UNSCOPED `stats` report — `stats({shelf})` filters to one
  *     shelf and cannot pair the cross-notebook search with the add.
  */
 export interface DiagnosticSignal {
@@ -1305,7 +1305,7 @@ export interface StatsReport {
    * Notebook inventory (issue #40): per-shelf line counts and the `maxLines()`
    * cap, plus `notebookTotals`. Additive to the report from issue #18 / PR #24 —
    * `window`/`perCommand`/`anomalies` are unchanged. When `stats` is called with
-   * a `role`, only that shelf's notebook is listed (empty if it has none).
+   * a `shelf`, only that shelf's notebook is listed (empty if it has none).
    */
   notebooks: NotebookStat[];
   notebookTotals: NotebookTotals;
@@ -1396,23 +1396,23 @@ export function stats(
   // (1) loop: same shelf+command ≥ LOOP_N times inside LOOP_WINDOW_MS.
   const LOOP_N = clampInt(process.env.NB_LOOP_N, 10, 2, 1000);
   const LOOP_WINDOW_MS = clampInt(process.env.NB_LOOP_WINDOW_S, 120, 5, 86_400) * 1000;
-  const byRoleCmd = new Map<string, number[]>();
+  const byShelfCmd = new Map<string, number[]>();
   for (const r of recent) {
     const k = `${r.role}\u0000${r.command}`;
-    const arr = byRoleCmd.get(k) ?? [];
+    const arr = byShelfCmd.get(k) ?? [];
     arr.push(Date.parse(r.ts));
-    byRoleCmd.set(k, arr);
+    byShelfCmd.set(k, arr);
   }
-  for (const [k, tsList] of byRoleCmd) {
+  for (const [k, tsList] of byShelfCmd) {
     const sortedTs = tsList.sort((a, b) => a - b);
     for (let i = 0; i + LOOP_N - 1 < sortedTs.length; i++) {
       if (sortedTs[i + LOOP_N - 1] - sortedTs[i] <= LOOP_WINDOW_MS) {
-        const [role, command] = k.split('\u0000');
+        const [shelf, command] = k.split('\u0000');
         anomalies.push({
           kind: 'loop',
           command,
-          role,
-          shelf: role,
+          role: shelf,
+          shelf,
           detail: `${LOOP_N}+ calls within ${Math.round(LOOP_WINDOW_MS / 1000)}s — the agent may be stuck/looping`,
         });
         break;
@@ -1459,7 +1459,7 @@ export function stats(
 
   // (A) browse-without-use: a notebook `show`n in a session with no `vote` on any
   //     of its entries that session → the description may over-promise. The unit
-  //     is the (session, role) pair, so it needs NB_SESSION — rows with a blank
+  //     is the (session, shelf) pair, so it needs NB_SESSION — rows with a blank
   //     session can't be grouped and are skipped (FR-USAGE-002: "co-access is
   //     then not computed"). A vote anywhere in the session counts as use.
   {
@@ -1475,11 +1475,11 @@ export function stats(
     }
     for (const [k, v] of browsed) {
       if (!v.shown || v.voted) continue;
-      const [session, role] = k.split('\u0000');
+      const [session, shelf] = k.split('\u0000');
       signals.push({
         kind: 'browse-without-use',
-        role,
-        shelf: role,
+        role: shelf,
+        shelf,
         session,
         detail: `shown in session "${session}" but no entry was voted that session — the notebook's description may over-promise`,
       });
@@ -1520,7 +1520,7 @@ export function stats(
   {
     const ups = new Map<string, Set<string>>(); // id → sessions it was upvoted in
     const downs = new Map<string, Set<string>>(); // id → sessions it was downvoted in
-    const roleOf = new Map<string, string>(); // id → role, for reporting
+    const shelfOf = new Map<string, string>(); // id → shelf, for reporting
     for (const r of recent) {
       if (r.command !== 'vote' || r.session === '') continue;
       const target = r.outcome === 'up' ? ups : r.outcome === 'down' ? downs : null;
@@ -1529,7 +1529,7 @@ export function stats(
         let s = target.get(id);
         if (!s) { s = new Set(); target.set(id, s); }
         s.add(r.session);
-        roleOf.set(id, r.role);
+        shelfOf.set(id, r.role);
       }
     }
     for (const [id, upSessions] of ups) {
@@ -1540,8 +1540,8 @@ export function stats(
       if (!crossSession) continue;
       signals.push({
         kind: 'vote-reversal',
-        role: roleOf.get(id) ?? '',
-        shelf: roleOf.get(id) ?? '',
+        role: shelfOf.get(id) ?? '',
+        shelf: shelfOf.get(id) ?? '',
         entry: id,
         detail: `entry ${id} was upvoted and downvoted in different sessions — it may be correct but mis-aimed`,
       });
@@ -1598,7 +1598,7 @@ export function stats(
   signals.sort(
     (a, b) =>
       sigOrder[a.kind] - sigOrder[b.kind] ||
-      a.role.localeCompare(b.role) ||
+      a.shelf.localeCompare(b.shelf) ||
       (a.entry ?? a.session ?? '').localeCompare(b.entry ?? b.session ?? ''),
   );
 
@@ -1669,11 +1669,11 @@ export function stats(
   // mirroring the per-command filtering above. `cap` is read once so every row
   // and the total report the same value.
   const cap = maxLines();
-  const inventoryRoles = opts.role ? listShelves(dir).filter((r) => r === opts.role) : listShelves(dir);
-  const notebooks: NotebookStat[] = inventoryRoles.map((role) => ({
-    role,
-    shelf: role,
-    lines: readEntries(dir, role).length,
+  const inventoryShelves = opts.role ? listShelves(dir).filter((r) => r === opts.role) : listShelves(dir);
+  const notebooks: NotebookStat[] = inventoryShelves.map((shelf) => ({
+    role: shelf,
+    shelf,
+    lines: readEntries(dir, shelf).length,
     cap,
   }));
   const notebookTotals: NotebookTotals = {
