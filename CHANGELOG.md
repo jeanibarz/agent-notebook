@@ -23,12 +23,12 @@ versions are listed plainly.
   `nb show --json`, `nb list --json` rows, `nb search --json` groups, `nb describe --json`,
   and in `nb stats --json` the `notebooks[]`, `anomalies[]` and `signals[]` entries.
   `notebookTotals` gains `shelves` next to `roles`.
-- Library exports `listShelves` and `assertSafeShelf`.
+- Library exports `listShelves` and `assertSafeShelf`, and a `shelf` option for `stats()` (the `role` option still works).
 - `nb shelves`, an alias of `nb list`.
 
 ### Deprecated
-- The `role` / `roles` JSON keys, the `listRoles` and `assertSafeRole` exports, and the
-  `nb roles` command. They still work and behave exactly as before; they will be removed
+- The `role` / `roles` JSON keys, the `listRoles` and `assertSafeRole` exports, the `role`
+  option of `stats()`, and the `nb roles` command. They still work and behave exactly as before; they will be removed
   only in a later release marked BREAKING.
 
 ## [0.3.0] - 2026-10-29
