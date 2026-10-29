@@ -154,6 +154,20 @@ agent-notebook notebooks — 3 in /home/you/.agent-notebook/notebooks
 
 Notebooks are ordered **richest-first** (most lessons first — the ones most worth reusing), ties broken by name. A notebook with no `# desc:` falls back to its top-scored lesson, marked `(auto)`. A bare `prefix` filters by name using the `.` namespace convention (`nb list review.` shows just `review.*`), and `--limit N` bounds the rows (default 50) so the index stays a flat, cheap read as notebooks accumulate — the header then reads `showing N of total`. `nb list --json` emits the raw `NotebookListing` (`{ dir, total, rows[] }`) for a supervising agent. An empty (zero-lesson, no-description) notebook is hidden — it is phantom debris with nothing to discover — while a described-but-empty notebook is kept, because its description is still a deliberate trigger. It prints a friendly note to stderr and exits 0 when no notebook (or none matching the prefix) exists yet.
 
+### A full shelf is the normal state
+
+A shelf at its cap is not a problem to fix. Eviction and aging only run on a full shelf: each new lesson pushes out the lowest-scored one, and the stalest survivor loses a point, so lessons nobody votes for leave over time. That pressure is what keeps a shelf focused, and it is why the default cap is a tight 50 lines.
+
+Do not divide a shelf into two shelves because it is full. (This is not about `nb split`, which cuts one overloaded lesson in two.) Dividing makes two half-empty shelves where nothing is evicted, so stale lessons pile up again, and every new shelf lengthens the index that agents read to choose one. Many small shelves with overlapping descriptions are harder to choose from than one full shelf.
+
+Act only when a full shelf loses lessons that agents still use:
+
+- **Signal:** `nb stats` reports `eviction-while-still-voted` for the shelf repeatedly: a lesson was evicted with a score above the +1 a new lesson starts at. The [example janitor](docs/harness-setup.md#the-janitor) flags a shelf with 2 or more such evictions, or evicted lessons that were added again, within its window (30 days by default).
+- **If the shelf holds two groups of lessons needed in different situations**, divide it by situation into two shelves (see the namespace convention below).
+- **Otherwise**, merge near-duplicates (`nb merge`) to free lines, or raise `NB_MAX_LINES`.
+
+When the evicted lessons were never voted, or had fallen back to +1 or below through down votes or aging, eviction is working as intended: leave the shelf as it is. Merging small shelves whose lessons are needed together is also fine: it shortens the index.
+
 ### Grouping notebooks — the `.` namespace convention
 
 When one shelf collects lessons needed in different situations, split it into **namespaced shelves** named with a `.`-delimited prefix — `review.tests`, `review.correctness`, `review.security` — instead of one overloaded `review`, so each shelf again holds lessons used together and the prefix keeps the family together. It is a **naming convention only**: nothing new to configure.
@@ -200,7 +214,7 @@ A bare `prefix` scopes by name (`nb search lock review.`), and `--json` emits th
 `nb stats` also surfaces a handful of **free diagnostic signals** — memory-quality observations read straight from the usage log, costing no new agent action because each is already implied by behaviour the agent performs for its own reasons. They appear in the human table under a `signals:` section and in `--json` as `signals[]` (each a `DiagnosticSignal` = `{ kind, shelf, role, detail, session?, entry? }`). The kinds:
 
 - **browse-without-use** — a notebook was `show`n in a session but nothing in it was voted that session → its description may over-promise (it drew a look that didn't pay off).
-- **eviction-while-still-voted** — the cap evicted an entry (`add`'s `evicted` column) whose id had been voted on → the cap may be too tight for that shelf, a candidate to split the shelf.
+- **eviction-while-still-voted** — the cap evicted an entry (`add`'s `evicted` column) whose score was still above the +1 a new lesson starts at → a lesson agents found useful was lost. One occurrence is normal churn; repeated ones on the same shelf mean the cap is too tight for it (see [A full shelf is the normal state](#a-full-shelf-is-the-normal-state)).
 - **vote-reversal** — the same entry was upvoted in one session and downvoted in another → the lesson may be correct but *mis-aimed* (right in one context, wrong in another).
 - **failed-search** — a [`nb search`](#searching--the-demoted-fallback) returned nothing and a lesson was then `add`ed in the same session → a coverage gap the notebook did not hold, labelled by the agent's own query.
 

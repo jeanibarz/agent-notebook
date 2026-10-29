@@ -25,7 +25,8 @@ default (raise the cap with `NB_MAX_LINES`),
 ranked by the votes agents cast on them; when it is full a new lesson still goes
 in — the lowest-scored line is evicted and the stalest one ages a point, so a
 once-useful lesson that goes quiet eventually makes way (see
-[docs/eviction-and-aging.md](docs/eviction-and-aging.md)). There is one file
+[docs/eviction-and-aging.md](docs/eviction-and-aging.md)). A full shelf is the
+normal state: do not divide a shelf into two shelves because it is full. There is one file
 per shelf, and `nb list` shows the whole set —
 each with a one-line description of *when to open it* — so you can see what
 experience exists and open what fits, without having to name it in a search.
@@ -99,7 +100,7 @@ notebook so the next run of this task starts wiser:
    nb rm "<shelf>" <id> --reason wrong        # it was never true / it misled
    nb rm "<shelf>" <id> --reason obsolete      # it was true but no longer applies
    ```
-3. **Tidy, if the notebook is cluttered or full.**
+3. **Tidy, if lessons repeat each other or one line holds two lessons.**
    ```sh
    nb merge "<shelf>" <idA> <idB> "<one tighter lesson>" --reason duplicate
    nb split "<shelf>" <id> "<lesson A>" "<lesson B>" --reason overloaded

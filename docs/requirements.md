@@ -553,7 +553,8 @@ the usage ring alone — the entry-level columns of [FR-USAGE-002](#fr-usage-002
 new agent action and no field added to a lesson ([NG-004](#ng-004)). The three kinds:
 **browse-without-use** (a `show` of a notebook in a session with no `vote` on any of its
 entries that same session → the description may over-promise), **eviction-while-still-voted**
-(an `add` whose `evicted` id had been voted on → the cap may be too tight for that shelf),
+(an `add` whose evicted entry's final score was above the +1 a new entry starts at → a useful
+lesson was lost; evicting an entry at +1 or below is the cap working as intended),
 and **vote-reversal** (one entry id with an `up` vote in one session and a `down` vote in a
 **different** session → correct but mis-aimed). browse-without-use and vote-reversal are
 session-scoped and SHALL skip rows with a blank session ([FR-USAGE-002](#fr-usage-002):

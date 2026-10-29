@@ -23,7 +23,7 @@ You have a bounded, voted, plain-text memory via the `nb` command. Use it:
   2. `nb vote <shelf> <id> -1` for any shown to you that misled. (`vote` takes no
      `--reason`; record *why* on the `rm` below.)
   3. `nb rm <shelf> <id> --reason obsolete` for anything incorrect / no longer true.
-  4. `nb merge` / `nb split <shelf> …` only if a notebook is cluttered or full.
+  4. `nb merge` / `nb split <shelf> …` only if lessons repeat each other or one line holds two lessons.
   5. `nb add <shelf> "<=200-char lesson>"` — at most ONE genuinely new, non-obvious
      lesson, to the notebook it fits. Adding nothing is fine; never pad.
 

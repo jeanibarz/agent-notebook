@@ -44,7 +44,7 @@ const reason = [
   `  1. nb vote <shelf> <id> +1     — each lesson that actually helped`,
   `  2. nb vote <shelf> <id> -1     — each lesson shown to you that misled (vote takes no --reason)`,
   `  3. nb rm   <shelf> <id> --reason obsolete   — anything incorrect / no longer true`,
-  `  4. nb merge/split <shelf> …    — only if a notebook is cluttered or full`,
+  `  4. nb merge/split <shelf> …    — only if lessons repeat or a line holds two`,
   `  5. nb add  <shelf> "<=200-char lesson"   — at MOST one new, non-obvious lesson, to the notebook it fits (or none)`,
   `Do not pad to hit a quota — "nothing new worth storing" is a valid outcome. Then stop.`,
 ].join('\n');

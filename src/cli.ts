@@ -143,7 +143,8 @@ notes:
   - \`nb stats\` also surfaces free *diagnostic signals* read straight from the usage log (no
     extra agent action): browse-without-use (a notebook shown in a session but no entry voted
     that session — the description may over-promise), eviction-while-still-voted (the cap
-    evicted an entry that had been voted on — the cap may be too tight for that shelf), and
+    evicted an entry whose score was still above the
+    starting +1 — a useful lesson was lost), and
     vote-reversal (the same entry upvoted in one session and downvoted in another — correct but
     mis-aimed). They need \`NB_SESSION\` set to attribute calls to a session; \`--json\` includes
     them as \`signals[]\` in the StatsReport.

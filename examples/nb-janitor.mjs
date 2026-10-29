@@ -7,8 +7,9 @@
 //   file, the usage log, and (if NB_DIR is a git repo) the commit history, and
 //   reports four things, each with a concrete suggested `nb` command:
 //
-//     1. Cap pressure & reorg       — notebooks near the cap (50 lines by default) that will
-//                                      start evicting lessons; split candidates.
+//     1. Lessons lost to eviction   — shelves that evict lessons still scored above +1,
+//                                      or whose evicted lessons get added again.
+//                                      A full shelf alone is normal and not flagged.
 //     2. Near-duplicate SHELF names — likely typos / fragmentation (e.g.
 //                                      `build-and-test` vs `build-and-tests`) that split memory.
 //     3. Likely duplicate LESSONS   — paraphrase pairs the exact-match dedup let
@@ -20,7 +21,7 @@
 // WHY A SEPARATE, OFFLINE TOOL
 //   The notebook core stays dumb, deterministic, and offline (requirements.md
 //   DP-6): nothing clever runs inside an `nb` call. All the "intelligence" —
-//   fuzzy duplicate detection, reorg heuristics, trend analysis — lives here, in
+//   fuzzy duplicate detection, eviction-loss heuristics, trend analysis — lives here, in
 //   an offline janitor that only READS the plain files and PRINTS suggestions.
 //   It never edits a notebook; you (or an agent) run the suggested commands.
 //
@@ -127,9 +128,20 @@ function readUsage(dir) {
   try {
     for (const line of readFileSync(file, 'utf-8').split('\n')) {
       if (line.trim() === '') continue;
-      const [ts, shelf, command, status] = line.split('\t');
+      // columns: ts, shelf, command, status, ms, session, entry-ids, outcome, collided, evicted, …
+      const [ts, shelf, command, status, , , entries = '', outcome = '', , evicted = ''] = line.split('\t');
       if (!ts || !command) continue;
-      rows.push({ ts, t: Date.parse(ts), shelf: shelf ?? '', command, ok: status === 'ok' });
+      rows.push({
+        ts,
+        t: Date.parse(ts),
+        shelf: shelf ?? '',
+        command,
+        ok: status === 'ok',
+        entries: entries.split(',').filter((e) => e !== ''),
+        outcome,
+        evicted: evicted.split(':')[0] ?? '',
+        evictedScore: Number(evicted.split(':')[1] ?? 0),
+      });
     }
   } catch {
     /* ignore */
@@ -167,11 +179,30 @@ const usage = readUsage(NB_DIR);
 const history = gitHistory(NB_DIR, DAYS);
 const now = Date.now();
 
-// 1) cap pressure & reorg
-const capPressure = notebooks
-  .map((nb) => ({ shelf: nb.shelf, role: nb.shelf, lessons: nb.lessons.length, pct: Math.round((nb.lessons.length / MAX_LINES) * 100) }))
-  .filter((r) => r.pct >= 80)
-  .sort((a, b) => b.pct - a.pct);
+// 1) lessons lost to eviction. A full shelf is the normal state: eviction and
+//    aging only run at the cap, and they are what retire unused lessons. So
+//    fullness is reported for information only; a shelf is flagged when, within
+//    the window, it evicts lessons still scored above the +1 a new lesson starts
+//    at (net voted up, not aged out), or a lesson it
+//    evicted is added again (agents had to relearn it).
+const LOSS_MIN = 2; // one loss is ordinary churn; repeated losses are the signal
+const fullShelves = notebooks.filter((nb) => nb.lessons.length >= MAX_LINES).map((nb) => nb.shelf);
+const lossByShelf = {};
+const evictedBefore = {}; // shelf → ids evicted earlier in the log
+for (const r of usage) {
+  if (r.command !== 'add') continue;
+  const inWindow = now - r.t <= DAYS * 86400000;
+  const seen = (evictedBefore[r.shelf] ??= new Set());
+  const loss = (lossByShelf[r.shelf] ??= { shelf: r.shelf, stillVoted: 0, relearned: 0 });
+  if (inWindow && r.outcome === 'accepted' && r.entries.some((id) => seen.has(id))) loss.relearned++;
+  if (r.evicted !== '') {
+    if (inWindow && r.evictedScore > 1) loss.stillVoted++;
+    seen.add(r.evicted);
+  }
+}
+const lostLessons = Object.values(lossByShelf)
+  .filter((l) => l.stillVoted + l.relearned >= LOSS_MIN)
+  .sort((a, b) => b.stillVoted + b.relearned - (a.stillVoted + a.relearned));
 
 // 2) near-duplicate shelf names
 const shelfDups = [];
@@ -222,7 +253,8 @@ const report = {
   dir: NB_DIR,
   notebooks: notebooks.length,
   totalLessons: notebooks.reduce((s, n) => s + n.lessons.length, 0),
-  capPressure,
+  fullShelves,
+  lostLessons,
   shelfDups,
   roleDups: shelfDups, // deprecated alias of shelfDups
   lessonDups,
@@ -242,12 +274,16 @@ const out = [];
 const H = (s) => out.push('', `── ${s} ` + '─'.repeat(Math.max(0, 60 - s.length)));
 out.push(`nb-janitor — ${report.notebooks} notebooks, ${report.totalLessons} lessons in ${NB_DIR}`);
 
-H('1. Cap pressure & reorg');
-if (capPressure.length === 0) out.push('  ✅ no notebook is near the cap.');
+H(`1. Lessons lost to eviction (last ${DAYS}d)`);
+out.push(
+  `  ${fullShelves.length} of ${notebooks.length} shelves are full (${MAX_LINES} lines) — normal: eviction keeps them focused.`,
+);
+if (lostLessons.length === 0) out.push('  ✅ no shelf repeatedly evicts lessons scored above +1 or relearns evicted ones.');
 else
-  for (const r of capPressure) {
-    out.push(`  ⚠️  ${r.shelf}: ${r.lessons}/${MAX_LINES} (${r.pct}%) — about to evict lessons.`);
-    out.push(`      → split concerns into namespaces: move lessons to new shelves ${r.shelf}.<concern> (nb split cuts one lesson in two)`);
+  for (const l of lostLessons) {
+    out.push(`  ⚠️  ${l.shelf}: ${l.stillVoted} lesson(s) evicted with a score above +1, ${l.relearned} evicted lesson(s) added again.`);
+    out.push(`      → nb show ${l.shelf}: if its lessons serve two different situations, split it by situation;`);
+    out.push(`        otherwise nb merge near-duplicates to free lines, or raise NB_MAX_LINES.`);
   }
 
 H('2. Near-duplicate shelf names (fragmented memory)');

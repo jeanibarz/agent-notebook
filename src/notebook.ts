@@ -1211,8 +1211,9 @@ export interface Anomaly {
  * The three kinds, all implied by behavior the agent already performs:
  *   - `browse-without-use`: a notebook was `show`n in a session but nothing in it
  *     was voted that session → its description may over-promise.
- *   - `eviction-while-still-voted`: the cap evicted an entry that had been voted
- *     on → the cap may be too tight for that shelf (a candidate to split).
+ *   - `eviction-while-still-voted`: the cap evicted an entry whose score was still
+ *     above the +1 a new lesson starts at → a lesson agents found useful was lost. A full shelf is normal; only
+ *     repeated still-voted evictions suggest the cap is too tight for that shelf.
  *   - `vote-reversal`: the same entry was upvoted in one session and downvoted in
  *     another → the lesson may be correct but mis-aimed.
  *   - `failed-search`: a `search` returned nothing and a lesson was then added in the
@@ -1494,20 +1495,16 @@ export function stats(
   }
 
   // (B) eviction-while-still-voted: an `add` evicted an entry (its `evicted`
-  //     column is `<id>:<score>`) whose id was voted on → the cap may be too
-  //     tight for that shelf (a candidate to split the shelf).
+  //     column is `<id>:<score>`) whose final score was still above the +1
+  //     a new lesson starts at → a lesson agents voted up, and that had not aged
+  //     or been voted back down, was lost. Evicting an entry at +1 or below is the
+  //     cap doing its job.
   {
-    const votedIds = new Set<string>();
-    for (const r of recent) {
-      if (r.command === 'vote' && (r.outcome === 'up' || r.outcome === 'down')) {
-        for (const id of r.entries) votedIds.add(id);
-      }
-    }
     const seen = new Set<string>(); // dedup repeat evictions of the same shelf+id
     for (const r of recent) {
       if (r.command !== 'add' || r.evicted === '') continue;
-      const evictedId = r.evicted.split(':')[0];
-      if (!evictedId || !votedIds.has(evictedId)) continue;
+      const [evictedId, scoreRaw] = r.evicted.split(':');
+      if (!evictedId || !(Number(scoreRaw) > 1)) continue;
       const k = `${r.role}\u0000${evictedId}`;
       if (seen.has(k)) continue;
       seen.add(k);
@@ -1516,7 +1513,7 @@ export function stats(
         role: r.role,
         shelf: r.role,
         entry: evictedId,
-        detail: `entry ${evictedId} was evicted by the cap but had been voted on — the cap may be too tight for shelf "${r.role}" (consider splitting it)`,
+        detail: `entry ${evictedId} was evicted by the cap with score ${r.evicted.split(':')[1]} — if this repeats, the cap may be too tight for shelf "${r.role}"`,
       });
     }
   }

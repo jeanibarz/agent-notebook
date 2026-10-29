@@ -222,7 +222,7 @@ What each section diagnoses, and why it matters:
 
 | Section | Signal | What you do about it |
 |---|---|---|
-| **1. Cap pressure & reorg** | a notebook ≥ 80% of the cap (50 lines by default) is about to start evicting lessons | split its concerns into [namespaced shelves](../README.md#grouping-notebooks--the--namespace-convention) so no single notebook thrashes |
+| **1. Lessons lost to eviction** | a shelf whose evictions repeatedly remove lessons still scored above the starting +1, or whose evicted lessons get added again. It also counts full shelves, for information only: [a full shelf is the normal state](../README.md#a-full-shelf-is-the-normal-state) | open the shelf: if its lessons serve two different situations, divide it by situation into [namespaced shelves](../README.md#grouping-notebooks--the--namespace-convention); otherwise merge near-duplicates or raise `NB_MAX_LINES` |
 | **2. Near-duplicate shelves** | `build-and-test` vs `build-and-tests` — the same memory fragmented by a typo | consolidate the lessons under one shelf, retire the orphan |
 | **3. Duplicate lessons** | paraphrase pairs the exact-match dedup let through (a *recall* problem — the agent re-derived something it already knew) | `nb merge` the real duplicates into one tighter line |
 | **4. Volume & silence** | how the store grew over time (from git), and shelves that went quiet | spot a shelf that broke/was abandoned, or a healthy "notebook is sufficient" plateau |

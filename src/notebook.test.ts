@@ -976,16 +976,22 @@ describe('diagnostic signals (issue #72)', () => {
     expect(rep.signals.some((s) => s.kind === 'browse-without-use')).toBe(false);
   });
 
-  test('eviction-while-still-voted: the cap evicted an entry that had been voted on', () => {
-    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', entries: ['vic777'], outcome: 'up' });
-    logUsage(dir, 'patcher', 'add', true, 2, { session: 's2', entries: ['new999'], outcome: 'accepted', evicted: 'vic777:0' });
+  test('eviction-while-still-voted: the cap evicted an entry whose score was still above the starting +1', () => {
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's2', entries: ['new999'], outcome: 'accepted', evicted: 'vic777:2' });
     const rep = stats(dir, { now: Date.now() });
     const sig = rep.signals.find((s) => s.kind === 'eviction-while-still-voted');
     expect(sig).toMatchObject({ role: 'patcher', entry: 'vic777' });
   });
 
-  test('eviction-while-still-voted: evicting a never-voted entry is NOT flagged', () => {
-    logUsage(dir, 'patcher', 'add', true, 2, { session: 's1', entries: ['new999'], outcome: 'accepted', evicted: 'unv000:0' });
+  test('eviction-while-still-voted: an entry upvoted then voted back down is NOT flagged (the cap doing its job)', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', entries: ['bad111'], outcome: 'up' });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's2', entries: ['new999'], outcome: 'accepted', evicted: 'bad111:-1' });
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.signals.some((s) => s.kind === 'eviction-while-still-voted')).toBe(false);
+  });
+
+  test('eviction-while-still-voted: evicting a never-voted entry (still at the starting +1) is NOT flagged', () => {
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's1', entries: ['new999'], outcome: 'accepted', evicted: 'unv000:1' });
     const rep = stats(dir, { now: Date.now() });
     expect(rep.signals.some((s) => s.kind === 'eviction-while-still-voted')).toBe(false);
   });

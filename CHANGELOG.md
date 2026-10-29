@@ -22,6 +22,19 @@ versions are listed plainly.
   (`family.situation`). The dot builds no hierarchy, and deeper names split lessons that
   are needed together into small shelves. Docs only; no behaviour change.
 
+- **A full shelf is the normal state; do not split a shelf because it is full.** Eviction
+  and aging only run at the cap, and they are what retire unused lessons; splitting on
+  size multiplies half-empty shelves and makes the index harder to choose from. The README
+  gains a section on when to act: only when a full shelf keeps evicting lessons still
+  scored above the starting +1, or relearns evicted ones. The `eviction-while-still-voted` signal of `nb stats`
+  now counts only lessons evicted with a score above the +1 a new lesson starts at (evicting
+  a lesson that was never voted, or that fell back to +1 or below, is the cap working),
+  and its detail no longer suggests splitting.
+- `examples/nb-janitor.mjs`: section 1 is now "Lessons lost to eviction". It flags a shelf
+  with 2 or more evictions of lessons scored above +1 or re-added evicted lessons in the window, and
+  reports how many shelves are full for information only. The `--json` report replaces
+  `capPressure` with `fullShelves` and `lostLessons`.
+
 ### Added
 - `shelf` key next to `role` (same value) on every JSON object that carried `role`:
   `nb show --json`, `nb list --json` rows, `nb search --json` groups, `nb describe --json`,
