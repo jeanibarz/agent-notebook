@@ -1,6 +1,6 @@
-// Agent Notebook — a bounded, voted, plain-text memory per agent role.
+// Agent Notebook — a bounded, voted, plain-text memory, one file per shelf (a group of lessons that surface together).
 //
-// The design in one breath: each role keeps a notebook file of one-line
+// The design in one breath: each shelf is a notebook file of one-line
 // lessons, hard-capped so it can never rot. One entry = one line
 // `<score>\t<lesson>`; at most MAX_LINES entries; each lesson at most
 // MAX_CHARS characters. The agent votes +1/-1 at task end. A touch (a vote of
@@ -55,40 +55,43 @@ export interface Entry {
   text: string;
 }
 
-/** A role name is a path segment; reject anything that could escape the notebooks dir. */
+/** A shelf name is a path segment; reject anything that could escape the notebooks dir. */
 const SAFE_ROLE = /^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$/;
 
 /**
- * Max role-name length. A role becomes the `<role>.md` filename, so an
+ * Max shelf-name length. A shelf becomes the `<shelf>.md` filename, so an
  * unbounded name hits the filesystem's `ENAMETOOLONG` with a bare Node stack
- * instead of a notebook error. 128 fits `role@owner-repo` plus a suffix and
+ * instead of a notebook error. 128 fits `shelf@owner-repo` plus a suffix and
  * stays well under typical 255-byte filename limits.
  */
 const MAX_ROLE_LEN = 128;
 
 /**
- * Role names we refuse to own, case-insensitively. `README` is reserved because
+ * Shelf names we refuse to own, case-insensitively. `README` is reserved because
  * a `README.md` is the conventional backup/git artifact in a notebook folder, not
- * a notebook — treating it as a role would list, search, count and (worse) let a
+ * a notebook — treating it as a shelf would list, search, count and (worse) let a
  * write command rewrite it (issue #90). Reserving the name here rejects a direct
- * `<role>` target (`nb add README …`, `nb vote README …`); `listRoles` separately
+ * `<shelf>` target (`nb add README …`, `nb vote README …`); `listShelves` separately
  * filters a `README.md` already on disk out of the index.
  */
 const RESERVED_ROLES = new Set(['readme']);
 
-export function assertSafeRole(role: string): void {
+export function assertSafeShelf(role: string): void {
   if (role.length > MAX_ROLE_LEN) {
     throw new Error(
-      `invalid role name: ${JSON.stringify(role)} (too long: ${role.length} chars, max ${MAX_ROLE_LEN})`,
+      `invalid shelf name: ${JSON.stringify(role)} (too long: ${role.length} chars, max ${MAX_ROLE_LEN})`,
     );
   }
   if (!SAFE_ROLE.test(role) || role.includes('..')) {
-    throw new Error(`invalid role name: ${JSON.stringify(role)} (allowed: letters, digits, . _ @ -)`);
+    throw new Error(`invalid shelf name: ${JSON.stringify(role)} (allowed: letters, digits, . _ @ -)`);
   }
   if (RESERVED_ROLES.has(role.toLowerCase())) {
-    throw new Error(`invalid role name: ${JSON.stringify(role)} (reserved: a README.md is not a notebook)`);
+    throw new Error(`invalid shelf name: ${JSON.stringify(role)} (reserved: a README.md is not a notebook)`);
   }
 }
+
+/** @deprecated use assertSafeShelf — same function, kept so existing callers keep working. */
+export const assertSafeRole = assertSafeShelf;
 
 /** The notebooks directory. `NB_DIR` overrides; default `~/.agent-notebook/notebooks`. */
 export function notebooksDir(): string {
@@ -98,7 +101,7 @@ export function notebooksDir(): string {
 }
 
 function roleFile(dir: string, role: string): string {
-  assertSafeRole(role);
+  assertSafeShelf(role);
   return join(dir, `${role}.md`);
 }
 
@@ -168,7 +171,7 @@ export function isMetaLine(line: string): boolean {
 }
 
 /**
- * The LEADING block of metadata lines of a role file, verbatim (the raw strings,
+ * The LEADING block of metadata lines of a shelf file, verbatim (the raw strings,
  * `#` included). Only the maximal run of `# key: value` lines at the very top is
  * metadata; the first non-metadata line (an entry) ends the block, so a `# key:`
  * line that somehow sits *among* entries stays an ordinary score-0 lesson
@@ -199,7 +202,7 @@ export function getMetaValue(lines: string[], key: string): string | null {
 /**
  * Return `lines` with metadata `key` set to `value`, order preserved: an existing
  * key is rewritten in place, a new key is appended. An empty `value` REMOVES the
- * key (so `nb describe <role> ""` clears the description rather than storing an
+ * key (so `nb describe <shelf> ""` clears the description rather than storing an
  * empty `# desc:` line). Only the touched key is re-canonicalized to `# key:
  * value`; every other line is left verbatim, so unknown keys round-trip
  * unchanged ([NG-004] forward-compatibility).
@@ -263,7 +266,7 @@ async function withLock<T>(dir: string, fn: () => T): Promise<T> {
 
 /**
  * Reap orphaned notebook temp files left behind by a crashed writer. A durable
- * notebook write goes to `<role>.md.tmp` and is renamed over `<role>.md`
+ * notebook write goes to `<shelf>.md.tmp` and is renamed over `<shelf>.md`
  * (writeFileDurable); if the process dies between creating that temp and the
  * rename, the `.md.tmp` orphan lingers in the notebooks dir forever — nothing
  * else removes it, and it clutters directory listings, backups, and a
@@ -274,7 +277,7 @@ async function withLock<T>(dir: string, fn: () => T): Promise<T> {
  *   - only `*.md.tmp` — never a real `*.md` notebook, never the usage log or its
  *     per-pid `.nb-usage.log.<pid>.tmp` temp (a dotfile, excluded below too);
  *   - only the top level of `dir` (readdirSync is not recursive);
- *   - never a dotfile — a role name never starts with `.` (assertSafeRole), so a
+ *   - never a dotfile — a shelf name never starts with `.` (assertSafeShelf), so a
  *     `.x.md.tmp` is not ours to remove.
  * Best-effort: any failure (a racing unlink, a permission error) is swallowed so
  * a stale temp can never block a real mutation.
@@ -576,7 +579,7 @@ export function vote(dir: string, role: string, selector: string, delta: number)
   return withLock(dir, () => {
     if (delta !== 1 && delta !== -1) throw new Error('vote delta must be +1 or -1');
     const entries = readEntries(dir, role);
-    if (entries.length === 0) throw new Error(`notebook for role "${role}" is empty`);
+    if (entries.length === 0) throw new Error(`notebook for shelf "${role}" is empty`);
     const idx = selectIndex(entries, selector);
     entries[idx].score += delta;
     // A vote is a touch: move the entry to the fresh END so storage stays in
@@ -644,7 +647,7 @@ export function split(
 ): Promise<SplitResult> {
   return withLock(dir, () => {
     const entries = readEntries(dir, role);
-    if (entries.length === 0) throw new Error(`notebook for role "${role}" is empty`);
+    if (entries.length === 0) throw new Error(`notebook for shelf "${role}" is empty`);
     const idx = selectIndex(entries, selector);
     const original = entries[idx];
     const score = original.score; // both halves inherit the overloaded entry's score
@@ -687,7 +690,7 @@ export function split(
 export function remove(dir: string, role: string, selector: string): Promise<VoteResult> {
   return withLock(dir, () => {
     const entries = readEntries(dir, role);
-    if (entries.length === 0) throw new Error(`notebook for role "${role}" is empty`);
+    if (entries.length === 0) throw new Error(`notebook for shelf "${role}" is empty`);
     const idx = selectIndex(entries, selector);
     const [gone] = entries.splice(idx, 1);
     writeEntries(dir, role, entries);
@@ -699,7 +702,9 @@ export function remove(dir: string, role: string, selector: string): Promise<Vot
 export const DESC_KEY = 'desc';
 
 export interface DescribeResult {
+  /** @deprecated use shelf */
   role: string;
+  shelf: string;
   /** The description after the call: the new text when set, or the current text when read. `null` when none is set. */
   desc: string | null;
   /** True when this call wrote a new description; false for a read-only query. */
@@ -734,7 +739,7 @@ export function setDescription(dir: string, role: string, text: string): Promise
     const entries = readEntries(dir, role);
     const meta = setMetaValue(readMetaLines(dir, role), DESC_KEY, clean);
     writeEntries(dir, role, entries, meta);
-    return { role, desc: clean === '' ? null : clean, set: true };
+    return { role, shelf: role, desc: clean === '' ? null : clean, set: true };
   });
 }
 
@@ -746,18 +751,20 @@ export interface ShowEntry {
 }
 
 /**
- * The structured form of `nb show`: the role, its one-line description (or
+ * The structured form of `nb show`: the shelf, its one-line description (or
  * `null` when none is set), and its entries highest-score-first with an
  * insertion-order tie-break — the exact order `render()` prints.
  */
 export interface ShowResult {
+  /** @deprecated use shelf */
   role: string;
+  shelf: string;
   description: string | null;
   entries: ShowEntry[];
 }
 
 /**
- * The machine-readable sibling of `render()`, for `nb show <role> --json`. It
+ * The machine-readable sibling of `render()`, for `nb show <shelf> --json`. It
  * reuses the same `ordered(readEntries(...))` ordering and the same stable
  * `entryId`, so an agent recovers each entry's id/score/text without
  * regex-parsing the human output `render()` produces. An empty notebook yields
@@ -767,6 +774,7 @@ export function showJson(dir: string, role: string): ShowResult {
   const ord = ordered(readEntries(dir, role));
   return {
     role,
+    shelf: role,
     description: getDescription(dir, role),
     entries: ord.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text })),
   };
@@ -775,7 +783,7 @@ export function showJson(dir: string, role: string): ShowResult {
 /** Render a notebook for injection / `show`: a stable id + score, highest score first (most useful on top). */
 export function render(dir: string, role: string): string {
   const ord = ordered(readEntries(dir, role));
-  if (ord.length === 0) return `(notebook for role "${role}" is empty)`;
+  if (ord.length === 0) return `(notebook for shelf "${role}" is empty)`;
   return ord
     .map((x) => {
       const s = x.e.score >= 0 ? `+${x.e.score}` : `${x.e.score}`;
@@ -785,17 +793,17 @@ export function render(dir: string, role: string): string {
 }
 
 /**
- * The roles that have a notebook, as sorted file stems. A role file is
- * `<role>.md`; the sidecar `.nb-usage.log` and `.nb.lock` share the directory
+ * The shelves that have a notebook, as sorted file stems. A shelf file is
+ * `<shelf>.md`; the sidecar `.nb-usage.log` and `.nb.lock` share the directory
  * and are excluded by keeping only non-dotfile `*.md` entries (dotfiles like a
- * hypothetical `.foo.md` are skipped too — a role name never starts with `.`,
- * per `assertSafeRole`). A `README.md` (case-insensitive) is excluded too: it is
+ * hypothetical `.foo.md` are skipped too — a shelf name never starts with `.`,
+ * per `assertSafeShelf`). A `README.md` (case-insensitive) is excluded too: it is
  * the conventional git/backup artifact in a notebook folder, not a notebook
  * (issue #90) — the reserved name keeps a write command from ever creating one.
- * An absent/empty notebooks dir yields `[]` (not an error), so `nb roles` can
- * report "no roles yet" and exit 0 on a clean machine.
+ * An absent/empty notebooks dir yields `[]` (not an error), so `nb shelves` can
+ * report "no shelves yet" and exit 0 on a clean machine.
  */
-export function listRoles(dir: string): string[] {
+export function listShelves(dir: string): string[] {
   let names: string[];
   try {
     names = readdirSync(dir);
@@ -808,9 +816,14 @@ export function listRoles(dir: string): string[] {
     .sort();
 }
 
+/** @deprecated use listShelves — same function, kept so existing callers keep working. */
+export const listRoles = listShelves;
+
 /** One row of the notebook index (`nb list`): a notebook's name, lesson count, and the one-line trigger used to decide whether to open it. */
 export interface NotebookSummary {
+  /** @deprecated use shelf */
   role: string;
+  shelf: string;
   /** Stored lesson count (what the cap counts and `trim` evicts against); `0` for a described-but-empty notebook. */
   lessons: number;
   /** The explicit `# desc:` description, or `null` when none is set. */
@@ -820,7 +833,7 @@ export interface NotebookSummary {
 }
 
 export interface ListOptions {
-  /** Keep only notebooks whose role name starts with this prefix (the `.` namespace convention, e.g. `review.`). An empty/absent prefix keeps all. */
+  /** Keep only notebooks whose shelf name starts with this prefix (the `.` namespace convention, e.g. `review.`). An empty/absent prefix keeps all. */
   prefix?: string;
   /** Cap the number of rows returned (richest-first), so discovery cost stays flat as notebooks grow. `undefined` → no cap; a negative cap is treated as `0`. */
   limit?: number;
@@ -844,13 +857,13 @@ export interface NotebookListing {
  * convention; `limit` bounds the output.
  *
  * A zero-lesson notebook with NO description is hidden: it is phantom debris (an
- * `nb describe <role> ""` that left an empty file, or an `rm` of the last
+ * `nb describe <shelf> ""` that left an empty file, or an `rm` of the last
  * lesson) with nothing to discover. A described-but-empty notebook is a
  * deliberate trigger and is kept, so an agent can see a placeholder it set up.
  */
 export function listNotebooks(dir: string, opts: ListOptions = {}): NotebookListing {
   const prefix = opts.prefix ?? '';
-  const matches = listRoles(dir)
+  const matches = listShelves(dir)
     .filter((role) => role.startsWith(prefix))
     .map((role): NotebookSummary => {
       const entries = readEntries(dir, role);
@@ -858,7 +871,7 @@ export function listNotebooks(dir: string, opts: ListOptions = {}): NotebookList
       // Fall back to the top-scored lesson only when there is no explicit
       // description; `ordered` is score-desc with an insertion-order tie-break.
       const auto = desc === null && entries.length > 0 ? ordered(entries)[0].e.text : null;
-      return { role, lessons: entries.length, desc, auto };
+      return { role, shelf: role, lessons: entries.length, desc, auto };
     })
     .filter((n) => n.lessons > 0 || n.desc !== null);
   matches.sort((a, b) => b.lessons - a.lessons || a.role.localeCompare(b.role));
@@ -885,7 +898,9 @@ export interface SearchHit {
 
 /** One notebook's slice of a `search` result: its matching lessons (and whether the query hit its description). */
 export interface SearchGroup {
+  /** @deprecated use shelf */
   role: string;
+  shelf: string;
   /** The notebook's `# desc:` description (also searched), or `null` when none is set. */
   desc: string | null;
   /** True when the query matched the notebook's description — so a notebook surfaces even with zero entry hits. */
@@ -895,7 +910,7 @@ export interface SearchGroup {
 }
 
 export interface SearchOptions {
-  /** Scope to notebooks whose role name starts with this prefix (the `.` namespace convention). Empty/absent → all. */
+  /** Scope to notebooks whose shelf name starts with this prefix (the `.` namespace convention). Empty/absent → all. */
   prefix?: string;
   /** OR-over-terms instead of the default AND (a hit needs every term). */
   any?: boolean;
@@ -923,7 +938,7 @@ export interface SearchResult {
  * notebook whose description matches surfaces (with any entry hits) even when no
  * single entry contains the terms. Hits rank by terms-matched, then score, then
  * file order; groups rank by their best hit (description-only matches last), ties
- * by role name — all deterministic.
+ * by shelf name — all deterministic.
  */
 export function search(dir: string, query: string, opts: SearchOptions = {}): SearchResult {
   const terms = query.toLowerCase().split(/\s+/).filter((t) => t !== '');
@@ -937,7 +952,7 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
   };
 
   const groups: SearchGroup[] = [];
-  for (const role of listRoles(dir).filter((r) => r.startsWith(prefix))) {
+  for (const role of listShelves(dir).filter((r) => r.startsWith(prefix))) {
     const entries = readEntries(dir, role);
     const desc = getDescription(dir, role);
     // Tag each hit with its file-order index so equal (matched, score) hits keep a
@@ -950,6 +965,7 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
     tagged.sort((a, b) => b.matched - a.matched || b.e.score - a.e.score || a.idx - b.idx);
     groups.push({
       role,
+      shelf: role,
       desc,
       descMatched,
       hits: tagged.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text, matched: x.matched })),
@@ -957,7 +973,7 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
   }
 
   // Most-relevant notebook first: best hit's term-match count, then its score; a
-  // description-only match (no hits) ranks as 0 and sorts last. Ties by role name.
+  // description-only match (no hits) ranks as 0 and sorts last. Ties by shelf name.
   groups.sort((a, b) => {
     const am = a.hits[0]?.matched ?? 0;
     const bm = b.hits[0]?.matched ?? 0;
@@ -1063,7 +1079,7 @@ export function normalizeReason(
 /**
  * Collapse the TSV-structural characters (tab, CR, LF) in a single usage-log
  * field to spaces so an attacker-influenced value cannot inject an extra
- * column or an extra row. A well-formed field — a role like `patcher`, a
+ * column or an extra row. A well-formed field — a shelf like `patcher`, a
  * command like `add`, an `NB_SESSION` like `task-42` — contains none of these,
  * so it is left byte-identical.
  */
@@ -1179,7 +1195,9 @@ export interface CommandStat {
 export interface Anomaly {
   kind: 'loop' | 'went-silent' | 'high-error-rate';
   command: string;
+  /** @deprecated use shelf */
   role?: string;
+  shelf?: string;
   detail: string;
 }
 
@@ -1187,28 +1205,30 @@ export interface Anomaly {
  * A *free diagnostic signal* (issue #72): a memory-quality observation read
  * straight from the usage ring, costing no new agent action. Unlike `Anomaly`
  * (command health) this is about the notebook itself — its descriptions, cap
- * pressure, and whether a lesson is aimed right — so it carries a `role` (the
+ * pressure, and whether a lesson is aimed right — so it carries a `shelf` (the
  * notebook) and optionally the `entry` id or `session` the signal concerns.
  *
  * The three kinds, all implied by behavior the agent already performs:
  *   - `browse-without-use`: a notebook was `show`n in a session but nothing in it
  *     was voted that session → its description may over-promise.
  *   - `eviction-while-still-voted`: the cap evicted an entry that had been voted
- *     on → the cap may be too tight for that role (a candidate to split).
+ *     on → the cap may be too tight for that shelf (a candidate to split).
  *   - `vote-reversal`: the same entry was upvoted in one session and downvoted in
  *     another → the lesson may be correct but mis-aimed.
  *   - `failed-search`: a `search` returned nothing and a lesson was then added in the
  *     same session (issue #82) → a coverage gap the notebook lacked, labelled by the
  *     agent's own query. This is the `failed-search → add` gap-sensor the demoted
  *     `nb search` fallback unlocks (the coverage signal deferred from #72). The
- *     `search` row is logged under role `-` (it spans notebooks), so this signal is
+ *     `search` row is logged under shelf `-` (it spans notebooks), so this signal is
  *     observable only in an UNSCOPED `stats` report — `stats({role})` filters to one
- *     role and cannot pair the cross-notebook search with the add.
+ *     shelf and cannot pair the cross-notebook search with the add.
  */
 export interface DiagnosticSignal {
   kind: 'browse-without-use' | 'eviction-while-still-voted' | 'vote-reversal' | 'failed-search';
-  /** The notebook role the signal concerns. */
+  /** @deprecated use shelf */
   role: string;
+  /** The shelf the signal concerns. */
+  shelf: string;
   /** Human-readable one-line explanation. */
   detail: string;
   /** `browse-without-use`: the session the notebook was browsed in. */
@@ -1218,20 +1238,24 @@ export interface DiagnosticSignal {
 }
 
 /**
- * One role's notebook occupancy. `lines` is the stored lesson count (what the
+ * One shelf's notebook occupancy. `lines` is the stored lesson count (what the
  * cap counts and `enforceCap` evicts against); `cap` is `maxLines()` at call
- * time. A role is "about to evict" when `lines` approaches `cap`; `lines === cap`
+ * time. A shelf is "about to evict" when `lines` approaches `cap`; `lines === cap`
  * means the next distinct add evicts the lowest-scored lesson (and ages the
  * stalest survivor), so a supervisor can see memory pressure without listing files.
  */
 export interface NotebookStat {
+  /** @deprecated use shelf */
   role: string;
+  shelf: string;
   lines: number;
   cap: number;
 }
 
 export interface NotebookTotals {
+  /** @deprecated use shelves */
   roles: number;
+  shelves: number;
   lines: number;
   cap: number;
 }
@@ -1278,16 +1302,16 @@ export interface StatsReport {
   perCommand: CommandStat[];
   anomalies: Anomaly[];
   /**
-   * Notebook inventory (issue #40): per-role line counts and the `maxLines()`
+   * Notebook inventory (issue #40): per-shelf line counts and the `maxLines()`
    * cap, plus `notebookTotals`. Additive to the report from issue #18 / PR #24 —
    * `window`/`perCommand`/`anomalies` are unchanged. When `stats` is called with
-   * a `role`, only that role's notebook is listed (empty if it has none).
+   * a `role`, only that shelf's notebook is listed (empty if it has none).
    */
   notebooks: NotebookStat[];
   notebookTotals: NotebookTotals;
   /**
    * Free diagnostic signals (issue #72): memory-quality observations derived
-   * from the same windowed, role-scoped usage rows as `anomalies`, but about the
+   * from the same windowed, shelf-scoped usage rows as `anomalies`, but about the
    * notebook (descriptions, cap pressure, mis-aimed lessons) rather than command
    * health. Additive to the report — `window`/`perCommand`/`anomalies`/
    * `notebooks`/`notebookTotals` are unchanged. See `DiagnosticSignal`.
@@ -1296,7 +1320,7 @@ export interface StatsReport {
   /**
    * The named surfacing metrics (issue #81): recall-miss / precision-miss rates
    * and the coverage×surfacing readout, engagement-gated, computed from the same
-   * windowed, role-scoped usage rows. Additive to the report — every field above
+   * windowed, shelf-scoped usage rows. Additive to the report — every field above
    * is unchanged. See `SurfacingMetrics`.
    */
   surfacing: SurfacingMetrics;
@@ -1369,7 +1393,7 @@ export function stats(
 
   const anomalies: Anomaly[] = [];
 
-  // (1) loop: same role+command ≥ LOOP_N times inside LOOP_WINDOW_MS.
+  // (1) loop: same shelf+command ≥ LOOP_N times inside LOOP_WINDOW_MS.
   const LOOP_N = clampInt(process.env.NB_LOOP_N, 10, 2, 1000);
   const LOOP_WINDOW_MS = clampInt(process.env.NB_LOOP_WINDOW_S, 120, 5, 86_400) * 1000;
   const byRoleCmd = new Map<string, number[]>();
@@ -1388,6 +1412,7 @@ export function stats(
           kind: 'loop',
           command,
           role,
+          shelf: role,
           detail: `${LOOP_N}+ calls within ${Math.round(LOOP_WINDOW_MS / 1000)}s — the agent may be stuck/looping`,
         });
         break;
@@ -1428,7 +1453,7 @@ export function stats(
   }
 
   // Free diagnostic signals (issue #72): three memory-quality observations read
-  // straight from the windowed, role-scoped `recent` rows — no new agent action.
+  // straight from the windowed, shelf-scoped `recent` rows — no new agent action.
   // Each is implied by behavior the agent already performs for its own reasons.
   const signals: DiagnosticSignal[] = [];
 
@@ -1438,7 +1463,7 @@ export function stats(
   //     session can't be grouped and are skipped (FR-USAGE-002: "co-access is
   //     then not computed"). A vote anywhere in the session counts as use.
   {
-    const browsed = new Map<string, { shown: boolean; voted: boolean }>(); // session \u0000 role
+    const browsed = new Map<string, { shown: boolean; voted: boolean }>(); // session \u0000 shelf
     for (const r of recent) {
       if (r.session === '') continue;
       if (r.command !== 'show' && !(r.command === 'vote' && (r.outcome === 'up' || r.outcome === 'down'))) continue;
@@ -1454,6 +1479,7 @@ export function stats(
       signals.push({
         kind: 'browse-without-use',
         role,
+        shelf: role,
         session,
         detail: `shown in session "${session}" but no entry was voted that session — the notebook's description may over-promise`,
       });
@@ -1462,7 +1488,7 @@ export function stats(
 
   // (B) eviction-while-still-voted: an `add` evicted an entry (its `evicted`
   //     column is `<id>:<score>`) whose id was voted on → the cap may be too
-  //     tight for that role (a candidate to split the role).
+  //     tight for that shelf (a candidate to split the shelf).
   {
     const votedIds = new Set<string>();
     for (const r of recent) {
@@ -1470,7 +1496,7 @@ export function stats(
         for (const id of r.entries) votedIds.add(id);
       }
     }
-    const seen = new Set<string>(); // dedup repeat evictions of the same role+id
+    const seen = new Set<string>(); // dedup repeat evictions of the same shelf+id
     for (const r of recent) {
       if (r.command !== 'add' || r.evicted === '') continue;
       const evictedId = r.evicted.split(':')[0];
@@ -1481,8 +1507,9 @@ export function stats(
       signals.push({
         kind: 'eviction-while-still-voted',
         role: r.role,
+        shelf: r.role,
         entry: evictedId,
-        detail: `entry ${evictedId} was evicted by the cap but had been voted on — the cap may be too tight for role "${r.role}" (consider splitting it)`,
+        detail: `entry ${evictedId} was evicted by the cap but had been voted on — the cap may be too tight for shelf "${r.role}" (consider splitting it)`,
       });
     }
   }
@@ -1514,6 +1541,7 @@ export function stats(
       signals.push({
         kind: 'vote-reversal',
         role: roleOf.get(id) ?? '',
+        shelf: roleOf.get(id) ?? '',
         entry: id,
         detail: `entry ${id} was upvoted and downvoted in different sessions — it may be correct but mis-aimed`,
       });
@@ -1550,6 +1578,7 @@ export function stats(
           signals.push({
             kind: 'failed-search',
             role: r.role,
+            shelf: r.role,
             session,
             entry: addId !== '' ? addId : undefined,
             detail: `a search for "${lastFailedQuery}" returned nothing, then a lesson was added to "${r.role}" in the same session — a coverage gap the notebook did not hold`,
@@ -1640,14 +1669,16 @@ export function stats(
   // mirroring the per-command filtering above. `cap` is read once so every row
   // and the total report the same value.
   const cap = maxLines();
-  const inventoryRoles = opts.role ? listRoles(dir).filter((r) => r === opts.role) : listRoles(dir);
+  const inventoryRoles = opts.role ? listShelves(dir).filter((r) => r === opts.role) : listShelves(dir);
   const notebooks: NotebookStat[] = inventoryRoles.map((role) => ({
     role,
+    shelf: role,
     lines: readEntries(dir, role).length,
     cap,
   }));
   const notebookTotals: NotebookTotals = {
     roles: notebooks.length,
+    shelves: notebooks.length,
     lines: notebooks.reduce((sum, n) => sum + n.lines, 0),
     cap,
   };

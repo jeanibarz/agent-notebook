@@ -9,6 +9,28 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Changed
+- **Terminology: a notebook file is now called a *shelf*.** A shelf is one `<name>.md`
+  notebook file, a group of lessons that should surface together. Lessons are grouped by
+  co-access, not by agent role, so an agent that opens a shelf gets the lessons it looks
+  for plus ones it would not think to search for. The CLI help, error messages (e.g.
+  `invalid shelf name`, `missing <shelf> argument`), human `nb stats` output, README,
+  AGENTS.md and docs now say shelf. Argument positions, the `shelf@project` scoping, every
+  `NB_*` variable, the file layout and the usage-log format are unchanged.
+
+### Added
+- `shelf` key next to `role` (same value) on every JSON object that carried `role`:
+  `nb show --json`, `nb list --json` rows, `nb search --json` groups, `nb describe --json`,
+  and in `nb stats --json` the `notebooks[]`, `anomalies[]` and `signals[]` entries.
+  `notebookTotals` gains `shelves` next to `roles`.
+- Library exports `listShelves` and `assertSafeShelf`.
+- `nb shelves`, an alias of `nb list`.
+
+### Deprecated
+- The `role` / `roles` JSON keys, the `listRoles` and `assertSafeRole` exports, and the
+  `nb roles` command. They still work and behave exactly as before; they will be removed
+  only in a later release marked BREAKING.
+
 ## [0.3.0] - 2026-10-29
 
 ### Changed

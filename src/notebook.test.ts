@@ -40,6 +40,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import {
   addEntry,
   assertSafeRole,
+  assertSafeShelf,
   dedupKey,
   entryId,
   getDescription,
@@ -47,6 +48,7 @@ import {
   isMetaLine,
   listNotebooks,
   listRoles,
+  listShelves,
   logUsage,
   maxChars,
   maxLines,
@@ -61,6 +63,7 @@ import {
   search,
   setDescription,
   setMetaValue,
+  showJson,
   split,
   stats,
   vote,
@@ -658,26 +661,26 @@ describe('rm', () => {
   });
 });
 
-describe('role safety', () => {
-  test('rejects path-traversal and unsafe role names', () => {
-    expect(() => assertSafeRole('../etc/passwd')).toThrow();
-    expect(() => assertSafeRole('a/b')).toThrow();
-    expect(() => assertSafeRole('')).toThrow();
-    expect(() => assertSafeRole('patcher')).not.toThrow();
-    expect(() => assertSafeRole('cartographer@some-repo')).not.toThrow();
+describe('shelf safety', () => {
+  test('rejects path-traversal and unsafe shelf names', () => {
+    expect(() => assertSafeShelf('../etc/passwd')).toThrow();
+    expect(() => assertSafeShelf('a/b')).toThrow();
+    expect(() => assertSafeShelf('')).toThrow();
+    expect(() => assertSafeShelf('patcher')).not.toThrow();
+    expect(() => assertSafeShelf('cartographer@some-repo')).not.toThrow();
   });
 
-  test('a `.`-namespaced role is first-class (issue #83): it validates and round-trips to one flat file', async () => {
+  test('a `.`-namespaced shelf is first-class (issue #83): it validates and round-trips to one flat file', async () => {
     // The `.` namespace convention groups related notebooks lexically
-    // (`review.tests`, `review.correctness`) with no change to `assertSafeRole`:
+    // (`review.tests`, `review.correctness`) with no change to `assertSafeShelf`:
     // `.` is already a permitted interior character, so a namespaced role is an
     // ordinary role, not a special case.
-    expect(() => assertSafeRole('review.tests')).not.toThrow();
-    expect(() => assertSafeRole('review.correctness')).not.toThrow();
-    expect(() => assertSafeRole('a.b.c')).not.toThrow(); // multi-level nesting is fine
+    expect(() => assertSafeShelf('review.tests')).not.toThrow();
+    expect(() => assertSafeShelf('review.correctness')).not.toThrow();
+    expect(() => assertSafeShelf('a.b.c')).not.toThrow(); // multi-level nesting is fine
     // `@` stays reserved for the existing `role@project` scoping and is distinct
     // from the `.` grouping delimiter — the two can coexist in one name.
-    expect(() => assertSafeRole('review.tests@some-repo')).not.toThrow();
+    expect(() => assertSafeShelf('review.tests@some-repo')).not.toThrow();
     // Still no storage layout change: the namespace lives entirely in the name,
     // so the notebook is a single flat `<role>.md` file (no directories).
     await addEntry(dir, 'review.tests', 'a namespaced lesson');
@@ -685,55 +688,55 @@ describe('role safety', () => {
     expect(readEntries(dir, 'review.tests').map((e) => e.text)).toEqual(['a namespaced lesson']);
     // The boundary cases the pattern still rejects: a name cannot begin or end
     // with the `.` delimiter, and `..` is barred (path-traversal guard).
-    expect(() => assertSafeRole('.review')).toThrow();
-    expect(() => assertSafeRole('review.')).toThrow();
-    expect(() => assertSafeRole('review..tests')).toThrow();
+    expect(() => assertSafeShelf('.review')).toThrow();
+    expect(() => assertSafeShelf('review.')).toThrow();
+    expect(() => assertSafeShelf('review..tests')).toThrow();
   });
 
-  test('bounds role-name length with a friendly error before it becomes a filename', () => {
+  test('bounds shelf-name length with a friendly error before it becomes a filename', () => {
     // A 300-char alphanumeric name passes the character pattern but would hit
     // ENAMETOOLONG as `<role>.md`; it must throw the friendly length error.
     // `129` passes the character pattern, so only the length guard can reject
     // it — asserting the distinct `too long` diagnostic pins which guard fired.
-    expect(() => assertSafeRole('a'.repeat(300))).toThrow(/invalid role name: .* \(too long: 300 chars, max 128\)/);
+    expect(() => assertSafeShelf('a'.repeat(300))).toThrow(/invalid shelf name: .* \(too long: 300 chars, max 128\)/);
     // The boundary: 128 chars is allowed, 129 is not.
-    expect(() => assertSafeRole('a'.repeat(128))).not.toThrow();
-    expect(() => assertSafeRole('a'.repeat(129))).toThrow(/too long: 129 chars, max 128/);
+    expect(() => assertSafeShelf('a'.repeat(128))).not.toThrow();
+    expect(() => assertSafeShelf('a'.repeat(129))).toThrow(/too long: 129 chars, max 128/);
     // A realistic long role stays legal.
-    expect(() => assertSafeRole('code-review@jeanibarz-agent-notebook')).not.toThrow();
+    expect(() => assertSafeShelf('code-review@jeanibarz-agent-notebook')).not.toThrow();
   });
 
-  test('an over-long role is rejected by a runtime write before any file is created', async () => {
+  test('an over-long shelf is rejected by a runtime write before any file is created', async () => {
     // The acceptance criterion is end-to-end: driving an over-long role through
     // a real entry point must surface the friendly error instead of a bare
     // `ENAMETOOLONG`, and must not leave a `<role>.md` behind.
     const tooLong = 'a'.repeat(300);
-    await expect(addEntry(dir, tooLong, 'x')).rejects.toThrow(/invalid role name/);
+    await expect(addEntry(dir, tooLong, 'x')).rejects.toThrow(/invalid shelf name/);
     expect(existsSync(join(dir, `${tooLong}.md`))).toBe(false);
   });
 
-  test('`README` is a reserved role name (issue #90): a write command cannot target it', async () => {
+  test('`README` is a reserved shelf name (issue #90): a write command cannot target it', async () => {
     // A `README.md` is the conventional git/backup artifact in a notebook folder,
     // not a notebook — so a write command must never create or rewrite one. The
     // reserve is case-insensitive, matching the `README.md` the filesystem holds.
-    expect(() => assertSafeRole('README')).toThrow(/reserved: a README\.md is not a notebook/);
-    expect(() => assertSafeRole('readme')).toThrow(/reserved/);
-    expect(() => assertSafeRole('ReadMe')).toThrow(/reserved/);
+    expect(() => assertSafeShelf('README')).toThrow(/reserved: a README\.md is not a notebook/);
+    expect(() => assertSafeShelf('readme')).toThrow(/reserved/);
+    expect(() => assertSafeShelf('ReadMe')).toThrow(/reserved/);
     // The reserve blocks a real write (`nb add README …`) before any file touch.
     await expect(addEntry(dir, 'README', 'x')).rejects.toThrow(/reserved/);
     expect(existsSync(join(dir, 'README.md'))).toBe(false);
     // A role that merely contains "readme" is still a legitimate notebook.
-    expect(() => assertSafeRole('readme-notes')).not.toThrow();
+    expect(() => assertSafeShelf('readme-notes')).not.toThrow();
   });
 });
 
-describe('listRoles', () => {
+describe('listShelves', () => {
   test('excludes a README.md so it is not a notebook (issue #90)', () => {
     // A README that backs up the notebook folder (common when the dir is a git
     // repo) must not surface as a role — not listed, searched, counted or voted.
     writeFileSync(join(dir, 'README.md'), '# notes\n\nThis folder is backed up with git.\n', 'utf-8');
     writeFileSync(join(dir, 'tips.md'), '+1\trun lint before claiming done\n', 'utf-8');
-    expect(listRoles(dir)).toEqual(['tips']);
+    expect(listShelves(dir)).toEqual(['tips']);
   });
 
   test('excludes README.md case-insensitively', () => {
@@ -742,7 +745,7 @@ describe('listRoles', () => {
     writeFileSync(join(dir, 'readme.md'), 'lower-case readme\n', 'utf-8');
     writeFileSync(join(dir, 'Readme.md'), 'mixed-case readme\n', 'utf-8');
     writeFileSync(join(dir, 'reviewer.md'), '+1\treal notebook\n', 'utf-8');
-    expect(listRoles(dir)).toEqual(['reviewer']);
+    expect(listShelves(dir)).toEqual(['reviewer']);
   });
 });
 
@@ -760,7 +763,7 @@ describe('usage log + stats', () => {
     expect(voteStat.errorRate).toBe(1);
   });
 
-  test('a tab/CR/LF in a field cannot split the row (rejected-unsafe-role regression)', () => {
+  test('a tab/CR/LF in a field cannot split the row (rejected-unsafe-shelf regression)', () => {
     // The CLI logs in a `finally` block even when `add` rejected an unsafe role,
     // so a raw tab/newline in the role once became extra columns/rows and
     // mis-attributed the telemetry. Each field must stay structurally inert.
@@ -1009,7 +1012,7 @@ describe('diagnostic signals (issue #72)', () => {
     expect(rep.signals).toHaveLength(0);
   });
 
-  test('signals are scoped to the role when stats is called with one', () => {
+  test('signals are scoped to the shelf when stats is called with one', () => {
     logUsage(dir, 'alpha', 'show', true, 2, { session: 's1' });
     logUsage(dir, 'beta', 'show', true, 2, { session: 's2' });
     const rep = stats(dir, { now: Date.now(), role: 'alpha' });
@@ -1139,7 +1142,7 @@ describe('surfacing metrics (issue #81)', () => {
     expect(stats(dir, { now: Date.now() }).surfacing.readout).toBe('surfacing-failure');
   });
 
-  test('surfacing is scoped to the role when stats is called with one', () => {
+  test('surfacing is scoped to the shelf when stats is called with one', () => {
     logUsage(dir, 'alpha', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['v'] });
     logUsage(dir, 'alpha', 'add', true, 1, { session: 's1', outcome: 'dedup-blocked', entries: ['a'] });
     logUsage(dir, 'beta', 'vote', true, 1, { session: 's2', outcome: 'up', entries: ['w'] });
@@ -1330,7 +1333,7 @@ describe('locking (mkdir spinlock)', () => {
   // passes even if the lock is deleted and proves nothing. The genuine hazard is
   // several OS processes, so the no-lost-update test spawns real `nb` children.
 
-  test('cross-process: concurrent `nb add` invocations on one role all land (no lost update)', async () => {
+  test('cross-process: concurrent `nb add` invocations on one shelf all land (no lost update)', async () => {
     const N = 8; // small, deterministic; ~N*20ms serialization ≪ each child's 2s acquire budget
     const env = { ...process.env, NB_DIR: dir };
     delete env.NB_MAX_LINES; // keep the default cap (50); N is well under it, so none is evicted
@@ -1409,7 +1412,7 @@ describe('reaps leftover *.md.tmp on lock acquire (issue #46)', () => {
   // mutation sweeps it — only this writer's `*.md.tmp` convention, never a real
   // notebook or the usage log.
 
-  test('a planted role.md.tmp is removed by the next locked mutation', async () => {
+  test('a planted shelf.md.tmp is removed by the next locked mutation', async () => {
     const orphan = join(dir, 'role.md.tmp');
     writeFileSync(orphan, 'crash debris from an interrupted write', 'utf-8');
     expect(existsSync(orphan)).toBe(true);
@@ -1443,7 +1446,7 @@ describe('reaps leftover *.md.tmp on lock acquire (issue #46)', () => {
   });
 
   test('a dotfile *.md.tmp is NOT reaped (the dotfile guard, isolated)', async () => {
-    // A role name never starts with `.` (assertSafeRole), so `.hidden.md.tmp` is
+    // A role name never starts with `.` (assertSafeShelf), so `.hidden.md.tmp` is
     // not our convention even though it ends in `.md.tmp`. This isolates the
     // `name.startsWith('.')` half of the guard: unlike the usage-log temp (which
     // is excluded by the suffix check too), only a dotfile that DOES end in
@@ -1470,22 +1473,22 @@ describe('stats notebook inventory (issue #40)', () => {
   test('empty dir: no notebooks, totals zeroed, cap = maxLines()', async () => {
     const rep = stats(dir, { now: Date.now() });
     expect(rep.notebooks).toEqual([]);
-    expect(rep.notebookTotals).toEqual({ roles: 0, lines: 0, cap: maxLines() });
+    expect(rep.notebookTotals).toEqual({ roles: 0, shelves: 0, lines: 0, cap: maxLines() });
     // additive: the issue #18 fields stay present and unchanged.
     expect(rep.window).toBe('7d'); // default window when none is passed
     expect(rep.perCommand).toEqual([]);
     expect(rep.anomalies).toEqual([]);
   });
 
-  test('one role: its line count and cap are reported, with matching totals', async () => {
+  test('one shelf: its line count and cap are reported, with matching totals', async () => {
     await addEntry(dir, 'patcher', 'prefer execFileSync, array args');
     await addEntry(dir, 'patcher', 'run lint before done');
     const rep = stats(dir, { now: Date.now() });
-    expect(rep.notebooks).toEqual([{ role: 'patcher', lines: 2, cap: maxLines() }]);
-    expect(rep.notebookTotals).toEqual({ roles: 1, lines: 2, cap: maxLines() });
+    expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 2, cap: maxLines() }]);
+    expect(rep.notebookTotals).toEqual({ roles: 1, shelves: 1, lines: 2, cap: maxLines() });
   });
 
-  test('a role at NB_MAX_LINES reports lines === cap, a sibling stays below it', async () => {
+  test('a shelf at NB_MAX_LINES reports lines === cap, a sibling stays below it', async () => {
     process.env.NB_MAX_LINES = '3';
     for (const l of ['one', 'two', 'three']) await addEntry(dir, 'full', l); // 3/3 — at cap
     await addEntry(dir, 'spare', 'just one'); // 1/3 — below cap
@@ -1493,47 +1496,47 @@ describe('stats notebook inventory (issue #40)', () => {
     // Exact rows (sorted). The full role's lines equal its cap — the "about to
     // evict" signal — while the sibling, under the same global cap, stays below.
     expect(rep.notebooks).toEqual([
-      { role: 'full', lines: 3, cap: 3 },
-      { role: 'spare', lines: 1, cap: 3 },
+      { role: 'full', shelf: 'full', lines: 3, cap: 3 },
+      { role: 'spare', shelf: 'spare', lines: 1, cap: 3 },
     ]);
-    expect(rep.notebookTotals).toEqual({ roles: 2, lines: 4, cap: 3 });
+    expect(rep.notebookTotals).toEqual({ roles: 2, shelves: 2, lines: 4, cap: 3 });
   });
 
-  test('multiple roles are listed sorted, with exact rows and aggregate totals', async () => {
+  test('multiple shelves are listed sorted, with exact rows and aggregate totals', async () => {
     await addEntry(dir, 'zeta', 'a');
     await addEntry(dir, 'alpha', 'b');
     await addEntry(dir, 'alpha', 'c');
     const rep = stats(dir, { now: Date.now() });
     expect(rep.notebooks).toEqual([
-      { role: 'alpha', lines: 2, cap: maxLines() },
-      { role: 'zeta', lines: 1, cap: maxLines() },
+      { role: 'alpha', shelf: 'alpha', lines: 2, cap: maxLines() },
+      { role: 'zeta', shelf: 'zeta', lines: 1, cap: maxLines() },
     ]);
-    expect(rep.notebookTotals).toEqual({ roles: 2, lines: 3, cap: maxLines() });
+    expect(rep.notebookTotals).toEqual({ roles: 2, shelves: 2, lines: 3, cap: maxLines() });
   });
 
-  test('a role filter scopes the inventory to exactly that notebook (exact match, not prefix)', async () => {
+  test('a shelf filter scopes the inventory to exactly that notebook (exact match, not prefix)', async () => {
     await addEntry(dir, 'patcher', 'x');
     await addEntry(dir, 'patcher2', 'y'); // a prefix-collision sibling: must NOT leak in
     await addEntry(dir, 'cartographer', 'z');
     const rep = stats(dir, { role: 'patcher', now: Date.now() });
-    expect(rep.notebooks).toEqual([{ role: 'patcher', lines: 1, cap: maxLines() }]);
-    expect(rep.notebookTotals).toEqual({ roles: 1, lines: 1, cap: maxLines() });
+    expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 1, cap: maxLines() }]);
+    expect(rep.notebookTotals).toEqual({ roles: 1, shelves: 1, lines: 1, cap: maxLines() });
   });
 
-  test('a role filter for a role with no notebook yields an empty inventory', async () => {
+  test('a shelf filter for a shelf with no notebook yields an empty inventory', async () => {
     await addEntry(dir, 'patcher', 'x');
     const rep = stats(dir, { role: 'nobody', now: Date.now() });
     expect(rep.notebooks).toEqual([]);
-    expect(rep.notebookTotals).toEqual({ roles: 0, lines: 0, cap: maxLines() });
+    expect(rep.notebookTotals).toEqual({ roles: 0, shelves: 0, lines: 0, cap: maxLines() });
   });
 
-  test('sidecar and stray non-role files are not counted as notebooks', async () => {
+  test('sidecar and stray non-shelf files are not counted as notebooks', async () => {
     await addEntry(dir, 'patcher', 'x'); // a real role → patcher.md
     logUsage(dir, 'patcher', 'add', true, 1); // writes the .nb-usage.log sidecar
     writeFileSync(join(dir, 'notes.txt'), 'not a role file', 'utf-8');
     writeFileSync(join(dir, '.hidden.md'), 'a dotfile, not a role', 'utf-8');
     const rep = stats(dir, { now: Date.now() });
-    expect(rep.notebooks).toEqual([{ role: 'patcher', lines: 1, cap: maxLines() }]);
+    expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 1, cap: maxLines() }]);
   });
 
   test('inventory reflects current on-disk state, not the usage window', async () => {
@@ -1543,7 +1546,7 @@ describe('stats notebook inventory (issue #40)', () => {
     const rep = stats(dir, { now: Date.now() + 10 * 86_400_000, windowMs: 60_000 });
     expect(rep.totalCalls).toBe(0);
     expect(rep.perCommand).toEqual([]);
-    expect(rep.notebooks).toEqual([{ role: 'patcher', lines: 1, cap: maxLines() }]);
+    expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 1, cap: maxLines() }]);
   });
 });
 
@@ -1751,7 +1754,7 @@ describe('notebook metadata / descriptions (issue #70)', () => {
   test('setDescription writes a leading `# desc:` line and getDescription reads it', async () => {
     await addEntry(dir, 'r', 'a lesson');
     const res = await setDescription(dir, 'r', 'when debugging the build');
-    expect(res).toEqual({ role: 'r', desc: 'when debugging the build', set: true });
+    expect(res).toEqual({ role: 'r', shelf: 'r', desc: 'when debugging the build', set: true });
     expect(getDescription(dir, 'r')).toBe('when debugging the build');
     // The description leads the file; the entry follows.
     expect(readFileSync(join(dir, 'r.md'), 'utf-8')).toBe(
@@ -1863,7 +1866,7 @@ describe('listNotebooks — the notebook index (issue #71)', () => {
     await addEntry(dir, 'r', 'a lesson');
     await setDescription(dir, 'r', 'the trigger');
     const [row] = listNotebooks(dir).rows;
-    expect(row).toEqual({ role: 'r', lessons: 1, desc: 'the trigger', auto: null });
+    expect(row).toEqual({ role: 'r', shelf: 'r', lessons: 1, desc: 'the trigger', auto: null });
   });
 
   test('falls back to the top-scored lesson (auto) when there is no description', async () => {
@@ -1875,7 +1878,7 @@ describe('listNotebooks — the notebook index (issue #71)', () => {
     expect(row.auto).toBe('high');
   });
 
-  test('a bare prefix filters by role name (the `.` namespace convention)', async () => {
+  test('a bare prefix filters by shelf name (the `.` namespace convention)', async () => {
     await addEntry(dir, 'review.security', 'a');
     await addEntry(dir, 'review.perf', 'b');
     await addEntry(dir, 'patcher', 'c');
@@ -1930,6 +1933,7 @@ describe('listNotebooks — the notebook index (issue #71)', () => {
     expect(listing.total).toBe(1);
     expect(listing.rows[0]).toEqual({
       role: 'placeholder',
+      shelf: 'placeholder',
       lessons: 0,
       desc: 'open me when onboarding',
       auto: null,
@@ -2067,5 +2071,34 @@ describe('failed-search → add gap signal (issue #82)', () => {
     logUsage(dir, '-', 'search', true, 1, { session: '', outcome: 'no-match', note: 'q' });
     logUsage(dir, 'reviewer', 'add', true, 1, { session: '', outcome: 'accepted', entries: ['zzz999'] });
     expect(stats(dir).signals.some((s) => s.kind === 'failed-search')).toBe(false);
+  });
+});
+
+describe('shelf terminology (role kept as a deprecated alias)', () => {
+  test('listShelves is the same function as the deprecated listRoles', async () => {
+    expect(listRoles).toBe(listShelves);
+    await addEntry(dir, 'alpha', 'a');
+    await addEntry(dir, 'beta', 'b');
+    expect(listShelves(dir)).toEqual(['alpha', 'beta']);
+    expect(listRoles(dir)).toEqual(listShelves(dir));
+  });
+
+  test('assertSafeShelf is the same function as the deprecated assertSafeRole', () => {
+    expect(assertSafeRole).toBe(assertSafeShelf);
+    expect(() => assertSafeShelf('../escape')).toThrow(/invalid shelf name/);
+  });
+
+  test('every JSON-facing object carries `shelf` equal to `role`', async () => {
+    await addEntry(dir, 'patcher', 'run lint');
+    await setDescription(dir, 'patcher', 'when patching');
+    const sh = showJson(dir, 'patcher');
+    expect(sh.shelf).toBe(sh.role);
+    const [row] = listNotebooks(dir).rows;
+    expect(row.shelf).toBe(row.role);
+    const [grp] = search(dir, 'lint').groups;
+    expect(grp.shelf).toBe(grp.role);
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.notebooks[0].shelf).toBe(rep.notebooks[0].role);
+    expect(rep.notebookTotals.shelves).toBe(rep.notebookTotals.roles);
   });
 });

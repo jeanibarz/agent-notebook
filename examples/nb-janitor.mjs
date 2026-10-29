@@ -9,13 +9,13 @@
 //
 //     1. Cap pressure & reorg       — notebooks near the cap (50 lines by default) that will
 //                                      start evicting lessons; split candidates.
-//     2. Near-duplicate ROLE names  — likely typos / fragmentation (e.g.
+//     2. Near-duplicate SHELF names — likely typos / fragmentation (e.g.
 //                                      `reviewer` vs `review`) that split memory.
 //     3. Likely duplicate LESSONS   — paraphrase pairs the exact-match dedup let
 //                                      through; `nb merge` candidates. This is the
 //                                      "duplicate detection" gap, found offline.
 //     4. Volume over time & silence — from git history: how the store grew, how
-//                                      busy it's been, and which roles went quiet.
+//                                      busy it's been, and which shelves went quiet.
 //
 // WHY A SEPARATE, OFFLINE TOOL
 //   The notebook core stays dumb, deterministic, and offline (requirements.md
@@ -106,7 +106,7 @@ function jaccard(a, b) {
   return inter / (a.size + b.size - inter);
 }
 
-// role-name similarity (normalized edit-distance), for typo/fragmentation detect
+// shelf-name similarity (normalized edit-distance), for typo/fragmentation detect
 function editSim(a, b) {
   const m = a.length;
   const n = b.length;
@@ -152,7 +152,7 @@ function gitHistory(dir, days) {
       .filter((l) => l.trim() !== '')
       .map((l) => {
         const [iso, subject = ''] = l.split('\t');
-        const m = /^nb\s+(\w+)/.exec(subject); // our wrapper's "nb <cmd> <role>" messages
+        const m = /^nb\s+(\w+)/.exec(subject); // our wrapper's "nb <cmd> <shelf>" messages
         return { day: iso.slice(0, 10), cmd: m ? m[1] : null };
       });
     return commits;
@@ -169,11 +169,11 @@ const now = Date.now();
 
 // 1) cap pressure & reorg
 const capPressure = notebooks
-  .map((nb) => ({ role: nb.role, lessons: nb.lessons.length, pct: Math.round((nb.lessons.length / MAX_LINES) * 100) }))
+  .map((nb) => ({ shelf: nb.role, role: nb.role, lessons: nb.lessons.length, pct: Math.round((nb.lessons.length / MAX_LINES) * 100) }))
   .filter((r) => r.pct >= 80)
   .sort((a, b) => b.pct - a.pct);
 
-// 2) near-duplicate role names
+// 2) near-duplicate shelf names
 const roleDups = [];
 const roles = notebooks.map((n) => n.role);
 for (let i = 0; i < roles.length; i++)
@@ -185,14 +185,14 @@ for (let i = 0; i < roles.length; i++)
   }
 roleDups.sort((x, y) => y.sim - x.sim);
 
-// 3) likely duplicate lessons (within a role)
+// 3) likely duplicate lessons (within a shelf)
 const lessonDups = [];
 for (const nb of notebooks) {
   const toks = nb.lessons.map((e) => ({ ...e, tk: tokens(e.text) }));
   for (let i = 0; i < toks.length; i++)
     for (let j = i + 1; j < toks.length; j++) {
       const sim = jaccard(toks[i].tk, toks[j].tk);
-      if (sim >= SIM) lessonDups.push({ role: nb.role, sim: Number(sim.toFixed(2)), a: toks[i].text, b: toks[j].text });
+      if (sim >= SIM) lessonDups.push({ shelf: nb.role, role: nb.role, sim: Number(sim.toFixed(2)), a: toks[i].text, b: toks[j].text });
     }
 }
 lessonDups.sort((x, y) => y.sim - x.sim);
@@ -208,7 +208,7 @@ if (history) {
   }
   volume = { source: 'git', windowDays: DAYS, commits: history.length, byCmd, activeDays: Object.keys(byDay).length };
 }
-// silence: a role with lessons but no usage-log activity in the window
+// silence: a shelf with lessons but no usage-log activity in the window
 const SILENT_DAYS = DAYS;
 const lastUse = {};
 for (const r of usage) lastUse[r.role] = Math.max(lastUse[r.role] ?? 0, r.t || 0);
@@ -216,17 +216,19 @@ const silentRoles = notebooks
   .filter((nb) => nb.lessons.length > 0)
   .map((nb) => ({ role: nb.role, lastUse: lastUse[nb.role] ?? 0 }))
   .filter((r) => now - r.lastUse > SILENT_DAYS * 86400000)
-  .map((r) => ({ role: r.role, daysQuiet: r.lastUse ? Math.round((now - r.lastUse) / 86400000) : null }));
+  .map((r) => ({ shelf: r.role, role: r.role, daysQuiet: r.lastUse ? Math.round((now - r.lastUse) / 86400000) : null }));
 
 const report = {
   dir: NB_DIR,
   notebooks: notebooks.length,
   totalLessons: notebooks.reduce((s, n) => s + n.lessons.length, 0),
   capPressure,
-  roleDups,
+  shelfDups: roleDups,
+  roleDups, // deprecated alias of shelfDups
   lessonDups,
   volume,
-  silentRoles,
+  silentShelves: silentRoles,
+  silentRoles, // deprecated alias of silentShelves
   usageRows: usage.length,
 };
 
@@ -245,14 +247,14 @@ if (capPressure.length === 0) out.push('  ✅ no notebook is near the cap.');
 else
   for (const r of capPressure) {
     out.push(`  ⚠️  ${r.role}: ${r.lessons}/${MAX_LINES} (${r.pct}%) — about to evict lessons.`);
-    out.push(`      → split concerns into namespaces: nb split, or new roles ${r.role}.<concern>`);
+    out.push(`      → split concerns into namespaces: nb split, or new shelves ${r.role}.<concern>`);
   }
 
-H('2. Near-duplicate role names (fragmented memory)');
-if (roleDups.length === 0) out.push('  ✅ no suspiciously similar role names.');
+H('2. Near-duplicate shelf names (fragmented memory)');
+if (roleDups.length === 0) out.push('  ✅ no suspiciously similar shelf names.');
 else
   for (const d of roleDups) {
-    out.push(`  ⚠️  "${d.a}" ~ "${d.b}" (name similarity ${d.sim}) — likely the same role, split in two.`);
+    out.push(`  ⚠️  "${d.a}" ~ "${d.b}" (name similarity ${d.sim}) — likely the same shelf, split in two.`);
     out.push(`      → consolidate: re-add ${d.b}'s lessons under "${d.a}" (or vice-versa), then retire the orphan.`);
   }
 
@@ -277,7 +279,7 @@ if (volume)
   );
 else out.push('  (NB_DIR is not a git repo — enable git-versioning for growth trends: harness-setup.md#git-versioning)');
 if (report.usageRows === 0) out.push('  (no usage log yet — set NB_SESSION and use the notebooks to populate it)');
-if (silentRoles.length === 0) out.push('  ✅ no role has gone silent in the window.');
+if (silentRoles.length === 0) out.push('  ✅ no shelf has gone silent in the window.');
 else
   for (const s of silentRoles)
     out.push(`  💤 ${s.role}: ${s.daysQuiet == null ? 'never used in the log' : `quiet ${s.daysQuiet}d`} — stale, or no longer exercised?`);

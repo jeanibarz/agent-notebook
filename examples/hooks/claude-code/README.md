@@ -7,7 +7,7 @@ scripts save it a call and keep the retrospective from being forgotten.
 
 | File | Hook event | What it adds |
 |---|---|---|
-| `nb-session-start.sh` | `SessionStart` | injects the `nb list` **index** (every notebook + its "open me when…" description) into context, so the agent sees it without a call. No role logic — the same script in every project. |
+| `nb-session-start.sh` | `SessionStart` | injects the `nb list` **index** (every notebook + its "open me when…" description) into context, so the agent sees it without a call. No shelf logic — the same script in every project. |
 | `nb-retrospective.sh` | `Stop` / `SubagentStop` | once per session, nudges the agent to vote / prune / add on the notebooks it used before finishing. |
 | `settings.json` | — | the config that registers the two scripts. |
 
@@ -37,7 +37,7 @@ per-project `.claude/settings.json`.
 | `NB_BIN` | `nb` | point at the [git-versioning wrapper](../../nb-git-wrapper.mjs) to commit each change |
 
 (There is no `NB_ROLE`: the index hook injects *all* notebooks' descriptions and
-the agent chooses — nothing has to guess a per-project role.)
+the agent chooses — nothing has to guess a per-project shelf.)
 
 ## The two moments the hooks don't drive — and why that's fine
 

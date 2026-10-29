@@ -99,9 +99,9 @@ same care as the agent's other outputs. The concrete risks:
   is code-reviewed like any other shared artefact (that is the point of git
   history); restrict write access to the remote; and keep untrusted or
   externally-sourced notebooks out of the injected set.
-- **Path traversal / unsafe role names.** Handled by the package: a role must
+- **Path traversal / unsafe shelf names.** Handled by the package: a shelf must
   match a strict pattern, cannot contain `..`, is length-bounded, and `README` is
-  reserved ([FR-SAFE-001](requirements.md#fr-safe-001)). A hostile role name
+  reserved ([FR-SAFE-001](requirements.md#fr-safe-001)). A hostile shelf name
   cannot escape `NB_DIR`.
 - **Tampering.** Filesystem permissions on `NB_DIR` and branch protection on the
   remote are your controls; a signed-commit policy (`git commit -S`) works because
@@ -145,8 +145,8 @@ flowchart TB
   memory if the machine dies (mitigated by their home backup).
 - **Shared team notebooks.** One internal remote is the source of truth; the
   daily job pushes, developers pull. Because it's git, review and conflict
-  resolution are the workflows you already have. Use the `role@project` and `.`
-  namespace conventions so one shared store holds many roles cleanly. Gate pushes
+  resolution are the workflows you already have. Use the `shelf@project` and `.`
+  namespace conventions so one shared store holds many shelves cleanly. Gate pushes
   (CI secret-scan + human review) if the memory is widely injected.
 - **Project-scoped.** Commit a project's notebooks *into the project repo* under
   a known dir and point `NB_DIR` at it, so memory ships and is reviewed with the

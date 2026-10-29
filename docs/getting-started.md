@@ -79,7 +79,7 @@ flowchart LR
 
 ## What's actually inside a notebook
 
-A notebook is a plain text file. One per *role* — one per kind of job. You can
+A notebook is a plain text file. One per *shelf* — a group of lessons that belong together. You can
 open it in any editor; nothing is hidden or encoded.
 
 ```

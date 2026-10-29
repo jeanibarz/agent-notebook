@@ -84,10 +84,10 @@ at the start of a task and open what fits.
 
 | Hook | What it adds | Moment |
 |---|---|---|
-| `SessionStart` → `nb-session-start.sh` | injects the `nb list` **index** into context so the agent sees it without spending a call — no role logic, same for every project | ① |
+| `SessionStart` → `nb-session-start.sh` | injects the `nb list` **index** into context so the agent sees it without spending a call — no shelf logic, same for every project | ① |
 | `Stop` / `SubagentStop` → `nb-retrospective.sh` | nudges the retrospective once per session so it isn't forgotten | ④ |
 
-The index hook injects the *index of descriptions*, not a guessed "role" notebook
+The index hook injects the *index of descriptions*, not a guessed "shelf" notebook
 — so it stays generic across every project and never has to answer "which notebook
 is this?". It saves the agent one `nb list` call; the agent still chooses what to
 open. Skip it and nothing breaks — the instruction already tells the agent to list.
@@ -113,12 +113,12 @@ the [git wrapper](#git-versioning) if you want per-change history. Full notes in
 
 When your agent spawns a specialised subagent (reviewer, patcher, repro-builder),
 the subagent does the **same ① → ② → ④** for its own task — there is no
-per-subagent role to assign and no "subagent started" hook to rely on. Just point
+per-subagent shelf to assign and no "subagent started" hook to rely on. Just point
 the subagent at the same contract (its definition, or the prompt you spawn it
 with, references `AGENTS.md`), and it will:
 
 1. run `nb list`, open the notebooks that fit *its* job, and use them;
-2. **reuse an existing notebook** rather than mint a near-duplicate — role
+2. **reuse an existing notebook** rather than mint a near-duplicate — shelf
    matching is exact, so `reviewer` and `review` become two unrelated memories
    (the [janitor](#the-janitor) flags this);
 3. run its own retrospective at the end.
@@ -222,10 +222,10 @@ What each section diagnoses, and why it matters:
 
 | Section | Signal | What you do about it |
 |---|---|---|
-| **1. Cap pressure & reorg** | a notebook ≥ 80% of the cap (50 lines by default) is about to start evicting lessons | split its concerns into [namespaced roles](../README.md#grouping-notebooks--the--namespace-convention) so no single notebook thrashes |
-| **2. Near-duplicate roles** | `reviewer` vs `review` — the same memory fragmented by a typo | consolidate the lessons under one role, retire the orphan |
+| **1. Cap pressure & reorg** | a notebook ≥ 80% of the cap (50 lines by default) is about to start evicting lessons | split its concerns into [namespaced shelves](../README.md#grouping-notebooks--the--namespace-convention) so no single notebook thrashes |
+| **2. Near-duplicate shelves** | `reviewer` vs `review` — the same memory fragmented by a typo | consolidate the lessons under one shelf, retire the orphan |
 | **3. Duplicate lessons** | paraphrase pairs the exact-match dedup let through (a *recall* problem — the agent re-derived something it already knew) | `nb merge` the real duplicates into one tighter line |
-| **4. Volume & silence** | how the store grew over time (from git), and roles that went quiet | spot a role that broke/was abandoned, or a healthy "notebook is sufficient" plateau |
+| **4. Volume & silence** | how the store grew over time (from git), and shelves that went quiet | spot a shelf that broke/was abandoned, or a healthy "notebook is sufficient" plateau |
 
 The janitor is strictly **read-only** — it never edits a notebook, so it is safe
 to run anywhere, including in CI. It embodies the project's design: all the clever
@@ -256,7 +256,7 @@ setups, easiest first:
    git -C "$env:USERPROFILE\.agent-notebook\notebooks" push origin main
    ```
 
-Role names and the `.` namespace convention are filesystem-safe on NTFS; `NB_DIR`
+Shelf names and the `.` namespace convention are filesystem-safe on NTFS; `NB_DIR`
 defaults to `%USERPROFILE%\.agent-notebook\notebooks`.
 
 ---

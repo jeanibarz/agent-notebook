@@ -18,14 +18,15 @@ New here? Start with the [plain-language guide](docs/getting-started.md) or the
 
 ## 1. What the notebook is (one paragraph)
 
-A notebook is a bounded, voted, plain-text memory for one *role* — one kind of
-task (`reviewer`, `release`, `repro`). It holds at most 50 one-line lessons by
+A notebook is a bounded, voted, plain-text memory. Each notebook file is a *shelf*:
+a group of lessons that should surface together (`reviewer`, `release`, `repro`) —
+grouped by co-access, not by which agent writes them. It holds at most 50 one-line lessons by
 default (raise the cap with `NB_MAX_LINES`),
 ranked by the votes agents cast on them; when it is full a new lesson still goes
 in — the lowest-scored line is evicted and the stalest one ages a point, so a
 once-useful lesson that goes quiet eventually makes way (see
-[docs/eviction-and-aging.md](docs/eviction-and-aging.md)). There is one notebook
-per role, and `nb list` shows the whole set —
+[docs/eviction-and-aging.md](docs/eviction-and-aging.md)). There is one file
+per shelf, and `nb list` shows the whole set —
 each with a one-line description of *when to open it* — so you can see what
 experience exists and open what fits, without having to name it in a search.
 There is no server, no embedding, no network call: every `nb` command is a fast
@@ -67,7 +68,7 @@ that another notebook might cover. Reach for `nb search` only for a known-item
 lookup: surfacing from the index is the primary path, search is the fallback.
 
 ```sh
-nb show "<role>"           # a notebook's lessons, highest-scored first
+nb show "<shelf>"           # a notebook's lessons, highest-scored first
 nb search "<keywords>"     # SECONDARY keyword fallback — only for a known-item lookup
 ```
 
@@ -76,7 +77,7 @@ nb search "<keywords>"     # SECONDARY keyword fallback — only for a known-ite
 A subagent doing specialised work (reviewing, patching, reproducing a bug) does
 the same ① → ② for its own job: point it at this same contract so it runs
 `nb list`, opens the notebooks that fit, and runs the retrospective at its end.
-Reuse an existing notebook rather than minting a near-duplicate — role matching is
+Reuse an existing notebook rather than minting a near-duplicate — shelf matching is
 exact, so `reviewer` and `review` become two unrelated memories.
 
 ### ④ At the end of a task — **the retrospective** (the step that makes tomorrow faster)
@@ -90,26 +91,26 @@ notebook so the next run of this task starts wiser:
    lesson text works too. `vote` takes no `--reason` — record *why* on the `rm`
    below, which does.)
    ```sh
-   nb vote "<role>" <id> +1
-   nb vote "<role>" <id> -1
+   nb vote "<shelf>" <id> +1
+   nb vote "<shelf>" <id> -1
    ```
 2. **Prune what proved incorrect or obsolete.**
    ```sh
-   nb rm "<role>" <id> --reason wrong        # it was never true / it misled
-   nb rm "<role>" <id> --reason obsolete      # it was true but no longer applies
+   nb rm "<shelf>" <id> --reason wrong        # it was never true / it misled
+   nb rm "<shelf>" <id> --reason obsolete      # it was true but no longer applies
    ```
 3. **Tidy, if the notebook is cluttered or full.**
    ```sh
-   nb merge "<role>" <idA> <idB> "<one tighter lesson>" --reason duplicate
-   nb split "<role>" <id> "<lesson A>" "<lesson B>" --reason overloaded
+   nb merge "<shelf>" <idA> <idB> "<one tighter lesson>" --reason duplicate
+   nb split "<shelf>" <id> "<lesson A>" "<lesson B>" --reason overloaded
    ```
 4. **Add at most one new lesson** — to the notebook whose topic it fits (check
-   `nb list` if unsure which; start a new role only if no notebook covers this
+   `nb list` if unsure which; start a new shelf only if no notebook covers this
    kind of task). Make it the single most useful, non-obvious thing you learned
    that you would want *surfaced to you* next time. One line, ≤200 chars,
    concrete, no preamble. Adding nothing is a valid and honest outcome.
    ```sh
-   nb add "<role>" "fresh worktree has no node_modules — run npm install before build/test"
+   nb add "<shelf>" "fresh worktree has no node_modules — run npm install before build/test"
    ```
 
 > Never pad the notebook to hit a quota — a forced lesson pollutes a bounded
@@ -137,15 +138,18 @@ Rules the tool enforces, so you don't have to guess:
 - **A reason is always optional.** Omit it rather than invent one; an unknown
   code is kept as free text, never rejected.
 
-## 4. Roles, namespaces, and scoping — pick the right notebook
+## 4. Shelves, namespaces, and scoping — pick the right notebook
 
-- A **role** is one kind of task: `reviewer`, `patcher`, `release`. Reuse an
-  existing role (`nb list`) before creating a new one — role matching is exact,
-  so a typo silently starts an orphan notebook.
-- **Namespace** a role that grows several concerns with a `.` prefix:
+- A **shelf** is one `<name>.md` notebook file, a group of lessons that should
+  surface together: `reviewer`, `patcher`, `release`. Group by co-access, not by
+  agent role: an agent that opens a shelf gets the lessons it looks for plus ones
+  it would not think to search for. Reuse an existing shelf (`nb list`) before
+  creating a new one — shelf matching is exact, so a typo silently starts an orphan
+  notebook.
+- **Namespace** a shelf that grows several concerns with a `.` prefix:
   `review.tests`, `review.correctness`, `review.security`. It is a naming
   convention only — still one flat file each, no new storage.
-- Scope a role **to a project** with `@`: `reviewer@my-repo`. It composes with a
+- Scope a shelf **to a project** with `@` (`shelf@project`): `reviewer@my-repo`. It composes with a
   namespace: `review.tests@my-repo`.
 
 ---
@@ -154,14 +158,14 @@ Rules the tool enforces, so you don't have to guess:
 
 ```
 START       nb list                  # see every notebook + its "open me when…" description
-OPEN        nb show <role>           # open the one(s) whose description fits your task
+OPEN        nb show <shelf>           # open the one(s) whose description fits your task
             nb search <kw>           # only for a known-item lookup (secondary)
 SUBAGENT    point it at this contract # it runs nb list & opens notebooks for its own task
-END (retro) nb vote <role> <id> +1   # the lessons that helped
-            nb vote <role> <id> -1   # the ones that misled (vote takes no --reason)
-            nb rm   <role> <id> --reason obsolete   # what no longer applies
+END (retro) nb vote <shelf> <id> +1   # the lessons that helped
+            nb vote <shelf> <id> -1   # the ones that misled (vote takes no --reason)
+            nb rm   <shelf> <id> --reason obsolete   # what no longer applies
             nb merge/split …         # keep it tidy
-            nb add  <role> "<=200-char lesson"       # at most ONE, to the fitting notebook
+            nb add  <shelf> "<=200-char lesson"       # at most ONE, to the fitting notebook
 ```
 
 ---
