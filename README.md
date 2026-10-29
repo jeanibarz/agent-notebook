@@ -1,19 +1,19 @@
 # agent-notebook
 
-A bounded, voted, plain-text memory for AI agents — one small file per shelf, no embeddings, no vector DB, no network call.
+A bounded, voted, plain-text memory for AI agents — one small file (a *shelf*) per group of related lessons, no embeddings, no vector DB, no network call.
 
-A **shelf** is one `<name>.md` notebook file: a group of lessons that should surface together. Shelves group lessons by *co-access*, not by agent role — an agent that opens a shelf gets the lessons it looks for plus ones it would not think to search for. (Earlier versions called this unit a "role"; `role` keys, `listRoles`, `assertSafeRole` and `nb roles` remain as deprecated aliases.)
+A **shelf** is one `<name>.md` notebook file: a group of lessons an agent needs in the same situations. Shelves group lessons by *co-access* (needed together), not by agent role, so an agent that opens a shelf can get the lessons it looks for plus ones it might not think to search for. (Earlier versions called this unit a "role"; `role` keys, `listRoles`, `assertSafeRole` and `nb roles` remain as deprecated aliases.)
 
 <p align="center"><img src="https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/assets/cat.svg" alt="Running cat on a notebook file prints the whole plain-text memory at once — no query, no server, no embeddings." width="760"></p>
 
 ```
-$ nb add reviewer "run lint before claiming done"
+$ nb add build-and-test "run lint before claiming done"
 added — 1 lines
 
-$ nb show reviewer
+$ nb show build-and-test
 3f9a2c  [+1]  run lint before claiming done
 
-$ nb vote reviewer 3f9a2c +1
+$ nb vote build-and-test 3f9a2c +1
 +1 → [+2] run lint before claiming done
 ```
 
@@ -99,7 +99,7 @@ Every `show` line starts with a short stable id — pass that id (or a unique pr
 **Splitting an overloaded entry.** `nb split` is the reverse of `merge`: it replaces one entry with two, each inheriting the original's score — for when a line turned out to be two lessons crammed together. Each half is rejected (not truncated) if too long, and a split never creates a duplicate: the two halves must differ from each other and from every surviving entry, or the split is refused and nothing changes.
 
 ```
-$ nb split reviewer build "run the build first" "run vitest after the build" --reason overloaded
+$ nb split build-and-test build "run the build first" "run vitest after the build" --reason overloaded
 split one entry into two — 2 lines
 ```
 
@@ -116,21 +116,21 @@ The reason is always optional (omit it rather than invent one). An unrecognized 
 **Describing a notebook.** `nb describe <shelf> "<text>"` gives a notebook a one-line *description* — a **trigger** that says "the situation in which you should open me", so an agent (or a plain list of notebooks) can decide whether to open it without reading its lessons. It is stored as a leading `# desc:` comment at the top of the `<shelf>.md` file:
 
 ```
-$ nb describe reviewer "build / test / worktree gotchas for this repo"
-description set for shelf "reviewer": build / test / worktree gotchas for this repo
-$ nb describe reviewer           # no text → print the current one
-build / test / worktree gotchas for this repo
-$ nb show reviewer               # the description leads the output as a header
-# desc: build / test / worktree gotchas for this repo
+$ nb describe build-and-test "building or testing this repo, or working in a fresh worktree"
+description set for shelf "build-and-test": building or testing this repo, or working in a fresh worktree
+$ nb describe build-and-test           # no text → print the current one
+building or testing this repo, or working in a fresh worktree
+$ nb show build-and-test               # the description leads the output as a header
+# desc: building or testing this repo, or working in a fresh worktree
 acf179  [+1]  run lint before claiming done
 ```
 
-The description is capped like a lesson (rejected, not truncated, if too long), and an empty text (`nb describe reviewer ""`) clears it. The `# key: value` block round-trips through every mutation and is never turned into a lesson; unknown keys are preserved verbatim, so the file format stays forward-compatible. This stays within the no-schema non-goal — metadata is optional comment lines in the *file*, not a field on a lesson.
+The description is capped like a lesson (rejected, not truncated, if too long), and an empty text (`nb describe build-and-test ""`) clears it. The `# key: value` block round-trips through every mutation and is never turned into a lesson; unknown keys are preserved verbatim, so the file format stays forward-compatible. This stays within the no-schema non-goal — metadata is optional comment lines in the *file*, not a field on a lesson.
 
 **Piping a lesson in.** Pass `-` as the lesson to read it from stdin, so an agent that just wrote a lesson into a pipe can hand it over without shell-quoting:
 
 ```
-$ printf '%s\n' 'run lint first' | nb add reviewer -
+$ printf '%s\n' 'run lint first' | nb add build-and-test -
 added — 1 lines
 ```
 
@@ -147,16 +147,16 @@ It reads exactly one line: a single trailing newline is stripped, and **multi-li
 ```
 $ nb list
 agent-notebook notebooks — 3 in /home/you/.agent-notebook/notebooks
-  reviewer   12  build / test / worktree gotchas for this repo
-  patcher     8  when fixing a reproduced bug in this codebase
-  scout       3  mapping an unfamiliar repo: build/test entry points   (auto)
+  build-and-test   12  building or testing this repo, or working in a fresh worktree
+  bug-fixing        8  when fixing a reproduced bug in this codebase
+  repo-onboarding   3  mapping an unfamiliar repo: build/test entry points   (auto)
 ```
 
 Notebooks are ordered **richest-first** (most lessons first — the ones most worth reusing), ties broken by name. A notebook with no `# desc:` falls back to its top-scored lesson, marked `(auto)`. A bare `prefix` filters by name using the `.` namespace convention (`nb list review.` shows just `review.*`), and `--limit N` bounds the rows (default 50) so the index stays a flat, cheap read as notebooks accumulate — the header then reads `showing N of total`. `nb list --json` emits the raw `NotebookListing` (`{ dir, total, rows[] }`) for a supervising agent. An empty (zero-lesson, no-description) notebook is hidden — it is phantom debris with nothing to discover — while a described-but-empty notebook is kept, because its description is still a deliberate trigger. It prints a friendly note to stderr and exits 0 when no notebook (or none matching the prefix) exists yet.
 
 ### Grouping notebooks — the `.` namespace convention
 
-When one shelf grows several distinct concerns, split them into **namespaced notebooks** named with a `.`-delimited prefix — `review.tests`, `review.correctness`, `review.security` — instead of one overloaded `review`. This is the recommended way to "group by concept", and it is a **naming convention only**: nothing new to configure.
+When one shelf collects lessons needed in different situations, split it into **namespaced shelves** named with a `.`-delimited prefix — `review.tests`, `review.correctness`, `review.security` — instead of one overloaded `review`, so each shelf again holds lessons used together and the prefix keeps the family together. It is a **naming convention only**: nothing new to configure.
 
 ```
 $ nb list review.
@@ -166,7 +166,7 @@ agent-notebook notebooks — 2 matching "review." in /home/you/.agent-notebook/n
 ```
 
 - **Lexical clustering, no engine.** Related notebooks sort together and `nb list review.` / `nb search "flaky" review.` scope straight to the group — plain prefix matching on the name, never embeddings or similarity ([NG-001](docs/requirements.md#ng-001)).
-- **Keep the trailing dot.** `review.` matches the namespace but *not* a bare sibling that merely shares the stem (`reviewer`), so the group stays exactly what you meant.
+- **Keep the trailing dot.** `review.` matches the namespace but *not* a bare sibling that merely shares the stem (`reviews`), so the group stays exactly what you meant.
 - **No new storage.** A namespaced shelf is still one flat `<shelf>.md` file — `review.tests.md`, `review.correctness.md` — never a directory. `.` is already a legal shelf character, so there is nothing to enable.
 - **`@` is separate.** It stays reserved for the existing `shelf@project` scoping and composes with a namespace (`review.tests@your-repo`).
 - **`README` is reserved.** A `README.md` in the notebooks dir (common when the dir is a git repo that backs up your notebooks) is *not* a notebook — it is never listed, searched, counted, or writable as a shelf (case-insensitive). Name a real notebook something else (`readme-notes` is fine).
@@ -182,7 +182,7 @@ It is **keyword-only** — a plain case-insensitive substring over the query's t
 ```
 $ nb search "build vitest"
 agent-notebook search — "build vitest" (AND over 2 terms): 1 hit in 1 notebook (secondary fallback — lessons are normally surfaced to you, not searched)
-  reviewer
+  build-and-test
     d7497d  [+1]  run the build before vitest
 ```
 
@@ -232,7 +232,7 @@ This is richer *logging* only — the notebook file and the one-line lesson are 
 The anomaly detection in `nb stats` (loop / went-silent / high-error-rate flags) is tunable via env vars — out-of-range values are clamped to the stated bounds, and an unset or unparseable value falls back to the default:
 
 - `NB_USAGE_RING` — how many recent calls are kept for `nb stats` to analyze (default `5000`, range `100`–`100000`).
-- `NB_LOOP_N` — a loop is this many or more calls of the same command by the same shelf (default `10`, range `2`–`1000`).
+- `NB_LOOP_N` — a loop is this many or more calls of the same command on the same shelf (default `10`, range `2`–`1000`).
 - `NB_LOOP_WINDOW_S` — window those calls must fall within, in seconds (default `120`, range `5`–`86400`).
 - `NB_SILENT_H` — hours since a command's last call before it is flagged went-silent (default `48`, range `1`–`8760`).
 - `NB_ERR_MIN` — minimum calls before a command's error rate is judged (default `5`, range `1`–`10000`).
@@ -273,29 +273,29 @@ const dir = notebooksDir();
 // lowest-scored one evicted; see docs/eviction-and-aging.md), so `evicted` may
 // name a removed entry. (An invalid shelf name or an I/O error still throws —
 // those are faults, not rejected content.)
-const r: AddResult = await addEntry(dir, 'reviewer', 'run lint before claiming done');
+const r: AddResult = await addEntry(dir, 'build-and-test', 'run lint before claiming done');
 if (!r.added) console.warn(`not stored: ${r.reason}`);
-await addEntry(dir, 'reviewer', 'run the linter first'); // a near-duplicate
-await addEntry(dir, 'reviewer', 'obsolete note to drop');
+await addEntry(dir, 'build-and-test', 'run the linter first'); // a near-duplicate
+await addEntry(dir, 'build-and-test', 'obsolete note to drop');
 
-const entries = readEntries(dir, 'reviewer'); // Entry[] = { score, text }
+const entries = readEntries(dir, 'build-and-test'); // Entry[] = { score, text }
 
 // vote/merge/remove select an entry by stable id, unique prefix, or unique text
 // substring — and throw if the selector matches no entry, or more than one.
-await vote(dir, 'reviewer', 'run lint before', +1);
+await vote(dir, 'build-and-test', 'run lint before', +1);
 
 // merge folds two entries into a single line, inheriting the higher of their
 // two scores; remove deletes one. Both rewrite the notebook under the same lock
 // as addEntry and vote.
-await merge(dir, 'reviewer', 'run lint before', 'linter first', 'run lint before every commit');
+await merge(dir, 'build-and-test', 'run lint before', 'linter first', 'run lint before every commit');
 
 // split is the reverse of merge: it replaces one overloaded entry with two,
 // each inheriting the original's score. It throws (writing nothing) on an empty
 // or over-long half, on two halves that are duplicates of each other, or on a
 // half that would duplicate a surviving entry — so a split never creates a dup.
-await split(dir, 'reviewer', 'run lint before every commit', 'run lint before every commit', 'also run the type-checker before every commit');
+await split(dir, 'build-and-test', 'run lint before every commit', 'run lint before every commit', 'also run the type-checker before every commit');
 
-await remove(dir, 'reviewer', 'obsolete note');
+await remove(dir, 'build-and-test', 'obsolete note');
 
 listShelves(dir); // string[] — shelves that already have a notebook, sorted (`listRoles` is a deprecated alias)
 
@@ -306,7 +306,7 @@ listNotebooks(dir, { prefix: 'review.', limit: 50 });
 // → { dir, total, rows: [{ shelf, role, lessons, desc, auto }, ...] }
 // (`role` is a deprecated copy of `shelf`, kept so existing callers keep working.)
 
-console.log(render(dir, 'reviewer')); // highest-scored first
+console.log(render(dir, 'build-and-test')); // highest-scored first
 ```
 
 The CLI is a thin wrapper over this library — `src/notebook.ts` is the whole mechanism, with zero runtime dependencies.

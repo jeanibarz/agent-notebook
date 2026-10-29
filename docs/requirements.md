@@ -19,7 +19,7 @@ change the requirement and its test together (see [Keeping this document honest]
 ## 1. Purpose & scope
 
 `agent-notebook` is a bounded, voted, plain-text memory for AI agents: one small
-file per shelf (a group of lessons that should surface together), holding a short list of one-line lessons ranked by vote.
+file per shelf (a group of lessons an agent needs in the same situations), holding a short list of one-line lessons ranked by vote.
 It has zero runtime dependencies and makes no network calls.
 
 The product is deliberately narrow. Section [6. Non-goals](#6-non-goals-shall-not)
@@ -33,9 +33,9 @@ One definition per term, used identically in requirements, code, and tests.
 
 | Term | Definition |
 |------|------------|
-| **Shelf** | One `<name>.md` notebook file: a group of lessons that should surface together. Lessons are grouped by co-access, not by agent role, so an agent that opens a shelf gets the lessons it looks for plus ones it would not think to search for (see [DP-8](#dp-8)). A path-safe name (see [FR-SAFE-001](#fr-safe-001)); stored at `<NB_DIR>/<name>.md`. Formerly called a "role" (when notebooks were one per agent role); `role`/`roles` JSON keys, `listRoles`, `assertSafeRole` and `nb roles` remain as deprecated aliases. "Notebook" may still name the tool or a shelf's file in general prose. |
+| **Shelf** | One `<name>.md` notebook file: a group of lessons an agent needs in the same situations. Lessons are grouped by co-access (needed together), not by agent role, so an agent that opens a shelf can get the lessons it looks for plus ones it might not think to search for (see [DP-8](#dp-8)). A path-safe name (see [FR-SAFE-001](#fr-safe-001)); stored at `<NB_DIR>/<name>.md`. Formerly called a "role" (when notebooks were one per agent role); `role`/`roles` JSON keys, `listRoles`, `assertSafeRole` and `nb roles` remain as deprecated aliases. "Notebook" may still name the tool or a shelf's file in general prose. |
 | **Namespace** | A recommended *convention*, not a storage layer: a `.`-delimited shelf-name prefix (e.g. `review.tests`, `review.correctness`) that clusters related notebooks lexically so `nb list <prefix>` / `nb search … <prefix>` can scope to a group. A namespaced shelf is still one flat `<shelf>.md` file (see [FR-NAMESPACE-001](#fr-namespace-001)). |
-| **Notebook** | The file of one shelf: a bounded, newline-separated list of entries. |
+| **Notebook** | The tool and its set of shelves; also the general word for a shelf's file (a bounded, newline-separated list of entries). Say *shelf* when you mean one file, one name or one argument. |
 | **Entry** | One lesson = one line `"<score>\t<text>"`. The in-memory shape is `{ score: number; text: string }`. |
 | **Lesson** / **text** | The single-line content of an entry, at most `maxChars` characters, no tab/newline. |
 | **Score** | A signed integer: the running sum of +1/-1 votes on an entry. |
@@ -373,7 +373,7 @@ first-class shelf requiring **no** change to [FR-SAFE-001](#fr-safe-001) (`.` is
 already a permitted interior character) and **no** new storage layout — the notebook
 stays one flat `<shelf>.md` file, never a directory. The grouping prefix SHOULD carry
 the trailing `.` so a namespace (`review.`) does not also match a bare sibling that
-merely shares the stem (`reviewer`). `@` is NOT the grouping delimiter; it stays
+merely shares the stem (`reviews`). `@` is NOT the grouping delimiter; it stays
 reserved for the existing `shelf@project` scoping and MAY combine with a namespace
 (`review.tests@some-repo`).
 **Rationale:** "Group by concept" done the minimal, brand-safe way — lexically, by
@@ -532,7 +532,7 @@ and `cli.test.ts` → `describe('split (issue #68)')` and
 <a id="fr-stats-001"></a>
 **FR-STATS-001 (Should).** `stats` SHALL roll up per-command calls/errors/p50/p95/last-used
 within a window (`parseWindowMs`, default 7d) and flag three anomalies: **loop**
-(≥`NB_LOOP_N` calls of one shelf+command within `NB_LOOP_WINDOW_S`), **went-silent**
+(≥`NB_LOOP_N` calls of one command on one shelf within `NB_LOOP_WINDOW_S`), **went-silent**
 (used historically, zero in-window, and last seen longer than `NB_SILENT_H` ago),
 **high-error-rate** (≥`NB_ERR_MIN` calls and ≥`NB_ERR_RATE` failures).
 

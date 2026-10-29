@@ -1518,9 +1518,18 @@ describe('stats notebook inventory (issue #40)', () => {
     await addEntry(dir, 'patcher', 'x');
     await addEntry(dir, 'patcher2', 'y'); // a prefix-collision sibling: must NOT leak in
     await addEntry(dir, 'cartographer', 'z');
-    const rep = stats(dir, { role: 'patcher', now: Date.now() });
+    const rep = stats(dir, { shelf: 'patcher', now: Date.now() });
     expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 1, cap: maxLines() }]);
     expect(rep.notebookTotals).toEqual({ roles: 1, shelves: 1, lines: 1, cap: maxLines() });
+  });
+
+  test('the deprecated role option still scopes the report, and shelf wins when both are given', async () => {
+    await addEntry(dir, 'patcher', 'x');
+    await addEntry(dir, 'cartographer', 'z');
+    expect(stats(dir, { role: 'patcher', now: Date.now() }).notebooks.map((n) => n.shelf)).toEqual(['patcher']);
+    expect(
+      stats(dir, { shelf: 'cartographer', role: 'patcher', now: Date.now() }).notebooks.map((n) => n.shelf),
+    ).toEqual(['cartographer']);
   });
 
   test('a shelf filter for a shelf with no notebook yields an empty inventory', async () => {

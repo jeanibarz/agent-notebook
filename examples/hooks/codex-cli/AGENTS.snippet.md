@@ -4,7 +4,7 @@
   automatically at the start of every session, which IS the integration: unlike
   Claude Code, Codex has no lifecycle hooks, so the contract lives in the
   instructions, and the per-change git history comes from the PATH wrapper. No
-  per-project "shelf" to configure — the agent lists the notebooks and opens what
+  per-project notebook name to configure — the agent lists the notebooks and opens what
   fits.
 -->
 

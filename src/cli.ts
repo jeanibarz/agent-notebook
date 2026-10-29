@@ -61,7 +61,7 @@ import {
  */
 const LIST_DEFAULT_LIMIT = 50;
 
-const HELP = `nb — the Agent Notebook (bounded, voted, per-shelf memory)
+const HELP = `nb — the Agent Notebook (bounded, voted memory, grouped in shelves)
 
 usage:
   nb show   <shelf> [--json]               print the notebook (highest-scored first; --json emits {shelf,description,entries})
@@ -83,6 +83,8 @@ usage:
   nb --version                            print the tool version
 
 notes:
+  - <shelf> is a notebook's name: one <shelf>.md file of lessons an agent needs in the
+    same situations (see \`nb list\`).
   - add/vote/rm/merge accept --json (after the subcommand): stdout is one JSON
     result object and nothing else; warnings/errors stay on stderr. Exit codes are
     unchanged (a too-long add still exits 1, a duplicate still exits 0).
@@ -435,7 +437,7 @@ export async function runNbCli(
         // anomaly without regex-parsing the human table. The --since warning
         // above stays on stderr, keeping stdout pure JSON.
         if (rest.includes('--json')) {
-          process.stdout.write(JSON.stringify(stats(dir, { role: maybeShelf, windowMs })) + '\n');
+          process.stdout.write(JSON.stringify(stats(dir, { shelf: maybeShelf, windowMs })) + '\n');
         } else {
           process.stdout.write(renderStats(dir, maybeShelf, windowMs) + '\n');
         }
@@ -653,7 +655,7 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
 }
 
 function renderStats(dir: string, shelf: string | undefined, windowMs: number | undefined): string {
-  const rep = stats(dir, { role: shelf, windowMs });
+  const rep = stats(dir, { shelf, windowMs });
   const lines: string[] = [];
   lines.push(`nb usage — ${shelf ? `shelf ${shelf}, ` : ''}window ${rep.window}, ${rep.totalCalls} calls`);
   if (rep.perCommand.length === 0) {

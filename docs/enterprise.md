@@ -145,11 +145,10 @@ flowchart TB
   memory if the machine dies (mitigated by their home backup).
 - **Shared team notebooks.** One internal remote is the source of truth; the
   daily job pushes, developers pull. Because it's git, review and conflict
-  resolution are the workflows you already have. When several teams or projects
-  share the store, name shelves with a `.` group prefix (`review.tests`) and, for
-  project-specific lessons, an `@project` suffix (`review.tests@billing`), so names
-  do not collide and `nb list review.` lists one group. When many agents read the
-  shared shelves, gate pushes with a CI secret scan and a human review.
+  resolution are the workflows you already have. Name shelves with a `.` group
+  prefix (`review.tests`) so `nb list review.` lists one group, and add an
+  `@project` suffix (`review.tests@billing`) for project-specific lessons. Gate
+  pushes (CI secret scan plus human review) if the shelves are widely injected.
 - **Project-scoped.** Commit a project's notebooks *into the project repo* under
   a known dir and point `NB_DIR` at it, so memory ships and is reviewed with the
   code. (Keep the `.nb-usage.log` and `.nb.lock` git-ignored — see the

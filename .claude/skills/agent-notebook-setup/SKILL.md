@@ -45,7 +45,7 @@ Confirm `nb add smoke "test" && nb show smoke && nb rm smoke "test"` round-trips
 
 The required step is just putting the "list the notebooks, open what fits,
 retrospect at the end" contract where the harness reads standing instructions.
-There is no per-project "shelf" to configure.
+There is no per-project notebook name to configure.
 
 - **Claude Code:** put the contract in a `CLAUDE.md` it auto-loads — simplest is
   `cp <repo>/AGENTS.md ./AGENTS.md && ln -s AGENTS.md CLAUDE.md` (project), or the
@@ -56,9 +56,9 @@ There is no per-project "shelf" to configure.
 - **Optional hooks (Claude Code only):** copy `examples/hooks/claude-code/` scripts,
   `chmod +x`, and merge the `settings.json` `hooks` block into `.claude/settings.json`,
   replacing `/ABSOLUTE/PATH`. Explain they are *conveniences*: `SessionStart`
-  injects the `nb list` index (no shelf logic); `Stop`/`SubagentStop` nudges the
+  injects the `nb list` index (it does not choose a notebook for the agent); `Stop`/`SubagentStop` nudges the
   retrospective once per session. Skipping them changes nothing essential.
-- **Subagents:** no hook and no shelf assignment — a subagent reads the same
+- **Subagents:** no hook, and no notebook is assigned to a subagent — a subagent reads the same
   contract and runs `nb list` for its own task (`docs/harness-setup.md#subagents`).
 
 ## 4. git-versioning (optional)

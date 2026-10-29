@@ -79,7 +79,7 @@ flowchart LR
 
 ## What's actually inside a notebook
 
-A notebook is a plain text file. One per *shelf* — a group of lessons that belong together. You can
+A notebook is a plain text file. Each file is called a *shelf*: a group of lessons an agent needs in the same situations. You can
 open it in any editor; nothing is hidden or encoded.
 
 ```
@@ -188,10 +188,10 @@ You need [Node.js](https://nodejs.org) 18 or newer. Then:
 ```sh
 npm install -g agent-notebook      # installs the `nb` command
 
-nb add reviewer "run the build before the tests"
+nb add build-and-test "run the build before the tests"
 nb list                            # the index: every notebook + its description
-nb show reviewer                   # each line starts with a short id, e.g.  3f9a2c  [+1]  run the build…
-nb vote reviewer 3f9a2c +1         # vote by that id — a unique snippet ("run the build") works too
+nb show build-and-test             # each line starts with a short id, e.g.  3f9a2c  [+1]  run the build…
+nb vote build-and-test 3f9a2c +1   # vote by that id — a unique snippet ("run the build") works too
 ```
 
 That's a working notebook. You just taught an assistant something it will keep.

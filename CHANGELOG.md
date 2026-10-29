@@ -11,9 +11,9 @@ versions are listed plainly.
 
 ### Changed
 - **Terminology: a notebook file is now called a *shelf*.** A shelf is one `<name>.md`
-  notebook file, a group of lessons that should surface together. Lessons are grouped by
-  co-access, not by agent role, so an agent that opens a shelf gets the lessons it looks
-  for plus ones it would not think to search for. The CLI help, error messages (e.g.
+  notebook file: a group of lessons an agent needs in the same situations. Lessons are
+  grouped by co-access (needed together), not by agent role, so an agent that opens a
+  shelf can get the lessons it looks for plus ones it might not think to search for. The CLI help, error messages (e.g.
   `invalid shelf name`, `missing <shelf> argument`), human `nb stats` output, README,
   AGENTS.md and docs now say shelf. Argument positions, the `shelf@project` scoping, every
   `NB_*` variable, the file layout and the usage-log format are unchanged.

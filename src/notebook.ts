@@ -800,8 +800,8 @@ export function render(dir: string, shelf: string): string {
  * per `assertSafeShelf`). A `README.md` (case-insensitive) is excluded too: it is
  * the conventional git/backup artifact in a notebook folder, not a notebook
  * (issue #90) — the reserved name keeps a write command from ever creating one.
- * An absent/empty notebooks dir yields `[]` (not an error), so `nb shelves` can
- * report "no shelves yet" and exit 0 on a clean machine.
+ * An absent/empty notebooks dir yields `[]` (not an error), so `nb list` can
+ * report "no notebooks yet" and exit 0 on a clean machine.
  */
 export function listShelves(dir: string): string[] {
   let names: string[];
@@ -1361,11 +1361,18 @@ export function parseWindowMs(raw: string | undefined): number {
  */
 export function stats(
   dir: string,
-  opts: { role?: string; windowMs?: number; now?: number } = {},
+  opts: {
+    shelf?: string;
+    /** @deprecated use `shelf`; honoured when `shelf` is absent */
+    role?: string;
+    windowMs?: number;
+    now?: number;
+  } = {},
 ): StatsReport {
+  const scope = opts.shelf ?? opts.role;
   const now = opts.now ?? Date.now();
   const windowMs = opts.windowMs ?? 7 * 24 * 3600_000;
-  const all = parseUsage(dir).filter((r) => (opts.role ? r.role === opts.role : true));
+  const all = parseUsage(dir).filter((r) => (scope ? r.role === scope : true));
   const recent = all.filter((r) => now - Date.parse(r.ts) <= windowMs);
 
   const byCmd = new Map<string, UsageRow[]>();
@@ -1665,11 +1672,11 @@ export function stats(
         : `${Math.round(windowMs / 60_000)}m`;
 
   // Notebook inventory (issue #40). Independent of the usage window — it is the
-  // current on-disk state, not a time slice. Scoped to `opts.role` when given,
+  // current on-disk state, not a time slice. Scoped to the requested shelf when given,
   // mirroring the per-command filtering above. `cap` is read once so every row
   // and the total report the same value.
   const cap = maxLines();
-  const inventoryShelves = opts.role ? listShelves(dir).filter((r) => r === opts.role) : listShelves(dir);
+  const inventoryShelves = scope ? listShelves(dir).filter((r) => r === scope) : listShelves(dir);
   const notebooks: NotebookStat[] = inventoryShelves.map((shelf) => ({
     role: shelf,
     shelf,

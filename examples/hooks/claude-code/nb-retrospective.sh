@@ -7,7 +7,7 @@
 # blocks the stop a single time by emitting a `block` decision whose reason the
 # model reads; a per-session sentinel guarantees it never loops.
 #
-# It is shelf-agnostic: it does not guess a notebook. The agent already knows which
+# It does not guess a notebook. The agent already knows which
 # notebooks it opened this task (moment ②) and votes/adds to those.
 #
 # Reads the hook JSON on stdin (session_id, stop_hook_active). Requires `node`

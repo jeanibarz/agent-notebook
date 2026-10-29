@@ -18,9 +18,9 @@ New here? Start with the [plain-language guide](docs/getting-started.md) or the
 
 ## 1. What the notebook is (one paragraph)
 
-A notebook is a bounded, voted, plain-text memory. Each notebook file is a *shelf*:
-a group of lessons that should surface together (`reviewer`, `release`, `repro`) —
-grouped by co-access, not by which agent writes them. It holds at most 50 one-line lessons by
+A notebook is a bounded, voted, plain-text memory, made of *shelves*. A shelf is one
+file: a group of lessons an agent needs in the same situations (co-access), for example
+`release-and-tagging` or `flaky-ci-debugging`, not one file per agent role. Each shelf holds at most 50 one-line lessons by
 default (raise the cap with `NB_MAX_LINES`),
 ranked by the votes agents cast on them; when it is full a new lesson still goes
 in — the lowest-scored line is evicted and the stalest one ages a point, so a
@@ -77,8 +77,8 @@ nb search "<keywords>"     # SECONDARY keyword fallback — only for a known-ite
 A subagent doing specialised work (reviewing, patching, reproducing a bug) does
 the same ① → ② for its own job: point it at this same contract so it runs
 `nb list`, opens the notebooks that fit, and runs the retrospective at its end.
-Reuse an existing notebook rather than minting a near-duplicate — shelf matching is
-exact, so `reviewer` and `review` become two unrelated memories.
+Reuse an existing shelf rather than minting a near-duplicate — shelf names match
+exactly, so `build-and-test` and `build-and-tests` become two unrelated memories.
 
 ### ④ At the end of a task — **the retrospective** (the step that makes tomorrow faster)
 
@@ -104,9 +104,9 @@ notebook so the next run of this task starts wiser:
    nb merge "<shelf>" <idA> <idB> "<one tighter lesson>" --reason duplicate
    nb split "<shelf>" <id> "<lesson A>" "<lesson B>" --reason overloaded
    ```
-4. **Add at most one new lesson** — to the notebook whose topic it fits (check
-   `nb list` if unsure which; start a new shelf only if no notebook covers this
-   kind of task). Make it the single most useful, non-obvious thing you learned
+4. **Add at most one new lesson** — to the shelf whose lessons are needed in the same
+   situations as this one (check `nb list` if unsure which; start a new shelf only if
+   no existing shelf fits). Make it the single most useful, non-obvious thing you learned
    that you would want *surfaced to you* next time. One line, ≤200 chars,
    concrete, no preamble. Adding nothing is a valid and honest outcome.
    ```sh
@@ -140,16 +140,15 @@ Rules the tool enforces, so you don't have to guess:
 
 ## 4. Shelves, namespaces, and scoping — pick the right notebook
 
-- A **shelf** is one `<name>.md` notebook file, a group of lessons that should
-  surface together: `reviewer`, `patcher`, `release`. Group by co-access, not by
-  agent role: an agent that opens a shelf gets the lessons it looks for plus ones
-  it would not think to search for. Reuse an existing shelf (`nb list`) before
+- A **shelf** is one `<name>.md` notebook file: a group of lessons an agent needs in
+  the same situations (co-access), for example `release-and-tagging` or
+  `flaky-ci-debugging`. Group by co-access, not by agent role: an agent that opens a shelf can get the lessons it looks for plus ones it might not think to search for. Reuse an existing shelf (`nb list`) before
   creating a new one — shelf matching is exact, so a typo silently starts an orphan
   notebook.
 - **Namespace** a shelf that grows several concerns with a `.` prefix:
   `review.tests`, `review.correctness`, `review.security`. It is a naming
   convention only — still one flat file each, no new storage.
-- Scope a shelf **to a project** with `@` (`shelf@project`): `reviewer@my-repo`. It composes with a
+- Scope a shelf **to a project** with `@` (`shelf@project`): `build-and-test@my-repo`. It composes with a
   namespace: `review.tests@my-repo`.
 
 ---

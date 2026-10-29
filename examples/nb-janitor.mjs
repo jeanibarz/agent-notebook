@@ -10,7 +10,7 @@
 //     1. Cap pressure & reorg       — notebooks near the cap (50 lines by default) that will
 //                                      start evicting lessons; split candidates.
 //     2. Near-duplicate SHELF names — likely typos / fragmentation (e.g.
-//                                      `reviewer` vs `review`) that split memory.
+//                                      `build-and-test` vs `build-and-tests`) that split memory.
 //     3. Likely duplicate LESSONS   — paraphrase pairs the exact-match dedup let
 //                                      through; `nb merge` candidates. This is the
 //                                      "duplicate detection" gap, found offline.
@@ -247,7 +247,7 @@ if (capPressure.length === 0) out.push('  ✅ no notebook is near the cap.');
 else
   for (const r of capPressure) {
     out.push(`  ⚠️  ${r.shelf}: ${r.lessons}/${MAX_LINES} (${r.pct}%) — about to evict lessons.`);
-    out.push(`      → split concerns into namespaces: nb split, or new shelves ${r.shelf}.<concern>`);
+    out.push(`      → split concerns into namespaces: move lessons to new shelves ${r.shelf}.<concern> (nb split cuts one lesson in two)`);
   }
 
 H('2. Near-duplicate shelf names (fragmented memory)');
