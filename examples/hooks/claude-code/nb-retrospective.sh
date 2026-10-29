@@ -7,7 +7,7 @@
 # blocks the stop a single time by emitting a `block` decision whose reason the
 # model reads; a per-session sentinel guarantees it never loops.
 #
-# It is role-agnostic: it does not guess a notebook. The agent already knows which
+# It does not guess a notebook. The agent already knows which
 # notebooks it opened this task (moment ②) and votes/adds to those.
 #
 # Reads the hook JSON on stdin (session_id, stop_hook_active). Requires `node`
@@ -41,11 +41,11 @@ try { fs.writeFileSync(sentinel, new Date().toISOString()); } catch {}
 
 const reason = [
   `Before finishing, run the agent-notebook retrospective on the notebooks you opened this task (one pass, then stop):`,
-  `  1. nb vote <role> <id> +1     — each lesson that actually helped`,
-  `  2. nb vote <role> <id> -1     — each lesson shown to you that misled (vote takes no --reason)`,
-  `  3. nb rm   <role> <id> --reason obsolete   — anything incorrect / no longer true`,
-  `  4. nb merge/split <role> …    — only if a notebook is cluttered or full`,
-  `  5. nb add  <role> "<=200-char lesson"   — at MOST one new, non-obvious lesson, to the notebook it fits (or none)`,
+  `  1. nb vote <shelf> <id> +1     — each lesson that actually helped`,
+  `  2. nb vote <shelf> <id> -1     — each lesson shown to you that misled (vote takes no --reason)`,
+  `  3. nb rm   <shelf> <id> --reason obsolete   — anything incorrect / no longer true`,
+  `  4. nb merge/split <shelf> …    — only if lessons repeat or a line holds two`,
+  `  5. nb add  <shelf> "<=200-char lesson"   — at MOST one new, non-obvious lesson, to the notebook it fits (or none)`,
   `Do not pad to hit a quota — "nothing new worth storing" is a valid outcome. Then stop.`,
 ].join('\n');
 

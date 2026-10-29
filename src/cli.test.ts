@@ -26,7 +26,7 @@ afterEach(() => {
 
 /**
  * Run runNbCli with stdout/stderr captured. When `stdin` is provided, it is fed
- * to the CLI through the injectable stdin reader (used by `nb add <role> -`), so
+ * to the CLI through the injectable stdin reader (used by `nb add <shelf> -`), so
  * the stdin path is exercised without touching the real `process.stdin`.
  */
 async function run(
@@ -67,7 +67,7 @@ describe('runNbCli', () => {
     expect(show.out).toMatch(/^[0-9a-f]{6}\s+\[\+1\]\s+prefer execFileSync/m); // stable id + score
   });
 
-  test('show --json emits { role, description, entries } ordered highest-score-first (issue #87)', async () => {
+  test('show --json emits { shelf, description, entries } ordered highest-score-first (issue #87)', async () => {
     // Two lessons; vote the second one up so score ordering differs from insertion order.
     await run(['add', 'patcher', 'alpha lesson']);
     await run(['add', 'patcher', 'beta lesson']);
@@ -101,7 +101,7 @@ describe('runNbCli', () => {
   test('show --json on an empty notebook yields { description: null, entries: [] } and exits 0 (issue #87)', async () => {
     const r = await run(['show', 'solo', '--json']);
     expect(r.code).toBe(0);
-    expect(JSON.parse(r.out)).toEqual({ role: 'solo', description: null, entries: [] });
+    expect(JSON.parse(r.out)).toEqual({ role: 'solo', shelf: 'solo', description: null, entries: [] });
   });
 
   test('vote by the id shown in `show` succeeds', async () => {
@@ -163,21 +163,21 @@ describe('runNbCli', () => {
     expect(s.out).toContain('window 7d'); // falls back to the default and still reports
   });
 
-  test('--since with no value warns, renders empty quotes, and still resolves the role', async () => {
+  test('--since with no value warns, renders empty quotes, and still resolves the shelf', async () => {
     await run(['add', 'patcher', 'x']);
     const s = await run(['stats', 'patcher', '--since']); // --since is the final arg
     expect(s.code).toBe(0);
     expect(s.err).toContain("unrecognized --since ''"); // empty-quote fallback for a missing value
     expect(s.err).toContain('showing 7d');
     expect(s.out).toContain('window 7d');
-    expect(s.out).toContain('role patcher'); // role still parsed despite the dangling flag
+    expect(s.out).toContain('shelf patcher'); // shelf still parsed despite the dangling flag
   });
 
-  test('the human stats table renders a detected anomaly line (with the role suffix)', async () => {
+  test('the human stats table renders a detected anomaly line (with the shelf suffix)', async () => {
     // The --json path and the library's anomaly detection are both covered, but
     // the HUMAN table's anomaly rendering in renderStats (the `anomalies:` header
-    // and the `[kind] command (role X): detail` line, including the conditional
-    // role suffix) had no test. Seed a tight loop of calls into the usage log,
+    // and the `[kind] command (shelf X): detail` line, including the conditional
+    // shelf suffix) had no test. Seed a tight loop of calls into the usage log,
     // then run `nb stats` WITHOUT --json and assert the rendered anomaly line, so
     // a regression in that user-facing formatting is caught.
     process.env.NB_LOOP_N = '3';
@@ -190,7 +190,7 @@ describe('runNbCli', () => {
     const s = await run(['stats', 'patcher']); // default table path (no --json)
     expect(s.code).toBe(0);
     expect(s.out).toContain('  anomalies:'); // the header branch, not the "none" line
-    expect(s.out).toContain('[loop] add (role patcher):'); // kind, command, and the conditional role suffix
+    expect(s.out).toContain('[loop] add (shelf patcher):'); // kind, command, and the conditional shelf suffix
     expect(s.out).not.toContain('anomalies: none');
     // The per-command table row is rendered too (the `add` command summary line).
     expect(s.out).toMatch(/^\s*add\s+\d+\s+\d+%/m);
@@ -224,9 +224,9 @@ describe('runNbCli', () => {
     expect(s.out).not.toContain('nb usage —'); // the human table is NOT emitted
   });
 
-  test('--json composes with --since and a role, warning on stderr while stdout stays pure JSON', async () => {
+  test('--json composes with --since and a shelf, warning on stderr while stdout stays pure JSON', async () => {
     await run(['add', 'patcher', 'x']);
-    const s = await run(['stats', 'patcher', '--since', '7days', '--json']); // bad window + role + json
+    const s = await run(['stats', 'patcher', '--since', '7days', '--json']); // bad window + shelf + json
     expect(s.code).toBe(0);
     expect(s.err).toContain("unrecognized --since '7days'"); // still warns on a bad window
     const rep = JSON.parse(s.out); // stdout is pure JSON despite the warning on stderr
@@ -251,32 +251,32 @@ describe('runNbCli', () => {
     const s = await run(['stats']);
     expect(s.code).toBe(0);
     const out = s.out.split('\n').map((l) => l.trim());
-    expect(out).toContain('notebooks: 2 roles, 3 lines (cap 2/role)');
+    expect(out).toContain('notebooks: 2 shelves, 3 lines (cap 2/shelf)');
     // Whole-row, line-anchored assertions (^…$ on one line) so a regex can never
     // match across rows or treat 1/2 as a prefix of 1/20.
     expect(out.some((l) => /^patcher\s+2\/2\s+FULL$/.test(l))).toBe(true);
     expect(out.some((l) => /^scout\s+1\/2$/.test(l))).toBe(true); // below cap: no marker
   });
 
-  test('stats table says "notebooks: none" when no role has a notebook', async () => {
+  test('stats table says "notebooks: none" when no shelf has a notebook', async () => {
     const s = await run(['stats']); // only the stats call itself is logged; no notebook files
     expect(s.code).toBe(0);
     expect(s.out).toContain('notebooks: none');
     expect(s.out).not.toContain('FULL');
   });
 
-  test('stats <role> scopes the table inventory to that role (singular header)', async () => {
+  test('stats <shelf> scopes the table inventory to that shelf (singular header)', async () => {
     await run(['add', 'patcher', 'a']);
-    await run(['add', 'scout', 'b']); // a second role that must be excluded
+    await run(['add', 'scout', 'b']); // a second shelf that must be excluded
     const s = await run(['stats', 'patcher']);
     expect(s.code).toBe(0);
     const out = s.out.split('\n').map((l) => l.trim());
-    expect(out).toContain('notebooks: 1 role, 1 lines (cap 50/role)'); // singular "role"
+    expect(out).toContain('notebooks: 1 shelf, 1 lines (cap 50/shelf)'); // singular "shelf"
     expect(out.some((l) => /^patcher\s+1\/50$/.test(l))).toBe(true);
-    expect(out.some((l) => /^scout\b/.test(l))).toBe(false); // the other role is not listed
+    expect(out.some((l) => /^scout\b/.test(l))).toBe(false); // the other shelf is not listed
   });
 
-  test('stats --json includes per-role lines and the maxLines cap (issue #40)', async () => {
+  test('stats --json includes per-shelf lines and the maxLines cap (issue #40)', async () => {
     process.env.NB_MAX_LINES = '5';
     await run(['add', 'patcher', 'one']);
     await run(['add', 'patcher', 'two']);
@@ -289,8 +289,8 @@ describe('runNbCli', () => {
     expect(Array.isArray(report.perCommand)).toBe(true);
     expect(Array.isArray(report.anomalies)).toBe(true);
     // new inventory fields
-    expect(report.notebooks).toEqual([{ role: 'patcher', lines: 2, cap: 5 }]);
-    expect(report.notebookTotals).toEqual({ roles: 1, lines: 2, cap: 5 });
+    expect(report.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 2, cap: 5 }]);
+    expect(report.notebookTotals).toEqual({ roles: 1, shelves: 1, lines: 2, cap: 5 });
     expect(Array.isArray(report.signals)).toBe(true); // diagnostic signals (issue #72), additive
   });
 
@@ -304,7 +304,7 @@ describe('runNbCli', () => {
     const s = await run(['stats', 'reviewer']);
     expect(s.code).toBe(0);
     expect(s.out).toContain('  signals:'); // the header branch, not the "none" line
-    expect(s.out).toContain('[browse-without-use] role reviewer');
+    expect(s.out).toContain('[browse-without-use] shelf reviewer');
     expect(s.out).not.toContain('signals: none');
   });
 
@@ -313,7 +313,7 @@ describe('runNbCli', () => {
     await run(['show', 'solo']); // browse with no vote
     const s = await run(['stats', '--json']);
     const rep = JSON.parse(s.out);
-    expect(rep.signals.some((x: { kind: string; role: string }) => x.kind === 'browse-without-use' && x.role === 'solo')).toBe(true);
+    expect(rep.signals.some((x: { kind: string; shelf: string }) => x.kind === 'browse-without-use' && x.shelf === 'solo')).toBe(true);
   });
 
   test('the human stats table says "signals: none" when there is nothing to report', async () => {
@@ -372,9 +372,9 @@ describe('runNbCli', () => {
   });
 
   test('a missing required argument exits 1', async () => {
-    const r = await run(['show']); // no role
+    const r = await run(['show']); // no shelf
     expect(r.code).toBe(1);
-    expect(r.err).toContain('missing <role>');
+    expect(r.err).toContain('missing <shelf>');
   });
 
   test('a bad vote direction exits 1', async () => {
@@ -471,26 +471,26 @@ describe('runNbCli', () => {
     expect(r.err).toContain('missing <id|query>');
   });
 
-  test('path with no role prints the notebooks dir (respecting NB_DIR)', async () => {
+  test('path with no shelf prints the notebooks dir (respecting NB_DIR)', async () => {
     const r = await run(['path']);
     expect(r.code).toBe(0);
     expect(r.out).toBe(`${dir}\n`); // bare path, pipeable into cat/$(...)
   });
 
-  test('path <role> prints the resolved absolute role file path', async () => {
+  test('path <shelf> prints the resolved absolute shelf file path', async () => {
     const r = await run(['path', 'reviewer']);
     expect(r.code).toBe(0);
     expect(r.out).toBe(`${join(dir, 'reviewer.md')}\n`);
     expect(r.out.trimEnd()).toMatch(/\/reviewer\.md$/);
   });
 
-  test('path with an unsafe role name is rejected by the existing safe-role check', async () => {
+  test('path with an unsafe shelf name is rejected by the existing safe-shelf check', async () => {
     const r = await run(['path', '../escape']);
     expect(r.code).toBe(1);
-    expect(r.err).toMatch(/invalid role name/);
+    expect(r.err).toMatch(/invalid shelf name/);
   });
 
-  describe('list / ls / roles — the notebook index (issue #71)', () => {
+  describe('list / ls / shelves — the notebook index (issue #71)', () => {
     test('empty/absent notebooks dir prints a friendly note on stderr, empty stdout, exit 0', async () => {
       const r = await run(['list']);
       expect(r.code).toBe(0);
@@ -520,8 +520,8 @@ describe('runNbCli', () => {
       await run(['add', 'patcher', 'y']);
       await run(['add', 'reviewer', 'z']);
       const r = await run(['list']);
-      const roles = r.out.trimEnd().split('\n').slice(1).map((l) => l.trim().split(/\s+/)[0]);
-      expect(roles).toEqual(['patcher', 'planner', 'reviewer']);
+      const shelves = r.out.trimEnd().split('\n').slice(1).map((l) => l.trim().split(/\s+/)[0]);
+      expect(shelves).toEqual(['patcher', 'planner', 'reviewer']);
     });
 
     test('a notebook with no description falls back to its top-scored lesson, marked (auto)', async () => {
@@ -535,7 +535,7 @@ describe('runNbCli', () => {
       expect(row).not.toContain('low priority lesson');
     });
 
-    test('ls and roles are aliases of list (identical output)', async () => {
+    test('ls and shelves are aliases of list (identical output)', async () => {
       await run(['add', 'reviewer', 'a lesson']);
       await run(['add', 'patcher', 'b lesson']);
       const list = await run(['list']);
@@ -591,11 +591,11 @@ describe('runNbCli', () => {
       const parsed = JSON.parse(r.out);
       expect(parsed.dir).toBe(dir);
       expect(parsed.total).toBe(1);
-      expect(parsed.rows[0]).toEqual({ role: 'reviewer', lessons: 1, desc: 'the trigger', auto: null });
+      expect(parsed.rows[0]).toEqual({ role: 'reviewer', shelf: 'reviewer', lessons: 1, desc: 'the trigger', auto: null });
     });
 
     test('a zero-lesson, no-description notebook is hidden (phantom debris)', async () => {
-      // `nb describe <role> ""` on a fresh role writes an empty file with no
+      // `nb describe <shelf> ""` on a fresh shelf writes an empty file with no
       // metadata and no entries — nothing to discover. It must not appear.
       await run(['describe', 'phantom', '']);
       await run(['add', 'real', 'a lesson']);
@@ -628,7 +628,7 @@ describe('runNbCli', () => {
     });
   });
 
-  describe('add <role> - reads the lesson from stdin (issue #38)', () => {
+  describe('add <shelf> - reads the lesson from stdin (issue #38)', () => {
     test('happy path: a single piped line is stored and prints the usual added line', async () => {
       // The acceptance criterion: `printf '%s\n' 'run lint first' | nb add reviewer -`.
       const r = await run(['add', 'reviewer', '-'], 'run lint first\n');
@@ -754,9 +754,9 @@ describe('runNbCli', () => {
       expect(parseOnly(r.out)).toMatchObject({ added: true, reason: 'added', size: 1 });
     });
 
-    test('the flag is positional-order-independent and leaves the role/lesson intact', async () => {
-      // --json between the role and the lesson must be stripped before positional
-      // parsing, so the lesson is not swallowed and the role still resolves.
+    test('the flag is positional-order-independent and leaves the shelf/lesson intact', async () => {
+      // --json between the shelf and the lesson must be stripped before positional
+      // parsing, so the lesson is not swallowed and the shelf still resolves.
       const r = await run(['add', 'patcher', '--json', 'a lesson in the middle']);
       expect(r.code).toBe(0);
       expect(parseOnly(r.out)).toMatchObject({ added: true, reason: 'added', size: 1 });
@@ -996,7 +996,7 @@ describe('nb describe (issue #70)', () => {
   test('sets a description, then prints it back with no text operand', async () => {
     const set = await run(['describe', 'patcher', 'build / test gotchas for this repo']);
     expect(set.code).toBe(0);
-    expect(set.out).toContain('description set for role "patcher"');
+    expect(set.out).toContain('description set for shelf "patcher"');
     const get = await run(['describe', 'patcher']);
     expect(get.code).toBe(0);
     expect(get.out).toBe('build / test gotchas for this repo\n'); // bare line, pipe-friendly
@@ -1022,7 +1022,7 @@ describe('nb describe (issue #70)', () => {
     const get = await run(['describe', 'ghost']);
     expect(get.code).toBe(0);
     expect(get.out).toBe('');
-    expect(get.err).toContain('no description set for role "ghost"');
+    expect(get.err).toContain('no description set for shelf "ghost"');
   });
 
   test('an over-long description is rejected (exit 1), never truncated', async () => {
@@ -1050,9 +1050,9 @@ describe('nb describe (issue #70)', () => {
   test('--json emits a structured result for both set and read', async () => {
     const set = await run(['describe', 'patcher', 'json trigger', '--json']);
     expect(set.code).toBe(0);
-    expect(JSON.parse(set.out)).toEqual({ role: 'patcher', desc: 'json trigger', set: true });
+    expect(JSON.parse(set.out)).toEqual({ role: 'patcher', shelf: 'patcher', desc: 'json trigger', set: true });
     const get = await run(['describe', 'patcher', '--json']);
-    expect(JSON.parse(get.out)).toEqual({ role: 'patcher', desc: 'json trigger', set: false });
+    expect(JSON.parse(get.out)).toEqual({ role: 'patcher', shelf: 'patcher', desc: 'json trigger', set: false });
   });
 
   test('describe set is recorded in the usage log with a described outcome', async () => {
@@ -1069,7 +1069,7 @@ describe('nb describe (issue #70)', () => {
   test('a --reason before the text is stripped, never stored as the description', async () => {
     const set = await run(['describe', 'patcher', '--reason', 'other', 'real text']);
     expect(set.code).toBe(0);
-    expect(set.out).toContain('description set for role "patcher": real text');
+    expect(set.out).toContain('description set for shelf "patcher": real text');
     expect((await run(['describe', 'patcher'])).out).toBe('real text\n'); // the real text, not "--reason"
   });
 
@@ -1096,7 +1096,7 @@ describe('nb describe (issue #70)', () => {
   test('only a --reason and no text operand still reads, not sets (description stays unset)', async () => {
     const r = await run(['describe', 'patcher', '--reason', 'other']);
     expect(r.code).toBe(0);
-    expect(r.err).toContain('no description set for role "patcher"'); // read path, nothing stored
+    expect(r.err).toContain('no description set for shelf "patcher"'); // read path, nothing stored
   });
 });
 
@@ -1130,7 +1130,7 @@ describe('nb search — the demoted keyword fallback (issue #82)', () => {
     expect(or.out).toContain('patcher');
   });
 
-  test('a bare prefix operand scopes the search by role name', async () => {
+  test('a bare prefix operand scopes the search by shelf name', async () => {
     await run(['add', 'review.security', 'sanitize the lock input']);
     await run(['add', 'patcher', 'the lock is a spinlock']);
     const scoped = await run(['search', 'lock', 'review.']);
@@ -1154,7 +1154,7 @@ describe('nb search — the demoted keyword fallback (issue #82)', () => {
     const parsed = JSON.parse(r.out);
     expect(parsed.terms).toEqual(['vitest']);
     expect(parsed.groups).toHaveLength(1);
-    expect(parsed.groups[0].role).toBe('reviewer');
+    expect(parsed.groups[0].shelf).toBe('reviewer');
     expect(parsed.groups[0].hits[0].id).toBe(entryId('run the build before vitest'));
   });
 
@@ -1200,7 +1200,56 @@ describe('nb search — the demoted keyword fallback (issue #82)', () => {
     const report = JSON.parse(stats.out);
     const gap = report.signals.find((s: { kind: string }) => s.kind === 'failed-search');
     expect(gap).toBeDefined();
-    expect(gap.role).toBe('reviewer');
+    expect(gap.shelf).toBe('reviewer');
     expect(gap.detail).toContain('retry backoff');
+  });
+});
+
+describe('shelf terminology (role kept as a deprecated alias)', () => {
+  test('show/list/search/stats --json carry `shelf` equal to the deprecated `role`', async () => {
+    await run(['add', 'reviewer', 'check the lock file']);
+    await run(['describe', 'reviewer', 'when reviewing']);
+
+    const show = JSON.parse((await run(['show', 'reviewer', '--json'])).out);
+    expect(show.shelf).toBe('reviewer');
+    expect(show.shelf).toBe(show.role);
+
+    const list = JSON.parse((await run(['list', '--json'])).out);
+    expect(list.rows).toHaveLength(1);
+    expect(list.rows[0].shelf).toBe(list.rows[0].role);
+    expect(list.rows[0].shelf).toBe('reviewer');
+
+    const search = JSON.parse((await run(['search', 'lock', '--json'])).out);
+    expect(search.groups).toHaveLength(1);
+    expect(search.groups[0].shelf).toBe(search.groups[0].role);
+    expect(search.groups[0].shelf).toBe('reviewer');
+
+    const st = JSON.parse((await run(['stats', '--json'])).out);
+    expect(st.notebooks).toHaveLength(1);
+    expect(st.notebooks[0].shelf).toBe(st.notebooks[0].role);
+    expect(st.notebooks[0].shelf).toBe('reviewer');
+    expect(st.notebookTotals.shelves).toBe(st.notebookTotals.roles);
+    expect(st.notebookTotals.shelves).toBe(1);
+  });
+
+  test('`nb shelves` and `nb roles` print exactly what `nb list` prints', async () => {
+    await run(['add', 'reviewer', 'a lesson']);
+    await run(['add', 'patcher', 'another lesson']);
+    const list = await run(['list']);
+    const shelves = await run(['shelves']);
+    const roles = await run(['roles']);
+    expect(shelves.code).toBe(0);
+    expect(shelves.out).toBe(list.out);
+    expect(roles.out).toBe(list.out);
+    expect(list.out).toContain('reviewer');
+    const json = await run(['shelves', '--json']);
+    expect(JSON.parse(json.out)).toEqual(JSON.parse((await run(['list', '--json'])).out));
+  });
+
+  test('help documents <shelf> and `nb shelves`, not <role>', async () => {
+    const r = await run(['--help']);
+    expect(r.out).toContain('<shelf>');
+    expect(r.out).toContain('nb shelves');
+    expect(r.out).not.toContain('<role>');
   });
 });

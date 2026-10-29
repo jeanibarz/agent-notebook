@@ -9,6 +9,45 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Changed
+- **Terminology: a notebook file is now called a *shelf*.** A shelf is one `<name>.md`
+  notebook file: a group of lessons an agent needs in the same situations. Lessons are
+  grouped by co-access (needed together), not by agent role, so an agent that opens a
+  shelf can get the lessons it looks for plus ones it might not think to search for. The CLI help, error messages (e.g.
+  `invalid shelf name`, `missing <shelf> argument`), human `nb stats` output, README,
+  AGENTS.md and docs now say shelf. Argument positions, the `shelf@project` scoping, every
+  `NB_*` variable, the file layout and the usage-log format are unchanged.
+
+- The `.` namespace convention now recommends **no prefix or one level at most**
+  (`family.situation`). The dot builds no hierarchy, and deeper names split lessons that
+  are needed together into small shelves. Docs only; no behaviour change.
+
+- **A full shelf is the normal state; do not split a shelf because it is full.** Eviction
+  and aging only run at the cap, and they are what retire unused lessons; splitting on
+  size multiplies half-empty shelves and makes the index harder to choose from. The README
+  gains a section on when to act: only when a full shelf keeps evicting lessons still
+  scored above the starting +1, or relearns evicted ones. The `eviction-while-still-voted` signal of `nb stats`
+  now counts only lessons evicted with a score above the +1 a new lesson starts at (evicting
+  a lesson that was never voted, or that fell back to +1 or below, is the cap working),
+  and its detail no longer suggests splitting.
+- `examples/nb-janitor.mjs`: section 1 is now "Lessons lost to eviction". It flags a shelf
+  with 2 or more evictions of lessons scored above +1 or re-added evicted lessons in the window, and
+  reports how many shelves are full for information only. The `--json` report replaces
+  `capPressure` with `fullShelves` and `lostLessons`.
+
+### Added
+- `shelf` key next to `role` (same value) on every JSON object that carried `role`:
+  `nb show --json`, `nb list --json` rows, `nb search --json` groups, `nb describe --json`,
+  and in `nb stats --json` the `notebooks[]`, `anomalies[]` and `signals[]` entries.
+  `notebookTotals` gains `shelves` next to `roles`.
+- Library exports `listShelves` and `assertSafeShelf`, and a `shelf` option for `stats()` (the `role` option still works).
+- `nb shelves`, an alias of `nb list`.
+
+### Deprecated
+- The `role` / `roles` JSON keys, the `listRoles` and `assertSafeRole` exports, the `role`
+  option of `stats()`, and the `nb roles` command. They still work and behave exactly as before; they will be removed
+  only in a later release marked BREAKING.
+
 ## [0.3.0] - 2026-10-29
 
 ### Changed

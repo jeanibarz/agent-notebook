@@ -5,8 +5,8 @@
 # result. Its stdout is added to the session context.
 #
 # Deliberately generic: it injects the INDEX of every notebook (each with its
-# "open me when…" description), NOT a guessed per-project "role" notebook — so it
-# works the same in every repo with no role logic to maintain. The agent reads the
+# "open me when…" description), NOT a guessed per-project notebook name — so it
+# works the same in every repo, and the hook never chooses a notebook for the agent. The agent reads the
 # descriptions and opens whatever fits its task (that's moment ① → ②).
 set -uo pipefail
 
@@ -16,10 +16,10 @@ NB="${NB_BIN:-nb}"   # point NB_BIN at the git-versioning wrapper if you use one
 command -v "$NB" >/dev/null 2>&1 || exit 0
 
 echo "## Your agent-notebook index"
-echo "These are the available notebooks (bounded, voted, one-line lessons per role),"
+echo "These are the available notebooks (bounded, voted, one-line lessons; each name is a shelf),"
 echo "written by you and by other agents. Open the one(s) whose description fits this"
-echo "task with \`nb show <role>\` — and open more the moment the task reveals a need"
-echo "you didn't see coming (a snag another role has already learned). Use their"
+echo "task with \`nb show <shelf>\` (the name shown below) — and open more the moment the task reveals a need"
+echo "you didn't see coming (a snag recorded in another notebook). Use their"
 echo "lessons. At the end, run the retrospective: vote +1 on what helped and -1 on"
 echo "what misled, prune / merge / split to keep each notebook sharp (as many as"
 echo "apply), and add at most one new durable lesson."

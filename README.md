@@ -1,17 +1,19 @@
 # agent-notebook
 
-A bounded, voted, plain-text memory for AI agents — one small file per role, no embeddings, no vector DB, no network call.
+A bounded, voted, plain-text memory for AI agents — one small file (a *shelf*) per group of related lessons, no embeddings, no vector DB, no network call.
+
+A **shelf** is one `<name>.md` notebook file: a group of lessons an agent needs in the same situations. Shelves group lessons by *co-access* (needed together), not by agent role, so an agent that opens a shelf can get the lessons it looks for plus ones it might not think to search for. (Earlier versions called this unit a "role"; `role` keys, `listRoles`, `assertSafeRole` and `nb roles` remain as deprecated aliases.)
 
 <p align="center"><img src="https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/assets/cat.svg" alt="Running cat on a notebook file prints the whole plain-text memory at once — no query, no server, no embeddings." width="760"></p>
 
 ```
-$ nb add reviewer "run lint before claiming done"
+$ nb add build-and-test "run lint before claiming done"
 added — 1 lines
 
-$ nb show reviewer
+$ nb show build-and-test
 3f9a2c  [+1]  run lint before claiming done
 
-$ nb vote reviewer 3f9a2c +1
+$ nb vote build-and-test 3f9a2c +1
 +1 → [+2] run lint before claiming done
 ```
 
@@ -24,9 +26,9 @@ The point of durable memory isn't to answer the questions an agent knows to ask 
 `agent-notebook` is the whole mechanism, nothing more:
 
 - **One entry = one line.** `<score>\t<lesson>`, at most 200 characters, no multi-paragraph notes.
-- **Bounded.** At most 50 lines per role by default (raise with `NB_MAX_LINES`). A new lesson is *always* admitted; when full, the lowest-scored line is evicted — harmful or useless lessons leave, useful ones survive.
+- **Bounded.** At most 50 lines per shelf by default (raise with `NB_MAX_LINES`). A new lesson is *always* admitted; when full, the lowest-scored line is evicted — harmful or useless lessons leave, useful ones survive.
 - **Voted, with recency-aware eviction.** An agent votes +1/-1 on a lesson it used, and a vote also marks the lesson as recently used. No wall-clock decay curve, no relevance scoring, no scheduler — the only aging is one point docked from the *stalest* line when a full notebook takes a new lesson, so a once-useful lesson that goes quiet eventually makes way instead of being immortal. ([How, and why.](docs/eviction-and-aging.md))
-- **Plain text.** `~/.agent-notebook/notebooks/<role>.md`. Readable, diffable, greppable, backed up by whatever already backs up your home directory.
+- **Plain text.** `~/.agent-notebook/notebooks/<shelf>.md`. Readable, diffable, greppable, backed up by whatever already backs up your home directory.
 
 The cap and the vote are the whole mechanism. A new lesson enters at the `+1` floor; a vote lifts it past its neighbours by score; and when the file is full the *lowest-scored* line is evicted — never the newcomer, and never by age alone:
 
@@ -76,19 +78,19 @@ New here, or wiring it into a real agent? These pick up where the reference belo
 ## Usage
 
 ```
-nb show   <role>                        print the notebook (highest-scored first)
-nb add    <role> "<lesson>"             add a lesson (dedup-skipped; rejected if too long, never truncated)
-nb add    <role> -                      read the lesson from stdin (one line; multi-line is refused)
-nb vote   <role> <id|query> +1|-1       upvote/downvote an entry you used
-nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
-nb split  <role> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
-nb rm     <role> <id|query>             delete an entry
-nb describe <role> ["<text>"]           set the notebook's one-line description (no text → print it)
+nb show   <shelf>                        print the notebook (highest-scored first)
+nb add    <shelf> "<lesson>"             add a lesson (dedup-skipped; rejected if too long, never truncated)
+nb add    <shelf> -                      read the lesson from stdin (one line; multi-line is refused)
+nb vote   <shelf> <id|query> +1|-1       upvote/downvote an entry you used
+nb merge  <shelf> <idA> <idB> "<merged>" consolidate two entries into one
+nb split  <shelf> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
+nb rm     <shelf> <id|query>             delete an entry
+nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print it)
 nb search <query> [prefix] [--any]      SECONDARY keyword fallback — scan all notebooks (surfacing is primary)
-nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly/diagnostic flags + surfacing metrics (--json emits the raw StatsReport)
-nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
+nb stats  [<shelf>] [--since 7d] [--json] usage analytics + anomaly/diagnostic flags + surfacing metrics (--json emits the raw StatsReport)
+nb path   [<shelf>]                      print the notebooks dir, or a shelf's resolved file path
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lessons, description)
-nb ls / nb roles                        aliases of `nb list`
+nb ls / nb shelves                       aliases of `nb list` (`nb roles` still works, deprecated)
 nb --help                               show this help
 ```
 
@@ -97,7 +99,7 @@ Every `show` line starts with a short stable id — pass that id (or a unique pr
 **Splitting an overloaded entry.** `nb split` is the reverse of `merge`: it replaces one entry with two, each inheriting the original's score — for when a line turned out to be two lessons crammed together. Each half is rejected (not truncated) if too long, and a split never creates a duplicate: the two halves must differ from each other and from every surviving entry, or the split is refused and nothing changes.
 
 ```
-$ nb split reviewer build "run the build first" "run vitest after the build" --reason overloaded
+$ nb split build-and-test build "run the build first" "run vitest after the build" --reason overloaded
 split one entry into two — 2 lines
 ```
 
@@ -111,50 +113,64 @@ The optional `--reason <code>` (and `--note "<text>"`) is recorded in the usage 
 
 The reason is always optional (omit it rather than invent one). An unrecognized code is accepted as `other` with the code kept in the note, never rejected — the `other` rate is the thermostat that tells us when a new reason code should be minted. Codes are per-op: a code valid for one op buckets to `other` on another.
 
-**Describing a notebook.** `nb describe <role> "<text>"` gives a notebook a one-line *description* — a **trigger** that says "the situation in which you should open me", so an agent (or a plain list of notebooks) can decide whether to open it without reading its lessons. It is stored as a leading `# desc:` comment at the top of the `<role>.md` file:
+**Describing a notebook.** `nb describe <shelf> "<text>"` gives a notebook a one-line *description* — a **trigger** that says "the situation in which you should open me", so an agent (or a plain list of notebooks) can decide whether to open it without reading its lessons. It is stored as a leading `# desc:` comment at the top of the `<shelf>.md` file:
 
 ```
-$ nb describe reviewer "build / test / worktree gotchas for this repo"
-description set for role "reviewer": build / test / worktree gotchas for this repo
-$ nb describe reviewer           # no text → print the current one
-build / test / worktree gotchas for this repo
-$ nb show reviewer               # the description leads the output as a header
-# desc: build / test / worktree gotchas for this repo
+$ nb describe build-and-test "building or testing this repo, or working in a fresh worktree"
+description set for shelf "build-and-test": building or testing this repo, or working in a fresh worktree
+$ nb describe build-and-test           # no text → print the current one
+building or testing this repo, or working in a fresh worktree
+$ nb show build-and-test               # the description leads the output as a header
+# desc: building or testing this repo, or working in a fresh worktree
 acf179  [+1]  run lint before claiming done
 ```
 
-The description is capped like a lesson (rejected, not truncated, if too long), and an empty text (`nb describe reviewer ""`) clears it. The `# key: value` block round-trips through every mutation and is never turned into a lesson; unknown keys are preserved verbatim, so the file format stays forward-compatible. This stays within the no-schema non-goal — metadata is optional comment lines in the *file*, not a field on a lesson.
+The description is capped like a lesson (rejected, not truncated, if too long), and an empty text (`nb describe build-and-test ""`) clears it. The `# key: value` block round-trips through every mutation and is never turned into a lesson; unknown keys are preserved verbatim, so the file format stays forward-compatible. This stays within the no-schema non-goal — metadata is optional comment lines in the *file*, not a field on a lesson.
 
 **Piping a lesson in.** Pass `-` as the lesson to read it from stdin, so an agent that just wrote a lesson into a pipe can hand it over without shell-quoting:
 
 ```
-$ printf '%s\n' 'run lint first' | nb add reviewer -
+$ printf '%s\n' 'run lint first' | nb add build-and-test -
 added — 1 lines
 ```
 
 It reads exactly one line: a single trailing newline is stripped, and **multi-line** input is refused (exit 1) rather than silently flattened into one run-together entry — one entry is one line. Because `-` means stdin, the one-character lesson `-` can't be stored through this form; use a non-dash quoted argument, or call the library's `addEntry` directly, if you ever need a literal hyphen. Everything else is unchanged — the piped line still goes through the same caps, dedup, and eviction as a quoted argument.
 
-**Storage order vs. display order.** `nb show` sorts highest-scored first, but the `<role>.md` file on disk is stored in *recency order* — least-recently-touched first — not sorted by score, so a raw `cat` of the file looks unordered, and that is intentional, not a bug. A *touch* (a vote of either sign, an add, or a merge/split's new lesson) moves its line to the end, so the top of the file is the stalest lesson. That ordering is the recency signal eviction needs (at zero character cost — no timestamp), carried only in line position: ids are content-derived so they stay stable across reordering, and when the notebook is full the lowest-scored line is evicted (ties → stalest) and the stalest survivor is aged a point. The one cost is that a vote is now a line *move* (a ~2-line git diff) rather than a one-line in-place edit. Read a notebook with `nb show`, not by eyeballing the file. ([Full rationale.](docs/eviction-and-aging.md))
+**Storage order vs. display order.** `nb show` sorts highest-scored first, but the `<shelf>.md` file on disk is stored in *recency order* — least-recently-touched first — not sorted by score, so a raw `cat` of the file looks unordered, and that is intentional, not a bug. A *touch* (a vote of either sign, an add, or a merge/split's new lesson) moves its line to the end, so the top of the file is the stalest lesson. That ordering is the recency signal eviction needs (at zero character cost — no timestamp), carried only in line position: ids are content-derived so they stay stable across reordering, and when the notebook is full the lowest-scored line is evicted (ties → stalest) and the stalest survivor is aged a point. The one cost is that a vote is now a line *move* (a ~2-line git diff) rather than a one-line in-place edit. Read a notebook with `nb show`, not by eyeballing the file. ([Full rationale.](docs/eviction-and-aging.md))
 
-`NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than the 50-line / 200-char defaults. You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory and `nb path <role>` the resolved file, so `cat "$(nb path reviewer)"` or `git diff "$(nb path reviewer)"` just works.
+`NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than the 50-line / 200-char defaults. You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory and `nb path <shelf>` the resolved file, so `cat "$(nb path reviewer)"` or `git diff "$(nb path reviewer)"` just works.
 
 ### Discovering notebooks — `nb list`
 
-`nb list` is the **notebook index**: one richest-first line per notebook — its name, lesson count, and one-line description — so an agent can decide *which* notebook to open without reading any of them (level 1 of progressive disclosure). `ls` and `roles` are aliases.
+`nb list` is the **notebook index**: one richest-first line per notebook — its name, lesson count, and one-line description — so an agent can decide *which* notebook to open without reading any of them (level 1 of progressive disclosure). `ls` and `shelves` are aliases (`roles`, the old name, still works but is deprecated).
 
 ```
 $ nb list
 agent-notebook notebooks — 3 in /home/you/.agent-notebook/notebooks
-  reviewer   12  build / test / worktree gotchas for this repo
-  patcher     8  when fixing a reproduced bug in this codebase
-  scout       3  mapping an unfamiliar repo: build/test entry points   (auto)
+  build-and-test   12  building or testing this repo, or working in a fresh worktree
+  bug-fixing        8  when fixing a reproduced bug in this codebase
+  repo-onboarding   3  mapping an unfamiliar repo: build/test entry points   (auto)
 ```
 
 Notebooks are ordered **richest-first** (most lessons first — the ones most worth reusing), ties broken by name. A notebook with no `# desc:` falls back to its top-scored lesson, marked `(auto)`. A bare `prefix` filters by name using the `.` namespace convention (`nb list review.` shows just `review.*`), and `--limit N` bounds the rows (default 50) so the index stays a flat, cheap read as notebooks accumulate — the header then reads `showing N of total`. `nb list --json` emits the raw `NotebookListing` (`{ dir, total, rows[] }`) for a supervising agent. An empty (zero-lesson, no-description) notebook is hidden — it is phantom debris with nothing to discover — while a described-but-empty notebook is kept, because its description is still a deliberate trigger. It prints a friendly note to stderr and exits 0 when no notebook (or none matching the prefix) exists yet.
 
+### A full shelf is the normal state
+
+A shelf at its cap is not a problem to fix. Eviction and aging only run on a full shelf: each new lesson pushes out the lowest-scored one, and the stalest survivor loses a point, so lessons nobody votes for leave over time. That pressure is what keeps a shelf focused, and it is why the default cap is a tight 50 lines.
+
+Do not divide a shelf into two shelves because it is full. (This is not about `nb split`, which cuts one overloaded lesson in two.) Dividing makes two half-empty shelves where nothing is evicted, so stale lessons pile up again, and every new shelf lengthens the index that agents read to choose one. Many small shelves with overlapping descriptions are harder to choose from than one full shelf.
+
+Act only when a full shelf loses lessons that agents still use:
+
+- **Signal:** `nb stats` reports `eviction-while-still-voted` for the shelf repeatedly: a lesson was evicted with a score above the +1 a new lesson starts at. The [example janitor](docs/harness-setup.md#the-janitor) flags a shelf with 2 or more such evictions, or evicted lessons that were added again, within its window (30 days by default).
+- **If the shelf holds two groups of lessons needed in different situations**, divide it by situation into two shelves (see the namespace convention below).
+- **Otherwise**, merge near-duplicates (`nb merge`) to free lines, or raise `NB_MAX_LINES`.
+
+When the evicted lessons were never voted, or had fallen back to +1 or below through down votes or aging, eviction is working as intended: leave the shelf as it is. Merging small shelves whose lessons are needed together is also fine: it shortens the index.
+
 ### Grouping notebooks — the `.` namespace convention
 
-When one role grows several distinct concerns, split them into **namespaced notebooks** named with a `.`-delimited prefix — `review.tests`, `review.correctness`, `review.security` — instead of one overloaded `review`. This is the recommended way to "group by concept", and it is a **naming convention only**: nothing new to configure.
+When one shelf collects lessons needed in different situations, split it into **namespaced shelves** named with a `.`-delimited prefix — `review.tests`, `review.correctness`, `review.security` — instead of one overloaded `review`, so each shelf again holds lessons used together and the prefix keeps the family together. It is a **naming convention only**: nothing new to configure.
 
 ```
 $ nb list review.
@@ -164,10 +180,11 @@ agent-notebook notebooks — 2 matching "review." in /home/you/.agent-notebook/n
 ```
 
 - **Lexical clustering, no engine.** Related notebooks sort together and `nb list review.` / `nb search "flaky" review.` scope straight to the group — plain prefix matching on the name, never embeddings or similarity ([NG-001](docs/requirements.md#ng-001)).
-- **Keep the trailing dot.** `review.` matches the namespace but *not* a bare sibling that merely shares the stem (`reviewer`), so the group stays exactly what you meant.
-- **No new storage.** A namespaced role is still one flat `<role>.md` file — `review.tests.md`, `review.correctness.md` — never a directory. `.` is already a legal role character, so there is nothing to enable.
-- **`@` is separate.** It stays reserved for the existing `role@project` scoping and composes with a namespace (`review.tests@your-repo`).
-- **`README` is reserved.** A `README.md` in the notebooks dir (common when the dir is a git repo that backs up your notebooks) is *not* a notebook — it is never listed, searched, counted, or writable as a role (case-insensitive). Name a real notebook something else (`readme-notes` is fine).
+- **No prefix, or one level at most.** Most shelves need no prefix. When the index gets hard to scan, add one level (`family.situation`, e.g. `release.tagging`, `release.changelog`) and stop there. The dot builds no tree: no command groups, counts or opens a level. Deeper names (`ci.flaky.e2e.retries`) split lessons that are needed together across small shelves, lengthen the index every agent reads, and are hard to rename later because shelf names match exactly.
+- **Keep the trailing dot.** `review.` matches the namespace but *not* a bare sibling that merely shares the stem (`reviews`), so the group stays exactly what you meant.
+- **No new storage.** A namespaced shelf is still one flat `<shelf>.md` file — `review.tests.md`, `review.correctness.md` — never a directory. `.` is already a legal shelf character, so there is nothing to enable.
+- **`@` is separate.** It stays reserved for the existing `shelf@project` scoping and composes with a namespace (`review.tests@your-repo`).
+- **`README` is reserved.** A `README.md` in the notebooks dir (common when the dir is a git repo that backs up your notebooks) is *not* a notebook — it is never listed, searched, counted, or writable as a shelf (case-insensitive). Name a real notebook something else (`readme-notes` is fine).
 
 See [FR-NAMESPACE-001](docs/requirements.md#fr-namespace-001).
 
@@ -180,7 +197,7 @@ It is **keyword-only** — a plain case-insensitive substring over the query's t
 ```
 $ nb search "build vitest"
 agent-notebook search — "build vitest" (AND over 2 terms): 1 hit in 1 notebook (secondary fallback — lessons are normally surfaced to you, not searched)
-  reviewer
+  build-and-test
     d7497d  [+1]  run the build before vitest
 ```
 
@@ -190,18 +207,18 @@ A bare `prefix` scopes by name (`nb search lock review.`), and `--json` emits th
 
 ### Machine-readable `nb stats`
 
-`nb stats --json` prints the raw `StatsReport` to stdout as a single JSON object instead of the human table, so a supervising agent can act on a `loop` / `went-silent` / `high-error-rate` anomaly without regex-parsing formatted text. The shape is the exported `StatsReport` interface (`{ window, totalCalls, perCommand[], anomalies[], notebooks[], notebookTotals, signals[], surfacing }`) and is a stable, additive-only contract. `notebooks` is the per-role inventory — `{ role, lines, cap }` for each role's notebook, where `lines` is the stored-lesson count and `cap` is `maxLines()` — so a supervisor can see that a role is at (or near) its cap and about to evict a lesson; `notebookTotals` aggregates it as `{ roles, lines, cap }`. The inventory is the current on-disk state, not a slice of the usage window. It composes with `[<role>]` and `--since`; a bad `--since` window still warns on stderr (stdout stays pure JSON) and falls back to 7d.
+`nb stats --json` prints the raw `StatsReport` to stdout as a single JSON object instead of the human table, so a supervising agent can act on a `loop` / `went-silent` / `high-error-rate` anomaly without regex-parsing formatted text. The shape is the exported `StatsReport` interface (`{ window, totalCalls, perCommand[], anomalies[], notebooks[], notebookTotals, signals[], surfacing }`) and is a stable, additive-only contract. `notebooks` is the per-shelf inventory — `{ shelf, role, lines, cap }` for each shelf's notebook (`role` is a deprecated copy of `shelf`), where `lines` is the stored-lesson count and `cap` is `maxLines()` — so a supervisor can see that a shelf is at (or near) its cap and about to evict a lesson; `notebookTotals` aggregates it as `{ shelves, roles, lines, cap }` (`roles` is a deprecated copy of `shelves`). The inventory is the current on-disk state, not a slice of the usage window. It composes with `[<shelf>]` and `--since`; a bad `--since` window still warns on stderr (stdout stays pure JSON) and falls back to 7d.
 
 ### Free diagnostic signals
 
-`nb stats` also surfaces a handful of **free diagnostic signals** — memory-quality observations read straight from the usage log, costing no new agent action because each is already implied by behaviour the agent performs for its own reasons. They appear in the human table under a `signals:` section and in `--json` as `signals[]` (each a `DiagnosticSignal` = `{ kind, role, detail, session?, entry? }`). The kinds:
+`nb stats` also surfaces a handful of **free diagnostic signals** — memory-quality observations read straight from the usage log, costing no new agent action because each is already implied by behaviour the agent performs for its own reasons. They appear in the human table under a `signals:` section and in `--json` as `signals[]` (each a `DiagnosticSignal` = `{ kind, shelf, role, detail, session?, entry? }`). The kinds:
 
 - **browse-without-use** — a notebook was `show`n in a session but nothing in it was voted that session → its description may over-promise (it drew a look that didn't pay off).
-- **eviction-while-still-voted** — the cap evicted an entry (`add`'s `evicted` column) whose id had been voted on → the cap may be too tight for that role, a candidate to split the role.
+- **eviction-while-still-voted** — the cap evicted an entry (`add`'s `evicted` column) whose score was still above the +1 a new lesson starts at → a lesson agents found useful was lost. One occurrence is normal churn; repeated ones on the same shelf mean the cap is too tight for it (see [A full shelf is the normal state](#a-full-shelf-is-the-normal-state)).
 - **vote-reversal** — the same entry was upvoted in one session and downvoted in another → the lesson may be correct but *mis-aimed* (right in one context, wrong in another).
 - **failed-search** — a [`nb search`](#searching--the-demoted-fallback) returned nothing and a lesson was then `add`ed in the same session → a coverage gap the notebook did not hold, labelled by the agent's own query.
 
-All four are **session-aware**, so set `NB_SESSION` (a hook or supervising agent does this) for them to attribute calls to a session — browse-without-use, vote-reversal, and failed-search need it, and skip calls with a blank session. Like the anomalies, they are computed over the windowed, role-scoped usage rows (so `--since` and `[<role>]` apply). They are deliberately heuristic *hints*, not verdicts: a glance that didn't lead to a vote isn't proof a description is bad, just a place worth a look.
+All four are **session-aware**, so set `NB_SESSION` (a hook or supervising agent does this) for them to attribute calls to a session — browse-without-use, vote-reversal, and failed-search need it, and skip calls with a blank session. Like the anomalies, they are computed over the windowed, shelf-scoped usage rows (so `--since` and `[<shelf>]` apply). They are deliberately heuristic *hints*, not verdicts: a glance that didn't lead to a vote isn't proof a description is bad, just a place worth a look.
 
 ### Surfacing metrics
 
@@ -216,7 +233,7 @@ Two properties keep the rates honest. They are conditioned on **attempts** (add/
 
 ### What the usage log records
 
-Every `nb` call appends one tab-delimited row to the usage ring (`.nb-usage.log`). Beyond the base `timestamp · role · command · ok|err · duration`, each row also records, per call:
+Every `nb` call appends one tab-delimited row to the usage ring (`.nb-usage.log`). Beyond the base `timestamp · shelf · command · ok|err · duration`, each row also records, per call:
 
 - the **entry id(s)** the call touched — the added/voted/removed entry, (for `merge`) the two sources plus the merged result, or (for `split`) the source plus the two produced entries;
 - a **session id** read from the `NB_SESSION` environment variable (a hook or supervising agent sets it so calls can be grouped; absent → blank, and co-access simply isn't computed);
@@ -230,7 +247,7 @@ This is richer *logging* only — the notebook file and the one-line lesson are 
 The anomaly detection in `nb stats` (loop / went-silent / high-error-rate flags) is tunable via env vars — out-of-range values are clamped to the stated bounds, and an unset or unparseable value falls back to the default:
 
 - `NB_USAGE_RING` — how many recent calls are kept for `nb stats` to analyze (default `5000`, range `100`–`100000`).
-- `NB_LOOP_N` — a loop is this many or more calls of the same command by the same role (default `10`, range `2`–`1000`).
+- `NB_LOOP_N` — a loop is this many or more calls of the same command on the same shelf (default `10`, range `2`–`1000`).
 - `NB_LOOP_WINDOW_S` — window those calls must fall within, in seconds (default `120`, range `5`–`86400`).
 - `NB_SILENT_H` — hours since a command's last call before it is flagged went-silent (default `48`, range `1`–`8760`).
 - `NB_ERR_MIN` — minimum calls before a command's error rate is judged (default `5`, range `1`–`10000`).
@@ -250,7 +267,7 @@ import {
   remove,
   render,
   search,
-  listRoles,
+  listShelves,
   listNotebooks,
   notebooksDir,
   type AddResult,
@@ -269,41 +286,42 @@ const dir = notebooksDir();
 // submitted size so you can report it). The success case is 'added' — a newcomer
 // is ALWAYS admitted, even into a full notebook (the stalest line is aged and the
 // lowest-scored one evicted; see docs/eviction-and-aging.md), so `evicted` may
-// name a removed entry. (An invalid role name or an I/O error still throws —
+// name a removed entry. (An invalid shelf name or an I/O error still throws —
 // those are faults, not rejected content.)
-const r: AddResult = await addEntry(dir, 'reviewer', 'run lint before claiming done');
+const r: AddResult = await addEntry(dir, 'build-and-test', 'run lint before claiming done');
 if (!r.added) console.warn(`not stored: ${r.reason}`);
-await addEntry(dir, 'reviewer', 'run the linter first'); // a near-duplicate
-await addEntry(dir, 'reviewer', 'obsolete note to drop');
+await addEntry(dir, 'build-and-test', 'run the linter first'); // a near-duplicate
+await addEntry(dir, 'build-and-test', 'obsolete note to drop');
 
-const entries = readEntries(dir, 'reviewer'); // Entry[] = { score, text }
+const entries = readEntries(dir, 'build-and-test'); // Entry[] = { score, text }
 
 // vote/merge/remove select an entry by stable id, unique prefix, or unique text
 // substring — and throw if the selector matches no entry, or more than one.
-await vote(dir, 'reviewer', 'run lint before', +1);
+await vote(dir, 'build-and-test', 'run lint before', +1);
 
 // merge folds two entries into a single line, inheriting the higher of their
 // two scores; remove deletes one. Both rewrite the notebook under the same lock
 // as addEntry and vote.
-await merge(dir, 'reviewer', 'run lint before', 'linter first', 'run lint before every commit');
+await merge(dir, 'build-and-test', 'run lint before', 'linter first', 'run lint before every commit');
 
 // split is the reverse of merge: it replaces one overloaded entry with two,
 // each inheriting the original's score. It throws (writing nothing) on an empty
 // or over-long half, on two halves that are duplicates of each other, or on a
 // half that would duplicate a surviving entry — so a split never creates a dup.
-await split(dir, 'reviewer', 'run lint before every commit', 'run lint before every commit', 'also run the type-checker before every commit');
+await split(dir, 'build-and-test', 'run lint before every commit', 'run lint before every commit', 'also run the type-checker before every commit');
 
-await remove(dir, 'reviewer', 'obsolete note');
+await remove(dir, 'build-and-test', 'obsolete note');
 
-listRoles(dir); // string[] — roles that already have a notebook, sorted
+listShelves(dir); // string[] — shelves that already have a notebook, sorted (`listRoles` is a deprecated alias)
 
 // listNotebooks is the richest-first index behind `nb list` (name, lesson count,
 // description, with a top-lesson `auto` fallback). Phantom empty notebooks are
 // hidden; `total` counts every match so a caller can render "shown of total".
 listNotebooks(dir, { prefix: 'review.', limit: 50 });
-// → { dir, total, rows: [{ role, lessons, desc, auto }, ...] }
+// → { dir, total, rows: [{ shelf, role, lessons, desc, auto }, ...] }
+// (`role` is a deprecated copy of `shelf`, kept so existing callers keep working.)
 
-console.log(render(dir, 'reviewer')); // highest-scored first
+console.log(render(dir, 'build-and-test')); // highest-scored first
 ```
 
 The CLI is a thin wrapper over this library — `src/notebook.ts` is the whole mechanism, with zero runtime dependencies.

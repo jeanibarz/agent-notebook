@@ -7,20 +7,21 @@
 //   file, the usage log, and (if NB_DIR is a git repo) the commit history, and
 //   reports four things, each with a concrete suggested `nb` command:
 //
-//     1. Cap pressure & reorg       — notebooks near the cap (50 lines by default) that will
-//                                      start evicting lessons; split candidates.
-//     2. Near-duplicate ROLE names  — likely typos / fragmentation (e.g.
-//                                      `reviewer` vs `review`) that split memory.
+//     1. Lessons lost to eviction   — shelves that evict lessons still scored above +1,
+//                                      or whose evicted lessons get added again.
+//                                      A full shelf alone is normal and not flagged.
+//     2. Near-duplicate SHELF names — likely typos / fragmentation (e.g.
+//                                      `build-and-test` vs `build-and-tests`) that split memory.
 //     3. Likely duplicate LESSONS   — paraphrase pairs the exact-match dedup let
 //                                      through; `nb merge` candidates. This is the
 //                                      "duplicate detection" gap, found offline.
 //     4. Volume over time & silence — from git history: how the store grew, how
-//                                      busy it's been, and which roles went quiet.
+//                                      busy it's been, and which shelves went quiet.
 //
 // WHY A SEPARATE, OFFLINE TOOL
 //   The notebook core stays dumb, deterministic, and offline (requirements.md
 //   DP-6): nothing clever runs inside an `nb` call. All the "intelligence" —
-//   fuzzy duplicate detection, reorg heuristics, trend analysis — lives here, in
+//   fuzzy duplicate detection, eviction-loss heuristics, trend analysis — lives here, in
 //   an offline janitor that only READS the plain files and PRINTS suggestions.
 //   It never edits a notebook; you (or an agent) run the suggested commands.
 //
@@ -62,7 +63,7 @@ function readNotebooks(dir) {
     return [];
   }
   return files.map((f) => {
-    const role = f.slice(0, -3);
+    const shelf = f.slice(0, -3);
     let lessons = [];
     try {
       lessons = readFileSync(join(dir, f), 'utf-8')
@@ -78,7 +79,7 @@ function readNotebooks(dir) {
     } catch {
       /* unreadable → report as empty rather than crash the whole scan */
     }
-    return { role, lessons };
+    return { shelf, lessons };
   });
 }
 
@@ -106,7 +107,7 @@ function jaccard(a, b) {
   return inter / (a.size + b.size - inter);
 }
 
-// role-name similarity (normalized edit-distance), for typo/fragmentation detect
+// shelf-name similarity (normalized edit-distance), for typo/fragmentation detect
 function editSim(a, b) {
   const m = a.length;
   const n = b.length;
@@ -127,9 +128,20 @@ function readUsage(dir) {
   try {
     for (const line of readFileSync(file, 'utf-8').split('\n')) {
       if (line.trim() === '') continue;
-      const [ts, role, command, status] = line.split('\t');
+      // columns: ts, shelf, command, status, ms, session, entry-ids, outcome, collided, evicted, …
+      const [ts, shelf, command, status, , , entries = '', outcome = '', , evicted = ''] = line.split('\t');
       if (!ts || !command) continue;
-      rows.push({ ts, t: Date.parse(ts), role: role ?? '', command, ok: status === 'ok' });
+      rows.push({
+        ts,
+        t: Date.parse(ts),
+        shelf: shelf ?? '',
+        command,
+        ok: status === 'ok',
+        entries: entries.split(',').filter((e) => e !== ''),
+        outcome,
+        evicted: evicted.split(':')[0] ?? '',
+        evictedScore: Number(evicted.split(':')[1] ?? 0),
+      });
     }
   } catch {
     /* ignore */
@@ -152,7 +164,7 @@ function gitHistory(dir, days) {
       .filter((l) => l.trim() !== '')
       .map((l) => {
         const [iso, subject = ''] = l.split('\t');
-        const m = /^nb\s+(\w+)/.exec(subject); // our wrapper's "nb <cmd> <role>" messages
+        const m = /^nb\s+(\w+)/.exec(subject); // our wrapper's "nb <cmd> <shelf>" messages
         return { day: iso.slice(0, 10), cmd: m ? m[1] : null };
       });
     return commits;
@@ -167,32 +179,51 @@ const usage = readUsage(NB_DIR);
 const history = gitHistory(NB_DIR, DAYS);
 const now = Date.now();
 
-// 1) cap pressure & reorg
-const capPressure = notebooks
-  .map((nb) => ({ role: nb.role, lessons: nb.lessons.length, pct: Math.round((nb.lessons.length / MAX_LINES) * 100) }))
-  .filter((r) => r.pct >= 80)
-  .sort((a, b) => b.pct - a.pct);
-
-// 2) near-duplicate role names
-const roleDups = [];
-const roles = notebooks.map((n) => n.role);
-for (let i = 0; i < roles.length; i++)
-  for (let j = i + 1; j < roles.length; j++) {
-    const sim = editSim(roles[i], roles[j]);
-    // same namespace stem (`review.tests` vs `review.correctness`) is intentional, not a dup
-    const sameNs = roles[i].split('.')[0] === roles[j].split('.')[0] && roles[i].includes('.') && roles[j].includes('.');
-    if (sim >= 0.8 && !sameNs) roleDups.push({ a: roles[i], b: roles[j], sim: Number(sim.toFixed(2)) });
+// 1) lessons lost to eviction. A full shelf is the normal state: eviction and
+//    aging only run at the cap, and they are what retire unused lessons. So
+//    fullness is reported for information only; a shelf is flagged when, within
+//    the window, it evicts lessons still scored above the +1 a new lesson starts
+//    at (net voted up, not aged out), or a lesson it
+//    evicted is added again (agents had to relearn it).
+const LOSS_MIN = 2; // one loss is ordinary churn; repeated losses are the signal
+const fullShelves = notebooks.filter((nb) => nb.lessons.length >= MAX_LINES).map((nb) => nb.shelf);
+const lossByShelf = {};
+const evictedBefore = {}; // shelf → ids evicted earlier in the log
+for (const r of usage) {
+  if (r.command !== 'add') continue;
+  const inWindow = now - r.t <= DAYS * 86400000;
+  const seen = (evictedBefore[r.shelf] ??= new Set());
+  const loss = (lossByShelf[r.shelf] ??= { shelf: r.shelf, stillVoted: 0, relearned: 0 });
+  if (inWindow && r.outcome === 'accepted' && r.entries.some((id) => seen.has(id))) loss.relearned++;
+  if (r.evicted !== '') {
+    if (inWindow && r.evictedScore > 1) loss.stillVoted++;
+    seen.add(r.evicted);
   }
-roleDups.sort((x, y) => y.sim - x.sim);
+}
+const lostLessons = Object.values(lossByShelf)
+  .filter((l) => l.stillVoted + l.relearned >= LOSS_MIN)
+  .sort((a, b) => b.stillVoted + b.relearned - (a.stillVoted + a.relearned));
 
-// 3) likely duplicate lessons (within a role)
+// 2) near-duplicate shelf names
+const shelfDups = [];
+const shelves = notebooks.map((n) => n.shelf);
+for (let i = 0; i < shelves.length; i++)
+  for (let j = i + 1; j < shelves.length; j++) {
+    const sim = editSim(shelves[i], shelves[j]);
+    // same namespace stem (`review.tests` vs `review.correctness`) is intentional, not a dup
+    const sameNs = shelves[i].split('.')[0] === shelves[j].split('.')[0] && shelves[i].includes('.') && shelves[j].includes('.');
+    if (sim >= 0.8 && !sameNs) shelfDups.push({ a: shelves[i], b: shelves[j], sim: Number(sim.toFixed(2)) });
+  }
+shelfDups.sort((x, y) => y.sim - x.sim);
+
+// 3) likely duplicate lessons (within a shelf)
 const lessonDups = [];
 for (const nb of notebooks) {
   const toks = nb.lessons.map((e) => ({ ...e, tk: tokens(e.text) }));
   for (let i = 0; i < toks.length; i++)
     for (let j = i + 1; j < toks.length; j++) {
       const sim = jaccard(toks[i].tk, toks[j].tk);
-      if (sim >= SIM) lessonDups.push({ role: nb.role, sim: Number(sim.toFixed(2)), a: toks[i].text, b: toks[j].text });
+      if (sim >= SIM) lessonDups.push({ shelf: nb.shelf, role: nb.shelf, sim: Number(sim.toFixed(2)), a: toks[i].text, b: toks[j].text });
     }
 }
 lessonDups.sort((x, y) => y.sim - x.sim);
@@ -208,25 +239,28 @@ if (history) {
   }
   volume = { source: 'git', windowDays: DAYS, commits: history.length, byCmd, activeDays: Object.keys(byDay).length };
 }
-// silence: a role with lessons but no usage-log activity in the window
+// silence: a shelf with lessons but no usage-log activity in the window
 const SILENT_DAYS = DAYS;
 const lastUse = {};
-for (const r of usage) lastUse[r.role] = Math.max(lastUse[r.role] ?? 0, r.t || 0);
-const silentRoles = notebooks
+for (const r of usage) lastUse[r.shelf] = Math.max(lastUse[r.shelf] ?? 0, r.t || 0);
+const silentShelves = notebooks
   .filter((nb) => nb.lessons.length > 0)
-  .map((nb) => ({ role: nb.role, lastUse: lastUse[nb.role] ?? 0 }))
+  .map((nb) => ({ shelf: nb.shelf, lastUse: lastUse[nb.shelf] ?? 0 }))
   .filter((r) => now - r.lastUse > SILENT_DAYS * 86400000)
-  .map((r) => ({ role: r.role, daysQuiet: r.lastUse ? Math.round((now - r.lastUse) / 86400000) : null }));
+  .map((r) => ({ shelf: r.shelf, role: r.shelf, daysQuiet: r.lastUse ? Math.round((now - r.lastUse) / 86400000) : null }));
 
 const report = {
   dir: NB_DIR,
   notebooks: notebooks.length,
   totalLessons: notebooks.reduce((s, n) => s + n.lessons.length, 0),
-  capPressure,
-  roleDups,
+  fullShelves,
+  lostLessons,
+  shelfDups,
+  roleDups: shelfDups, // deprecated alias of shelfDups
   lessonDups,
   volume,
-  silentRoles,
+  silentShelves,
+  silentRoles: silentShelves, // deprecated alias of silentShelves
   usageRows: usage.length,
 };
 
@@ -240,19 +274,23 @@ const out = [];
 const H = (s) => out.push('', `── ${s} ` + '─'.repeat(Math.max(0, 60 - s.length)));
 out.push(`nb-janitor — ${report.notebooks} notebooks, ${report.totalLessons} lessons in ${NB_DIR}`);
 
-H('1. Cap pressure & reorg');
-if (capPressure.length === 0) out.push('  ✅ no notebook is near the cap.');
+H(`1. Lessons lost to eviction (last ${DAYS}d)`);
+out.push(
+  `  ${fullShelves.length} of ${notebooks.length} shelves are full (${MAX_LINES} lines) — normal: eviction keeps them focused.`,
+);
+if (lostLessons.length === 0) out.push('  ✅ no shelf repeatedly evicts lessons scored above +1 or relearns evicted ones.');
 else
-  for (const r of capPressure) {
-    out.push(`  ⚠️  ${r.role}: ${r.lessons}/${MAX_LINES} (${r.pct}%) — about to evict lessons.`);
-    out.push(`      → split concerns into namespaces: nb split, or new roles ${r.role}.<concern>`);
+  for (const l of lostLessons) {
+    out.push(`  ⚠️  ${l.shelf}: ${l.stillVoted} lesson(s) evicted with a score above +1, ${l.relearned} evicted lesson(s) added again.`);
+    out.push(`      → nb show ${l.shelf}: if its lessons serve two different situations, split it by situation;`);
+    out.push(`        otherwise nb merge near-duplicates to free lines, or raise NB_MAX_LINES.`);
   }
 
-H('2. Near-duplicate role names (fragmented memory)');
-if (roleDups.length === 0) out.push('  ✅ no suspiciously similar role names.');
+H('2. Near-duplicate shelf names (fragmented memory)');
+if (shelfDups.length === 0) out.push('  ✅ no suspiciously similar shelf names.');
 else
-  for (const d of roleDups) {
-    out.push(`  ⚠️  "${d.a}" ~ "${d.b}" (name similarity ${d.sim}) — likely the same role, split in two.`);
+  for (const d of shelfDups) {
+    out.push(`  ⚠️  "${d.a}" ~ "${d.b}" (name similarity ${d.sim}) — likely the same shelf, split in two.`);
     out.push(`      → consolidate: re-add ${d.b}'s lessons under "${d.a}" (or vice-versa), then retire the orphan.`);
   }
 
@@ -260,10 +298,10 @@ H(`3. Likely duplicate lessons (paraphrases, sim ≥ ${SIM})`);
 if (lessonDups.length === 0) out.push('  ✅ no paraphrase duplicates above threshold.');
 else
   for (const d of lessonDups.slice(0, 25)) {
-    out.push(`  ⚠️  [${d.role}] sim ${d.sim}`);
+    out.push(`  ⚠️  [${d.shelf}] sim ${d.sim}`);
     out.push(`        A: ${d.a}`);
     out.push(`        B: ${d.b}`);
-    out.push(`      → if they say the same thing: nb merge ${d.role} "<A-substr>" "<B-substr>" "<one line>" --reason duplicate`);
+    out.push(`      → if they say the same thing: nb merge ${d.shelf} "<A-substr>" "<B-substr>" "<one line>" --reason duplicate`);
   }
 if (lessonDups.length > 25) out.push(`  …(${lessonDups.length - 25} more pairs — run with --json)`);
 
@@ -277,10 +315,10 @@ if (volume)
   );
 else out.push('  (NB_DIR is not a git repo — enable git-versioning for growth trends: harness-setup.md#git-versioning)');
 if (report.usageRows === 0) out.push('  (no usage log yet — set NB_SESSION and use the notebooks to populate it)');
-if (silentRoles.length === 0) out.push('  ✅ no role has gone silent in the window.');
+if (silentShelves.length === 0) out.push('  ✅ no shelf has gone silent in the window.');
 else
-  for (const s of silentRoles)
-    out.push(`  💤 ${s.role}: ${s.daysQuiet == null ? 'never used in the log' : `quiet ${s.daysQuiet}d`} — stale, or no longer exercised?`);
+  for (const s of silentShelves)
+    out.push(`  💤 ${s.shelf}: ${s.daysQuiet == null ? 'never used in the log' : `quiet ${s.daysQuiet}d`} — stale, or no longer exercised?`);
 
 out.push('');
 process.stdout.write(out.join('\n') + '\n');

@@ -46,7 +46,7 @@ thing well.
 ## Match the audience
 
 - **Non-technical:** use the analogies and diagrams in `docs/getting-started.md`.
-  Avoid jargon; a "role" is just "a kind of job."
+  Avoid jargon; a "shelf" is just "one notebook file of lessons that belong together."
 - **Engineer / evaluator:** go to the model and guarantees — content-derived
   stable ids, insertion-order storage vs score-ordered display, the usage log and
   `nb stats` surfacing metrics, zero runtime deps. Source: `README.md`,

@@ -19,7 +19,7 @@ change the requirement and its test together (see [Keeping this document honest]
 ## 1. Purpose & scope
 
 `agent-notebook` is a bounded, voted, plain-text memory for AI agents: one small
-file per agent role, holding a short list of one-line lessons ranked by vote.
+file per shelf (a group of lessons an agent needs in the same situations), holding a short list of one-line lessons ranked by vote.
 It has zero runtime dependencies and makes no network calls.
 
 The product is deliberately narrow. Section [6. Non-goals](#6-non-goals-shall-not)
@@ -33,9 +33,9 @@ One definition per term, used identically in requirements, code, and tests.
 
 | Term | Definition |
 |------|------------|
-| **Role** | An agent identity that owns one notebook. A path-safe name (see [FR-SAFE-001](#fr-safe-001)). Stored at `<NB_DIR>/<role>.md`. |
-| **Namespace** | A recommended *convention*, not a storage layer: a `.`-delimited role-name prefix (e.g. `review.tests`, `review.correctness`) that clusters related notebooks lexically so `nb list <prefix>` / `nb search … <prefix>` can scope to a group. A namespaced role is still one flat `<role>.md` file (see [FR-NAMESPACE-001](#fr-namespace-001)). |
-| **Notebook** | The file for one role: a bounded, newline-separated list of entries. |
+| **Shelf** | One `<name>.md` notebook file: a group of lessons an agent needs in the same situations. Lessons are grouped by co-access (needed together), not by agent role, so an agent that opens a shelf can get the lessons it looks for plus ones it might not think to search for (see [DP-8](#dp-8)). A path-safe name (see [FR-SAFE-001](#fr-safe-001)); stored at `<NB_DIR>/<name>.md`. Formerly called a "role" (when notebooks were one per agent role); `role`/`roles` JSON keys, `listRoles`, `assertSafeRole` and `nb roles` remain as deprecated aliases. "Notebook" may still name the tool or a shelf's file in general prose. |
+| **Namespace** | A recommended *convention*, not a storage layer: a `.`-delimited shelf-name prefix (e.g. `review.tests`, `review.correctness`) that clusters related notebooks lexically so `nb list <prefix>` / `nb search … <prefix>` can scope to a group. Recommended depth: no prefix or one level. A namespaced shelf is still one flat `<shelf>.md` file (see [FR-NAMESPACE-001](#fr-namespace-001)). |
+| **Notebook** | The tool and its set of shelves; also the general word for a shelf's file (a bounded, newline-separated list of entries). Say *shelf* when you mean one file, one name or one argument. |
 | **Entry** | One lesson = one line `"<score>\t<text>"`. The in-memory shape is `{ score: number; text: string }`. |
 | **Lesson** / **text** | The single-line content of an entry, at most `maxChars` characters, no tab/newline. |
 | **Score** | A signed integer: the running sum of +1/-1 votes on an entry. |
@@ -177,7 +177,7 @@ lines.
 ### 4.2 `add`
 
 <a id="fr-add-001"></a>
-**FR-ADD-001 (Must).** `addEntry(dir, role, lesson)` SHALL sanitize the lesson, and
+**FR-ADD-001 (Must).** `addEntry(dir, shelf, lesson)` SHALL sanitize the lesson, and
 when it is accepted SHALL append a new entry with `score = 1` at the end of file
 order, returning `{ added: true, reason: 'added', size, evicted }`.
 
@@ -237,7 +237,7 @@ library `addEntry` or a non-dash quoted argument. *(See [DP-5](#dp-5).)*
 ### 4.3 `vote`
 
 <a id="fr-vote-001"></a>
-**FR-VOTE-001 (Must).** `vote(dir, role, selector, delta)` SHALL accept `delta` of
+**FR-VOTE-001 (Must).** `vote(dir, shelf, selector, delta)` SHALL accept `delta` of
 only `+1` or `-1`; any other value SHALL throw.
 
 <a id="fr-vote-002"></a>
@@ -269,7 +269,7 @@ SHALL NOT mutate anything. *(See [DP-5](#dp-5).)*
 ### 4.5 `merge`
 
 <a id="fr-merge-001"></a>
-**FR-MERGE-001 (Must).** `merge(dir, role, selA, selB, merged)` SHALL require two
+**FR-MERGE-001 (Must).** `merge(dir, shelf, selA, selB, merged)` SHALL require two
 distinct entries (SHALL throw if they resolve to the same one), replace both with a
 single entry whose text is the sanitized `merged`, and give it `max(scoreA, scoreB)`.
 
@@ -281,7 +281,7 @@ whose dedup key equals the merged text so the merge never creates a duplicate.
 ### 4.6 `split`
 
 <a id="fr-split-001"></a>
-**FR-SPLIT-001 (Must).** `split(dir, role, selector, lessonA, lessonB)` — the reverse
+**FR-SPLIT-001 (Must).** `split(dir, shelf, selector, lessonA, lessonB)` — the reverse
 of `merge` — SHALL replace the uniquely selected entry with two entries whose texts are
 the sanitized `lessonA` and `lessonB`, each inheriting the original entry's score. It
 SHALL return `{ size, source, ids: [idA, idB] }` and SHALL obey the `maxLines` cap
@@ -302,7 +302,7 @@ is removed. Over-long halves are rejected, never truncated ([DP-5](#dp-5)).
 ### 4.7 `rm`
 
 <a id="fr-rm-001"></a>
-**FR-RM-001 (Must).** `remove(dir, role, selector)` SHALL delete the uniquely
+**FR-RM-001 (Must).** `remove(dir, shelf, selector)` SHALL delete the uniquely
 selected entry and return its text and score. An empty notebook SHALL throw.
 
 ### 4.8 `show` / `render`
@@ -313,48 +313,50 @@ selected entry and return its text and score. An empty notebook SHALL throw.
 
 <a id="fr-show-002"></a>
 **FR-SHOW-002 (Should).** An empty notebook SHALL render a friendly, non-error
-message naming the role.
+message naming the shelf.
 
-### 4.9 Roles & paths
+### 4.9 Shelves & paths
 
 <a id="fr-safe-001"></a>
-**FR-SAFE-001 (Must).** A role name SHALL match `^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$`,
+**FR-SAFE-001 (Must).** A shelf name SHALL match `^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$`,
 SHALL NOT contain `..`, SHALL NOT be a reserved name (`README`, case-insensitive),
-and SHALL be at most 128 characters long. `assertSafeRole` SHALL throw otherwise.
-**Rationale:** The role is a path segment; the pattern and `..` check prevent
-traversal outside `NB_DIR`, and the 128-character bound keeps `<role>.md` under
-typical filename limits so an over-long name throws a friendly `invalid role name`
-error instead of a bare `ENAMETOOLONG` stack. 128 fits `role@owner-repo` plus a suffix.
+and SHALL be at most 128 characters long. `assertSafeShelf` SHALL throw otherwise.
+**Rationale:** The shelf is a path segment; the pattern and `..` check prevent
+traversal outside `NB_DIR`, and the 128-character bound keeps `<shelf>.md` under
+typical filename limits so an over-long name throws a friendly `invalid shelf name`
+error instead of a bare `ENAMETOOLONG` stack. 128 fits `shelf@owner-repo` plus a suffix.
 `README` is reserved because a `README.md` is the conventional git/backup artifact
 in a notebook folder, not a notebook — reserving the name stops a write command
 (`nb add README …`, `nb vote README …`) from ever creating or rewriting one.
-*Proven by:* `notebook.test.ts` → "rejects path-traversal and unsafe role names"; "bounds role-name length with a friendly error before it becomes a filename"; "`README` is a reserved role name (issue #90): a write command cannot target it".
+*Proven by:* `notebook.test.ts` → "rejects path-traversal and unsafe shelf names"; "bounds shelf-name length with a friendly error before it becomes a filename"; "`README` is a reserved shelf name (issue #90): a write command cannot target it".
 
-<a id="fr-roles-001"></a>
-**FR-ROLES-001 (Should).** `listRoles` SHALL return the sorted stems of `*.md` files
+<a id="fr-shelves-001"></a><a id="fr-roles-001"></a>
+**FR-SHELVES-001 (Should).** `listShelves` SHALL return the sorted stems of `*.md` files
 in `NB_DIR`, excluding dotfile sidecars (`.nb-usage.log`, `.nb.lock`) and a
 `README.md` (case-insensitive — it is a backup artifact, not a notebook; see
 [FR-SAFE-001](#fr-safe-001)). It is the primitive the `list` index
-([FR-LIST-001](#fr-list-001)) is built on; the `nb roles` *command* is now an alias
-of `nb list`, not a bare-stems printer.
+([FR-LIST-001](#fr-list-001)) is built on; the `nb shelves` *command* is an alias
+of `nb list`, not a bare-stems printer. `listRoles` is a deprecated alias bound to the
+same function (`listRoles === listShelves`); `assertSafeRole` likewise aliases
+`assertSafeShelf`. Both stay until a later release marked BREAKING.
 *Proven by:* `notebook.test.ts` → "excludes a README.md so it is not a notebook (issue #90)"; "excludes README.md case-insensitively".
 
 <a id="fr-path-001"></a>
-**FR-PATH-001 (Should).** `nb path` SHALL print `NB_DIR`; `nb path <role>` SHALL
-print `<NB_DIR>/<role>.md` as a bare path (pipe-friendly, no decoration).
+**FR-PATH-001 (Should).** `nb path` SHALL print `NB_DIR`; `nb path <shelf>` SHALL
+print `<NB_DIR>/<shelf>.md` as a bare path (pipe-friendly, no decoration).
 
 <a id="fr-list-001"></a>
 **FR-LIST-001 (Should).** `listNotebooks(dir, {prefix?, limit?})` SHALL return the
-notebook index — one `NotebookSummary {role, lessons, desc, auto}` per notebook —
-ordered **richest-first** (descending `lessons`), ties broken by `role` name
+notebook index — one `NotebookSummary {shelf, role, lessons, desc, auto}` per notebook (`role` is a deprecated copy of `shelf`, filled from the same value) —
+ordered **richest-first** (descending `lessons`), ties broken by `shelf` name
 ascending. `nb list` SHALL render it as a header line plus one aligned row per
-notebook (name, lesson count, description); `ls` and `roles` are aliases.
+notebook (name, lesson count, description); `ls`, `shelves` and the deprecated `roles` are aliases.
 **Rationale:** Level 1 of progressive disclosure for epic [#73](https://github.com/jeanibarz/agent-notebook/issues/73) — the always-readable index an agent consults to decide *which* notebook to open without reading any notebook's lessons. More lessons ⇒ more worth reusing, so it leads.
-*Proven by:* `notebook.test.ts` → "listNotebooks — the notebook index (issue #71)"; `cli.test.ts` → "list / ls / roles — the notebook index (issue #71)".
+*Proven by:* `notebook.test.ts` → "listNotebooks — the notebook index (issue #71)"; `cli.test.ts` → "list / ls / shelves — the notebook index (issue #71)".
 
 <a id="fr-list-002"></a>
 **FR-LIST-002 (Should).** A bare `prefix` operand SHALL keep only notebooks whose
-role name starts with it (the `.` namespace convention, e.g. `nb list review.`).
+shelf name starts with it (the `.` namespace convention, e.g. `nb list review.`).
 `--limit <N>` SHALL bound the rows to the richest `N` (default 50; a non-negative
 integer; an unparseable value SHALL warn on stderr and fall back to the default,
 never reject), while `NotebookListing.total` SHALL still count every match so the
@@ -363,23 +365,28 @@ as the only thing on stdout.
 
 <a id="fr-namespace-001"></a>
 **FR-NAMESPACE-001 (Should).** Related notebooks SHOULD be grouped with a `.`-delimited
-role-name prefix — the **namespace convention** (e.g. `review.tests`,
+shelf-name prefix — the **namespace convention** (e.g. `review.tests`,
 `review.correctness`) — so they cluster lexically and `nb list <prefix>`
 ([FR-LIST-002](#fr-list-002)) / `nb search … <prefix>` ([FR-SEARCH-001](#fr-search-001))
-can scope to the group. This is a *naming convention only*: a namespaced role is a
-first-class role requiring **no** change to [FR-SAFE-001](#fr-safe-001) (`.` is
+can scope to the group. This is a *naming convention only*: a namespaced shelf is a
+first-class shelf requiring **no** change to [FR-SAFE-001](#fr-safe-001) (`.` is
 already a permitted interior character) and **no** new storage layout — the notebook
-stays one flat `<role>.md` file, never a directory. The grouping prefix SHOULD carry
+stays one flat `<shelf>.md` file, never a directory. The grouping prefix SHOULD carry
 the trailing `.` so a namespace (`review.`) does not also match a bare sibling that
-merely shares the stem (`reviewer`). `@` is NOT the grouping delimiter; it stays
-reserved for the existing `role@project` scoping and MAY combine with a namespace
+merely shares the stem (`reviews`). A shelf name SHOULD carry no prefix or one
+level at most (`family.situation`): the convention is not a hierarchy, and no command
+groups, counts or opens a level. `@` is NOT the grouping delimiter; it stays
+reserved for the existing `shelf@project` scoping and MAY combine with a namespace
 (`review.tests@some-repo`).
 **Rationale:** "Group by concept" done the minimal, brand-safe way — lexically, by
 name, not by a similarity engine ([NG-001](#ng-001)). It lets an agent see and open a
 related cluster at the index level ([FR-LIST-001](#fr-list-001)) while adding no
 schema, no field, and no filesystem structure. `.` is filesystem-safe cross-platform.
+One level is enough to cluster the index; deeper names would split lessons that are
+needed together into small shelves ([DP-8](#dp-8)), lengthen the injected index, and make
+renames costly because shelf names match exactly.
 Part of epic [#73](https://github.com/jeanibarz/agent-notebook/issues/73) (Phase 2).
-*Proven by:* `notebook.test.ts` → "a `.`-namespaced role is first-class (issue #83)"; "the `.` delimiter clusters a namespace and excludes a non-namespaced sibling (issue #83)"; `cli.test.ts` → "a bare prefix filters by name (the `.` namespace convention)".
+*Proven by:* `notebook.test.ts` → "a `.`-namespaced shelf is first-class (issue #83)"; "the `.` delimiter clusters a namespace and excludes a non-namespaced sibling (issue #83)"; `cli.test.ts` → "a bare prefix filters by name (the `.` namespace convention)".
 
 <a id="fr-list-003"></a>
 **FR-LIST-003 (Should).** When a notebook has no `# desc:` description, `list` SHALL
@@ -390,7 +397,7 @@ unmarked.
 
 <a id="fr-list-004"></a>
 **FR-LIST-004 (Should).** `listNotebooks` SHALL HIDE a notebook that has zero lessons
-AND no description (phantom debris — e.g. `nb describe <role> ""` that left an empty
+AND no description (phantom debris — e.g. `nb describe <shelf> ""` that left an empty
 file, or an `rm` of the last lesson). A described-but-empty notebook (zero lessons,
 a `# desc:` set) SHALL be kept — it is a deliberate trigger an agent set up.
 **Rationale:** The index exists to point at notebooks worth opening; an empty,
@@ -401,10 +408,10 @@ existing `# desc:` metadata, adding no field to a lesson.
 ### 4.10 CLI contract
 
 <a id="fr-cli-001"></a>
-**FR-CLI-001 (Must).** `nb` SHALL implement: `show`, `add <role> ("<lesson>"|-)`,
-`vote`, `merge`, `split <role> <id|query> "<a>" "<b>"`,
-`rm`, `describe <role> ["<text>"]`, `stats [<role>] [--since <N{d,h,m}>] [--json]`, `path [<role>]`,
-`list [prefix] [--limit <N>] [--json]` (aliases `ls`, `roles`), `--help`, `--version`.
+**FR-CLI-001 (Must).** `nb` SHALL implement: `show`, `add <shelf> ("<lesson>"|-)`,
+`vote`, `merge`, `split <shelf> <id|query> "<a>" "<b>"`,
+`rm`, `describe <shelf> ["<text>"]`, `stats [<shelf>] [--since <N{d,h,m}>] [--json]`, `path [<shelf>]`,
+`list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`), `--help`, `--version`.
 The `-` lesson operand of `add` reads from stdin per
 [FR-ADD-007](#fr-add-007). The optional `[--reason <code>] [--note "<text>"]` flags are
 consumed by every mutating op — `add`, `merge`, `rm`, `split`, and `describe` — (the
@@ -424,6 +431,17 @@ the only thing on stdout (warnings stay on stderr), as a stable machine contract
 (resolve `argv[1]` via `realpath` before the main-module check).
 **Rationale:** Regression guard — a prior release silently did nothing through the
 npm bin symlink.
+
+<a id="fr-cli-005"></a>
+**FR-CLI-005 (Must).** Every JSON object that names a shelf (`ShowResult`,
+`NotebookSummary`, `SearchGroup`, `DescribeResult`, `Anomaly`, `DiagnosticSignal`,
+`NotebookStat`) SHALL carry `shelf` and the deprecated `role` with the same value,
+filled from one variable so they cannot diverge; `NotebookTotals` SHALL carry `shelves`
+and the deprecated `roles` likewise. Keys are only ever added to the `StatsReport`
+contract, never removed or renamed; the deprecated keys, `listRoles`, `assertSafeRole`
+and `nb roles` SHALL keep working and SHALL be removed only in a later release marked
+BREAKING.
+*Proven by:* `cli.test.ts` and `notebook.test.ts` → "shelf terminology (role kept as a deprecated alias)".
 
 ### 4.11 Durability & concurrency
 
@@ -451,7 +469,7 @@ tolerated for platforms that disallow it.)*
 **FR-USAGE-001 (Must).** Each CLI invocation other than `--help`/`--version` (which
 return before any work) SHALL append one tab-delimited row to the usage ring,
 bounded to `usageRing` rows (oldest dropped). The row's first five columns SHALL be
-`"<iso-ts>\t<role>\t<command>\t<ok|err>\t<ms>ms"`, followed by the five entry-level
+`"<iso-ts>\t<shelf>\t<command>\t<ok|err>\t<ms>ms"`, followed by the five entry-level
 columns of [FR-USAGE-002](#fr-usage-002) and the two reason columns of
 [FR-USAGE-003](#fr-usage-003). A failure to log SHALL NOT fail the
 operation, and every field SHALL be sanitized (tab/CR/LF collapsed to spaces) so a
@@ -519,7 +537,7 @@ and `cli.test.ts` → `describe('split (issue #68)')` and
 <a id="fr-stats-001"></a>
 **FR-STATS-001 (Should).** `stats` SHALL roll up per-command calls/errors/p50/p95/last-used
 within a window (`parseWindowMs`, default 7d) and flag three anomalies: **loop**
-(≥`NB_LOOP_N` calls of one role+command within `NB_LOOP_WINDOW_S`), **went-silent**
+(≥`NB_LOOP_N` calls of one command on one shelf within `NB_LOOP_WINDOW_S`), **went-silent**
 (used historically, zero in-window, and last seen longer than `NB_SILENT_H` ago),
 **high-error-rate** (≥`NB_ERR_MIN` calls and ≥`NB_ERR_RATE` failures).
 
@@ -529,13 +547,14 @@ documented default (never `NaN`, which would disable detection).
 
 <a id="fr-stats-003"></a>
 **FR-STATS-003 (Should).** `stats` SHALL additionally derive **free diagnostic signals**
-from the same windowed, role-scoped usage rows and return them as `StatsReport.signals`
-(a list of `DiagnosticSignal = { kind, role, detail, session?, entry? }`), computed from
+from the same windowed, shelf-scoped usage rows and return them as `StatsReport.signals`
+(a list of `DiagnosticSignal = { kind, shelf, role, detail, session?, entry? }`, `role` being a deprecated copy of `shelf`), computed from
 the usage ring alone — the entry-level columns of [FR-USAGE-002](#fr-usage-002) — with no
 new agent action and no field added to a lesson ([NG-004](#ng-004)). The three kinds:
 **browse-without-use** (a `show` of a notebook in a session with no `vote` on any of its
 entries that same session → the description may over-promise), **eviction-while-still-voted**
-(an `add` whose `evicted` id had been voted on → the cap may be too tight for that role),
+(an `add` whose evicted entry's final score was above the +1 a new entry starts at → a useful
+lesson was lost; evicting an entry at +1 or below is the cap working as intended),
 and **vote-reversal** (one entry id with an `up` vote in one session and a `down` vote in a
 **different** session → correct but mis-aimed). browse-without-use and vote-reversal are
 session-scoped and SHALL skip rows with a blank session ([FR-USAGE-002](#fr-usage-002):
@@ -553,7 +572,7 @@ one-line / no-schema lesson contract intact. They are heuristic hints, not verdi
 **FR-STATS-004 (Should).** `stats` SHALL additionally report the named **surfacing
 metrics** (`StatsReport.surfacing`, a `SurfacingMetrics` object) that turn the usage
 ring into the rates [`self-observing-notebook.md`](./self-observing-notebook.md) §4
-defines, computed from the same windowed, role-scoped rows with no new agent action and
+defines, computed from the same windowed, shelf-scoped rows with no new agent action and
 no field added to a lesson ([NG-004](#ng-004)):
 - **coverage** (novel-add rate) = `accepted` adds ÷ `addAttempts`;
 - **recallMiss** (dedup-block rate — the headline alarm: a stored lesson was re-derived) =
@@ -604,8 +623,8 @@ comment lines in the *file*, not a field on a lesson.
 *Proven by:* `notebook.test.ts` → "notebook metadata / descriptions (issue #70)".
 
 <a id="fr-desc-002"></a>
-**FR-DESC-002 (Should).** `nb describe <role> "<text>"` SHALL set the notebook's
-one-line **description** (the `# desc:` metadata value); `nb describe <role>` with no
+**FR-DESC-002 (Should).** `nb describe <shelf> "<text>"` SHALL set the notebook's
+one-line **description** (the `# desc:` metadata value); `nb describe <shelf>` with no
 text SHALL print the current description (bare, pipe-friendly) or warn on stderr and
 exit 0 when none is set. `setDescription`/`getDescription` are the library form.
 An empty (post-sanitize) text SHALL clear the description. The `[--reason] [--note]`
@@ -635,9 +654,9 @@ entry is matched on its own text; the description is matched separately, so a no
 whose description matches SHALL surface (with any entry hits) even when no single entry
 contains the terms. Results SHALL group by notebook; within a group, hits SHALL rank by
 terms-matched, then score, then file order; groups SHALL rank by their best hit
-(description-only matches last), ties by role name — all deterministic. Each hit SHALL
+(description-only matches last), ties by shelf name — all deterministic. Each hit SHALL
 carry the entry's stable **id**, so the agent can `vote` it afterwards. `prefix` SHALL
-scope by role name (the `.` namespace convention); an empty/whitespace query SHALL yield
+scope by shelf name (the `.` namespace convention); an empty/whitespace query SHALL yield
 no terms and no groups (never an error). `nb search <query> [prefix] [--any] [--json]` is
 the CLI form; `--json` SHALL emit the raw `SearchResult`. Search SHALL be **keyword-only**
 — plain substring over terms, no embeddings or similarity ranking ([NG-001](#ng-001)).
@@ -652,15 +671,15 @@ and `cli.test.ts` → `describe('nb search …')`.
 <a id="fr-search-002"></a>
 **FR-SEARCH-002 (Should).** The CLI SHALL log each `search` to the usage ring
 ([FR-USAGE-002](#fr-usage-002)) with outcome `match` or `no-match` and the query in the
-`note` field (reusing existing columns — no new column), under `role` `-` since it spans
+`note` field (reusing existing columns — no new column), under `shelf` `-` since it spans
 notebooks. `stats` SHALL then derive a **`failed-search`** `DiagnosticSignal`
 ([FR-STATS-003](#fr-stats-003)): within one session, a `no-match` search followed
 by an `accepted` `add` SHALL be flagged as a **coverage gap** the notebook did not hold,
 labelled by the agent's own query (one signal per session + added-entry; a blank session
 is skipped, and a terms-less query logs `no-terms`, never `no-match`, so it cannot be a
-false gap). Because the `search` row is logged under role `-` (it spans notebooks), the
-signal is observable only in an **unscoped** `stats` report — `nb stats <role>` filters to
-one role and cannot pair the cross-notebook search with the add. **Rationale:** This is the
+false gap). Because the `search` row is logged under shelf `-` (it spans notebooks), the
+signal is observable only in an **unscoped** `stats` report — `nb stats <shelf>` filters to
+one shelf and cannot pair the cross-notebook search with the add. **Rationale:** This is the
 `failed-search → add` gap-sensor — the coverage signal deferred from #72. A search that
 keeps failing for a topic is exactly where presentation is failing for that topic, and the
 agent labels it for free ([DP-8](#dp-8)). The search `note` carries an agent-supplied query,
@@ -688,8 +707,8 @@ supported target (no Linux-specific syscalls) and is covered by CI.
 
 <a id="nfr-safe-001"></a>
 **NFR-SAFE-001 (Must).** No operation SHALL write, read, or delete outside `NB_DIR`;
-role validation ([FR-SAFE-001](#fr-safe-001)) is the sole guard and SHALL be applied
-on every role-to-path conversion.
+shelf validation ([FR-SAFE-001](#fr-safe-001)) is the sole guard and SHALL be applied
+on every shelf-to-path conversion.
 
 <a id="nfr-maint-001"></a>
 **NFR-MAINT-001 (Should).** The whole mechanism SHALL stay in `src/notebook.ts` (the
@@ -749,7 +768,7 @@ to the default (integer vars also fall back on a non-numeric string).
 |---|---|---|---|
 | `NB_DIR` | `~/.agent-notebook/notebooks` | — | Notebooks directory. |
 | `NB_SESSION` | _(unset → blank)_ | — | Session id a caller/hook sets; recorded per usage row ([FR-USAGE-002](#fr-usage-002)) to group a session's calls. |
-| `NB_MAX_LINES` | 50 | 1–5000 | `maxLines` — entries per notebook (a deliberately tight default so eviction pressure stays meaningful and a notebook keeps only what earns its place; raise it for a role that genuinely needs more). |
+| `NB_MAX_LINES` | 50 | 1–5000 | `maxLines` — entries per notebook (a deliberately tight default so eviction pressure stays meaningful and a notebook keeps only what earns its place; raise it for a shelf that genuinely needs more). |
 | `NB_MAX_CHARS` | 200 | 20–2000 | `maxChars` — characters per lesson. |
 | `NB_USAGE_RING` | 5000 | 100–100000 | `usageRing` — rows in the usage log. |
 | `NB_LOOP_N` | 10 | 2–1000 | Loop anomaly: call count threshold. |

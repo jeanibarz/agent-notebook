@@ -39,13 +39,13 @@ describe('nb invoked through an npm-style bin symlink', () => {
   });
 
   test('add + show actually produce output when run through a symlink, not just exit 0', () => {
-    const out = execFileSync(binPath, ['add', 'role', 'symlinked lesson'], {
+    const out = execFileSync(binPath, ['add', 'shelf', 'symlinked lesson'], {
       env: { ...process.env, NB_DIR: dir },
       encoding: 'utf-8',
     });
     expect(out).toContain('added — 1 lines');
 
-    const shown = execFileSync(binPath, ['show', 'role'], {
+    const shown = execFileSync(binPath, ['show', 'shelf'], {
       env: { ...process.env, NB_DIR: dir },
       encoding: 'utf-8',
     });

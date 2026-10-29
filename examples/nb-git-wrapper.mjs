@@ -101,8 +101,8 @@ function autoCommit(dir, argv) {
       /* exit 1 → staged changes present → fall through to commit */
     }
     const cmd = (argv[0] ?? '').trim();
-    const role = (argv[1] ?? '').trim();
-    const msg = `nb ${cmd}${role ? ` ${role}` : ''}`.slice(0, 72);
+    const shelf = (argv[1] ?? '').trim();
+    const msg = `nb ${cmd}${shelf ? ` ${shelf}` : ''}`.slice(0, 72);
     run(['commit', '--quiet', '-m', msg]);
   } catch {
     /* fail-open: never fail an nb call because the backup commit failed */

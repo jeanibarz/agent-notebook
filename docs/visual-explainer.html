@@ -161,7 +161,7 @@
       </div>
     </div>
     <div class="nb" aria-label="Example notebook file">
-      <div class="nb-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>reviewer.md</span></div>
+      <div class="nb-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>build-and-test.md</span></div>
       <div class="nb-body">
         <div class="row desc"># desc: build / test / release gotchas for this repo</div>
         <div class="row"><span class="sc">+5</span><span class="tx">run the build before the tests — tests exec the built files</span></div>
@@ -180,7 +180,7 @@
     <div class="card"><div class="n">01</div><h3>One lesson, one line</h3><p>At most 200 characters. Not a document — a single hard-won reminder you could read aloud.</p></div>
     <div class="card"><div class="n">02</div><h3>Voted, recency-aware</h3><p>+1 when a lesson helped, −1 when it misled — and a vote also marks it recently used. Good lessons float up; no wall-clock decay, no scheduler.</p></div>
     <div class="card"><div class="n">03</div><h3>Bounded, self-cleaning</h3><p>A capped list — 50 by default, tunable. A new lesson always gets in; when full, the <em>lowest-scored</em> line is evicted and the <em>stalest</em> one loses a point — so a once-useful lesson gone quiet makes way, and it never rots into a junk drawer.</p></div>
-    <div class="card"><div class="n">04</div><h3>Plain text</h3><p>One file per role. You can <code style="font-family:var(--font-mono)">cat</code> it, <code style="font-family:var(--font-mono)">grep</code> it, and <code style="font-family:var(--font-mono)">git diff</code> it. You cannot do that to a vector database.</p></div>
+    <div class="card"><div class="n">04</div><h3>Plain text</h3><p>One file per shelf: a group of related lessons. You can <code style="font-family:var(--font-mono)">cat</code> it, <code style="font-family:var(--font-mono)">grep</code> it, and <code style="font-family:var(--font-mono)">git diff</code> it. You cannot do that to a vector database.</p></div>
   </div>
 </div></section>
 
@@ -217,7 +217,7 @@
   <p class="muted" style="max-width:62ch">The most valuable lesson is the one the agent would never think to search for: the trap it forgot exists. A search only returns what you can already name. So the notebook is <em>surfaced</em> instead — put in front of the agent whether it asks or not. And it is more than dumping a file: each notebook carries a plain-language description of when to open it, and every use leaves a signal — which lessons got used, and which got used <em>together</em> — that you can mine offline to keep notebooks well-described and well-organized over time. So the agent meets the lessons that fit the task, including the ones it didn't know it would need.</p>
   <div class="two" style="margin-top:0.6rem">
     <div class="panel"><p class="tag dim">A search engine · pull</p><p style="margin-top:0.6rem" class="muted">The agent must ask the right question to get an answer back. If it forgot the trap exists, it never asks — so the lesson never surfaces.</p></div>
-    <div class="panel good"><p class="tag hot">A notebook · push</p><p style="margin-top:0.6rem">The role's notebook is put in front of the agent, and its description says when it fits — so the forgotten lesson arrives unasked. That's the serendipity other tools miss.</p></div>
+    <div class="panel good"><p class="tag hot">A notebook · push</p><p style="margin-top:0.6rem">The notebook is put in front of the agent, and its description says when it fits — so the forgotten lesson arrives unasked. That's the serendipity other tools miss.</p></div>
   </div>
 </div></section>
 
@@ -227,7 +227,7 @@
   <div class="steps" style="margin-top:0.6rem">
     <div class="step"><h3>Read</h3><p>At task start, the notebook is surfaced so the agent begins informed. <code>nb show</code></p></div>
     <div class="step"><h3>Consult</h3><p>Mid-task, check if a past job already covers this. <code>nb list</code></p></div>
-    <div class="step"><h3>Delegate</h3><p>A helper agent gets its own notebook for its own role.</p></div>
+    <div class="step"><h3>Delegate</h3><p>A helper agent opens the shelves that fit its own job.</p></div>
     <div class="step"><h3>Retrospect</h3><p>At the end, vote on what helped, add one new lesson. <code>nb vote</code></p></div>
   </div>
   <p class="muted" style="margin-top:1rem; max-width:60ch">Moment four is where it compounds: a thumbs-up to the notes that helped, a thumbs-down to any that misled, and the single most useful new thing learned — one line. Do it after every task and the notebook quietly gets smarter on its own.</p>
@@ -238,7 +238,7 @@
   <h2>For the human, and for the agent.</h2>
   <div class="audience" style="margin-top:0.6rem">
     <div class="panel"><p class="tag hot">If you are a person</p><p style="margin-top:0.6rem" class="muted">You can read exactly what your assistant "believes," correct a wrong line by deleting it, and watch memory form over time in git. The memory is as transparent and editable as a to-do list.</p></div>
-    <div class="panel"><p class="tag hot">If you are an agent</p><p style="margin-top:0.6rem" class="muted">Read your role's notebook before you plan; vote the lessons that helped and prune the ones that misled; add at most one new ≤200-char lesson at task end. Never pad — "nothing new worth storing" is a valid outcome.</p></div>
+    <div class="panel"><p class="tag hot">If you are an agent</p><p style="margin-top:0.6rem" class="muted">Open the shelves that fit your task before you plan; vote the lessons that helped and prune the ones that misled; add at most one new ≤200-char lesson at task end. Never pad — "nothing new worth storing" is a valid outcome.</p></div>
   </div>
 </div></section>
 

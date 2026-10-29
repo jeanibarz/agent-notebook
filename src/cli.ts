@@ -1,23 +1,23 @@
 #!/usr/bin/env node
-// `nb` — the Agent Notebook CLI. A role's bounded, voted memory: local plain
+// `nb` — the Agent Notebook CLI. A shelf is a bounded, voted memory: local plain
 // text, no embeddings, no network, so every call is a fast, deterministic,
 // offline file edit.
 //
 // Commands:
-//   nb show   <role> [--json]              print the notebook (--json → structured {role,description,entries})
-//   nb add    <role> "<lesson>"            dedup-skip, score +1, write, trim (lowest-score out)
-//   nb add    <role> -                     read the one-line lesson from stdin (multi-line refused)
-//   nb vote   <role> <id|query> +1|-1      adjust an entry's score
-//   nb merge  <role> <idA> <idB> "<merged>"  consolidate two entries into one
-//   nb split  <role> <id|query> "<a>" "<b>"   cut one overloaded entry into two
-//   nb rm     <role> <id|query>            delete an entry judged useless
+//   nb show   <shelf> [--json]              print the notebook (--json → structured {shelf,description,entries})
+//   nb add    <shelf> "<lesson>"            dedup-skip, score +1, write, trim (lowest-score out)
+//   nb add    <shelf> -                     read the one-line lesson from stdin (multi-line refused)
+//   nb vote   <shelf> <id|query> +1|-1      adjust an entry's score
+//   nb merge  <shelf> <idA> <idB> "<merged>"  consolidate two entries into one
+//   nb split  <shelf> <id|query> "<a>" "<b>"   cut one overloaded entry into two
+//   nb rm     <shelf> <id|query>            delete an entry judged useless
 //   (add/vote/rm/merge take --json: one structured result object on stdout)
-//   nb describe <role> ["<text>"]          set the notebook's one-line description (or print it)
+//   nb describe <shelf> ["<text>"]          set the notebook's one-line description (or print it)
 //   nb search <query> [prefix] [--any]     SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
-//   nb stats  [<role>] [--since 7d] [--json]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport)
-//   nb path   [<role>]                     print the notebooks dir, or a role's file path
+//   nb stats  [<shelf>] [--since 7d] [--json]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport)
+//   nb path   [<shelf>]                     print the notebooks dir, or a shelf's file path
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
-//   nb ls / nb roles                       aliases of `nb list`
+//   nb ls / nb shelves / nb roles          aliases of `nb list` (`roles` is deprecated)
 //   nb --help                              this help
 //
 // Every call appends one line to the usage ring so `nb stats` can surface
@@ -30,7 +30,7 @@ import { pathToFileURL } from 'node:url';
 
 import {
   addEntry,
-  assertSafeRole,
+  assertSafeShelf,
   entryId,
   getDescription,
   isValidWindow,
@@ -61,31 +61,34 @@ import {
  */
 const LIST_DEFAULT_LIMIT = 50;
 
-const HELP = `nb — the Agent Notebook (bounded, voted, per-role memory)
+const HELP = `nb — the Agent Notebook (bounded, voted memory, grouped in shelves)
 
 usage:
-  nb show   <role> [--json]               print the notebook (highest-scored first; --json emits {role,description,entries})
-  nb add    <role> "<lesson>"             add a lesson (dedup-skipped; rejected if too long, never truncated)
-  nb add    <role> -                      read the lesson from stdin (one line; multi-line is refused)
-  nb vote   <role> <id|query> +1|-1       upvote/downvote an entry you used
-  nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
-  nb split  <role> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
-  nb rm     <role> <id|query>             delete an entry
-  nb describe <role> ["<text>"]           set the notebook's one-line description (no text → print the current one)
+  nb show   <shelf> [--json]               print the notebook (highest-scored first; --json emits {shelf,description,entries})
+  nb add    <shelf> "<lesson>"             add a lesson (dedup-skipped; rejected if too long, never truncated)
+  nb add    <shelf> -                      read the lesson from stdin (one line; multi-line is refused)
+  nb vote   <shelf> <id|query> +1|-1       upvote/downvote an entry you used
+  nb merge  <shelf> <idA> <idB> "<merged>" consolidate two entries into one
+  nb split  <shelf> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
+  nb rm     <shelf> <id|query>             delete an entry
+  nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print the current one)
   nb search <query> [prefix] [--any]      SECONDARY keyword fallback — scan all notebooks (surfacing is the primary path)
-  nb stats  [<role>] [--since 7d] [--json] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
-  nb path   [<role>]                      print the notebooks dir, or a role's resolved file path
+  nb stats  [<shelf>] [--since 7d] [--json] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
+  nb path   [<shelf>]                      print the notebooks dir, or a shelf's resolved file path
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
-  nb roles  [prefix] [--limit N]          alias of \`nb list\`
+  nb shelves [prefix] [--limit N]         alias of \`nb list\`
+  nb roles  [prefix] [--limit N]          deprecated alias of \`nb list\` (still works)
   nb --help                               show this help
   nb --version                            print the tool version
 
 notes:
+  - <shelf> is a notebook's name: one <shelf>.md file of lessons an agent needs in the
+    same situations (see \`nb list\`).
   - add/vote/rm/merge accept --json (after the subcommand): stdout is one JSON
     result object and nothing else; warnings/errors stay on stderr. Exit codes are
     unchanged (a too-long add still exits 1, a duplicate still exits 0).
-  - \`nb add <role> -\` reads the lesson from stdin (one line, so a supervising agent
+  - \`nb add <shelf> -\` reads the lesson from stdin (one line, so a supervising agent
     can pipe it in without shell-quoting). It reads exactly one line: a trailing
     newline is stripped and multi-line input is REFUSED (exit 1), never flattened —
     one entry = one line. To store a literal single hyphen, use the library addEntry.
@@ -114,13 +117,13 @@ notes:
              from mined notes rather than be guessed up front)
       describe (no enum yet — free text only, like add; the flags are accepted and logged so
              a code learned from the other write commands is never stored as the description)
-  - \`nb describe <role> "<text>"\` sets the notebook's one-line description, stored as a
-    leading \`# desc: <text>\` comment in the file; \`nb describe <role>\` (no text) prints the
+  - \`nb describe <shelf> "<text>"\` sets the notebook's one-line description, stored as a
+    leading \`# desc: <text>\` comment in the file; \`nb describe <shelf>\` (no text) prints the
     current one. The description is a *trigger* — "the situation in which you should open me" —
     so \`nb show\` and a bare list can tell what a notebook is for without reading its lessons.
     It is capped like a lesson (rejected, not truncated, if too long); an empty text clears it.
     The \`# key: value\` block round-trips through every mutation and never becomes a lesson.
-  - \`nb list\` (aliases \`ls\`, \`roles\`) is the notebook index: one richest-first line per notebook —
+  - \`nb list\` (aliases \`ls\`, \`shelves\`; \`roles\` is the deprecated old name) is the notebook index: one richest-first line per notebook —
     name, lesson count, and description — so you can pick which notebook to open WITHOUT reading any
     of them. Richest-first = most lessons first (ties by name). A notebook with no \`# desc:\` falls back
     to its top-scored lesson, marked \`(auto)\`. A bare \`prefix\` filters by name (the \`.\` namespace
@@ -140,7 +143,8 @@ notes:
   - \`nb stats\` also surfaces free *diagnostic signals* read straight from the usage log (no
     extra agent action): browse-without-use (a notebook shown in a session but no entry voted
     that session — the description may over-promise), eviction-while-still-voted (the cap
-    evicted an entry that had been voted on — the cap may be too tight for that role), and
+    evicted an entry whose score was still above the
+    starting +1 — a useful lesson was lost), and
     vote-reversal (the same entry upvoted in one session and downvoted in another — correct but
     mis-aimed). They need \`NB_SESSION\` set to attribute calls to a session; \`--json\` includes
     them as \`signals[]\` in the StatsReport.
@@ -157,7 +161,7 @@ notes:
   - when full, the LOWEST-scored line is evicted (ties: oldest).
   - every \`nb show\` line begins with the entry's short stable <id>; pass that id to vote/rm/merge
     (a unique id prefix works too). A unique text substring also selects an entry; an ambiguous one is refused.
-  - storage: $NB_DIR or ~/.agent-notebook/notebooks/<role>.md (plain text, git-diffable).
+  - storage: $NB_DIR or ~/.agent-notebook/notebooks/<shelf>.md (plain text, git-diffable).
 
 docs: https://github.com/jeanibarz/agent-notebook`;
 
@@ -196,10 +200,10 @@ export async function runNbCli(
 
   const dir = notebooksDir();
   const started = Date.now();
-  let role = '-';
+  let shelf = '-';
   let ok = false;
   // Richer usage-log fields for this call (entry-level + outcome logging, #67).
-  // Each command fills what it produced; `show`/`path`/`roles`/`stats` leave it
+  // Each command fills what it produced; `show`/`path`/`shelves`/`stats` leave it
   // empty and `logUsage` writes blanks. `session` is filled by `logUsage` from
   // `NB_SESSION`, so it is not set here.
   const meta: UsageMeta = {};
@@ -207,8 +211,8 @@ export async function runNbCli(
   // result object on stdout and nothing else, so a supervisor can branch on
   // `reason`/`score` without regex-parsing the English line. `show` also honors
   // it (emitting a ShowResult); `stats` reads it from its own arg slice. Strip it
-  // before positional parsing (like `stats`, it is a flag, not a role/lesson);
-  // `path`/`roles` ignore it. Exit codes are unchanged (a too-long add still exits 1).
+  // before positional parsing (like `stats`, it is a flag, not a shelf/lesson);
+  // `path`/`shelves` ignore it. Exit codes are unchanged (a too-long add still exits 1).
   const json = argv.includes('--json');
   let args = json ? argv.filter((a) => a !== '--json') : argv;
   // `--reason <code>` / `--note "<text>"` attach an optional, never-required
@@ -217,7 +221,7 @@ export async function runNbCli(
   // obsolete · other), `split` (overloaded · other), `add` (free text only,
   // no enum yet), and `describe` (free text only, like `add`). Pulling them out
   // of `args` BEFORE positional parsing keeps them from being mistaken for a
-  // lesson/operand — otherwise `nb describe <role> --reason x "text"` would
+  // lesson/operand — otherwise `nb describe <shelf> --reason x "text"` would
   // silently store `--reason` as the description (issue #91, a DP-5 violation);
   // `normalizeReason` validates the code against the op's seed-and-grow enum.
   let reasonArg: string | undefined;
@@ -231,25 +235,25 @@ export async function runNbCli(
     }
     switch (cmd) {
       case 'show': {
-        // Resolve the role from the --json-stripped args so `nb show <role> --json`
-        // and `nb show --json <role>` both work and the flag is never taken as the role.
-        role = need(args[1], 'role');
+        // Resolve the shelf from the --json-stripped args so `nb show <shelf> --json`
+        // and `nb show --json <shelf>` both work and the flag is never taken as the shelf.
+        shelf = need(args[1], 'shelf');
         if (json) {
-          // `--json` emits the structured ShowResult ({ role, description, entries })
+          // `--json` emits the structured ShowResult ({ shelf, description, entries })
           // and nothing else, so an agent reads each entry's id/score/text without
           // regex-parsing the human output. Same ordering as `render()`.
-          process.stdout.write(JSON.stringify(showJson(dir, role)) + '\n');
+          process.stdout.write(JSON.stringify(showJson(dir, shelf)) + '\n');
         } else {
           // Print the one-line description (if any) as a header above the lessons,
           // so a reader sees what the notebook is *for* before its contents.
-          const desc = getDescription(dir, role);
+          const desc = getDescription(dir, shelf);
           if (desc) process.stdout.write(`# desc: ${desc}\n`);
-          process.stdout.write(render(dir, role) + '\n');
+          process.stdout.write(render(dir, shelf) + '\n');
         }
         break;
       }
       case 'add': {
-        role = need(args[1], 'role');
+        shelf = need(args[1], 'shelf');
         // A lesson operand of `-` means "read the lesson from stdin" so a
         // supervising agent that wrote a lesson into a pipe can hand it over
         // without shell-quoting it. We read exactly one line (see
@@ -260,7 +264,7 @@ export async function runNbCli(
         // unchanged `addEntry`, so caps, dedup, and eviction behave identically.
         let lesson = need(args[2], 'lesson');
         if (lesson === '-') lesson = readOneLine(await readStdin());
-        const r = await addEntry(dir, role, lesson);
+        const r = await addEntry(dir, shelf, lesson);
         // Record which entry was touched and how it landed BEFORE the output
         // branch below, which can `throw`/`return` on 'too-long' — the finally
         // still logs, so meta must already be set.
@@ -293,10 +297,10 @@ export async function runNbCli(
         break;
       }
       case 'vote': {
-        role = need(args[1], 'role');
+        shelf = need(args[1], 'shelf');
         const selector = need(args[2], 'id|query');
         const delta = parseDelta(need(args[3], '+1|-1'));
-        const r = await vote(dir, role, selector, delta);
+        const r = await vote(dir, shelf, selector, delta);
         meta.entries = [entryId(r.text)];
         meta.outcome = delta > 0 ? 'up' : 'down';
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
@@ -304,11 +308,11 @@ export async function runNbCli(
         break;
       }
       case 'merge': {
-        role = need(args[1], 'role');
+        shelf = need(args[1], 'shelf');
         const a = need(args[2], 'idA');
         const b = need(args[3], 'idB');
         const merged = need(args[4], 'merged lesson');
-        const r = await merge(dir, role, a, b, merged);
+        const r = await merge(dir, shelf, a, b, merged);
         meta.entries = [...(r.sources ?? []), ...(r.id ? [r.id] : [])];
         meta.outcome = 'merged';
         // Reason lives in the usage log only (merge enum: duplicate · other).
@@ -322,11 +326,11 @@ export async function runNbCli(
         break;
       }
       case 'split': {
-        role = need(args[1], 'role');
+        shelf = need(args[1], 'shelf');
         const selector = need(args[2], 'id|query');
         const lessonA = need(args[3], 'lessonA');
         const lessonB = need(args[4], 'lessonB');
-        const r = await split(dir, role, selector, lessonA, lessonB);
+        const r = await split(dir, shelf, selector, lessonA, lessonB);
         const { reason, note } = normalizeReason('split', reasonArg, noteArg);
         // Log the source + both produced ids, the outcome, and the reason/note —
         // the reason lives in the usage log only, never in the notebook.
@@ -339,9 +343,9 @@ export async function runNbCli(
         break;
       }
       case 'rm': {
-        role = need(args[1], 'role');
+        shelf = need(args[1], 'shelf');
         const selector = need(args[2], 'id|query');
-        const r = await remove(dir, role, selector);
+        const r = await remove(dir, shelf, selector);
         meta.entries = [entryId(r.text)];
         meta.outcome = 'removed';
         // Reason lives in the usage log only (rm enum: wrong · obsolete · other).
@@ -355,15 +359,15 @@ export async function runNbCli(
         break;
       }
       case 'describe': {
-        role = need(args[1], 'role');
+        shelf = need(args[1], 'shelf');
         // With a text operand → set the description; without one → print the
         // current description. Use `args` (the `--json` flag already stripped),
-        // so `nb describe <role> --json` reads rather than setting the
+        // so `nb describe <shelf> --json` reads rather than setting the
         // description to the literal "--json". An empty string is still a
         // *present* operand (clears the description), so we branch on presence
         // (args.length), not on emptiness.
         if (args.length > 2) {
-          const r = await setDescription(dir, role, args[2]);
+          const r = await setDescription(dir, shelf, args[2]);
           meta.outcome = r.desc === null ? 'desc-cleared' : 'described';
           // `--reason`/`--note` are stripped above (so they can't be mistaken
           // for the description text); record them in the usage log, never in
@@ -375,18 +379,18 @@ export async function runNbCli(
             if (note) meta.note = note;
           }
           if (json) process.stdout.write(JSON.stringify(r) + '\n');
-          else if (r.desc === null) process.stdout.write(`description cleared for role "${role}"\n`);
-          else process.stdout.write(`description set for role "${role}": ${r.desc}\n`);
+          else if (r.desc === null) process.stdout.write(`description cleared for shelf "${shelf}"\n`);
+          else process.stdout.write(`description set for shelf "${shelf}": ${r.desc}\n`);
         } else {
-          const desc = getDescription(dir, role);
-          if (json) process.stdout.write(JSON.stringify({ role, desc, set: false }) + '\n');
+          const desc = getDescription(dir, shelf);
+          if (json) process.stdout.write(JSON.stringify({ role: shelf, shelf, desc, set: false }) + '\n');
           else if (desc) process.stdout.write(desc + '\n');
-          else process.stderr.write(`no description set for role "${role}" — set one with \`nb describe ${role} "<text>"\`\n`);
+          else process.stderr.write(`no description set for shelf "${shelf}" — set one with \`nb describe ${shelf} "<text>"\`\n`);
         }
         break;
       }
       case 'search': {
-        // The demoted keyword fallback (issue #82). Spans notebooks, so `role`
+        // The demoted keyword fallback (issue #82). Spans notebooks, so the usage-log shelf column
         // stays `-` (like `list`). `--json` is already stripped from `args`; pull
         // out the boolean `--any` (OR instead of AND), leaving the query at
         // args[1] and an optional positional name prefix at args[2].
@@ -427,16 +431,16 @@ export async function runNbCli(
           );
         }
         const windowMs = sinceIdx >= 0 ? parseWindowMs(sinceVal) : undefined;
-        const maybeRole = rest.find((a, i) => !a.startsWith('--') && (sinceIdx < 0 || i !== sinceIdx + 1));
-        role = maybeRole ?? '-';
+        const maybeShelf = rest.find((a, i) => !a.startsWith('--') && (sinceIdx < 0 || i !== sinceIdx + 1));
+        shelf = maybeShelf ?? '-';
         // `--json` emits the raw StatsReport (stable, machine-readable) so a
         // supervising agent can act on a loop/went-silent/high-error-rate
         // anomaly without regex-parsing the human table. The --since warning
         // above stays on stderr, keeping stdout pure JSON.
         if (rest.includes('--json')) {
-          process.stdout.write(JSON.stringify(stats(dir, { role: maybeRole, windowMs })) + '\n');
+          process.stdout.write(JSON.stringify(stats(dir, { shelf: maybeShelf, windowMs })) + '\n');
         } else {
-          process.stdout.write(renderStats(dir, maybeRole, windowMs) + '\n');
+          process.stdout.write(renderStats(dir, maybeShelf, windowMs) + '\n');
         }
         break;
       }
@@ -444,27 +448,28 @@ export async function runNbCli(
         // Read-only on notebook state (like `show`/`stats`, it still appends one
         // usage row via the shared `finally`): expose the file layout the
         // plain-text promise relies on, so nobody has to hard-code
-        // `$NB_DIR | ~/.agent-notebook/notebooks/<role>.md`. Output is a BARE path
+        // `$NB_DIR | ~/.agent-notebook/notebooks/<shelf>.md`. Output is a BARE path
         // (no decoration) so it pipes into `cat`/`$(...)`.
-        const maybeRole = argv[1];
-        if (maybeRole == null || maybeRole === '') {
+        const maybeShelf = argv[1];
+        if (maybeShelf == null || maybeShelf === '') {
           process.stdout.write(dir + '\n');
         } else {
-          role = maybeRole;
-          assertSafeRole(role); // reuse the existing escape-proof role check
-          process.stdout.write(join(dir, `${role}.md`) + '\n');
+          shelf = maybeShelf;
+          assertSafeShelf(shelf); // reuse the existing escape-proof shelf check
+          process.stdout.write(join(dir, `${shelf}.md`) + '\n');
         }
         break;
       }
       case 'list':
       case 'ls':
+      case 'shelves':
       case 'roles': {
         // The notebook index (issue #71): one richest-first line per notebook —
         // name, lesson count, and description — so a caller can pick WHICH
-        // notebook to open without reading any of them. `ls` and `roles` are
-        // aliases (`roles` replaces the old plain-stems listing, matching the
+        // notebook to open without reading any of them. `ls`, `shelves` and `roles` are
+        // aliases (`roles`, now deprecated, replaced the old plain-stems listing, matching the
         // richer format the kookr `nb` shim already bolted on). Read-only — it
-        // still appends one usage row via the shared `finally`; `role` stays `-`
+        // still appends one usage row via the shared `finally`; the logged shelf stays `-`
         // because the command spans notebooks rather than acting on one.
         // `--json` is already stripped from `args`; pull out `--limit`, leaving
         // an optional positional name prefix as args[1].
@@ -503,7 +508,7 @@ export async function runNbCli(
     return 1;
   } finally {
     // The `stats` read of the usage log happens above; logging it afterwards is fine.
-    logUsage(dir, role, cmd, ok, Date.now() - started, meta);
+    logUsage(dir, shelf, cmd, ok, Date.now() - started, meta);
   }
 }
 
@@ -545,7 +550,7 @@ function readOneLine(raw: string): string {
 }
 
 /* c8 ignore start */
-// The real stdin reader for `nb add <role> -`. Drains stdin to a string. Guards
+// The real stdin reader for `nb add <shelf> -`. Drains stdin to a string. Guards
 // against a TTY: with no pipe, reading would block forever waiting for the user,
 // so we fail fast with a message that shows the intended pipe form instead. The
 // test suite injects its own reader, so this branch is excluded from coverage.
@@ -580,7 +585,7 @@ const READOUT_GLOSS: Record<'healthy' | 'surfacing-failure' | 'coverage-building
 };
 
 /**
- * Render the notebook index for `nb list`/`ls`/`roles`. Returns `{out, err}` so
+ * Render the notebook index for `nb list`/`ls`/`shelves`/`roles`. Returns `{out, err}` so
  * the caller writes the body to stdout (pipe-clean) and a friendly empty-state
  * note to stderr, exactly like `nb roles` did. One header line, then one row per
  * notebook: `  <name>  <count>  <description>`, name left-padded and count
@@ -593,19 +598,19 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
   if (listing.total === 0) {
     const err = prefix
       ? `no notebooks matching "${prefix}" — run \`nb list\` to see them all\n`
-      : 'no notebooks yet — add one with `nb add <role> "<lesson>"`\n';
+      : 'no notebooks yet — add one with `nb add <shelf> "<lesson>"`\n';
     return { out: '', err };
   }
   const shown = listing.rows.length;
   const countClause = shown < listing.total ? `${shown} of ${listing.total}` : `${listing.total}`;
   const match = prefix ? ` matching "${prefix}"` : '';
   const lines = [`agent-notebook notebooks — ${countClause}${match} in ${dir}`];
-  const nameWidth = listing.rows.reduce((w, r) => Math.max(w, r.role.length), 0);
+  const nameWidth = listing.rows.reduce((w, r) => Math.max(w, r.shelf.length), 0);
   const countWidth = listing.rows.reduce((w, r) => Math.max(w, String(r.lessons).length), 0);
   for (const r of listing.rows) {
     const trigger = r.desc ?? r.auto; // explicit description, else the (auto) top lesson
     const descPart = trigger ? `  ${trigger}${r.desc === null ? '  (auto)' : ''}` : '';
-    lines.push(`  ${r.role.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`);
+    lines.push(`  ${r.shelf.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`);
   }
   return { out: lines.join('\n') + '\n', err: '' };
 }
@@ -616,7 +621,7 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
  * (keeping stdout empty), exactly like `nb list`. A no-match is not an error — the
  * note reminds the reader that search is the secondary path AND that the miss was
  * recorded as a possible coverage gap. On a match: one header line (term count and
- * AND/OR mode), then per notebook a role line (with its description when set, and a
+ * AND/OR mode), then per notebook a shelf line (with its description when set, and a
  * `(description match)` tag when only the description matched) followed by one
  * indented `<id>  [score]  <text>` line per hit — the id so the agent can `vote` it.
  */
@@ -642,7 +647,7 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
   for (const g of result.groups) {
     const descPart = g.desc ? `  — ${g.desc}` : '';
     const descOnly = g.hits.length === 0 ? '  (description match)' : g.descMatched ? '  (+description match)' : '';
-    lines.push(`  ${g.role}${descPart}${descOnly}`);
+    lines.push(`  ${g.shelf}${descPart}${descOnly}`);
     for (const h of g.hits) {
       lines.push(`    ${h.id}  [${fmt(h.score)}]  ${h.text}`);
     }
@@ -650,10 +655,10 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
   return { out: lines.join('\n') + '\n', err: '' };
 }
 
-function renderStats(dir: string, role: string | undefined, windowMs: number | undefined): string {
-  const rep = stats(dir, { role, windowMs });
+function renderStats(dir: string, shelf: string | undefined, windowMs: number | undefined): string {
+  const rep = stats(dir, { shelf, windowMs });
   const lines: string[] = [];
-  lines.push(`nb usage — ${role ? `role ${role}, ` : ''}window ${rep.window}, ${rep.totalCalls} calls`);
+  lines.push(`nb usage — ${shelf ? `shelf ${shelf}, ` : ''}window ${rep.window}, ${rep.totalCalls} calls`);
   if (rep.perCommand.length === 0) {
     lines.push('  (no usage recorded in this window)');
   } else {
@@ -668,7 +673,7 @@ function renderStats(dir: string, role: string | undefined, windowMs: number | u
   if (rep.anomalies.length > 0) {
     lines.push('  anomalies:');
     for (const a of rep.anomalies) {
-      lines.push(`    [${a.kind}] ${a.command}${a.role ? ` (role ${a.role})` : ''}: ${a.detail}`);
+      lines.push(`    [${a.kind}] ${a.command}${a.shelf ? ` (shelf ${a.shelf})` : ''}: ${a.detail}`);
     }
   } else {
     lines.push('  anomalies: none');
@@ -676,12 +681,12 @@ function renderStats(dir: string, role: string | undefined, windowMs: number | u
   // Free diagnostic signals (issue #72): memory-quality observations read from
   // the usage ring (over-promised descriptions, too-tight caps, mis-aimed
   // lessons). Distinct from anomalies (command health), so they get their own
-  // section; each line names the role (and entry/session where relevant).
+  // section; each line names the shelf (and entry/session where relevant).
   if (rep.signals.length > 0) {
     lines.push('  signals:');
     for (const s of rep.signals) {
       const where = s.entry ? ` entry ${s.entry}` : s.session ? ` session "${s.session}"` : '';
-      lines.push(`    [${s.kind}] role ${s.role}${where}: ${s.detail}`);
+      lines.push(`    [${s.kind}] shelf ${s.shelf}${where}: ${s.detail}`);
     }
   } else {
     lines.push('  signals: none');
@@ -701,17 +706,17 @@ function renderStats(dir: string, role: string | undefined, windowMs: number | u
     lines.push(`    precision-miss  ${pct(sf.precisionMiss)}  (${sf.votesActedOn ? `${Math.round((sf.precisionMiss ?? 0) * sf.votesActedOn)}/${sf.votesActedOn} downvotes on pushed lessons` : 'no votes'})`);
     if (sf.readout) lines.push(`    readout: ${sf.readout} — ${READOUT_GLOSS[sf.readout]}`);
   }
-  // Notebook inventory (issue #40): make memory pressure visible — a role at
+  // Notebook inventory (issue #40): make memory pressure visible — a shelf at
   // `lines/cap` where the two are equal is one distinct add from an eviction,
   // flagged FULL so a supervisor spots it without listing files.
   const nb = rep.notebookTotals;
   if (rep.notebooks.length === 0) {
     lines.push('  notebooks: none');
   } else {
-    lines.push(`  notebooks: ${nb.roles} role${nb.roles === 1 ? '' : 's'}, ${nb.lines} lines (cap ${nb.cap}/role)`);
+    lines.push(`  notebooks: ${nb.shelves} ${nb.shelves === 1 ? 'shelf' : 'shelves'}, ${nb.lines} lines (cap ${nb.cap}/shelf)`);
     for (const n of rep.notebooks) {
       const full = n.lines >= n.cap ? '  FULL' : '';
-      lines.push(`    ${n.role.padEnd(20)}  ${String(n.lines).padStart(4)}/${n.cap}${full}`);
+      lines.push(`    ${n.shelf.padEnd(20)}  ${String(n.lines).padStart(4)}/${n.cap}${full}`);
     }
   }
   return lines.join('\n');
