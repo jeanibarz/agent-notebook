@@ -277,5 +277,46 @@ In your harness, start a fresh session and give it a task: the agent should run
 and — if you added the optional hooks — you'll also see the index injected at the
 top and a retrospective nudge when the task ends.
 
+---
+
+## Diagnosing low engagement
+
+[Verify it's working](#verify-its-working) is a one-time smoke test for a *fresh*
+install. This is the *ongoing* diagnosis — **your agents don't seem to be using
+the notebooks; is the hook mis-wired, is `NB_SESSION` missing, or is it genuine
+quiet?** The trap is that the [SessionStart hook fails *open*](#claude-code): if
+`nb` isn't on its PATH it injects nothing and errors nothing, so a broken hook is
+**silent** — agents simply never see the index and nobody is told.
+
+One command tells the causes apart. Run `nb stats` with **no shelf argument** —
+the deployment-wide view — and read its `surfacing:` line against this tree. (Use
+the no-argument form on purpose: the injection hook's own `nb list` is global, so
+a shelf-scoped `nb stats <shelf>` never sees it and would mis-report the hook as
+unwired.)
+
+| Symptom — the `nb stats` `surfacing:` line reads… | Cause | Remedy |
+|---|---|---|
+| `…notebooks hold N lessons but had 0 reads…; the SessionStart injection hook is probably not wired` | the index never reaches the agent — the hook isn't firing, or `nb` isn't resolvable from it (fail-open ⇒ silent) | run the **hook self-check** below; put `nb` on PATH or point the hook at your wrapper with `NB_BIN` |
+| `…N session opened a notebook but cast no vote; the end-of-task retrospective nudge isn't landing` | agents read the notebooks but skip the retrospective (moment ④), so nothing is voted, pruned, or added | wire the [`Stop`/`SubagentStop` retrospective hook](#claude-code) (`nb-retrospective.sh`), or reinforce moment ④ in the contract |
+| `…NB_SESSION was unset on N calls, so none could group into a session; export NB_SESSION…` | calls happen but aren't attributed to a session, so engagement can't be measured | export `NB_SESSION` (a per-task id) in the harness environment — see [the janitor note](#the-janitor) |
+| `surfacing: N engaged session(s)` (with `recall-miss` / `precision-miss` readouts) | **not a bug** — the plumbing works and this is real usage; low volume may just be a healthy [sufficient-notebook plateau](#the-janitor) | nothing to fix; read the readout for memory *quality*, not wiring |
+
+These are the same root causes `nb stats` exposes machine-readably as
+`surfacing.engagementDiagnosis` in `--json` (`null` once any session is engaged) —
+the table is the operator's reading of them.
+
+**Hook self-check** — does the SessionStart hook actually inject anything?
+
+```sh
+bash examples/hooks/claude-code/nb-session-start.sh | head
+```
+
+Non-empty output (the `## Your agent-notebook index` block) ⇒ the hook works and
+the agent will see the index. **Empty** output ⇒ the hook is failing open: `nb`
+isn't resolvable from the hook's environment. Put `nb` on PATH (or point the hook
+at your wrapper with `NB_BIN=/path/to/nb`) and re-run — the index should appear.
+
+---
+
 Rolling this out across a team or under compliance constraints? Continue to the
 **[enterprise integration guide](enterprise.md)**.
