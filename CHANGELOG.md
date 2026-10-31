@@ -10,6 +10,18 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **"Diagnosing low engagement" runbook** (issue #108). [`docs/harness-setup.md`](docs/harness-setup.md#diagnosing-low-engagement)
+  gains a troubleshooting section for the *ongoing* symptom the old "Verify it's working" smoke
+  test never covered — "my agents don't seem to use the notebooks." It centers on the failure mode
+  that is otherwise silent: the SessionStart injection hook **fails open**, so a mis-wired hook
+  errors nothing and tells no one. A symptom→cause→remedy decision tree reads the deployment-wide
+  `nb stats` `surfacing:` line (the no-argument form — the engagement diagnosis is computed across
+  all shelves regardless of any shelf argument, so the no-arg view is the one that also prints the
+  full inventory) and maps each of the three #105 root causes to its concrete
+  fix: hook-not-wired → a copy-paste **hook self-check** (`bash examples/hooks/claude-code/nb-session-start.sh | head`;
+  empty ⇒ broken), reads-but-no-votes → wire the retrospective hook, blank sessions → export
+  `NB_SESSION` — plus a fourth "engaged, not a bug" row for genuine quiet. Linked from the README.
+  Docs-only; no code, no notebook-file schema change.
 - **nb-janitor reports shelf co-access** (issue #107). The offline, read-only janitor
   (`examples/nb-janitor.mjs`) gains **section 5**: it groups usage rows by session, collects
   the set of shelves `show`n per session, and counts shelf-pair co-occurrence — the one signal

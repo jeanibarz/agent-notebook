@@ -70,7 +70,7 @@ npm link   # puts `nb` on your PATH, pointing at this clone
 New here, or wiring it into a real agent? These pick up where the reference below leaves off:
 
 - **[Getting started](docs/getting-started.md)** — the plain-language intro (no AI/DevOps background needed), with diagrams. There's also a one-page [visual explainer](docs/visual-explainer.html).
-- **[Harness setup](docs/harness-setup.md)** — make your agent use the notebook: the one "list the notebooks, open what fits, retrospect at the end" instruction that does it, plus optional convenience hooks, per-change git-versioning, daily backup, and a diagnostics janitor — for **Claude Code** and **Codex CLI**, on Linux/macOS/Windows.
+- **[Harness setup](docs/harness-setup.md)** — make your agent use the notebook: the one "list the notebooks, open what fits, retrospect at the end" instruction that does it, plus optional convenience hooks, per-change git-versioning, daily backup, and a diagnostics janitor — for **Claude Code** and **Codex CLI**, on Linux/macOS/Windows. Agents not biting? The [Diagnosing low engagement](docs/harness-setup.md#diagnosing-low-engagement) runbook tells a mis-wired hook from genuine quiet.
 - **[Enterprise integration](docs/enterprise.md)** — rolling it out under data-sovereignty, security, and compliance constraints.
 - **[Eviction & aging](docs/eviction-and-aging.md)** — how a *full* notebook decides what to keep: recency-ordered storage and the staleness decay that keeps a once-useful lesson from becoming immortal.
 - **[AGENTS.md](AGENTS.md)** — the operating contract an agent follows (also the `CLAUDE.md` your harness loads). Copy-pasteable integration pieces live in [`examples/`](examples/).
