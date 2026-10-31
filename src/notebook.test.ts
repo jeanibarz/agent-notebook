@@ -903,6 +903,35 @@ describe('usage log + stats', () => {
     expect(rep.anomalies.some((a) => a.kind === 'loop' && a.command === 'add')).toBe(true);
   });
 
+  test('a retrospective vote-sweep across DISTINCT entries is not flagged as a loop', () => {
+    // A retro rapidly votes many different lessons in one session. That is the
+    // designed behavior, not a stuck agent — the loop key includes the entry, so
+    // distinct targets do not collapse into one hot key.
+    process.env.NB_LOOP_N = '5';
+    process.env.NB_LOOP_WINDOW_S = '60';
+    const base = Date.parse('2026-10-23T10:00:00Z');
+    const rows = Array.from(
+      { length: 6 },
+      (_, i) => `${new Date(base + i * 2000).toISOString()}\tpatcher\tvote\tok\t2ms\tretro1\te${i}\tup`,
+    );
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const rep = stats(dir, { now: base + 60_000 });
+    expect(rep.anomalies.some((a) => a.kind === 'loop')).toBe(false);
+  });
+
+  test('hammering the SAME entry still flags a loop (detection survives the entry-keying)', () => {
+    process.env.NB_LOOP_N = '5';
+    process.env.NB_LOOP_WINDOW_S = '60';
+    const base = Date.parse('2026-10-23T10:00:00Z');
+    const rows = Array.from(
+      { length: 6 },
+      (_, i) => `${new Date(base + i * 2000).toISOString()}\tpatcher\tvote\tok\t2ms\tretro1\tsame\tup`,
+    );
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const rep = stats(dir, { now: base + 60_000 });
+    expect(rep.anomalies.some((a) => a.kind === 'loop' && a.command === 'vote')).toBe(true);
+  });
+
   test('flags a went-silent anomaly (used historically, silent recently)', () => {
     const now = Date.parse('2026-10-23T10:00:00Z');
     const old = new Date(now - 100 * 3600_000).toISOString(); // 100h ago

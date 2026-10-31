@@ -1661,12 +1661,18 @@ export function stats(
 
   const anomalies: Anomaly[] = [];
 
-  // (1) loop: same shelf+command ≥ LOOP_N times inside LOOP_WINDOW_MS.
+  // (1) loop: same shelf+command on the SAME target ≥ LOOP_N times inside
+  //     LOOP_WINDOW_MS. The key includes the touched entry id(s) so a legitimate
+  //     retrospective — many rapid `vote`s across DISTINCT entries in one session
+  //     — is not mistaken for a stuck agent, while hammering a single entry (or a
+  //     repeated entry-less call such as `show <shelf>`) still trips it. Entry-less
+  //     calls share the empty target, preserving the original shelf+command grouping.
   const LOOP_N = clampInt(process.env.NB_LOOP_N, 10, 2, 1000);
   const LOOP_WINDOW_MS = clampInt(process.env.NB_LOOP_WINDOW_S, 120, 5, 86_400) * 1000;
   const byShelfCmd = new Map<string, number[]>();
   for (const r of recent) {
-    const k = `${r.role}\u0000${r.command}`;
+    const target = r.entries.slice().sort().join(',');
+    const k = `${r.role}\u0000${r.command}\u0000${target}`;
     const arr = byShelfCmd.get(k) ?? [];
     arr.push(Date.parse(r.ts));
     byShelfCmd.set(k, arr);

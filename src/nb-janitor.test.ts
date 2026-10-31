@@ -196,3 +196,46 @@ describe('nb-janitor section 5 — shelf co-access (issue #107)', () => {
     expect(ratios[1]).toBe(0.8); // (m,n) second
   });
 });
+
+// Section 2 — near-duplicate shelf names. A shelf is `role@project` (or just
+// `role`). Two shelves fragment memory only when they are near-duplicate ROLES
+// within the SAME project scope. Shelf discovery is by `<name>.md` filename, so
+// these tests seed files, not a usage log.
+describe('nb-janitor section 2 — scope-aware shelf-name dedup', () => {
+  function mkShelf(name: string): void {
+    writeFileSync(join(dir, `${name}.md`), '# scope: global\n1\ta lesson\n', 'utf-8');
+  }
+  function shelfDups(): { a: string; b: string; sim: number }[] {
+    const out = execFileSync('node', [janitor, '--json'], { env: { ...process.env, NB_DIR: dir }, encoding: 'utf-8' });
+    return JSON.parse(out).shelfDups;
+  }
+
+  test('different roles in the SAME project scope are not flagged (issue: @project false positive)', () => {
+    mkShelf('orchestrator@jeanibarz-knowledge-base-mcp-server');
+    mkShelf('patch-author@jeanibarz-knowledge-base-mcp-server');
+    expect(shelfDups()).toEqual([]);
+  });
+
+  test('the SAME role in different project scopes is not flagged (pins the scope guard)', () => {
+    mkShelf('repo-cartographer@project-a');
+    mkShelf('repo-cartographer@project-b');
+    expect(shelfDups()).toEqual([]);
+  });
+
+  test('a genuine near-duplicate role within one scope is still flagged (detection survives)', () => {
+    mkShelf('code-review');
+    mkShelf('code-reviews');
+    const dups = shelfDups();
+    expect(dups.length).toBe(1);
+    expect([dups[0].a, dups[0].b].sort()).toEqual(['code-review', 'code-reviews']);
+    expect(dups[0].sim).toBeGreaterThanOrEqual(0.8);
+  });
+
+  test('a scoped typo in the role within the same project is flagged (similarity on the role, not the shared scope)', () => {
+    mkShelf('orchestrator@proj');
+    mkShelf('orchestratr@proj'); // dropped an 'o' — a typo split
+    const dups = shelfDups();
+    expect(dups.length).toBe(1);
+    expect(dups[0].sim).toBeGreaterThanOrEqual(0.8);
+  });
+});

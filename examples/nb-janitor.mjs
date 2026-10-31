@@ -210,14 +210,24 @@ const lostLessons = Object.values(lossByShelf)
   .sort((a, b) => b.stillVoted + b.relearned - (a.stillVoted + a.relearned));
 
 // 2) near-duplicate shelf names
+// A shelf name is `role@project` (or just `role` when unscoped). Two shelves only
+// fragment memory when they are near-duplicate ROLES within the SAME project scope
+// — `orchestrator@proj` vs `patch-author@proj` are DIFFERENT roles in one project
+// (intentional, not a dup), and `role@a` vs `role@b` are the same role in different
+// projects (also intentional). So compare similarity on the role, scoped by project.
+const splitShelf = (name) => {
+  const at = name.indexOf('@');
+  return at === -1 ? { role: name, scope: '' } : { role: name.slice(0, at), scope: name.slice(at + 1) };
+};
 const shelfDups = [];
 const shelves = notebooks.map((n) => n.shelf);
 for (let i = 0; i < shelves.length; i++)
   for (let j = i + 1; j < shelves.length; j++) {
-    const sim = editSim(shelves[i], shelves[j]);
-    // same namespace stem (`review.tests` vs `review.correctness`) is intentional, not a dup
-    const sameNs = shelves[i].split('.')[0] === shelves[j].split('.')[0] && shelves[i].includes('.') && shelves[j].includes('.');
-    if (sim >= 0.8 && !sameNs) shelfDups.push({ a: shelves[i], b: shelves[j], sim: Number(sim.toFixed(2)) });
+    const a = splitShelf(shelves[i]);
+    const b = splitShelf(shelves[j]);
+    if (a.scope !== b.scope) continue; // different project scope → intentionally separate
+    const sim = editSim(a.role, b.role);
+    if (sim >= 0.8) shelfDups.push({ a: shelves[i], b: shelves[j], sim: Number(sim.toFixed(2)) });
   }
 shelfDups.sort((x, y) => y.sim - x.sim);
 
