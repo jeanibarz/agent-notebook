@@ -196,3 +196,64 @@ describe('nb-janitor section 5 — shelf co-access (issue #107)', () => {
     expect(ratios[1]).toBe(0.8); // (m,n) second
   });
 });
+
+// Section 2 — near-duplicate shelf names. A shelf is `role@project` (or just
+// `role`, and the role may use the `.`-namespace convention). Two shelves fragment
+// memory only when they are near-duplicate ROLES within the SAME project scope and
+// are not intentional `.`-namespace siblings. Shelf discovery is by `<name>.md`
+// filename, so these tests seed files, not a usage log.
+describe('nb-janitor section 2 — scope-aware shelf-name dedup', () => {
+  function mkShelf(name: string): void {
+    writeFileSync(join(dir, `${name}.md`), '# scope: global\n1\ta lesson\n', 'utf-8');
+  }
+  function shelfDups(): { a: string; b: string; sim: number }[] {
+    const out = execFileSync('node', [janitor, '--json'], { env: { ...process.env, NB_DIR: dir }, encoding: 'utf-8' });
+    return JSON.parse(out).shelfDups;
+  }
+
+  test('different roles in the SAME project scope are not flagged (issue: @project false positive)', () => {
+    mkShelf('orchestrator@jeanibarz-knowledge-base-mcp-server');
+    mkShelf('patch-author@jeanibarz-knowledge-base-mcp-server');
+    expect(shelfDups()).toEqual([]);
+  });
+
+  test('the SAME role in different project scopes is not flagged (pins the scope guard)', () => {
+    mkShelf('repo-cartographer@project-a');
+    mkShelf('repo-cartographer@project-b');
+    expect(shelfDups()).toEqual([]);
+  });
+
+  test('a genuine near-duplicate role within one scope is still flagged (detection survives)', () => {
+    mkShelf('code-review');
+    mkShelf('code-reviews');
+    const dups = shelfDups();
+    expect(dups.length).toBe(1);
+    expect([dups[0].a, dups[0].b].sort()).toEqual(['code-review', 'code-reviews']);
+    expect(dups[0].sim).toBeGreaterThanOrEqual(0.8);
+  });
+
+  test('a role typo within the same project scope is still flagged', () => {
+    mkShelf('orchestrator@proj');
+    mkShelf('orchestratr@proj'); // dropped an 'o' — a typo split
+    const dups = shelfDups();
+    expect(dups.length).toBe(1);
+    expect(dups[0].sim).toBeGreaterThanOrEqual(0.8);
+  });
+
+  test('intentional `.`-namespace siblings sharing a stem are not flagged (regression: PR #113 review)', () => {
+    // `build.ci` / `build.cd` are edit-close (sim 0.88) but are the documented
+    // `.`-namespace convention, not fragmentation. Must be suppressed.
+    mkShelf('build.ci');
+    mkShelf('build.cd');
+    expect(shelfDups()).toEqual([]);
+  });
+
+  test('`.`-namespace siblings composed with an `@project` scope are not flagged', () => {
+    // The `.` convention composes with `@` (README: `review.tests@your-repo`).
+    // Use edit-close roles sharing a stem (`build.ci`/`build.cd`, sim 0.88) so this
+    // genuinely pins the `.`-stem guard in the composed case — without it they flag.
+    mkShelf('build.ci@your-repo');
+    mkShelf('build.cd@your-repo');
+    expect(shelfDups()).toEqual([]);
+  });
+});

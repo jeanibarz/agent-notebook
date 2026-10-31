@@ -9,6 +9,23 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Fixed
+- **`nb stats` no longer mistakes a retrospective sweep for a stuck loop.** The `[loop]`
+  anomaly ("N+ calls within the window — the agent may be stuck/looping") keyed only on
+  shelf + command, so a healthy retrospective that rapidly votes many *distinct* lessons in
+  one session tripped it. The loop key now includes the touched entry id(s), so repeating the
+  *same* targeted call (or a repeated entry-less call like `show <shelf>`) still trips it while
+  a sweep across distinct entries does not.
+- **`nb-janitor` shelf-name dedup (section 2) is now `@project`-scope-aware.** A shelf name is
+  `role@project` (and the role may use the `.`-namespace convention). The old check ran
+  edit-similarity across the whole name with only a `.`-stem suppression, so a long shared
+  `@project` suffix inflated the score and flagged `orchestrator@proj` vs `patch-author@proj`
+  — different roles in the *same* project — as "likely the same shelf split in two." It now
+  compares similarity on the *role*, only within the same project scope, while still suppressing
+  intentional `.`-namespace siblings (`build.ci` vs `build.cd`, which the role comparison alone
+  would wrongly flag). Genuine same-scope typo fragmentation (e.g. `code-review` vs
+  `code-reviews`) is still caught.
+
 ### Added
 - **"Diagnosing low engagement" runbook** (issue #108). [`docs/harness-setup.md`](docs/harness-setup.md#diagnosing-low-engagement)
   gains a troubleshooting section for the *ongoing* symptom the old "Verify it's working" smoke
