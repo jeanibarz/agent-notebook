@@ -9,6 +9,8 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-31
+
 ### Fixed
 - **`nb stats` no longer mistakes a retrospective sweep for a stuck loop.** The `[loop]`
   anomaly ("N+ calls within the window — the agent may be stuck/looping") keyed only on
@@ -310,7 +312,8 @@ versions are listed plainly.
 ### Added
 - Initial release: a bounded, voted, plain-text memory for AI agents. Commands: `nb add`, `show`, `vote`, `merge`, `rm`, `stats`. Each role's notebook holds at most 200 lines, each at most 200 characters, and the lowest-scored line is evicted first when full. The library has zero runtime dependencies.
 
-[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/jeanibarz/agent-notebook/compare/v0.2.0...v0.2.1
