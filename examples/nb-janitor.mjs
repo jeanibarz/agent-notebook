@@ -210,15 +210,19 @@ const lostLessons = Object.values(lossByShelf)
   .sort((a, b) => b.stillVoted + b.relearned - (a.stillVoted + a.relearned));
 
 // 2) near-duplicate shelf names
-// A shelf name is `role@project` (or just `role` when unscoped). Two shelves only
-// fragment memory when they are near-duplicate ROLES within the SAME project scope
-// — `orchestrator@proj` vs `patch-author@proj` are DIFFERENT roles in one project
-// (intentional, not a dup), and `role@a` vs `role@b` are the same role in different
-// projects (also intentional). So compare similarity on the role, scoped by project.
+// A shelf name is `role@project` (or just `role`), and the role may itself use the
+// `.`-namespace convention (`review.tests`, `build.ci`). Two shelves only fragment
+// memory when they are near-duplicate ROLES within the SAME project scope AND not
+// intentional namespace siblings:
+//   • `orchestrator@proj` vs `patch-author@proj` — different roles, same project → not a dup.
+//   • `role@a` vs `role@b` — same role, different projects → not a dup.
+//   • `build.ci` vs `build.cd` (shared `.`-stem) — intentional namespace siblings → not a dup.
+// So: compare similarity on the role, scoped by project, suppressing dotted siblings.
 const splitShelf = (name) => {
   const at = name.indexOf('@');
   return at === -1 ? { role: name, scope: '' } : { role: name.slice(0, at), scope: name.slice(at + 1) };
 };
+const dotStem = (role) => (role.includes('.') ? role.slice(0, role.indexOf('.')) : null);
 const shelfDups = [];
 const shelves = notebooks.map((n) => n.shelf);
 for (let i = 0; i < shelves.length; i++)
@@ -226,6 +230,7 @@ for (let i = 0; i < shelves.length; i++)
     const a = splitShelf(shelves[i]);
     const b = splitShelf(shelves[j]);
     if (a.scope !== b.scope) continue; // different project scope → intentionally separate
+    if (dotStem(a.role) !== null && dotStem(a.role) === dotStem(b.role)) continue; // shared `.`-namespace stem → intentional siblings
     const sim = editSim(a.role, b.role);
     if (sim >= 0.8) shelfDups.push({ a: shelves[i], b: shelves[j], sim: Number(sim.toFixed(2)) });
   }

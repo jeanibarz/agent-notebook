@@ -198,9 +198,10 @@ describe('nb-janitor section 5 — shelf co-access (issue #107)', () => {
 });
 
 // Section 2 — near-duplicate shelf names. A shelf is `role@project` (or just
-// `role`). Two shelves fragment memory only when they are near-duplicate ROLES
-// within the SAME project scope. Shelf discovery is by `<name>.md` filename, so
-// these tests seed files, not a usage log.
+// `role`, and the role may use the `.`-namespace convention). Two shelves fragment
+// memory only when they are near-duplicate ROLES within the SAME project scope and
+// are not intentional `.`-namespace siblings. Shelf discovery is by `<name>.md`
+// filename, so these tests seed files, not a usage log.
 describe('nb-janitor section 2 — scope-aware shelf-name dedup', () => {
   function mkShelf(name: string): void {
     writeFileSync(join(dir, `${name}.md`), '# scope: global\n1\ta lesson\n', 'utf-8');
@@ -231,11 +232,26 @@ describe('nb-janitor section 2 — scope-aware shelf-name dedup', () => {
     expect(dups[0].sim).toBeGreaterThanOrEqual(0.8);
   });
 
-  test('a scoped typo in the role within the same project is flagged (similarity on the role, not the shared scope)', () => {
+  test('a role typo within the same project scope is still flagged', () => {
     mkShelf('orchestrator@proj');
     mkShelf('orchestratr@proj'); // dropped an 'o' — a typo split
     const dups = shelfDups();
     expect(dups.length).toBe(1);
     expect(dups[0].sim).toBeGreaterThanOrEqual(0.8);
+  });
+
+  test('intentional `.`-namespace siblings sharing a stem are not flagged (regression: PR #113 review)', () => {
+    // `build.ci` / `build.cd` are edit-close (sim 0.88) but are the documented
+    // `.`-namespace convention, not fragmentation. Must be suppressed.
+    mkShelf('build.ci');
+    mkShelf('build.cd');
+    expect(shelfDups()).toEqual([]);
+  });
+
+  test('`.`-namespace siblings composed with an `@project` scope are not flagged', () => {
+    // The `.` convention composes with `@` (README: `review.tests@your-repo`).
+    mkShelf('review.tests@your-repo');
+    mkShelf('review.correctness@your-repo');
+    expect(shelfDups()).toEqual([]);
   });
 });

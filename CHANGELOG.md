@@ -17,10 +17,13 @@ versions are listed plainly.
   *same* targeted call (or a repeated entry-less call like `show <shelf>`) still trips it while
   a sweep across distinct entries does not.
 - **`nb-janitor` shelf-name dedup (section 2) is now `@project`-scope-aware.** A shelf name is
-  `role@project`; the old check split on `.` and flagged `orchestrator@proj` vs
-  `patch-author@proj` — different roles in the *same* project — as "likely the same shelf split
-  in two." It now compares similarity on the *role*, only within the same project scope, so that
-  false positive is gone while genuine same-scope typo fragmentation (e.g. `code-review` vs
+  `role@project` (and the role may use the `.`-namespace convention). The old check ran
+  edit-similarity across the whole name with only a `.`-stem suppression, so a long shared
+  `@project` suffix inflated the score and flagged `orchestrator@proj` vs `patch-author@proj`
+  — different roles in the *same* project — as "likely the same shelf split in two." It now
+  compares similarity on the *role*, only within the same project scope, while still suppressing
+  intentional `.`-namespace siblings (`build.ci` vs `build.cd`, which the role comparison alone
+  would wrongly flag). Genuine same-scope typo fragmentation (e.g. `code-review` vs
   `code-reviews`) is still caught.
 
 ### Added
