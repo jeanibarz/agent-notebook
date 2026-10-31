@@ -196,6 +196,38 @@ describe('runNbCli', () => {
     expect(s.out).toMatch(/^\s*add\s+\d+\s+\d+%/m);
   });
 
+  test('the human stats table renders the ops-per-day activity sparkline line (issue #106)', async () => {
+    // Seed a known pattern: the OLDEST 24h bucket (≈6.5 days ago) is the busiest.
+    // The `stats` call self-logs one row into the NEWEST bucket, so only the
+    // rightmost glyph can shift — the leftmost (busiest) glyph and the line
+    // format stay deterministic.
+    const now = Date.now();
+    const DAY = 86_400_000;
+    const rows: string[] = [];
+    for (let k = 0; k < 8; k++) rows.push(`${new Date(now - 6.5 * DAY).toISOString()}\tpatcher\tshow\tok\t2ms\ts1`);
+    rows.push(`${new Date(now - 2.5 * DAY).toISOString()}\tpatcher\tshow\tok\t2ms\ts1`);
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const s = await run(['stats', 'patcher']); // default table path (no --json)
+    expect(s.code).toBe(0);
+    // One `activity` line: 7 block glyphs for a 7d window + the "(7d, N ops)" label.
+    expect(s.out).toMatch(/^ {2}activity {2}[▁▂▃▄▅▆▇█]{7} {2}\(7d, \d+ ops\)$/m);
+    // The oldest bucket is the busiest (8 ops) → its glyph is the top block.
+    const activityLine = s.out.split('\n').find((l) => l.includes('activity'))!;
+    expect(activityLine).toContain('█'); // the busiest bucket renders as the full block
+    expect(/activity {2}█/.test(activityLine)).toBe(true); // ...and it is the leftmost (oldest) glyph
+  });
+
+  test('stats --json exposes the per-day activity array (issue #106)', async () => {
+    await run(['add', 'patcher', 'x']); // one `add` row; the stats read happens before stats self-logs
+    const s = await run(['stats', 'patcher', '--json']);
+    expect(s.code).toBe(0);
+    const rep = JSON.parse(s.out);
+    expect(Array.isArray(rep.activity)).toBe(true);
+    expect(rep.activity).toHaveLength(7); // default 7d window → 7 rolling-24h buckets
+    expect(rep.activity.reduce((a: number, b: number) => a + b, 0)).toBe(rep.totalCalls);
+    expect(rep.activity.at(-1)).toBe(1); // the single `add` is in the newest bucket
+  });
+
   test('--json emits a single valid StatsReport object on stdout', async () => {
     await run(['add', 'patcher', 'x']); // records one `add` usage row
     const s = await run(['stats', 'patcher', '--json']);

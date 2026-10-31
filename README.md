@@ -218,7 +218,18 @@ A bare `prefix` scopes by name (`nb search lock review.`), and `--json` emits th
 
 ### Machine-readable `nb stats`
 
-`nb stats --json` prints the raw `StatsReport` to stdout as a single JSON object instead of the human table, so a supervising agent can act on a `loop` / `went-silent` / `high-error-rate` anomaly without regex-parsing formatted text. The shape is the exported `StatsReport` interface (`{ window, totalCalls, perCommand[], anomalies[], notebooks[], notebookTotals, signals[], surfacing }`) and is a stable, additive-only contract. `notebooks` is the per-shelf inventory — `{ shelf, role, lines, cap }` for each shelf's notebook (`role` is a deprecated copy of `shelf`), where `lines` is the stored-lesson count and `cap` is `maxLines()` — so a supervisor can see that a shelf is at (or near) its cap and about to evict a lesson; `notebookTotals` aggregates it as `{ shelves, roles, lines, cap }` (`roles` is a deprecated copy of `shelves`). The inventory is the current on-disk state, not a slice of the usage window. It composes with `[<shelf>]` and `--since`; a bad `--since` window still warns on stderr (stdout stays pure JSON) and falls back to 7d.
+`nb stats --json` prints the raw `StatsReport` to stdout as a single JSON object instead of the human table, so a supervising agent can act on a `loop` / `went-silent` / `high-error-rate` anomaly without regex-parsing formatted text. The shape is the exported `StatsReport` interface (`{ window, totalCalls, perCommand[], anomalies[], notebooks[], notebookTotals, signals[], surfacing, activity[] }`) and is a stable, additive-only contract. `activity` is the per-day ops count (see [below](#activity-sparkline)). `notebooks` is the per-shelf inventory — `{ shelf, role, lines, cap }` for each shelf's notebook (`role` is a deprecated copy of `shelf`), where `lines` is the stored-lesson count and `cap` is `maxLines()` — so a supervisor can see that a shelf is at (or near) its cap and about to evict a lesson; `notebookTotals` aggregates it as `{ shelves, roles, lines, cap }` (`roles` is a deprecated copy of `shelves`). The inventory is the current on-disk state, not a slice of the usage window. It composes with `[<shelf>]` and `--since`; a bad `--since` window still warns on stderr (stdout stays pure JSON) and falls back to 7d.
+
+### Activity sparkline
+
+`nb stats` prints a one-line **ops-per-day activity sparkline** right under its header, so "when did this store go quiet?" is answerable at a glance:
+
+```
+nb usage — window 7d, 41 calls
+  activity  ▂▁▅█▇▃▁  (7d, 41 ops)
+```
+
+Each of the eight Unicode block glyphs (`▁▂▃▄▅▆▇█`) is one bucket, scaled against the window's busiest bucket — zero-based, so a **silent (0-op) bucket always reads as the floor glyph `▁`** and the busiest as `█`. Buckets are **rolling 24-hour windows counting back from now** (not calendar days, so there is no timezone question): the leftmost glyph is the oldest 24h of the window and the rightmost is the 24h ending now. The bucket count follows `--since` (`7d` → 7 glyphs, a sub-day window → 1), and it is scoped to `[<shelf>]` like the rest of the report. In `--json` the same counts are the `activity` array (oldest bucket first; `activity.length` is the bucket count and `sum(activity) === totalCalls`). Zero dependencies — no chart library, no network.
 
 ### Free diagnostic signals
 

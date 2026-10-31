@@ -1466,6 +1466,15 @@ export interface StatsReport {
    * is unchanged. See `SurfacingMetrics`.
    */
   surfacing: SurfacingMetrics;
+  /**
+   * Ops-per-day activity (issue #106): one count per rolling-24h bucket over the
+   * window, **oldest bucket first** (last entry = the 24h ending at `now`).
+   * Bucketed from the same windowed, scoped rows as `perCommand`, so
+   * `activity.length` is the bucket count and `sum(activity) === totalCalls`.
+   * The human table renders it as a `sparkline(...)`. Additive — every field
+   * above is unchanged. See `activityByDay` / `sparkline` and RFC 0106.
+   */
+  activity: number[];
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -1484,6 +1493,61 @@ const WINDOW_RE = /^(\d+)([dhm])$/;
  */
 export function isValidWindow(raw: string | undefined): boolean {
   return raw != null && WINDOW_RE.test(raw.trim());
+}
+
+/** The eight Unicode block glyphs, low→high, that `sparkline` scales counts over. */
+const SPARK_GLYPHS = '▁▂▃▄▅▆▇█';
+
+/**
+ * Render a count series as a one-line Unicode block sparkline (issue #106).
+ * Pure and zero-dependency — no chart library, no network.
+ *
+ * Scaling is **zero-based**, not min–max: each bar is proportional to the
+ * busiest bucket (`max`), so a **silent (0-op) bucket always reads as the floor
+ * glyph `▁`** and the busiest as `█`. For a *count* plot (the "went quiet"
+ * question) a zero must read as the floor; min–max scaling would both stretch a
+ * nearly flat series and make a 0-op bucket indistinguishable from a nonzero
+ * minimum. The identity this yields: `sparkline([0,1,2,3,4,5,6,7])` →
+ * `▁▂▃▄▅▆▇█`. See RFC 0106.
+ *
+ * `[]` → `''`; an all-zero (or all-equal-at-0) series → all `▁`.
+ */
+export function sparkline(counts: number[]): string {
+  // `Math.max(...[])` is `-Infinity` (≤ 0), so this one branch also covers the
+  // empty series — `''.repeat(0)` is `''` — with no separate length guard.
+  const max = Math.max(...counts);
+  if (max <= 0) return SPARK_GLYPHS[0].repeat(counts.length);
+  // 0 → index 0 (floor); max → index 7 (top). For 0 ≤ c ≤ max the index is
+  // always within [0, GLYPHS.length-1], so no clamp is needed.
+  return counts.map((c) => SPARK_GLYPHS[Math.round((c / max) * (SPARK_GLYPHS.length - 1))]).join('');
+}
+
+/** One rolling-24h bucket in ms, for the activity sparkline. */
+const ACTIVITY_BUCKET_MS = 86_400_000;
+
+/**
+ * Bucket call timestamps into **rolling 24-hour windows counting back from
+ * `now`** (issue #106) — NOT calendar days, so there is no local-vs-UTC
+ * question; the only inputs are `now` and each row's epoch ms. Returns the
+ * per-bucket counts **oldest-first** (index 0 = the oldest 24h, last index =
+ * the most recent 24h ending at `now`).
+ *
+ * Bucket count is `max(1, ceil(windowMs / DAY))`, so a `7d` window yields 7
+ * buckets and any sub-day window yields 1. A timestamp is placed by its age
+ * `now − ts`: a negative age (clock skew / future row) lands in the newest
+ * bucket and an age at/over the window edge in the oldest, so **every** input
+ * timestamp is counted — `sum(result) === tsList.length`. Callers pass the
+ * already-windowed, scoped rows, so that sum equals the report's `totalCalls`.
+ */
+export function activityByDay(tsList: number[], now: number, windowMs: number): number[] {
+  const nBuckets = Math.max(1, Math.ceil(windowMs / ACTIVITY_BUCKET_MS));
+  const buckets = new Array<number>(nBuckets).fill(0);
+  for (const t of tsList) {
+    const age = now - t;
+    const fromRight = Math.min(nBuckets - 1, Math.floor(Math.max(0, age) / ACTIVITY_BUCKET_MS));
+    buckets[nBuckets - 1 - fromRight]++;
+  }
+  return buckets;
 }
 
 /** Parse a window like `7d`, `12h`, `30m` into milliseconds. Default 7 days. */
@@ -1903,5 +1967,14 @@ export function stats(
     engagementDiagnosis,
   };
 
-  return { window, totalCalls: recent.length, perCommand, anomalies, notebooks, notebookTotals, signals, surfacing };
+  // Ops-per-day activity sparkline (issue #106): bucket the same windowed,
+  // scoped `recent` rows into rolling-24h buckets anchored at `now`, so the
+  // array sums to `totalCalls` and the human renderer can draw one activity line.
+  const activity = activityByDay(
+    recent.map((r) => Date.parse(r.ts)),
+    now,
+    windowMs,
+  );
+
+  return { window, totalCalls: recent.length, perCommand, anomalies, notebooks, notebookTotals, signals, surfacing, activity };
 }

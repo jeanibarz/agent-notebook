@@ -10,6 +10,16 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb stats` shows an ops-per-day activity sparkline** (issue #106). The report gains a
+  one-line, zero-dependency Unicode block-glyph plot of activity over the window —
+  e.g. `activity  ▂▁▅█▇▃▁  (7d, 41 ops)` — so "when did this store go quiet?" is answerable
+  at a glance instead of by eyeballing raw `.nb-usage.log` timestamps. Rows are bucketed
+  into **rolling 24-hour windows counting back from now** (timezone-free; oldest bucket
+  leftmost, the 24h ending now rightmost), and the per-bucket counts are exposed as
+  `StatsReport.activity` in `nb stats --json` (`sum(activity) === totalCalls`). Scaling is
+  zero-based so a silent (0-op) bucket always reads as the floor glyph `▁`. No notebook-file
+  schema change and no new runtime dependency; the library gains the pure `sparkline` and
+  `activityByDay` functions. See [RFC 0106](docs/rfcs/0106-stats-activity-sparkline.md).
 - **`nb stats` breaks down "no engaged sessions" by root cause** (issue #105). When the
   engagement gate finds no engagement anywhere in the window, the one vague
   `surfacing: no engaged sessions…` line is replaced by up to three terse, actionable
