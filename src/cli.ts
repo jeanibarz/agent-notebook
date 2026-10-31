@@ -51,6 +51,7 @@ import {
   split,
   stats,
   vote,
+  type EngagementDiagnosis,
   type SearchResult,
   type UsageMeta,
 } from './notebook.js';
@@ -168,6 +169,10 @@ notes:
     *attempts* (robust to a lazy agent) and gated on *engagement* — only sessions with a vote are
     scored, so an uninstrumented session isn't mistaken for "healthy quiet". A rate is \`null\` (shown
     \`—\`) when there's no data. Needs \`NB_SESSION\` set to attribute calls to a session.
+  - when NO session is engaged anywhere in the window, \`nb stats\` splits the cause instead of one
+    vague line: \`NB_SESSION\` unset, the retrospective nudge not landing (a notebook was opened but
+    never voted), or the SessionStart hook not wired (lessons stored but nothing read them). The
+    counts are \`surfacing.engagementDiagnosis\` in \`--json\` (\`null\` once any session is engaged).
   - a notebook holds at most 200 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
@@ -624,6 +629,42 @@ function pct(rate: number | null): string {
   return (rate === null ? '—' : `${Math.round(rate * 100)}%`).padStart(4);
 }
 
+/** Pluralize `word` for `n` by appending `s` unless `n === 1`. */
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
+}
+
+/**
+ * Turn the zero-engagement diagnosis (issue #105) into up to three terse,
+ * actionable `surfacing:` lines — one per applicable root cause, in the order
+ * `diagnoseEngagement` emits them. Returns `[]` when there is nothing to
+ * diagnose (no diagnosis object, or `engagedSessions > 0`, or none of the three
+ * causes applies), so the caller can fall back to the generic line.
+ */
+function engagementDiagnosisLines(diag: EngagementDiagnosis | null): string[] {
+  if (!diag) return [];
+  const out: string[] = [];
+  for (const cause of diag.causes) {
+    if (cause === 'blank-session') {
+      out.push(
+        `  surfacing: no engaged sessions — NB_SESSION was unset on ${plural(diag.blankSessionCalls, 'call')}, ` +
+          `so none could group into a session; export NB_SESSION (then vote) to measure`,
+      );
+    } else if (cause === 'retrospective-not-landing') {
+      out.push(
+        `  surfacing: no engaged sessions — ${plural(diag.readOnlySessions, 'session')} opened a notebook but cast no vote; ` +
+          `the end-of-task retrospective nudge isn't landing`,
+      );
+    } else if (cause === 'injection-hook') {
+      out.push(
+        `  surfacing: no engaged sessions — notebooks hold ${plural(diag.storedLessons, 'lesson')} but had 0 reads in this window; ` +
+          `the SessionStart injection hook is probably not wired`,
+      );
+    }
+  }
+  return out;
+}
+
 /** One-line gloss per coverage×surfacing readout quadrant (issue #81, §4 of the design rationale). */
 const READOUT_GLOSS: Record<'healthy' | 'surfacing-failure' | 'coverage-building' | 'churny', string> = {
   healthy: 'covers and surfaces',
@@ -745,7 +786,15 @@ function renderStats(dir: string, shelf: string | undefined, windowMs: number | 
   // precision-miss is shown beside it so "surface everything" cannot look free.
   const sf = rep.surfacing;
   if (sf.engagedSessions === 0) {
-    lines.push('  surfacing: no engaged sessions in this window (set NB_SESSION and vote to measure)');
+    // Zero engagement: split the one vague line into the root cause(s) (issue
+    // #105). At most three terse lines; fall back to the generic line when none
+    // of the three causes apply (e.g. an empty notebook with no activity).
+    const diagLines = engagementDiagnosisLines(sf.engagementDiagnosis);
+    if (diagLines.length > 0) {
+      for (const l of diagLines) lines.push(l);
+    } else {
+      lines.push('  surfacing: no engaged sessions in this window (set NB_SESSION and vote to measure)');
+    }
   } else {
     const sess = `${sf.engagedSessions} engaged session${sf.engagedSessions === 1 ? '' : 's'}`;
     lines.push(`  surfacing: ${sess}`);

@@ -352,6 +352,7 @@ describe('runNbCli', () => {
       votesActedOn: 1,
       precisionMiss: 0, // one upvote, zero downvotes
       readout: 'churny',
+      engagementDiagnosis: null, // engaged ⇒ no zero-engagement breakdown (issue #105)
     });
   });
 
@@ -359,10 +360,46 @@ describe('runNbCli', () => {
     delete process.env.NB_SESSION; // no session → the engagement gate finds nothing to score
     await run(['add', 'patcher', 'a lesson']);
     const s = await run(['stats', 'patcher']);
-    expect(s.out).toContain('surfacing: no engaged sessions in this window');
+    // With NB_SESSION unset the zero-engagement line now names the blank-session
+    // root cause (issue #105) rather than the old generic message.
+    expect(s.out).toContain('surfacing: no engaged sessions — NB_SESSION was unset');
     const json = JSON.parse((await run(['stats', 'patcher', '--json'])).out);
     expect(json.surfacing.engagedSessions).toBe(0);
     expect(json.surfacing.recallMiss).toBeNull(); // null, shown as — in the table, never a misleading 0%
+    expect(json.surfacing.engagementDiagnosis.causes).toContain('blank-session');
+  });
+
+  test('zero-engagement table names the retrospective-not-landing cause (issue #105)', async () => {
+    process.env.NB_SESSION = 's1';
+    await run(['add', 'patcher', 'a lesson']); // populates the notebook (not a read, not a vote)
+    await run(['show', 'patcher']); // a deliberate read in s1, but no vote follows
+    const s = await run(['stats', 'patcher']);
+    expect(s.out).toContain("opened a notebook but cast no vote");
+    expect(s.out).not.toContain('injection hook'); // a read happened ⇒ hook cause must be off
+    const json = JSON.parse((await run(['stats', 'patcher', '--json'])).out);
+    expect(json.surfacing.engagementDiagnosis.causes).toEqual(['retrospective-not-landing']);
+  });
+
+  test("zero engagement with no identifiable cause falls back to the generic line (issue #105)", async () => {
+    // NB_SESSION set (no blank-session), only the hook's global `nb list` ran (a
+    // read ⇒ no injection-hook; not a deliberate read ⇒ no retrospective): none
+    // of the three causes applies, so the original generic line is kept.
+    process.env.NB_SESSION = 's1';
+    await run(['add', 'patcher', 'a lesson']);
+    await run(['list']); // the hook's index read (global shelf '-')
+    const s = await run(['stats', 'patcher']);
+    expect(s.out).toContain('surfacing: no engaged sessions in this window (set NB_SESSION');
+    const json = JSON.parse((await run(['stats', 'patcher', '--json'])).out);
+    expect(json.surfacing.engagementDiagnosis.causes).toEqual([]);
+  });
+
+  test('zero-engagement table names the injection-hook cause when nothing read (issue #105)', async () => {
+    process.env.NB_SESSION = 's1'; // session set ⇒ not the blank-session cause
+    await run(['add', 'patcher', 'a lesson']); // stored lesson, but `add` is not a read
+    const s = await run(['stats', 'patcher']);
+    expect(s.out).toContain('the SessionStart injection hook is probably not wired');
+    const json = JSON.parse((await run(['stats', 'patcher', '--json'])).out);
+    expect(json.surfacing.engagementDiagnosis.causes).toEqual(['injection-hook']);
   });
 
   test('unknown command exits 2', async () => {

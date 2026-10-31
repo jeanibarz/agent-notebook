@@ -180,6 +180,13 @@ What is implemented today (merged):
   eviction-while-still-voted, vote-reversal) — #72.
 - The named **recall-miss / precision-miss rates** and the coverage×surfacing
   readout in `nb stats`, with the vote-liveness engagement gate — #81.
+- The **zero-engagement root-cause breakdown** in `nb stats` — when the
+  engagement gate finds nothing anywhere in the window, the one vague "no engaged
+  sessions" line is split into the deployment-level cause(s): `NB_SESSION` unset,
+  the retrospective nudge not landing (read-but-never-voted), or the SessionStart
+  injection hook not wired (lessons stored but nothing read). Counts are exposed
+  as `surfacing.engagementDiagnosis` in `--json`. The hook's own global `nb list`
+  is a read but not deliberate engagement, so it is never double-counted — #105.
 - `nb search` — the demoted keyword fallback and `failed-search → add`
   gap-sensor, explicitly secondary to surfacing per
   [NG-007](./requirements.md#ng-007). A `no-match` search is logged (query in the

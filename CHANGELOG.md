@@ -10,6 +10,18 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb stats` breaks down "no engaged sessions" by root cause** (issue #105). When the
+  engagement gate finds no engagement anywhere in the window, the one vague
+  `surfacing: no engaged sessions…` line is replaced by up to three terse, actionable
+  lines naming the actual deployment-level failure(s): `NB_SESSION` unset (calls can't be
+  grouped into sessions), the retrospective nudge not landing (a notebook was opened but
+  never voted), or the SessionStart injection hook not wired (notebooks hold lessons but
+  nothing read them). The diagnosis is deployment-wide — the hook's own global `nb list`
+  is counted as a read but **not** as deliberate engagement, so it is never
+  double-counted — and the underlying counts are exposed as
+  `surfacing.engagementDiagnosis` in `nb stats --json` (`null` whenever any session was
+  engaged). No notebook-file schema change; the library gains the `diagnoseEngagement`
+  function and the `EngagementDiagnosis` type.
 - **`nb move <from> <to> <id|query>` — score-preserving cross-shelf move** (issue #103).
   Relocates one lesson from one shelf to another **with its score intact**, the
   consolidation `add`+`rm` could not express (`add` always enters at the `+1` floor, so a
