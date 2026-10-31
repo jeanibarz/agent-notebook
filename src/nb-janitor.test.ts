@@ -250,8 +250,10 @@ describe('nb-janitor section 2 — scope-aware shelf-name dedup', () => {
 
   test('`.`-namespace siblings composed with an `@project` scope are not flagged', () => {
     // The `.` convention composes with `@` (README: `review.tests@your-repo`).
-    mkShelf('review.tests@your-repo');
-    mkShelf('review.correctness@your-repo');
+    // Use edit-close roles sharing a stem (`build.ci`/`build.cd`, sim 0.88) so this
+    // genuinely pins the `.`-stem guard in the composed case — without it they flag.
+    mkShelf('build.ci@your-repo');
+    mkShelf('build.cd@your-repo');
     expect(shelfDups()).toEqual([]);
   });
 });
