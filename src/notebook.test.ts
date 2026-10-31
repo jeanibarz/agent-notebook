@@ -42,6 +42,7 @@ import {
   assertSafeRole,
   assertSafeShelf,
   dedupKey,
+  diagnoseEngagement,
   entryId,
   getDescription,
   getMetaValue,
@@ -1261,6 +1262,166 @@ describe('surfacing metrics (issue #81)', () => {
     const sf = stats(dir, { now, windowMs: 48 * 3600_000 }).surfacing;
     expect(sf.engagedSessions).toBe(0);
     expect(sf.recallMiss).toBeNull();
+  });
+});
+
+describe('zero-engagement root-cause diagnosis (issue #105)', () => {
+  // diagnoseEngagement splits a "no engaged sessions" window into its root
+  // cause(s). Each guard is isolated by a test so a deleted/flipped condition
+  // fails a test (mutation-resistant). "Read" is defined twice on purpose:
+  // READ_COMMANDS (show/list/search) for the hook check, DELIBERATE (show/search)
+  // for the retrospective check — the one place the hook's own `nb list` must not
+  // be double-counted.
+
+  // --- diagnoseEngagement unit tests (counts + causes, no stats() wrapper) ---
+
+  test('blank-session rows with no stored lessons yield only the blank-session cause (AC1)', () => {
+    // storedLessons = 0 isolates blank-session from injection-hook (which needs
+    // lessons to surface); the overlap of the two is pinned by its own test below.
+    const d = diagnoseEngagement(
+      [{ ts: 't', role: 'r', command: 'add', ok: true, ms: 1, session: '', entries: [], outcome: 'accepted', collided: '', evicted: '', reason: '', note: '' }],
+      0,
+    );
+    expect(d.blankSessionCalls).toBe(1);
+    expect(d.causes).toEqual(['blank-session']);
+  });
+
+  test('a deliberate read (show) in a session with no vote is retrospective-not-landing (AC2)', () => {
+    const d = diagnoseEngagement(
+      [{ ts: 't', role: 'r', command: 'show', ok: true, ms: 1, session: 's1', entries: [], outcome: '', collided: '', evicted: '', reason: '', note: '' }],
+      3,
+    );
+    expect(d.readOnlySessions).toBe(1);
+    expect(d.reads).toBe(1);
+    expect(d.causes).toEqual(['retrospective-not-landing']); // NOT injection-hook (reads>0), NOT blank-session (no blank rows)
+  });
+
+  test('zero reads with stored lessons is injection-hook (AC3)', () => {
+    const d = diagnoseEngagement([], 5);
+    expect(d.reads).toBe(0);
+    expect(d.causes).toEqual(['injection-hook']);
+  });
+
+  test('injection-hook needs stored lessons: zero reads + empty notebook ⇒ no cause', () => {
+    // Pins the `storedLessons > 0` guard — with 0 lessons there is nothing to
+    // surface, so "hook not wired" must NOT be claimed.
+    const d = diagnoseEngagement([], 0);
+    expect(d.causes).toEqual([]);
+  });
+
+  test("the hook's own `nb list` is a read (hook check) but NOT a deliberate read (retrospective check)", () => {
+    // A session with ONLY the auto-injected `nb list` and no vote: reads>0 keeps
+    // injection-hook OFF, and list excluded from deliberate reads keeps
+    // retrospective OFF — so no cause fires (don't double-count the hook's list).
+    const d = diagnoseEngagement(
+      [{ ts: 't', role: 'r', command: 'list', ok: true, ms: 1, session: 's1', entries: [], outcome: '', collided: '', evicted: '', reason: '', note: '' }],
+      5,
+    );
+    expect(d.reads).toBe(1); // list counts as a read → injection-hook off
+    expect(d.readOnlySessions).toBe(0); // list is NOT a deliberate read → retrospective off
+    expect(d.causes).toEqual([]);
+  });
+
+  test('search counts as a deliberate read (retrospective cause)', () => {
+    const d = diagnoseEngagement(
+      [{ ts: 't', role: 'r', command: 'search', ok: true, ms: 1, session: 's1', entries: [], outcome: 'no-match', collided: '', evicted: '', reason: '', note: 'q' }],
+      3,
+    );
+    expect(d.readOnlySessions).toBe(1);
+    expect(d.causes).toEqual(['retrospective-not-landing']);
+  });
+
+  test('a deliberate read in a BLANK session does not count as a read-only session', () => {
+    // Pins the `r.session !== ''` guard on the deliberate-read branch: a blank
+    // show is a blank-session cause, never a retrospective one.
+    const d = diagnoseEngagement(
+      [{ ts: 't', role: 'r', command: 'show', ok: true, ms: 1, session: '', entries: [], outcome: '', collided: '', evicted: '', reason: '', note: '' }],
+      3,
+    );
+    expect(d.readOnlySessions).toBe(0);
+    expect(d.reads).toBe(1); // still a read for the hook check (so injection-hook off)
+    expect(d.causes).toEqual(['blank-session']);
+  });
+
+  test('two distinct deliberate-read sessions count as two read-only sessions, not more', () => {
+    const d = diagnoseEngagement(
+      [
+        { ts: 't', role: 'r', command: 'show', ok: true, ms: 1, session: 's1', entries: [], outcome: '', collided: '', evicted: '', reason: '', note: '' },
+        { ts: 't', role: 'r', command: 'search', ok: true, ms: 1, session: 's1', entries: [], outcome: 'no-match', collided: '', evicted: '', reason: '', note: '' },
+        { ts: 't', role: 'r', command: 'show', ok: true, ms: 1, session: 's2', entries: [], outcome: '', collided: '', evicted: '', reason: '', note: '' },
+      ],
+      3,
+    );
+    expect(d.readOnlySessions).toBe(2); // s1 (de-duped across its two reads) + s2
+  });
+
+  test('a blank-session call with zero reads and stored lessons fires BOTH causes, in order', () => {
+    // Overlap: a session-less `add` (no read) with a non-empty notebook — the
+    // operator has two real problems; both lines show, blank-session first.
+    const d = diagnoseEngagement(
+      [{ ts: 't', role: 'r', command: 'add', ok: true, ms: 1, session: '', entries: [], outcome: 'accepted', collided: '', evicted: '', reason: '', note: '' }],
+      5,
+    );
+    expect(d.causes).toEqual(['blank-session', 'injection-hook']);
+  });
+
+  // --- through stats(): engagement gate + JSON field ---
+
+  test('stats() fills engagementDiagnosis only when engagedSessions === 0', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['a1'] });
+    const engaged = stats(dir, { now: Date.now() }).surfacing;
+    expect(engaged.engagedSessions).toBe(1);
+    expect(engaged.engagementDiagnosis).toBeNull(); // engaged ⇒ nothing to diagnose
+  });
+
+  test('stats() surfaces the retrospective cause for a read-but-never-voted session', () => {
+    process.env.NB_SESSION = 's1';
+    logUsage(dir, 'patcher', 'show', true, 1, { session: 's1' });
+    const sf = stats(dir, { now: Date.now(), shelf: 'patcher' }).surfacing;
+    expect(sf.engagedSessions).toBe(0);
+    expect(sf.engagementDiagnosis?.causes).toEqual(['retrospective-not-landing']);
+    expect(sf.engagementDiagnosis?.readOnlySessions).toBe(1);
+  });
+
+  test('stats() surfaces the injection-hook cause: stored lessons, no reads logged', async () => {
+    await addEntry(dir, 'patcher', 'a stored lesson'); // populates the notebook WITHOUT a usage row
+    const sf = stats(dir, { now: Date.now(), shelf: 'patcher' }).surfacing;
+    expect(sf.engagedSessions).toBe(0);
+    expect(sf.engagementDiagnosis?.reads).toBe(0);
+    expect(sf.engagementDiagnosis?.storedLessons).toBe(1);
+    expect(sf.engagementDiagnosis?.causes).toEqual(['injection-hook']);
+  });
+
+  test('the diagnosis is deployment-wide: a quiet shelf shows no diagnosis when another shelf is engaged', async () => {
+    // Shelf 'beta' has an engaged (voted) session; shelf 'alpha' is quiet. Scoped
+    // to alpha, engagedSessions is 0, but the DEPLOYMENT works, so no root-cause
+    // diagnosis is emitted (the renderer then keeps the plain generic line).
+    await addEntry(dir, 'alpha', 'a lesson'); // alpha has lessons but is never read/voted
+    logUsage(dir, 'beta', 'vote', true, 1, { session: 's9', outcome: 'up', entries: ['x'] });
+    const sf = stats(dir, { now: Date.now(), shelf: 'alpha' }).surfacing;
+    expect(sf.engagedSessions).toBe(0); // alpha itself saw no engagement
+    expect(sf.engagementDiagnosis).toBeNull(); // but the deployment is engaged ⇒ no false "hook not wired"
+  });
+
+  test("a global `nb list` suppresses injection-hook even when scoped to an unread shelf", async () => {
+    // The hook's index read is logged globally (shelf '-'); a shelf-scoped view
+    // must still treat it as a read so it does not falsely claim the hook is down.
+    await addEntry(dir, 'alpha', 'a lesson');
+    logUsage(dir, '-', 'list', true, 1, { session: 's1' }); // the hook's index injection
+    const sf = stats(dir, { now: Date.now(), shelf: 'alpha' }).surfacing;
+    expect(sf.engagementDiagnosis?.reads).toBe(1); // the global list is seen
+    expect(sf.engagementDiagnosis?.causes).not.toContain('injection-hook');
+  });
+
+  test('the diagnosis is windowed: a read outside the window does not suppress injection-hook', async () => {
+    const now = Date.parse('2026-10-23T10:00:00Z');
+    const old = new Date(now - 100 * 3600_000).toISOString();
+    writeFileSync(join(dir, '.nb-usage.log'), `${old}\tpatcher\tshow\tok\t1ms\ts1\t\t\t\t\t\t\n`, 'utf-8');
+    // Stored lesson, but the only read is 100h back → inside a 48h window, reads===0.
+    await addEntry(dir, 'patcher', 'lesson');
+    const sf = stats(dir, { now, windowMs: 48 * 3600_000, shelf: 'patcher' }).surfacing;
+    expect(sf.engagementDiagnosis?.reads).toBe(0);
+    expect(sf.engagementDiagnosis?.causes).toContain('injection-hook');
   });
 });
 

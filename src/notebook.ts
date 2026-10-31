@@ -1388,6 +1388,54 @@ export interface SurfacingMetrics {
   precisionMiss: number | null;
   /** The coverage×surfacing 2×2 readout — `healthy` / `surfacing-failure` / `coverage-building` / `churny` — a heuristic hint, not a verdict. `null` when there is not enough data (no add attempts) to place it. */
   readout: 'healthy' | 'surfacing-failure' | 'coverage-building' | 'churny' | null;
+  /**
+   * Root-cause breakdown of a window with **no engagement anywhere** (issue
+   * #105). The single "no engaged sessions" message hides three very different
+   * deployment-level failures; this splits them. It is deployment-wide, so it is
+   * `null` whenever ANY session cast a vote in the window (a vote on any shelf
+   * means the setup works) — including every shelf-scoped `nb stats <shelf>`
+   * whose own shelf is quiet but whose deployment is healthy. See
+   * `EngagementDiagnosis`.
+   */
+  engagementDiagnosis: EngagementDiagnosis | null;
+}
+
+/**
+ * Why a window has **no engaged sessions** (issue #105), derived from the same
+ * windowed, shelf-scoped usage rows as the rates above — a read, not a new field
+ * ([NG-004]). Three operational failures collapse into "no engaged sessions",
+ * each with a different fix; the counts here let `nb stats` name the one(s) in
+ * play. Only populated when `SurfacingMetrics.engagedSessions === 0`.
+ *
+ * All counts are **deployment-wide** (the window, every shelf), because the
+ * three fixes — `NB_SESSION`, the retrospective nudge, the SessionStart hook —
+ * are deployment-level, not per-shelf. "Read" is defined twice on purpose (the
+ * risk the issue flags — "don't double-count the hook's own `nb list`"):
+ *   - `reads` counts `show`/`list`/`search` — ANY read, so `0` means even the
+ *     SessionStart hook's auto-injected `nb list` never ran (the hook cause).
+ *   - `readOnlySessions` counts only `show`/`search` — a *deliberate* open of
+ *     notebook content, EXCLUDING the hook's automatic `nb list`, so a session
+ *     where the hook injected the index but the agent never opened a notebook is
+ *     not mislabelled as "used the notebook but skipped the retrospective".
+ */
+export interface EngagementDiagnosis {
+  /** Recent rows whose `session` was blank (`NB_SESSION` unset) — they can never form a session, so they can never be "engaged". */
+  blankSessionCalls: number;
+  /** Distinct NON-blank sessions that `show`/`search`ed a notebook (deliberate reads, excluding the hook's auto `nb list`) but — since this is only populated when nothing engaged — cast no vote. */
+  readOnlySessions: number;
+  /** `show`/`list`/`search` rows in the window (any read, across all shelves). `0` with stored lessons ⇒ the injection hook probably never ran. */
+  reads: number;
+  /** Lessons currently stored across ALL notebooks (deployment-wide); gates the hook diagnosis (nothing to surface anywhere ⇒ no "hook not wired" claim). */
+  storedLessons: number;
+  /**
+   * The applicable root causes, in report order (≤ 3):
+   *   - `blank-session` — `blankSessionCalls > 0`: export `NB_SESSION`.
+   *   - `retrospective-not-landing` — `readOnlySessions > 0`: the vote nudge isn't landing.
+   *   - `injection-hook` — `reads === 0 && storedLessons > 0`: the SessionStart hook isn't wired.
+   * Empty when `engagedSessions === 0` but none apply (e.g. an empty notebook
+   * with no activity) — the renderer then keeps the generic line.
+   */
+  causes: ('blank-session' | 'retrospective-not-landing' | 'injection-hook')[];
 }
 
 export interface StatsReport {
@@ -1447,6 +1495,55 @@ export function parseWindowMs(raw: string | undefined): number {
   return n * (m[2] === 'd' ? 86_400_000 : m[2] === 'h' ? 3_600_000 : 60_000);
 }
 
+/** Reads for the injection-hook check (cause 3): ANY read, so the hook's auto `nb list` counts. */
+const READ_COMMANDS = new Set(['show', 'list', 'search']);
+/** Deliberate reads for the retrospective check (cause 2): opening content, EXCLUDING the hook's auto `nb list`. */
+const DELIBERATE_READ_COMMANDS = new Set(['show', 'search']);
+
+/**
+ * Split a **zero-engagement** window into its root cause(s) (issue #105). Called
+ * only when there is no engagement anywhere in the window; returns the counts
+ * plus the ordered `causes[]` the renderer turns into up to three actionable
+ * lines.
+ *
+ * `recent` is the windowed but **deployment-wide (NOT shelf-scoped)** row set,
+ * and `storedLessons` is the total across **all** notebooks — because the three
+ * remedies are deployment-level: `NB_SESSION`, the SessionStart hook, and the
+ * retrospective nudge are not per-shelf, and the hook's own `nb list` is logged
+ * globally (shelf `-`), so a shelf-scoped view would miss it and falsely report
+ * "hook not wired". `storedLessons` gates the hook cause — no lessons anywhere,
+ * no "hook not wired" claim. See `EngagementDiagnosis` for the two deliberately
+ * different "read" definitions and why they avoid double-counting that `nb list`.
+ */
+export function diagnoseEngagement(recent: UsageRow[], storedLessons: number): EngagementDiagnosis {
+  let blankSessionCalls = 0;
+  let reads = 0;
+  const readOnly = new Set<string>(); // distinct non-blank sessions with a deliberate read
+  for (const r of recent) {
+    if (r.session === '') blankSessionCalls++;
+    if (READ_COMMANDS.has(r.command)) reads++;
+    if (r.session !== '' && DELIBERATE_READ_COMMANDS.has(r.command)) readOnly.add(r.session);
+  }
+  const readOnlySessions = readOnly.size;
+  const causes: EngagementDiagnosis['causes'] = [];
+  if (blankSessionCalls > 0) causes.push('blank-session');
+  if (readOnlySessions > 0) causes.push('retrospective-not-landing');
+  if (reads === 0 && storedLessons > 0) causes.push('injection-hook');
+  return { blankSessionCalls, readOnlySessions, reads, storedLessons, causes };
+}
+
+/**
+ * Total lessons across ALL notebooks, for the deployment-wide engagement
+ * diagnosis (issue #105) — the hook cause asks "are there lessons to surface
+ * *anywhere*". Reuses the already-built per-shelf `notebooks` when `stats` is
+ * unscoped (then it already covers every shelf); otherwise sums each shelf
+ * afresh. Only called on the zero-engagement path, so the extra reads are rare.
+ */
+function globalStoredLessons(dir: string, notebooks: NotebookStat[], scope: string | undefined): number {
+  if (!scope) return notebooks.reduce((sum, n) => sum + n.lines, 0);
+  return listShelves(dir).reduce((sum, shelf) => sum + readEntries(dir, shelf).length, 0);
+}
+
 /**
  * Monitoring without a monitoring system: read the usage ring, roll up per
  * command, and flag the three anomalies that matter — an agent looping on a
@@ -1466,8 +1563,14 @@ export function stats(
   const scope = opts.shelf ?? opts.role;
   const now = opts.now ?? Date.now();
   const windowMs = opts.windowMs ?? 7 * 24 * 3600_000;
-  const all = parseUsage(dir).filter((r) => (scope ? r.role === scope : true));
-  const recent = all.filter((r) => now - Date.parse(r.ts) <= windowMs);
+  const parsed = parseUsage(dir);
+  const inWindow = (r: UsageRow): boolean => now - Date.parse(r.ts) <= windowMs;
+  // Deployment-wide (unscoped) windowed rows: the engagement diagnosis (issue
+  // #105) reads these, since NB_SESSION / the hook / the retrospective nudge are
+  // deployment-level and the hook's `nb list` is logged globally (shelf `-`).
+  const recentAll = parsed.filter(inWindow);
+  const all = scope ? parsed.filter((r) => r.role === scope) : parsed;
+  const recent = all.filter(inWindow);
 
   const byCmd = new Map<string, UsageRow[]>();
   for (const r of recent) {
@@ -1744,16 +1847,6 @@ export function stats(
       ? (recallHigh ? 'churny' : 'coverage-building')
       : (recallHigh ? 'surfacing-failure' : 'healthy');
   }
-  const surfacing: SurfacingMetrics = {
-    engagedSessions: engaged.size,
-    addAttempts,
-    coverage,
-    recallMiss,
-    votesActedOn,
-    precisionMiss,
-    readout,
-  };
-
   const window =
     windowMs % 86_400_000 === 0
       ? `${windowMs / 86_400_000}d`
@@ -1764,7 +1857,8 @@ export function stats(
   // Notebook inventory (issue #40). Independent of the usage window — it is the
   // current on-disk state, not a time slice. Scoped to the requested shelf when given,
   // mirroring the per-command filtering above. `cap` is read once so every row
-  // and the total report the same value.
+  // and the total report the same value. Computed before the surfacing object so
+  // its line total can gate the engagement diagnosis below (issue #105).
   const cap = maxLines();
   const inventoryShelves = scope ? listShelves(dir).filter((r) => r === scope) : listShelves(dir);
   const notebooks: NotebookStat[] = inventoryShelves.map((shelf) => ({
@@ -1778,6 +1872,35 @@ export function stats(
     shelves: notebooks.length,
     lines: notebooks.reduce((sum, n) => sum + n.lines, 0),
     cap,
+  };
+
+  // Zero-engagement root-cause split (issue #105). Deployment-wide, NOT
+  // shelf-scoped: gated on global engagement (a vote on ANY shelf means the setup
+  // works, so no deployment-level diagnosis), and fed the global windowed rows +
+  // the total lessons across all notebooks (see `diagnoseEngagement`). This is
+  // why a shelf-scoped `nb stats <shelf>` whose shelf is quiet but whose
+  // deployment is healthy shows the plain "no engaged sessions" line, not a
+  // false "hook not wired".
+  const engagedAll = new Set<string>();
+  for (const r of recentAll) {
+    if (r.command === 'vote' && r.session !== '' && (r.outcome === 'up' || r.outcome === 'down')) {
+      engagedAll.add(r.session);
+    }
+  }
+  const engagementDiagnosis =
+    engagedAll.size === 0
+      ? diagnoseEngagement(recentAll, globalStoredLessons(dir, notebooks, scope))
+      : null;
+
+  const surfacing: SurfacingMetrics = {
+    engagedSessions: engaged.size,
+    addAttempts,
+    coverage,
+    recallMiss,
+    votesActedOn,
+    precisionMiss,
+    readout,
+    engagementDiagnosis,
   };
 
   return { window, totalCalls: recent.length, perCommand, anomalies, notebooks, notebookTotals, signals, surfacing };
