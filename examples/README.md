@@ -11,7 +11,7 @@ in this directory. Use the ones you want; skip the rest.
 |---|---|---|
 | [`nb-git-wrapper.mjs`](nb-git-wrapper.mjs) | a git commit per notebook change (reviewable, revertible memory) | Node, git |
 | [`nb-backup.sh`](nb-backup.sh) | daily push of that history to a remote | bash, git |
-| [`nb-janitor.mjs`](nb-janitor.mjs) | read-only diagnostics: near-duplicate lessons and near-duplicate shelf names, lessons lost to eviction, growth trends | Node (git optional) |
+| [`nb-janitor.mjs`](nb-janitor.mjs) | read-only diagnostics: near-duplicate lessons and near-duplicate shelf names, lessons lost to eviction, growth trends, shelf co-access (which shelves are shown together) | Node (git optional) |
 | [`hooks/claude-code/`](hooks/claude-code/) | optional hooks: inject the `nb list` index at session start + nudge the retrospective once per session | Claude Code |
 | [`hooks/codex-cli/`](hooks/codex-cli/) | the AGENTS.md contract + PATH wrapper for Codex CLI | Codex CLI |
 

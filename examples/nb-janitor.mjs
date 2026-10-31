@@ -5,7 +5,7 @@
 //   `nb stats` tells you how ONE notebook is doing right now. The janitor takes
 //   the long, cross-notebook view that stats cannot: it reads every notebook
 //   file, the usage log, and (if NB_DIR is a git repo) the commit history, and
-//   reports four things, each with a concrete suggested `nb` command:
+//   reports five things, each with a concrete suggested `nb` command:
 //
 //     1. Lessons lost to eviction   — shelves that evict lessons still scored above +1,
 //                                      or whose evicted lessons get added again.
@@ -17,6 +17,10 @@
 //                                      "duplicate detection" gap, found offline.
 //     4. Volume over time & silence — from git history: how the store grew, how
 //                                      busy it's been, and which shelves went quiet.
+//     5. Shelf co-access            — which shelves get `show`n together in the same
+//                                      session: pairs almost always opened together
+//                                      (merge/namespace), and isolated shelves.
+//                                      Needs NB_SESSION; degrades to a note without it.
 //
 // WHY A SEPARATE, OFFLINE TOOL
 //   The notebook core stays dumb, deterministic, and offline (requirements.md
@@ -129,13 +133,14 @@ function readUsage(dir) {
     for (const line of readFileSync(file, 'utf-8').split('\n')) {
       if (line.trim() === '') continue;
       // columns: ts, shelf, command, status, ms, session, entry-ids, outcome, collided, evicted, …
-      const [ts, shelf, command, status, , , entries = '', outcome = '', , evicted = ''] = line.split('\t');
+      const [ts, shelf, command, status, , session = '', entries = '', outcome = '', , evicted = ''] = line.split('\t');
       if (!ts || !command) continue;
       rows.push({
         ts,
         t: Date.parse(ts),
         shelf: shelf ?? '',
         command,
+        session,
         ok: status === 'ok',
         entries: entries.split(',').filter((e) => e !== ''),
         outcome,
@@ -249,6 +254,65 @@ const silentShelves = notebooks
   .filter((r) => now - r.lastUse > SILENT_DAYS * 86400000)
   .map((r) => ({ shelf: r.shelf, role: r.shelf, daysQuiet: r.lastUse ? Math.round((now - r.lastUse) / 86400000) : null }));
 
+// 5) shelf co-access — which shelves get `show`n together in the same session.
+//    A shelf is *defined* by co-access (lessons needed in the same situations),
+//    so two shelves almost always opened together are really one (merge/namespace
+//    candidate), and a shelf never opened alongside another is isolated. Rows
+//    with a blank session carry no co-access signal (requirements.md FR-USAGE-002:
+//    "co-access is then not computed"), so they are dropped here and the section
+//    degrades to a one-line note when nothing is left — mirroring section 4
+//    degrading without git.
+const COACCESS_MIN_SUPPORT = 2; // a single shared session is coincidence, not a pattern
+const COACCESS_MIN_RATIO = 0.8; // "almost always opened together"
+const COACCESS_MAX_ROWS = 25; // cap each list like section 3
+const sessionShelves = {}; // session → Set of shelves `show`n in it (non-blank sessions only)
+for (const r of usage) {
+  if (r.command !== 'show' || r.session === '' || r.shelf === '') continue;
+  (sessionShelves[r.session] ??= new Set()).add(r.shelf);
+}
+const showsByShelf = {}; // shelf → # distinct non-blank sessions it was shown in
+const coCount = new Map(); // "a\tb" (a<b) → # sessions showing both
+let coAccessSessions = 0; // # non-blank sessions that showed ≥1 shelf
+for (const shelves of Object.values(sessionShelves)) {
+  const list = [...shelves].sort(); // a created set always holds ≥1 shelf
+  coAccessSessions++;
+  for (const s of list) showsByShelf[s] = (showsByShelf[s] ?? 0) + 1;
+  for (let i = 0; i < list.length; i++)
+    for (let j = i + 1; j < list.length; j++) {
+      const key = `${list[i]}\t${list[j]}`;
+      coCount.set(key, (coCount.get(key) ?? 0) + 1);
+    }
+}
+const shelvesShown = Object.keys(showsByShelf);
+const coAccessComputed = shelvesShown.length > 0;
+const coPaired = new Set(); // shelves that co-occur with ≥1 other (any count)
+const highPairs = [];
+for (const [key, co] of coCount) {
+  const [a, b] = key.split('\t');
+  coPaired.add(a);
+  coPaired.add(b);
+  const support = Math.min(showsByShelf[a], showsByShelf[b]); // ≥1: a paired shelf was shown
+  const ratio = co / support;
+  if (co >= COACCESS_MIN_SUPPORT && ratio >= COACCESS_MIN_RATIO)
+    highPairs.push({ a, b, co, support, ratio: Number(ratio.toFixed(2)) });
+}
+highPairs.sort((x, y) => y.ratio - x.ratio || y.co - x.co);
+// isolated: shown but never alongside another shelf — only meaningful once ≥2
+// distinct shelves were shown overall (with one, "isolated" is trivially true).
+const isolated =
+  shelvesShown.length >= 2
+    ? shelvesShown
+        .filter((s) => !coPaired.has(s))
+        .map((s) => ({ shelf: s, shows: showsByShelf[s] }))
+        .sort((x, y) => y.shows - x.shows)
+    : [];
+const coAccess = {
+  computed: coAccessComputed,
+  sessions: coAccessSessions,
+  highPairs,
+  isolated,
+};
+
 const report = {
   dir: NB_DIR,
   notebooks: notebooks.length,
@@ -261,6 +325,7 @@ const report = {
   volume,
   silentShelves,
   silentRoles: silentShelves, // deprecated alias of silentShelves
+  coAccess,
   usageRows: usage.length,
 };
 
@@ -319,6 +384,34 @@ if (silentShelves.length === 0) out.push('  ✅ no shelf has gone silent in the 
 else
   for (const s of silentShelves)
     out.push(`  💤 ${s.shelf}: ${s.daysQuiet == null ? 'never used in the log' : `quiet ${s.daysQuiet}d`} — stale, or no longer exercised?`);
+
+H('5. Shelf co-access (shown together in a session)');
+if (!coAccess.computed)
+  out.push(
+    '  (no sessions with NB_SESSION set — co-access not computed; set NB_SESSION so shelves shown together can be correlated)',
+  );
+else {
+  out.push(`  from ${coAccess.sessions} session(s) with a shelf shown.`);
+  if (highPairs.length === 0)
+    out.push('  ✅ no pair of shelves is almost always opened together.');
+  else {
+    for (const p of highPairs.slice(0, COACCESS_MAX_ROWS)) {
+      out.push(
+        `  ⚠️  "${p.a}" + "${p.b}" — shown together in ${p.co}/${p.support} session(s) (co-access ${p.ratio}); almost always opened together.`,
+      );
+      out.push(`      → consider one namespaced shelf (e.g. "${p.a}.*"/"${p.b}.*") or nb merge their overlapping lessons.`);
+    }
+    if (highPairs.length > COACCESS_MAX_ROWS)
+      out.push(`  …(${highPairs.length - COACCESS_MAX_ROWS} more pairs — run with --json)`);
+  }
+  if (isolated.length === 0) out.push('  ✅ no isolated shelf (every shown shelf shares a session with another).');
+  else {
+    for (const s of isolated.slice(0, COACCESS_MAX_ROWS))
+      out.push(`  🏝️  ${s.shelf}: shown in ${s.shows} session(s), never alongside another shelf — isolated.`);
+    if (isolated.length > COACCESS_MAX_ROWS)
+      out.push(`  …(${isolated.length - COACCESS_MAX_ROWS} more isolated — run with --json)`);
+  }
+}
 
 out.push('');
 process.stdout.write(out.join('\n') + '\n');

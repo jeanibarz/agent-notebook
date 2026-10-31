@@ -10,6 +10,17 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **nb-janitor reports shelf co-access** (issue #107). The offline, read-only janitor
+  (`examples/nb-janitor.mjs`) gains **section 5**: it groups usage rows by session, collects
+  the set of shelves `show`n per session, and counts shelf-pair co-occurrence — the one signal
+  the shelf definition rests on (lessons needed *in the same situations*) that nothing measured
+  before. It reports **high-co-access pairs** ("almost always opened together → consider one
+  namespaced shelf or `nb merge`", when a pair's `co ≥ 2` and `co / min(shows) ≥ 0.8`) and
+  **isolated shelves** (shown but never alongside another). Blank-`NB_SESSION` logs degrade to a
+  one-line "set NB_SESSION" note, exactly as section 4 degrades without git. The data is added to
+  `--json` as `report.coAccess` (`{ computed, sessions, highPairs, isolated }`). Read-only, hot
+  `nb` path untouched (DP-6), zero dependencies, no notebook-file schema change. See
+  [RFC 0107](docs/rfcs/0107-janitor-shelf-co-access.md).
 - **`nb stats` shows an ops-per-day activity sparkline** (issue #106). The report gains a
   one-line, zero-dependency Unicode block-glyph plot of activity over the window —
   e.g. `activity  ▂▁▅█▇▃▁  (7d, 41 ops)` — so "when did this store go quiet?" is answerable
