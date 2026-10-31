@@ -38,6 +38,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import {
+  activityByDay,
   addEntry,
   assertSafeRole,
   assertSafeShelf,
@@ -66,6 +67,7 @@ import {
   setDescription,
   setMetaValue,
   showJson,
+  sparkline,
   split,
   stats,
   vote,
@@ -935,6 +937,55 @@ describe('usage log + stats', () => {
     expect(rep.window).toBe('30m');
   });
 
+  test('stats exposes an ops-per-day activity array summing to totalCalls (issue #106)', () => {
+    const now = Date.parse('2026-10-31T12:00:00Z');
+    const DAY = 86_400_000;
+    // oldest-first target over a 7d window: [1,0,3,8,5,2,0].
+    const plan = [1, 0, 3, 8, 5, 2, 0]; // index 0 = oldest 24h bucket
+    const rows: string[] = [];
+    for (let idx = 0; idx < plan.length; idx++) {
+      const fromRight = plan.length - 1 - idx; // 6..0
+      for (let k = 0; k < plan[idx]; k++) {
+        // place squarely inside the bucket (+0.5 day) so it cannot drift to a neighbour
+        rows.push(`${new Date(now - (fromRight + 0.5) * DAY).toISOString()}\tmyshelf\tshow\tok\t3ms\ts1`);
+      }
+    }
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const rep = stats(dir, { now, windowMs: 7 * DAY });
+    expect(rep.activity).toEqual([1, 0, 3, 8, 5, 2, 0]);
+    expect(rep.activity.reduce((a, b) => a + b, 0)).toBe(rep.totalCalls);
+    expect(rep.totalCalls).toBe(19);
+  });
+
+  test('stats activity is scoped to the requested shelf, not deployment-wide (issue #106)', () => {
+    const now = Date.parse('2026-10-31T12:00:00Z');
+    const DAY = 86_400_000;
+    const rows = [
+      // shelf 'a': 2 rows in the newest bucket
+      `${new Date(now - 0.5 * DAY).toISOString()}\ta\tshow\tok\t3ms\ts1`,
+      `${new Date(now - 0.5 * DAY).toISOString()}\ta\tshow\tok\t3ms\ts1`,
+      // shelf 'b': 3 rows (must be excluded when scoped to 'a')
+      `${new Date(now - 0.5 * DAY).toISOString()}\tb\tshow\tok\t3ms\ts1`,
+      `${new Date(now - 2.5 * DAY).toISOString()}\tb\tshow\tok\t3ms\ts1`,
+      `${new Date(now - 2.5 * DAY).toISOString()}\tb\tshow\tok\t3ms\ts1`,
+    ];
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const rep = stats(dir, { now, windowMs: 7 * DAY, shelf: 'a' });
+    expect(rep.activity).toEqual([0, 0, 0, 0, 0, 0, 2]); // only shelf 'a', newest bucket
+    expect(rep.totalCalls).toBe(2);
+  });
+
+  test('stats activity has one bucket for a sub-day window and renders empty windows as all-zero (issue #106)', () => {
+    const now = Date.parse('2026-10-31T12:00:00Z');
+    // single-day (12h) window → exactly one bucket
+    logUsage(dir, 'p', 'show', true, 1);
+    const one = stats(dir, { now: Date.now(), windowMs: 12 * 3600_000 });
+    expect(one.activity).toHaveLength(1);
+    // empty 7d window → seven zero buckets, no crash
+    const empty = stats(dir, { now, windowMs: 7 * 86_400_000, shelf: 'nope' });
+    expect(empty.activity).toEqual([0, 0, 0, 0, 0, 0, 0]);
+  });
+
   test('a malformed NB_ERR_RATE falls back to the default, not NaN (which would disable detection)', () => {
     process.env.NB_ERR_MIN = '4';
     process.env.NB_ERR_RATE = 'abc';
@@ -1039,6 +1090,71 @@ describe('usage log + stats', () => {
     // No stray temp file lingered: every writer's rename consumed its own temp.
     expect(readdirSync(dir).filter((f) => f.startsWith('.nb-usage.log.') && f.endsWith('.tmp'))).toEqual([]);
   }, 30_000);
+});
+
+describe('sparkline (issue #106)', () => {
+  test('empty input renders the empty string', () => {
+    expect(sparkline([])).toBe('');
+  });
+
+  test('maps 0..max linearly onto the eight block glyphs (the ▁▂▃▄▅▆▇█ identity)', () => {
+    expect(sparkline([0, 1, 2, 3, 4, 5, 6, 7])).toBe('▁▂▃▄▅▆▇█');
+  });
+
+  test('an all-zero series renders the floor glyph in every slot (silent reads as the floor)', () => {
+    expect(sparkline([0, 0, 0])).toBe('▁▁▁');
+  });
+
+  test('a single nonzero value renders the top glyph (it is its own max)', () => {
+    expect(sparkline([5])).toBe('█');
+  });
+
+  test('zero-based scaling: a 0 bucket beside nonzero ones is the floor, the max is the top', () => {
+    // max = 8; 0→▁, 8→█, 4→round(4/8*7)=round(3.5)=4→▅
+    expect(sparkline([0, 8, 4])).toBe('▁█▅');
+  });
+
+  test('every nonzero bucket is scaled against the max, not min–max (a near-flat series stays near the top)', () => {
+    // min–max scaling would make [6,7,8] read ▁▄█; zero-based keeps all three high.
+    expect(sparkline([6, 7, 8])).toBe('▆▇█');
+  });
+});
+
+describe('activityByDay (issue #106)', () => {
+  const DAY = 86_400_000;
+  const now = Date.parse('2026-10-31T12:00:00Z');
+
+  test('buckets rolling 24h windows oldest-first with the newest 24h on the right', () => {
+    const ts = [
+      now - 0.5 * DAY, // newest bucket (rightmost)
+      now - 0.5 * DAY,
+      now - 2.5 * DAY, // index 4 of 7
+      now - 6.5 * DAY, // oldest bucket (leftmost)
+    ];
+    expect(activityByDay(ts, now, 7 * DAY)).toEqual([1, 0, 0, 0, 1, 0, 2]);
+  });
+
+  test('bucket count is ceil(windowMs / day), at least one', () => {
+    expect(activityByDay([], now, 7 * DAY)).toHaveLength(7);
+    expect(activityByDay([], now, 36 * 3600_000)).toHaveLength(2); // ceil(1.5) = 2
+    expect(activityByDay([], now, 12 * 3600_000)).toHaveLength(1); // sub-day → 1
+    expect(activityByDay([], now, 0)).toHaveLength(1); // max(1, 0)
+  });
+
+  test('a timestamp exactly at the window edge lands in the oldest bucket, not off the array', () => {
+    // age === windowMs would compute fromRight = 7; it must clamp to the oldest bucket.
+    expect(activityByDay([now - 7 * DAY], now, 7 * DAY)).toEqual([1, 0, 0, 0, 0, 0, 0]);
+  });
+
+  test('a future (negative-age) timestamp lands in the newest bucket', () => {
+    expect(activityByDay([now + 3600_000], now, 7 * DAY)).toEqual([0, 0, 0, 0, 0, 0, 1]);
+  });
+
+  test('every timestamp is counted — the buckets sum to the input length', () => {
+    const ts = [now - 0.1 * DAY, now - 7 * DAY, now + DAY, now - 3 * DAY];
+    const buckets = activityByDay(ts, now, 7 * DAY);
+    expect(buckets.reduce((a, b) => a + b, 0)).toBe(ts.length);
+  });
 });
 
 describe('diagnostic signals (issue #72)', () => {
