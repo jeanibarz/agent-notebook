@@ -38,7 +38,7 @@ The cap and the vote are the whole mechanism. A new lesson enters at the `+1` fl
 
 Naming the non-goals matters more than listing features — if any of this is what you need, this is the wrong tool:
 
-- No embeddings, no semantic search, no similarity ranking.
+- No embeddings, no semantic search, no vector similarity. (Duplicate *blocking* stays exact-normal-form; a dependency-free lexical check may add a non-blocking "looks like an existing lesson — merge?" advisory, but never blocks or ranks.)
 - No long-form notes, summaries, or documents — one line, period.
 - No network calls, no server, no sync between machines.
 - No multi-field schema — a lesson is a string, a score is an integer.

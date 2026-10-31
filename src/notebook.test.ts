@@ -45,6 +45,7 @@ import {
   dedupKey,
   diagnoseEngagement,
   entryId,
+  similarity,
   getDescription,
   getMetaValue,
   isMetaLine,
@@ -137,6 +138,55 @@ describe('dedup', () => {
     await addEntry(dir, 'c', 'lesson one');
     await addEntry(dir, 'c', 'lesson two');
     expect(readEntries(dir, 'c')).toHaveLength(2);
+  });
+});
+
+describe('near-duplicate advisory (FR-ADD-008)', () => {
+  test('similarity is 1 for identical normal forms, 0 for disjoint, and in-between for a paraphrase', () => {
+    expect(similarity('run lint before done', 'run lint before done')).toBe(1);
+    expect(similarity('Run LINT before done!', 'run lint before done')).toBe(1); // normal-form equal
+    expect(similarity('xyz', 'run lint before done')).toBeLessThan(0.1);
+    const s = similarity('run lint before claiming done', 'lint before claiming complete');
+    expect(s).toBeGreaterThan(0.3);
+    expect(s).toBeLessThan(1);
+  });
+
+  test('a resembling (non-exact) lesson is STILL stored and carries a near-match id — it never blocks', async () => {
+    process.env.NB_NEAR_DUP = '0.4';
+    await addEntry(dir, 'c', 'run lint before claiming done');
+    const r = await addEntry(dir, 'c', 'run lint before claiming complete');
+    expect(r.added).toBe(true); // non-blocking: the lesson is NOT lost
+    expect(r.reason).toBe('added');
+    expect(r.nearId).toBe(entryId('run lint before claiming done'));
+    expect(r.nearText).toBe('run lint before claiming done');
+    expect(readEntries(dir, 'c')).toHaveLength(2); // both kept
+    delete process.env.NB_NEAR_DUP;
+  });
+
+  test('an exact-normal-form duplicate still hard-blocks (not downgraded to an advisory)', async () => {
+    process.env.NB_NEAR_DUP = '0.4';
+    await addEntry(dir, 'c', 'prefer execFileSync');
+    const r = await addEntry(dir, 'c', 'Prefer  execFileSync!');
+    expect(r.added).toBe(false);
+    expect(r.reason).toBe('duplicate');
+    expect(r.nearId).toBeUndefined();
+    delete process.env.NB_NEAR_DUP;
+  });
+
+  test('a dissimilar lesson is added with no near-match attached', async () => {
+    await addEntry(dir, 'c', 'run lint before done');
+    const r = await addEntry(dir, 'c', 'rotate the TLS certificate yearly');
+    expect(r.added).toBe(true);
+    expect(r.nearId).toBeUndefined();
+  });
+
+  test('a higher threshold suppresses the advisory for a weak resemblance', async () => {
+    process.env.NB_NEAR_DUP = '0.95';
+    await addEntry(dir, 'c', 'run lint before claiming done');
+    const r = await addEntry(dir, 'c', 'run lint before claiming complete');
+    expect(r.added).toBe(true);
+    expect(r.nearId).toBeUndefined(); // below the (very high) bar ⇒ no advisory
+    delete process.env.NB_NEAR_DUP;
   });
 });
 

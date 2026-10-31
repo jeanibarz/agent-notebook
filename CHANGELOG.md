@@ -9,6 +9,19 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Added
+- **Non-blocking near-duplicate advisory on `nb add` (FR-ADD-008).** The exact-normal-form
+  dedup key misses paraphrases (`"run lint before done"` vs `"lint before claiming complete"`),
+  so a re-derived lesson is silently re-stored and the recall-miss goes uncounted. An accepted
+  add now also compares the lesson to existing entries with a deterministic, dependency-free
+  trigram-Jaccard `similarity`; when one is at/above `NB_NEAR_DUP` (default `0.5`) it still
+  stores the lesson (never blocks — a fuzzy match must not cause a silent loss, DP-5) and
+  prints a `nb merge` suggestion to stderr (stdout stays pipe-clean; `--json` carries `nearId`).
+  The resembling id is logged in the `collided` column of the still-`accepted` row, making the
+  near-duplicate / paraphrase-miss rate measurable. No embeddings, no new runtime dependency
+  (NG-001 amended to permit a non-blocking lexical advisory while the *blocking* decision stays
+  exact-normal-form only).
+
 ## [0.5.0] - 2026-10-31
 
 ### Fixed

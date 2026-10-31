@@ -224,12 +224,31 @@ stdin yields `reason: 'empty'`). Because `-` denotes stdin, the one-character le
 `-` cannot be stored through this operand; a literal hyphen SHALL go through the
 library `addEntry` or a non-dash quoted argument. *(See [DP-5](#dp-5).)*
 
+<a id="fr-add-008"></a>
+**FR-ADD-008 (Should).** An accepted add whose lesson is *not* an exact-normal-form
+duplicate ([FR-ADD-003](#fr-add-003)) but whose trigram-Jaccard `similarity` to an
+existing entry is ≥ the near-duplicate threshold (`NB_NEAR_DUP`, default `0.5`) SHALL
+still be stored, and SHALL additionally surface a **non-blocking advisory** that names
+the resembling entry and suggests a `merge`. The advisory SHALL NOT block, reject,
+reorder, or otherwise alter the add — a fuzzy match must never cause a silent loss
+([DP-5](#dp-5)). The resembling entry's id SHALL be recorded in the usage log's
+`collided` field on the (still `accepted`) row, so an accept-with-resemblance is a
+measurable near-duplicate / paraphrase-miss signal, distinct from a hard
+`dedup-blocked`. The check SHALL be deterministic, offline, and dependency-free — a
+lexical overlap, not embeddings or semantic ranking ([NG-001](#ng-001)). *(On the CLI
+the advisory goes to stderr so stdout stays pipe-clean; `--json` carries `nearId`.)*
+*Proven by:* `notebook.test.ts` → `describe('near-duplicate advisory (FR-ADD-008)')`;
+`cli.test.ts` → "a resembling add still stores the lesson, warns on stderr, and logs the
+accepted row with the near-match id" and "a resembling add --json carries nearId; a
+dissimilar add does not warn".
+
 *Acceptance (table):*
 
 | Precondition | Input | reason | Stored? |
 |---|---|---|---|
 | empty notebook | `"lesson"` | `added` | yes, score +1 |
-| contains `dedupKey`-equal line | near-duplicate | `duplicate` | no |
+| contains `dedupKey`-equal line | exact-normal-form duplicate | `duplicate` | no |
+| contains a trigram-similar line (≥ `NB_NEAR_DUP`) | same lesson reworded | `added` + advisory | yes, score +1 |
 | `maxChars=30` | 50-char lesson | `too-long` | no |
 | full, mixed scores, newcomer not lowest | new lesson | `added` | yes, lowest evicted |
 | full, every entry outranks newcomer | new lesson | `added` | yes — stalest line aged, lowest evicted |
@@ -759,8 +778,13 @@ These are as binding as the functional requirements. A PR that adds any of these
 changing the product, not extending it, and SHALL make that case explicitly.
 
 <a id="ng-001"></a>
-**NG-001.** The tool SHALL NOT use embeddings, semantic search, or similarity ranking.
-Dedup is conservative exact-normal-form equality only.
+**NG-001.** The tool SHALL NOT use embeddings, semantic search, a learned/vector
+similarity ranker, or any network call for matching. The *blocking* dedup decision
+SHALL remain conservative exact-normal-form equality only. A deterministic, offline,
+dependency-free *lexical* overlap (e.g. trigram Jaccard) MAY additionally raise a
+**non-blocking** near-duplicate advisory ([FR-ADD-008](#fr-add-008)); it SHALL NOT
+block, reject, reorder, or rank an add, so it can never cause a silent loss
+([DP-5](#dp-5)) and never becomes a retrieval path ([NG-007](#ng-007)).
 
 <a id="ng-002"></a>
 **NG-002.** The tool SHALL NOT store long-form notes, summaries, or documents — one
