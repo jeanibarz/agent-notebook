@@ -85,6 +85,7 @@ nb vote   <shelf> <id|query> +1|-1       upvote/downvote an entry you used
 nb merge  <shelf> <idA> <idB> "<merged>" consolidate two entries into one
 nb split  <shelf> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
 nb rm     <shelf> <id|query>             delete an entry
+nb move   <from> <to> <id|query>         move an entry to another shelf, keeping its score (consolidate shelves)
 nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print it)
 nb search <query> [prefix] [--any]      SECONDARY keyword fallback — scan all notebooks (surfacing is primary)
 nb stats  [<shelf>] [--since 7d] [--json] usage analytics + anomaly/diagnostic flags + surfacing metrics (--json emits the raw StatsReport)
@@ -94,7 +95,7 @@ nb ls / nb shelves                       aliases of `nb list` (`nb roles` still 
 nb --help                               show this help
 ```
 
-Every `show` line starts with a short stable id — pass that id (or a unique prefix, or a unique text substring) to `vote`/`rm`/`merge`/`split`. An over-long `add` is rejected outright, never silently truncated, so you rewrite it shorter instead of storing a cut-off, useless lesson.
+Every `show` line starts with a short stable id — pass that id (or a unique prefix, or a unique text substring) to `vote`/`rm`/`merge`/`split`/`move`. An over-long `add` is rejected outright, never silently truncated, so you rewrite it shorter instead of storing a cut-off, useless lesson.
 
 **Splitting an overloaded entry.** `nb split` is the reverse of `merge`: it replaces one entry with two, each inheriting the original's score — for when a line turned out to be two lessons crammed together. Each half is rejected (not truncated) if too long, and a split never creates a duplicate: the two halves must differ from each other and from every surviving entry, or the split is refused and nothing changes.
 
@@ -108,6 +109,7 @@ The optional `--reason <code>` (and `--note "<text>"`) is recorded in the usage 
 - `merge` — `duplicate` (the two entries say the same thing — one is a reworded copy of the other) · `other`
 - `rm` — `wrong` (the lesson is incorrect or misleading) · `obsolete` (it was true but no longer applies) · `other`
 - `split` — `overloaded` (the entry crammed two distinct lessons into one line) · `other`
+- `move` — `consolidate` (folding a thin or redundant shelf into a broader one — two situations turned out to be one) · `other`
 - `add` — no enum yet: free text only via `--note`, so `add`'s codes can emerge from mined notes rather than be guessed up front
 - `describe` — no enum yet (free text only, like `add`); the flags are accepted and stripped so a code learned from the other write commands is never stored as the description
 
@@ -167,6 +169,15 @@ Act only when a full shelf loses lessons that agents still use:
 - **Otherwise**, merge near-duplicates (`nb merge`) to free lines, or raise `NB_MAX_LINES`.
 
 When the evicted lessons were never voted, or had fallen back to +1 or below through down votes or aging, eviction is working as intended: leave the shelf as it is. Merging small shelves whose lessons are needed together is also fine: it shortens the index.
+
+**Consolidating shelves without losing vote capital.** When you fold one shelf into another, move each lesson with `nb move <from> <to> <id|query>` rather than re-adding it. `add` always enters at the `+1` floor, so a hard-won `+7` lesson would land at `+1`, bottom of the target and eviction-bait, with its vote history thrown away. `move` carries the score across intact:
+
+```
+$ nb move repo-onboarding build-and-test "build/test entry points" --reason consolidate
+moved [+7] build/test entry points — "repo-onboarding" now 2, "build-and-test" now 13 lines
+```
+
+The entry is admitted into the target like a newcomer, so a full target ages and evicts its *stalest other* line, never the lesson you just moved. A move is refused — writing nothing to either shelf — if the source and target are the same shelf, the selector is absent or ambiguous (the same unique-match rule as `vote`/`rm`), or the target already holds a near-duplicate (the same dedup rule as `add`, so a move never creates a duplicate).
 
 ### Grouping notebooks — the `.` namespace convention
 

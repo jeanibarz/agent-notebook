@@ -698,6 +698,98 @@ export function remove(dir: string, shelf: string, selector: string): Promise<Vo
   });
 }
 
+export interface MoveResult {
+  /** `moved` on success; `duplicate` when the target already holds the lesson (nothing was written). */
+  reason: 'moved' | 'duplicate';
+  /** The moved lesson's text. */
+  text: string;
+  /** The moved entry's score — carried across intact (the whole point of `move`). */
+  score: number;
+  /** Stable id of the moved entry (same in both shelves — the id is content-derived). */
+  id: string;
+  /** Source shelf's entry count after the move (unchanged on `duplicate`). */
+  fromSize: number;
+  /** Target shelf's entry count after the move (unchanged on `duplicate`). */
+  toSize: number;
+  /** A lower-scored target entry the insert pushed out to stay under cap, or `null`. */
+  evicted: Entry | null;
+  /** For `duplicate`: the id of the existing target entry that blocked the move. */
+  collidedId?: string;
+}
+
+/**
+ * Move one entry from `fromShelf` to `toShelf` WITH ITS SCORE INTACT — the
+ * score-preserving cross-shelf relocation that `add`+`rm` cannot express (add
+ * always enters at the +1 floor, discarding hard-won vote capital). It is the
+ * tool-owned inverse of "shelves are chosen by situation": when two situations
+ * turn out to be one, their shelves can be consolidated without the tool
+ * resetting scores (issue #103).
+ *
+ * The entry lands in the target as a PROTECTED newcomer at the fresh end, exactly
+ * like `add` — so a full target admits it, ages/evicts its stalest OTHER line, and
+ * never drops the lesson just moved (no loss of a voted lesson), while its score
+ * is carried over unchanged (the aging step only docks a stale *survivor*, never
+ * the protected newcomer). The move is refused, writing NOTHING to either shelf,
+ * when: the source and target are the same shelf; the source is empty; the
+ * selector is absent/ambiguous (same unique-match rule as vote/rm/merge, so a
+ * move never relocates the wrong lesson); or the target already holds a
+ * near-duplicate (same dedup rule as `add`/`merge` — a move never creates a
+ * duplicate). On success the TARGET is written first (the lesson is persisted
+ * there before it leaves the source), so an interruption between the two writes
+ * duplicates the lesson across shelves rather than losing it.
+ */
+export function move(dir: string, fromShelf: string, toShelf: string, selector: string): Promise<MoveResult> {
+  return withLock(dir, () => {
+    assertSafeShelf(fromShelf);
+    assertSafeShelf(toShelf);
+    if (fromShelf === toShelf) {
+      throw new Error(`move needs two different shelves (source and target are both "${fromShelf}")`);
+    }
+    const source = readEntries(dir, fromShelf);
+    if (source.length === 0) throw new Error(`notebook for shelf "${fromShelf}" is empty`);
+    const idx = selectIndex(source, selector);
+    const moving = source[idx];
+    const id = entryId(moving.text);
+    const target = readEntries(dir, toShelf);
+    const key = dedupKey(moving.text);
+    const collider = target.find((e) => dedupKey(e.text) === key);
+    if (collider) {
+      // The target already holds this lesson — refuse and write NOTHING, so the
+      // source copy stays intact and the caller can `rm`/`vote` it deliberately
+      // rather than silently discarding one of the two. Same dedup rule as `add`.
+      return {
+        reason: 'duplicate',
+        text: moving.text,
+        score: moving.score,
+        id,
+        fromSize: source.length,
+        toSize: target.length,
+        evicted: null,
+        collidedId: entryId(collider.text),
+      };
+    }
+    // Insert with the score intact as a protected newcomer at the fresh end; a full
+    // target then ages/evicts its stalest OTHER line, never this one (see enforceCap).
+    const moved: Entry = { score: moving.score, text: moving.text };
+    target.push(moved);
+    const { kept, evicted } = enforceCap(target, 1);
+    // Write the TARGET first (lesson now persisted there), then drop it from the
+    // source. An interruption between the two leaves a duplicate, never a loss.
+    writeEntries(dir, toShelf, kept);
+    const remaining = source.filter((_, i) => i !== idx);
+    writeEntries(dir, fromShelf, remaining);
+    return {
+      reason: 'moved',
+      text: moved.text,
+      score: moved.score,
+      id,
+      fromSize: remaining.length,
+      toSize: kept.length,
+      evicted: evicted[0] ?? null,
+    };
+  });
+}
+
 /** The `desc` metadata key: a notebook's optional one-line description/trigger. */
 export const DESC_KEY = 'desc';
 
@@ -998,7 +1090,7 @@ export interface UsageRow {
   session: string;
   /** Stable id(s) of the entry/entries the call touched; `[]` when none. */
   entries: string[];
-  /** Outcome token: `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` (add), `up`/`down` (vote), `removed` (rm), `merged` (merge), `match`/`no-match`/`no-terms` (search, with the query in `note`; `no-terms` = the query had no searchable tokens, so it is NOT a coverage gap); `''` otherwise. */
+  /** Outcome token: `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` (add), `up`/`down` (vote), `removed` (rm), `merged` (merge), `split` (split), `moved`/`move-blocked` (move; `move-blocked` = the target already held a near-duplicate), `match`/`no-match`/`no-terms` (search, with the query in `note`; `no-terms` = the query had no searchable tokens, so it is NOT a coverage gap); `''` otherwise. */
   outcome: string;
   /** For a `dedup-blocked` add: the id of the existing entry that blocked it; `''` otherwise. */
   collided: string;
@@ -1050,6 +1142,7 @@ export const REASON_ENUMS: Record<string, readonly string[]> = {
   merge: ['duplicate', 'other'],
   rm: ['wrong', 'obsolete', 'other'],
   split: ['overloaded', 'other'],
+  move: ['consolidate', 'other'],
 };
 
 /**

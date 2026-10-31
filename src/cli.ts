@@ -11,7 +11,8 @@
 //   nb merge  <shelf> <idA> <idB> "<merged>"  consolidate two entries into one
 //   nb split  <shelf> <id|query> "<a>" "<b>"   cut one overloaded entry into two
 //   nb rm     <shelf> <id|query>            delete an entry judged useless
-//   (add/vote/rm/merge take --json: one structured result object on stdout)
+//   nb move   <from> <to> <id|query>        relocate an entry across shelves, score intact
+//   (add/vote/rm/merge/move take --json: one structured result object on stdout)
 //   nb describe <shelf> ["<text>"]          set the notebook's one-line description (or print it)
 //   nb search <query> [prefix] [--any]     SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
 //   nb stats  [<shelf>] [--since 7d] [--json]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport)
@@ -38,6 +39,7 @@ import {
   logUsage,
   maxChars,
   merge,
+  move,
   normalizeReason,
   notebooksDir,
   parseWindowMs,
@@ -71,6 +73,7 @@ usage:
   nb merge  <shelf> <idA> <idB> "<merged>" consolidate two entries into one
   nb split  <shelf> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
   nb rm     <shelf> <id|query>             delete an entry
+  nb move   <from> <to> <id|query>         move an entry to another shelf, keeping its score (consolidate shelves)
   nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print the current one)
   nb search <query> [prefix] [--any]      SECONDARY keyword fallback — scan all notebooks (surfacing is the primary path)
   nb stats  [<shelf>] [--since 7d] [--json] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
@@ -85,9 +88,15 @@ usage:
 notes:
   - <shelf> is a notebook's name: one <shelf>.md file of lessons an agent needs in the
     same situations (see \`nb list\`).
-  - add/vote/rm/merge accept --json (after the subcommand): stdout is one JSON
+  - add/vote/rm/merge/move accept --json (after the subcommand): stdout is one JSON
     result object and nothing else; warnings/errors stay on stderr. Exit codes are
     unchanged (a too-long add still exits 1, a duplicate still exits 0).
+  - \`nb move <from> <to> <id|query>\` relocates one entry to another shelf WITH ITS
+    SCORE INTACT — the score-preserving consolidation \`add\`+\`rm\` cannot do (\`add\`
+    resets to +1). It refuses, writing nothing, if source and target are the same
+    shelf, the selector is absent/ambiguous, or the target already holds a
+    near-duplicate; the moved entry is admitted like a newcomer, so a full target
+    ages/evicts its stalest OTHER line, never the lesson you moved.
   - \`nb add <shelf> -\` reads the lesson from stdin (one line, so a supervising agent
     can pipe it in without shell-quoting). It reads exactly one line: a trailing
     newline is stripped and multi-line input is REFUSED (exit 1), never flattened —
@@ -112,6 +121,9 @@ notes:
              other      any other motive; add \`--note\` so a recurring one can emerge
       split  overloaded the entry crammed two distinct lessons into one line — cut apart
                         (e.g. "run build, then vitest" → "run build first" + "run vitest")
+             other      any other motive; add \`--note\` so a recurring one can emerge
+      move   consolidate folding a thin or redundant shelf into a broader one — two
+                        situations turned out to be one (the usual reason to move)
              other      any other motive; add \`--note\` so a recurring one can emerge
       add    (no enum yet — free text only: use \`--note "<text>"\`; add's codes will emerge
              from mined notes rather than be guessed up front)
@@ -218,8 +230,9 @@ export async function runNbCli(
   // `--reason <code>` / `--note "<text>"` attach an optional, never-required
   // reason to a mutating op, logged (never stored in the notebook). Every
   // mutating op consumes them — `merge` (duplicate · other), `rm` (wrong ·
-  // obsolete · other), `split` (overloaded · other), `add` (free text only,
-  // no enum yet), and `describe` (free text only, like `add`). Pulling them out
+  // obsolete · other), `split` (overloaded · other), `move` (consolidate ·
+  // other), `add` (free text only, no enum yet), and `describe` (free text only,
+  // like `add`). Pulling them out
   // of `args` BEFORE positional parsing keeps them from being mistaken for a
   // lesson/operand — otherwise `nb describe <shelf> --reason x "text"` would
   // silently store `--reason` as the description (issue #91, a DP-5 violation);
@@ -227,7 +240,7 @@ export async function runNbCli(
   let reasonArg: string | undefined;
   let noteArg: string | undefined;
   try {
-    if (cmd === 'add' || cmd === 'merge' || cmd === 'rm' || cmd === 'split' || cmd === 'describe') {
+    if (cmd === 'add' || cmd === 'merge' || cmd === 'rm' || cmd === 'split' || cmd === 'describe' || cmd === 'move') {
       // Inside the try so a malformed flag (e.g. `--reason` with no value)
       // becomes a handled exit-1 error, not an uncaught rejection.
       ({ value: reasonArg, rest: args } = extractOption(args, '--reason'));
@@ -356,6 +369,41 @@ export async function runNbCli(
         }
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else process.stdout.write(`removed — [${fmt(r.score)}] ${r.text}\n`);
+        break;
+      }
+      case 'move': {
+        const from = need(args[1], 'from-shelf');
+        const to = need(args[2], 'to-shelf');
+        const selector = need(args[3], 'id|query');
+        // Usage log: attribute the call to the SOURCE shelf (the one the entry
+        // leaves); the moved id is in `meta.entries`, so a reader sees which
+        // lesson relocated even though the op spans two shelves.
+        shelf = from;
+        const r = await move(dir, from, to, selector);
+        meta.entries = [r.id];
+        meta.outcome = r.reason === 'moved' ? 'moved' : 'move-blocked';
+        if (r.collidedId) meta.collided = r.collidedId;
+        if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
+        // Reason lives in the usage log only (move enum: consolidate · other).
+        {
+          const { reason, note } = normalizeReason('move', reasonArg, noteArg);
+          if (reason) meta.reason = reason;
+          if (note) meta.note = note;
+        }
+        if (json) process.stdout.write(JSON.stringify(r) + '\n');
+        else if (r.reason === 'duplicate') {
+          process.stdout.write(
+            `skipped (a near-duplicate already lives in "${to}") — "${from}" unchanged, "${to}" still ${r.toSize} lines\n`,
+          );
+        } else {
+          process.stdout.write(
+            `moved [${fmt(r.score)}] ${r.text} — "${from}" now ${r.fromSize}, "${to}" now ${r.toSize} lines`,
+          );
+          if (r.evicted) {
+            process.stdout.write(` (evicted lowest-scored from "${to}": [${fmt(r.evicted.score)}] ${r.evicted.text})`);
+          }
+          process.stdout.write('\n');
+        }
         break;
       }
       case 'describe': {

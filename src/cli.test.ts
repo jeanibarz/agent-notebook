@@ -933,6 +933,79 @@ describe('runNbCli', () => {
   });
 });
 
+describe('nb move (score-preserving cross-shelf move, issue #103)', () => {
+  test('moves an entry to another shelf keeping its score, and reports both sizes', async () => {
+    await run(['add', 'thin', 'use execFileSync with array args']);
+    await run(['vote', 'thin', 'execFileSync', '+1']); // score +2
+    const m = await run(['move', 'thin', 'broad', 'execFileSync']);
+    expect(m.code).toBe(0);
+    expect(m.out).toContain('moved [+2]');
+    expect(m.out).toContain('"thin" now 0');
+    expect(m.out).toContain('"broad" now 1');
+    // the score survived the move — `show` on the target prints [+2], not the +1 add floor
+    const show = await run(['show', 'broad']);
+    expect(show.out).toMatch(/\[\+2\]\s+use execFileSync with array args/);
+    expect((await run(['show', 'thin'])).out).toContain('is empty');
+  });
+
+  test('--json emits a MoveResult with the preserved score', async () => {
+    await run(['add', 'from', 'portable lesson']);
+    await run(['vote', 'from', 'portable', '+1']); // +2
+    const m = await run(['move', '--json', 'from', 'to', 'portable']);
+    expect(m.code).toBe(0);
+    const r = JSON.parse(m.out);
+    expect(r.reason).toBe('moved');
+    expect(r.score).toBe(2);
+    expect(r.id).toBe(entryId('portable lesson'));
+    expect(r.fromSize).toBe(0);
+    expect(r.toSize).toBe(1);
+  });
+
+  test('a near-duplicate in the target is skipped (exit 0), leaving the source intact', async () => {
+    await run(['add', 'from', 'prefer execFileSync, array args']);
+    await run(['add', 'to', 'prefer execfilesync array args']); // dedup-equal
+    const m = await run(['move', 'from', 'to', 'execFileSync']);
+    expect(m.code).toBe(0);
+    expect(m.out).toContain('skipped');
+    expect((await run(['show', 'from'])).out).toContain('prefer execFileSync');
+  });
+
+  test('moving into the same shelf exits 1', async () => {
+    await run(['add', 's', 'only lesson']);
+    const m = await run(['move', 's', 's', 'only']);
+    expect(m.code).toBe(1);
+    expect(m.err).toContain('two different shelves');
+  });
+
+  test('a missing operand exits 1', async () => {
+    await run(['add', 'from', 'x']);
+    const m = await run(['move', 'from', 'to']); // no selector
+    expect(m.code).toBe(1);
+    expect(m.err).toContain('missing <id|query>');
+  });
+
+  test('logs the move attributed to the source shelf, with the recognized reason', async () => {
+    process.env.NB_SESSION = 'cli-move-1';
+    await run(['add', 'from', 'a durable lesson']);
+    await run(['move', 'from', 'to', 'durable', '--reason', 'consolidate']);
+    const row = parseUsage(dir).at(-1)!;
+    expect(row.command).toBe('move');
+    expect(row.role).toBe('from'); // attributed to the source shelf
+    expect(row.outcome).toBe('moved');
+    expect(row.reason).toBe('consolidate');
+    expect(row.entries).toEqual([entryId('a durable lesson')]);
+  });
+
+  test('an unrecognized move reason is logged as other, code kept in the note', async () => {
+    await run(['add', 'from', 'another lesson']);
+    await run(['move', 'from', 'to', 'another', '--reason', 'tidying', '--note', 'end of sprint']);
+    const row = parseUsage(dir).at(-1)!;
+    expect(row.command).toBe('move');
+    expect(row.reason).toBe('other');
+    expect(row.note).toBe('tidying: end of sprint');
+  });
+});
+
 // The CLI entrypoint is `settleCliExit(runNbCli(...))`. `runNbCli` try/catches
 // every handled command error and resolves with an exit code, so no input makes
 // the real promise reject today — the `.catch` guards against a *future* bug in
