@@ -289,10 +289,13 @@ quiet?** The trap is that the [SessionStart hook fails *open*](#claude-code): if
 **silent** — agents simply never see the index and nobody is told.
 
 One command tells the causes apart. Run `nb stats` with **no shelf argument** —
-the deployment-wide view — and read its `surfacing:` line against this tree. (Use
-the no-argument form on purpose: the injection hook's own `nb list` is global, so
-a shelf-scoped `nb stats <shelf>` never sees it and would mis-report the hook as
-unwired.)
+the deployment-wide view — and read its `surfacing:` line against this tree. (The
+engagement diagnosis is deployment-wide *by design*: it is gated on a vote in
+*any* session and counts lessons across *all* shelves, so a shelf-scoped
+`nb stats <shelf>` reports the same `surfacing:` line — it never gives a false
+"hook not wired" just because one shelf is quiet. The no-argument form is what you
+want here because it also prints the whole notebook inventory and every command's
+activity, which is the deployment-wide picture these symptoms live in.)
 
 | Symptom — the `nb stats` `surfacing:` line reads… | Cause | Remedy |
 |---|---|---|
