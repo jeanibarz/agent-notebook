@@ -104,6 +104,7 @@ notebook so the next run of this task starts wiser:
    ```sh
    nb merge "<shelf>" <idA> <idB> "<one tighter lesson>" --reason duplicate
    nb split "<shelf>" <id> "<lesson A>" "<lesson B>" --reason overloaded
+   nb move  "<from>" "<to>" <id> --reason consolidate   # fold a shelf into another, score intact
    ```
 4. **Add at most one new lesson** — to the shelf whose lessons are needed in the same
    situations as this one (check `nb list` if unsure which; start a new shelf only if

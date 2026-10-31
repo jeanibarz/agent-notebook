@@ -9,6 +9,19 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Added
+- **`nb move <from> <to> <id|query>` — score-preserving cross-shelf move** (issue #103).
+  Relocates one lesson from one shelf to another **with its score intact**, the
+  consolidation `add`+`rm` could not express (`add` always enters at the `+1` floor, so a
+  hard-won lesson would land at the bottom of the target and lose its vote history). The
+  entry is admitted into the target like a newcomer, so a full target ages/evicts its
+  stalest *other* line, never the lesson just moved. The move is refused — writing nothing
+  to either shelf — when the source and target are the same shelf, the selector is
+  absent/ambiguous (same unique-match rule as `vote`/`rm`), or the target already holds a
+  near-duplicate (same dedup rule as `add`). Accepts the usual `--reason <code>`/`--note`
+  (enum: `consolidate` · `other`) and `--json` (emits a `MoveResult`). The library gains
+  `move(dir, fromShelf, toShelf, selector)` and the `MoveResult` type.
+
 ## [0.4.0] - 2026-10-29
 
 ### Changed

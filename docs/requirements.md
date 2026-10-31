@@ -251,7 +251,7 @@ downvoted entry to the fresh end never shields it. *(See [DP-3](#dp-3).)*
 **FR-VOTE-003 (Should).** Scores MAY go negative (a repeatedly downvoted lesson), and
 such entries SHALL be evicted first under [FR-ADD-005](#fr-add-005).
 
-### 4.4 Selector resolution (shared by vote/rm/merge/split)
+### 4.4 Selector resolution (shared by vote/rm/merge/split/move)
 
 <a id="fr-sel-001"></a>
 **FR-SEL-001 (Must).** Resolution SHALL try, in order: (1) if the selector is hex,
@@ -304,6 +304,35 @@ is removed. Over-long halves are rejected, never truncated ([DP-5](#dp-5)).
 <a id="fr-rm-001"></a>
 **FR-RM-001 (Must).** `remove(dir, shelf, selector)` SHALL delete the uniquely
 selected entry and return its text and score. An empty notebook SHALL throw.
+
+### 4.7a `move`
+
+<a id="fr-move-001"></a>
+**FR-MOVE-001 (Must).** `move(dir, fromShelf, toShelf, selector)` SHALL remove the
+uniquely selected entry from `fromShelf` and insert it into `toShelf` **with its score
+carried over unchanged**, returning `{ reason, text, score, id, fromSize, toSize,
+evicted, collidedId? }`. The inserted entry SHALL be treated as a newcomer for the
+`maxLines` cap — a *touch* (so it lands at the fresh end, [DP-3](#dp-3)) and *protected*
+like any newcomer ([FR-ADD-006](#fr-add-006)), so a full target ages/evicts its stalest
+*other* line and never drops the lesson just moved. This is the
+score-preserving relocation `add`+`rm` cannot express: `add` enters at the `+1` floor,
+discarding the vote capital the move must keep.
+**Rationale:** "Shelves are chosen by situation" needs an inverse — when two situations
+turn out to be one, their shelves must be consolidable without the tool resetting scores
+(issue #103). The score lives in the entry line the tool owns, so only the tool can
+relocate it losslessly under its own lock and eviction rules.
+
+<a id="fr-move-002"></a>
+**FR-MOVE-002 (Must).** `move` SHALL refuse, writing NOTHING to either shelf, when: the
+source and target are the same shelf (throw); the source is empty (throw); the selector
+is absent or ambiguous (throw, per [FR-SEL-002](#fr-sel-002)); or the target already
+holds an entry with the moved lesson's dedup key — a near-duplicate — in which case it
+SHALL return `reason: 'duplicate'` with the colliding entry's `collidedId` and leave
+both shelves untouched (same dedup rule as `add`/`merge`, so a move never creates a
+duplicate). On success it SHALL persist the target before removing from the source, so
+an interruption between the two writes duplicates the lesson across shelves rather than
+losing it (a "no loss of a voted lesson" guarantee).
+*Proven by:* `notebook.test.ts` → `describe('move …')` and `cli.test.ts` → `describe('nb move …')`.
 
 ### 4.8 `show` / `render`
 
@@ -410,13 +439,14 @@ existing `# desc:` metadata, adding no field to a lesson.
 <a id="fr-cli-001"></a>
 **FR-CLI-001 (Must).** `nb` SHALL implement: `show`, `add <shelf> ("<lesson>"|-)`,
 `vote`, `merge`, `split <shelf> <id|query> "<a>" "<b>"`,
-`rm`, `describe <shelf> ["<text>"]`, `stats [<shelf>] [--since <N{d,h,m}>] [--json]`, `path [<shelf>]`,
+`rm`, `move <from> <to> <id|query>`, `describe <shelf> ["<text>"]`, `stats [<shelf>] [--since <N{d,h,m}>] [--json]`, `path [<shelf>]`,
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`), `--help`, `--version`.
 The `-` lesson operand of `add` reads from stdin per
 [FR-ADD-007](#fr-add-007). The optional `[--reason <code>] [--note "<text>"]` flags are
-consumed by every mutating op — `add`, `merge`, `rm`, `split`, and `describe` — (the
+consumed by every mutating op — `add`, `merge`, `rm`, `split`, `move`, and `describe` — (the
 operation-reasons mechanism, [FR-REASON-001](#fr-reason-001)); they are stripped before
 positional parsing so they are never mistaken for a lesson/operand/description text.
+`move` and `rm` SHALL emit a JSON result object with `--json` like the other mutating ops.
 
 <a id="fr-cli-002"></a>
 **FR-CLI-002 (Must).** Exit codes SHALL be: `0` success; `1` a handled operation
@@ -446,7 +476,7 @@ BREAKING.
 ### 4.11 Durability & concurrency
 
 <a id="fr-lock-001"></a>
-**FR-LOCK-001 (Must).** Every notebook mutation (`add`/`vote`/`merge`/`split`/`rm`) SHALL run
+**FR-LOCK-001 (Must).** Every notebook mutation (`add`/`vote`/`merge`/`split`/`rm`/`move`) SHALL run
 under a `mkdir`-based spinlock on `.nb.lock`, with an acquire budget of ~2s; a lock
 older than ~10s SHALL be treated as stale and stolen. (The usage log is appended
 outside this lock — see [FR-USAGE-001](#fr-usage-001).)
@@ -486,10 +516,11 @@ then not computed), `entry-ids` is the comma-joined stable id(s) the call touche
 `outcome` is `accepted`/`dedup-blocked`/`empty`/`too-long` for `add` (plus
 `rejected-full` in logs predating the always-admit policy; `add` no longer emits it),
 `up`/`down` for `vote`, `removed` for `rm`, `merged` for `merge`, `split` for `split`,
-and blank for a
+`moved`/`move-blocked` for `move` (the latter when the target already held a
+near-duplicate), and blank for a
 read-only command, `collided-id` is the id of the existing entry that blocked a
-`dedup-blocked` add, and `evicted-id:score` is the entry an `add` evicted and its
-final score. The parser SHALL tolerate an old five-column row written before this
+`dedup-blocked` add or a `move-blocked` move, and `evicted-id:score` is the entry an
+`add` or `move` evicted and its final score. The parser SHALL tolerate an old five-column row written before this
 change, reading the missing columns as blank/empty.
 **Rationale:** Diagnostic signals (recall/precision, co-access, findability, coverage
 × surfacing) rest on entry-level data living in the log, not the notebook — this adds
@@ -520,7 +551,8 @@ An **unrecognized** code SHALL be accepted as `other` (keeping the original code
 front of the note), never rejected — the `other` rate is the growth thermostat that an
 offline process mines to promote recurring reasons into real enum codes. The enum is
 **seed-and-grow** and now spans every mutating op: `merge` seeds `duplicate · other`,
-`rm` seeds `wrong · obsolete · other`, and `split` seeds `overloaded · other`; `add` and
+`rm` seeds `wrong · obsolete · other`, `split` seeds `overloaded · other`, and `move`
+seeds `consolidate · other`; `add` and
 `describe` are intentionally enum-less (free text only via `--note`) so their vocabulary
 emerges from mined notes rather than being guessed up front. A code valid for one op is NOT valid for
 another (it buckets to `other` there), since the vocabularies are per-op. Each enum value

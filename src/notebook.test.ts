@@ -53,6 +53,7 @@ import {
   maxChars,
   maxLines,
   merge,
+  move,
   normalizeReason,
   parseUsage,
   readEntries,
@@ -658,6 +659,95 @@ describe('rm', () => {
     const r = await remove(dir, 'd', entryId('drop this one'));
     expect(r.text).toBe('drop this one');
     expect(readEntries(dir, 'd').map((e) => e.text)).toEqual(['keep this one']);
+  });
+});
+
+describe('move (score-preserving cross-shelf move, issue #103)', () => {
+  test('relocates an entry to another shelf with its score intact', async () => {
+    await addEntry(dir, 'thin', 'use execFileSync with array args');
+    await vote(dir, 'thin', 'execFileSync', 1);
+    await vote(dir, 'thin', 'execFileSync', 1); // score +3 — hard-won vote capital
+    const r = await move(dir, 'thin', 'broad', 'execFileSync');
+    expect(r.reason).toBe('moved');
+    expect(r.score).toBe(3); // carried over, NOT reset to the +1 add floor
+    expect(r.fromSize).toBe(0);
+    expect(r.toSize).toBe(1);
+    expect(readEntries(dir, 'thin')).toHaveLength(0); // gone from the source
+    const target = readEntries(dir, 'broad');
+    expect(target).toEqual([{ score: 3, text: 'use execFileSync with array args' }]);
+  });
+
+  test('preserves the moved entry even when the target is full (admitted like a newcomer)', async () => {
+    process.env.NB_MAX_LINES = '2';
+    await addEntry(dir, 'to', 'alpha'); // +1, oldest
+    await addEntry(dir, 'to', 'bravo'); // +1
+    await addEntry(dir, 'from', 'charlie');
+    await vote(dir, 'from', 'charlie', 1);
+    await vote(dir, 'from', 'charlie', 1); // charlie -> +3
+    const r = await move(dir, 'from', 'to', 'charlie');
+    expect(r.reason).toBe('moved');
+    expect(r.score).toBe(3);
+    const target = readEntries(dir, 'to');
+    expect(target).toHaveLength(2); // still at cap
+    const moved = target.find((e) => e.text === 'charlie');
+    expect(moved?.score).toBe(3); // the moved lesson survived with its score intact
+    expect(target.some((e) => e.text === 'alpha')).toBe(false); // the stalest/lowest was evicted
+    expect(readEntries(dir, 'from')).toHaveLength(0); // and it left the source
+    expect(r.evicted?.text).toBe('alpha');
+  });
+
+  test('refuses to move into the same shelf and writes nothing', async () => {
+    await addEntry(dir, 's', 'only lesson');
+    await expect(move(dir, 's', 's', 'only')).rejects.toThrow(/two different shelves/);
+    expect(readEntries(dir, 's')).toHaveLength(1);
+  });
+
+  test('refuses a near-duplicate in the target, leaving both shelves untouched', async () => {
+    await addEntry(dir, 'from', 'Prefer execFileSync, array args.');
+    await vote(dir, 'from', 'execFileSync', 1); // source copy at +2
+    await addEntry(dir, 'to', 'prefer execfilesync array args'); // dedup-equal in the target
+    const r = await move(dir, 'from', 'to', 'execFileSync');
+    expect(r.reason).toBe('duplicate');
+    expect(r.collidedId).toBe(entryId('prefer execfilesync array args'));
+    expect(readEntries(dir, 'from')).toHaveLength(1); // source still holds it (nothing discarded)
+    expect(readEntries(dir, 'from')[0].score).toBe(2);
+    expect(readEntries(dir, 'to')).toHaveLength(1); // target unchanged
+  });
+
+  test('refuses an ambiguous selector and moves nothing', async () => {
+    await addEntry(dir, 'from', 'widget cache warm path');
+    await addEntry(dir, 'from', 'widget cache cold path');
+    await expect(move(dir, 'from', 'to', 'widget')).rejects.toThrow(/matches 2/);
+    expect(readEntries(dir, 'from')).toHaveLength(2); // untouched
+    expect(readEntries(dir, 'to')).toHaveLength(0); // nothing created
+  });
+
+  test('refuses a selector that matches nothing', async () => {
+    await addEntry(dir, 'from', 'some lesson');
+    await expect(move(dir, 'from', 'to', 'nonexistent')).rejects.toThrow(/no entry matches/);
+    expect(readEntries(dir, 'from')).toHaveLength(1);
+  });
+
+  test('refuses to move from an empty / absent source shelf', async () => {
+    await expect(move(dir, 'empty', 'to', 'anything')).rejects.toThrow(/is empty/);
+    expect(existsSync(join(dir, 'to.md'))).toBe(false); // target never created
+  });
+
+  test('the moved entry lands at the fresh (recency) end of the target', async () => {
+    await addEntry(dir, 'to', 'first');
+    await addEntry(dir, 'to', 'second');
+    await addEntry(dir, 'from', 'incoming');
+    await move(dir, 'from', 'to', 'incoming');
+    // Storage order is least-recently-touched first; a freshly moved entry is a
+    // touch, so it must be last on disk.
+    expect(readEntries(dir, 'to').map((e) => e.text)).toEqual(['first', 'second', 'incoming']);
+  });
+
+  test('round-trips the target notebook description (metadata preserved)', async () => {
+    await setDescription(dir, 'to', 'broad lessons for this repo');
+    await addEntry(dir, 'from', 'incoming lesson');
+    await move(dir, 'from', 'to', 'incoming');
+    expect(getDescription(dir, 'to')).toBe('broad lessons for this repo');
   });
 });
 
