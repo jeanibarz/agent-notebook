@@ -69,7 +69,7 @@ const HELP = `nb — the Agent Notebook (bounded, voted memory, grouped in shelv
 
 usage:
   nb show   <shelf> [--json]               print the notebook (highest-scored first; --json emits {shelf,description,entries})
-  nb add    <shelf> "<lesson>"             add a lesson (dedup-skipped; rejected if too long, never truncated)
+  nb add    <shelf> "<lesson>"             add a lesson (exact dup skipped; a near-dup still adds but warns; rejected if too long, never truncated)
   nb add    <shelf> -                      read the lesson from stdin (one line; multi-line is refused)
   nb vote   <shelf> <id|query> +1|-1       upvote/downvote an entry you used
   nb merge  <shelf> <idA> <idB> "<merged>" consolidate two entries into one
@@ -290,6 +290,11 @@ export async function runNbCli(
         meta.entries = r.id ? [r.id] : [];
         meta.outcome = r.reason === 'added' ? 'accepted' : r.reason === 'duplicate' ? 'dedup-blocked' : r.reason;
         if (r.collidedId) meta.collided = r.collidedId;
+        // An accepted add that resembled an existing entry records that entry id
+        // in the same `collided` column; `outcome` stays `accepted`, so the pair
+        // (outcome=accepted ∧ collided≠'') is the measurable near-duplicate /
+        // paraphrase-miss signal, distinct from a hard `dedup-blocked`.
+        else if (r.nearId) meta.collided = r.nearId;
         if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
         // `add` has no seeded enum yet (free text only): a `--note` records
         // free text, and a stray `--reason` buckets to `other` so its vocabulary
@@ -305,13 +310,23 @@ export async function runNbCli(
           // still emitting its `reason`, so a supervisor sees why it failed.
           process.stdout.write(JSON.stringify(r) + '\n');
           if (r.reason === 'too-long') return 1;
-        } else if (r.reason === 'duplicate') process.stdout.write(`skipped (near-duplicate already present) — ${r.size} lines\n`);
+        } else if (r.reason === 'duplicate') process.stdout.write(`skipped (exact duplicate already present) — ${r.size} lines\n`);
         else if (r.reason === 'empty') process.stdout.write('skipped (empty lesson)\n');
         else if (r.reason === 'too-long') throw new Error(`lesson too long (${r.length} chars > ${maxChars()} max). Rewrite it shorter as ONE complete line and retry — it was NOT truncated or stored.`);
         else {
           process.stdout.write(`added — ${r.size} lines`);
           if (r.evicted) process.stdout.write(` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text})`);
           process.stdout.write('\n');
+          // Non-blocking near-duplicate advisory: the lesson WAS stored (stdout
+          // above), and this hint goes to stderr so stdout stays pipe-clean. It
+          // surfaces the resembling lesson at the moment of re-derivation, so the
+          // agent can consolidate if it is the same lesson reworded.
+          if (r.nearId) {
+            process.stderr.write(
+              `note: resembles ${r.nearId} "${r.nearText}" — if that is the same lesson reworded, ` +
+                `consolidate with: nb merge ${shelf} ${r.nearId} ${r.id} "<combined>"\n`,
+            );
+          }
         }
         break;
       }

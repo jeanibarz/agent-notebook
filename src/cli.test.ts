@@ -857,6 +857,36 @@ describe('runNbCli', () => {
       expect(dupRow.collided).toBe(entryId('run lint before done'));
     });
 
+    test('a resembling add still stores the lesson, warns on stderr, and logs the accepted row with the near-match id (FR-ADD-008)', async () => {
+      process.env.NB_NEAR_DUP = '0.4';
+      await run(['add', 'patcher', 'run lint before claiming done']);
+      const nearId = entryId('run lint before claiming done');
+      const r = await run(['add', 'patcher', 'run lint before claiming complete']);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('added —'); // the lesson WAS stored (stdout, pipe-clean)
+      expect(r.err).toContain('resembles'); // the advisory went to stderr
+      expect(r.err).toContain(nearId);
+      expect(r.err).toContain('nb merge');
+      // The accepted row carries the resemblance as the measurable near-dup
+      // signal — read it NOW, before any later command appends its own row.
+      const row = parseUsage(dir).at(-1)!;
+      expect(row.outcome).toBe('accepted');
+      expect(row.collided).toBe(nearId);
+      // Both lessons are kept — the advisory never blocks.
+      expect((await run(['show', 'patcher'])).out).toContain('run lint before claiming complete');
+      delete process.env.NB_NEAR_DUP;
+    });
+
+    test('a resembling add --json carries nearId; a dissimilar add does not warn', async () => {
+      process.env.NB_NEAR_DUP = '0.4';
+      await run(['add', 'patcher', 'run lint before claiming done']);
+      const j = await run(['add', 'patcher', 'run lint before claiming complete', '--json']);
+      expect(JSON.parse(j.out).nearId).toBe(entryId('run lint before claiming done'));
+      const far = await run(['add', 'patcher', 'rotate the TLS certificate yearly']);
+      expect(far.err).not.toContain('resembles');
+      delete process.env.NB_NEAR_DUP;
+    });
+
     test('vote logs the direction and the voted entry id', async () => {
       await run(['add', 'patcher', 'alpha lesson']);
       await run(['vote', 'patcher', 'alpha', '+1']);

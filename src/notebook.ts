@@ -28,6 +28,18 @@ export function maxLines(): number {
 export function maxChars(): number {
   return clampInt(process.env.NB_MAX_CHARS, 200, 20, 2000);
 }
+/**
+ * Trigram-Jaccard similarity at/above which an *accepted* add also emits a
+ * non-blocking near-duplicate advisory (see `similarity`/`addEntry`). It never
+ * blocks an add (DP-5: a fuzzy match must never cause a silent loss); a lower
+ * value surfaces more "did you mean to merge?" hints, and `0` disables the
+ * advisory entirely. The default is a deliberately conservative starting
+ * point — the honest way to tune it is offline from the `merge{duplicate}`
+ * labels the log already records.
+ */
+export function nearThreshold(): number {
+  return clampRate(process.env.NB_NEAR_DUP, 0.5);
+}
 /** The usage log is itself a bounded ring (monitoring can't grow unbounded either). */
 export function usageRing(): number {
   return clampInt(process.env.NB_USAGE_RING, 5000, 100, 100000);
@@ -146,6 +158,34 @@ export function dedupKey(text: string): string {
     .replace(/[^a-z0-9\s]/g, ' ') // punctuation → space, so "shell-safety" == "shell safety"
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Character-trigram Jaccard similarity of two lessons' normal forms, in [0,1].
+ * Deterministic, offline, zero-dependency, sub-millisecond on bounded lessons —
+ * it is NOT embeddings, semantic search, or a learned/vector ranker ([NG-001]):
+ * a cheap lexical overlap used ONLY to raise a *non-blocking* advisory, never to
+ * block, reject, or rank. Trigrams are robust to word reordering and small
+ * morphological changes ("claiming"/"claim"), which the exact-normal-form dedup
+ * key misses.
+ */
+export function similarity(a: string, b: string): number {
+  const ta = trigrams(dedupKey(a));
+  const tb = trigrams(dedupKey(b));
+  // `trigrams` pads its input, so each set holds ≥1 element even for an empty
+  // string; the Jaccard denominator (|A|+|B|−|A∩B| ≥ max(|A|,|B|) ≥ 1) is thus
+  // never zero and needs no guard.
+  let inter = 0;
+  for (const g of ta) if (tb.has(g)) inter++;
+  return inter / (ta.size + tb.size - inter);
+}
+
+/** The set of character trigrams of `s`, padded so boundary characters still form trigrams. */
+function trigrams(s: string): Set<string> {
+  const out = new Set<string>();
+  const t = `  ${s} `;
+  for (let i = 0; i + 3 <= t.length; i++) out.add(t.slice(i, i + 3));
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +518,10 @@ export interface AddResult {
   id?: string;
   /** For 'duplicate': the id of the existing entry that blocked the add (the colliding entry). */
   collidedId?: string;
+  /** For an *accepted* add that closely resembles (but is not an exact-normal-form duplicate of) an existing entry: that entry's id. The add still succeeds — this is a non-blocking advisory, not a block. Absent when nothing was near. */
+  nearId?: string;
+  /** The text of the `nearId` entry, so the caller can show it in the advisory. */
+  nearText?: string;
   /** For merge: the ids of the two source entries consumed into the merged one. */
   sources?: [string, string];
 }
@@ -498,13 +542,44 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     if (collider) {
       return { added: false, reason: 'duplicate', evicted: null, size: entries.length, id, collidedId: entryId(collider.text) };
     }
+    // Not an exact-normal-form duplicate (which would have hard-blocked above),
+    // but it may still closely *resemble* an existing entry — a paraphrase the
+    // literal dedup key cannot catch. Find the most similar one at/above the
+    // threshold and attach it so the CLI can raise a NON-blocking advisory. The
+    // add proceeds either way (DP-5: a fuzzy match must never cause a silent
+    // loss). This also leaves a measurable signal: an accepted add that carried
+    // a near-match is a candidate paraphrase-miss.
+    const thr = nearThreshold();
+    let near: Entry | null = null;
+    if (thr > 0) {
+      // `thr === 0` disables the advisory (otherwise every add would "resemble"
+      // something). The threshold is inclusive (`s >= thr`); among entries that
+      // clear it the most similar wins, and a tie resolves to the FIRST in
+      // storage order (`s > nearSim`, seeded below threshold) — the earliest,
+      // more-established lesson, deterministically.
+      let nearSim = -1;
+      for (const e of entries) {
+        const s = similarity(text, e.text);
+        if (s >= thr && s > nearSim) {
+          near = e;
+          nearSim = s;
+        }
+      }
+    }
     const newEntry: Entry = { score: 1, text };
     entries.push(newEntry); // newcomer lands at the fresh end — storage is recency order
     // Newcomer is protected: a full notebook admits it, ages its stalest line,
     // and evicts the lowest-scored one (never the newcomer). See enforceCap.
     const { kept, evicted } = enforceCap(entries, 1);
     writeEntries(dir, shelf, kept);
-    return { added: true, reason: 'added', evicted: evicted[0] ?? null, size: kept.length, id };
+    return {
+      added: true,
+      reason: 'added',
+      evicted: evicted[0] ?? null,
+      size: kept.length,
+      id,
+      ...(near ? { nearId: entryId(near.text), nearText: near.text } : {}),
+    };
   });
 }
 
