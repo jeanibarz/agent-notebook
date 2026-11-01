@@ -49,6 +49,7 @@ import {
   getDescription,
   getMetaValue,
   isMetaLine,
+  isValidWindow,
   listNotebooks,
   listRoles,
   listShelves,
@@ -59,6 +60,7 @@ import {
   move,
   normalizeReason,
   parseUsage,
+  parseWindowMs,
   readEntries,
   readMetaLines,
   remove,
@@ -2669,5 +2671,67 @@ describe('shelf terminology (role kept as a deprecated alias)', () => {
     const rep = stats(dir, { now: Date.now() });
     expect(rep.notebooks[0].shelf).toBe(rep.notebooks[0].role);
     expect(rep.notebookTotals.shelves).toBe(rep.notebookTotals.roles);
+  });
+});
+
+// RFC 0118 — direct, behavioral unit tests for the exported window helpers.
+// The CLI `--since` path (src/cli.test.ts) only asserts the rendered window
+// label, so each multiplier, both default-fallback branches, and both sides of
+// `isValidWindow` are otherwise unpinned. Assertions are input→output only, to
+// stay decoupled from the shared WINDOW_RE and the internal ms constants.
+describe('window helpers (parseWindowMs / isValidWindow)', () => {
+  const DAY_MS = 24 * 3600_000;
+
+  describe('parseWindowMs', () => {
+    test.each([
+      ['7d', 604_800_000], // d multiplier (86_400_000)
+      ['12h', 43_200_000], // h multiplier (3_600_000)
+      ['30m', 1_800_000], // m multiplier (60_000)
+    ])('%s parses to %d ms', (raw, expected) => {
+      expect(parseWindowMs(raw)).toBe(expected);
+    });
+
+    test('falsy input falls back to the 7-day default', () => {
+      // Pins the `if (!raw)` short-circuit branch specifically.
+      expect(parseWindowMs(undefined)).toBe(7 * DAY_MS);
+      expect(parseWindowMs('')).toBe(7 * DAY_MS);
+    });
+
+    test('an unrecognized window falls back to the 7-day default', () => {
+      // `'7days'` matches no WINDOW_RE unit — pins the `if (!m)` branch, which
+      // is a different return from the falsy branch above.
+      expect(parseWindowMs('7days')).toBe(7 * DAY_MS);
+      expect(parseWindowMs('abc')).toBe(7 * DAY_MS);
+    });
+
+    test('surrounding whitespace is trimmed before parsing', () => {
+      expect(parseWindowMs('  12h  ')).toBe(43_200_000);
+    });
+  });
+
+  describe('isValidWindow', () => {
+    test.each(['7d', '12h', '30m', ' 7d '])('accepts %s', (raw) => {
+      expect(isValidWindow(raw)).toBe(true);
+    });
+
+    test.each([
+      ['7days', 'a plausible mistype the --since guard exists for'],
+      ['', 'empty string'],
+      ['abc', 'no digit/unit'],
+      ['7', 'digit without a unit'],
+    ])('rejects %s (%s)', (raw) => {
+      expect(isValidWindow(raw)).toBe(false);
+    });
+
+    test('rejects undefined', () => {
+      expect(isValidWindow(undefined)).toBe(false);
+    });
+
+    test('the 7d / 7days split the CLI warning depends on holds', () => {
+      // The load-bearing pair: the guard must accept the real window and reject
+      // the mistype that parseWindowMs would otherwise silently coerce to 7d.
+      expect(isValidWindow('7d')).toBe(true);
+      expect(isValidWindow('7days')).toBe(false);
+    });
   });
 });
