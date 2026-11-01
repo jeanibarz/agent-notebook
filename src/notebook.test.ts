@@ -149,6 +149,33 @@ describe('near-duplicate advisory (FR-ADD-008)', () => {
     const s = similarity('run lint before claiming done', 'lint before claiming complete');
     expect(s).toBeGreaterThan(0.3);
     expect(s).toBeLessThan(1);
+    // Empty / punctuation-only normal forms stay finite in [0,1] (no guard, no NaN).
+    expect(similarity('', '')).toBe(1);
+    const e = similarity('', 'abc');
+    expect(e).toBeGreaterThanOrEqual(0);
+    expect(e).toBeLessThanOrEqual(1);
+  });
+
+  test('NB_NEAR_DUP=0 disables the advisory entirely (no spurious near-match on every add)', async () => {
+    process.env.NB_NEAR_DUP = '0';
+    await addEntry(dir, 'c', 'run lint before claiming done');
+    const r = await addEntry(dir, 'c', 'run lint before claiming complete');
+    expect(r.added).toBe(true);
+    expect(r.nearId).toBeUndefined();
+    delete process.env.NB_NEAR_DUP;
+  });
+
+  test('ties resolve to the earliest-stored entry (first-wins)', async () => {
+    process.env.NB_NEAR_DUP = '0.3';
+    // Two existing entries exactly equidistant from the candidate — their
+    // differing suffixes share no trigrams with it and are the same length, so
+    // similarity ties (0.85 each). Added oldest-first; the advisory names the FIRST.
+    await addEntry(dir, 'c', 'always rotate the token qqqqq');
+    await addEntry(dir, 'c', 'always rotate the token wwwww');
+    const r = await addEntry(dir, 'c', 'always rotate the token');
+    expect(r.added).toBe(true);
+    expect(r.nearId).toBe(entryId('always rotate the token qqqqq')); // earliest wins
+    delete process.env.NB_NEAR_DUP;
   });
 
   test('a resembling (non-exact) lesson is STILL stored and carries a near-match id — it never blocks', async () => {

@@ -32,9 +32,10 @@ export function maxChars(): number {
  * Trigram-Jaccard similarity at/above which an *accepted* add also emits a
  * non-blocking near-duplicate advisory (see `similarity`/`addEntry`). It never
  * blocks an add (DP-5: a fuzzy match must never cause a silent loss); a lower
- * value surfaces more "did you mean to merge?" hints. The default is a
- * deliberately conservative starting point — the honest way to tune it is
- * offline from the `merge{duplicate}` labels the log already records.
+ * value surfaces more "did you mean to merge?" hints, and `0` disables the
+ * advisory entirely. The default is a deliberately conservative starting
+ * point — the honest way to tune it is offline from the `merge{duplicate}`
+ * labels the log already records.
  */
 export function nearThreshold(): number {
   return clampRate(process.env.NB_NEAR_DUP, 0.5);
@@ -171,7 +172,9 @@ export function dedupKey(text: string): string {
 export function similarity(a: string, b: string): number {
   const ta = trigrams(dedupKey(a));
   const tb = trigrams(dedupKey(b));
-  if (ta.size === 0 || tb.size === 0) return ta.size === tb.size ? 1 : 0;
+  // `trigrams` pads its input, so each set holds ≥1 element even for an empty
+  // string; the Jaccard denominator (|A|+|B|−|A∩B| ≥ max(|A|,|B|) ≥ 1) is thus
+  // never zero and needs no guard.
   let inter = 0;
   for (const g of ta) if (tb.has(g)) inter++;
   return inter / (ta.size + tb.size - inter);
@@ -548,12 +551,19 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     // a near-match is a candidate paraphrase-miss.
     const thr = nearThreshold();
     let near: Entry | null = null;
-    let nearSim = thr;
-    for (const e of entries) {
-      const s = similarity(text, e.text);
-      if (s >= nearSim) {
-        near = e;
-        nearSim = s;
+    if (thr > 0) {
+      // `thr === 0` disables the advisory (otherwise every add would "resemble"
+      // something). The threshold is inclusive (`s >= thr`); among entries that
+      // clear it the most similar wins, and a tie resolves to the FIRST in
+      // storage order (`s > nearSim`, seeded below threshold) — the earliest,
+      // more-established lesson, deterministically.
+      let nearSim = -1;
+      for (const e of entries) {
+        const s = similarity(text, e.text);
+        if (s >= thr && s > nearSim) {
+          near = e;
+          nearSim = s;
+        }
       }
     }
     const newEntry: Entry = { score: 1, text };

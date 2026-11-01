@@ -227,9 +227,10 @@ library `addEntry` or a non-dash quoted argument. *(See [DP-5](#dp-5).)*
 <a id="fr-add-008"></a>
 **FR-ADD-008 (Should).** An accepted add whose lesson is *not* an exact-normal-form
 duplicate ([FR-ADD-003](#fr-add-003)) but whose trigram-Jaccard `similarity` to an
-existing entry is ≥ the near-duplicate threshold (`NB_NEAR_DUP`, default `0.5`) SHALL
-still be stored, and SHALL additionally surface a **non-blocking advisory** that names
-the resembling entry and suggests a `merge`. The advisory SHALL NOT block, reject,
+existing entry is ≥ the near-duplicate threshold (`NB_NEAR_DUP`, default `0.5`;
+`0` disables the advisory) SHALL still be stored, and SHALL additionally surface a
+**non-blocking advisory** that names the resembling entry (the most similar; ties
+resolved to the earliest in storage order) and suggests a `merge`. The advisory SHALL NOT block, reject,
 reorder, or otherwise alter the add — a fuzzy match must never cause a silent loss
 ([DP-5](#dp-5)). The resembling entry's id SHALL be recorded in the usage log's
 `collided` field on the (still `accepted`) row, so an accept-with-resemblance is a
