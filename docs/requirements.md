@@ -685,6 +685,37 @@ already stored); precision-miss is its counterweight so "surface everything" is 
 *Proven by:* `notebook.test.ts` → `describe('surfacing metrics (issue #81)')` and
 `cli.test.ts` → the surfacing-metrics table/`--json` tests.
 
+<a id="fr-stats-005"></a>
+**FR-STATS-005 (Should).** `stats` SHALL additionally report an **ops-over-time
+activity sparkline** — the windowed, shelf-scoped usage rows bucketed into
+**rolling 24-hour windows counting back from `now`** (not calendar days, so the
+read is timezone-free and deterministic given `now`) — surfaced both as one human
+line under the `nb usage — …` header and as `StatsReport.activity` (a `number[]`,
+**oldest bucket first**) in `--json`. The bucket count SHALL be
+`max(1, ceil(windowMs / 86_400_000))` (a `7d` window → 7 buckets, `12h` → 1), and
+every scoped in-window row SHALL land in exactly one bucket so that
+**`sum(activity) === totalCalls`** — the rendered `(<window>, N ops)` label is
+exactly that scoped total. Each bucket count SHALL be mapped to one of the eight
+Unicode block glyphs `▁▂▃▄▅▆▇█` by **zero-based** scaling (not min–max): a silent
+(0-op) bucket SHALL read as the floor glyph `▁` and the window's busiest bucket as
+the full block `█`, so "went quiet" is legible (the testable identity is
+`sparkline([0,1,2,3,4,5,6,7]) === '▁▂▃▄▅▆▇█'`; an empty series renders `''`). An
+empty or single-day window SHALL render without crashing. Scope follows the rest
+of the report, and the feature SHALL add no runtime dependency ([DP-7](#dp-7)) and
+no field to a lesson ([NG-004](#ng-004)) — it is a pure read of the usage ring.
+See [RFC 0106](./rfcs/0106-stats-activity-sparkline.md) for the design and the
+zero-based-vs-min–max rationale.
+**Rationale:** `nb stats` otherwise shows activity per command but nothing *over
+time*; "when did this store go quiet?" is a core observability question. Rolling-24h
+bucketing keeps the read timezone-free and unit-testable with a fixed `now`, and
+zero-based scaling anchors the floor glyph to zero (the origin) rather than to the
+window's busiest-relative minimum, so a fully silent window reads as the floor `▁`
+instead of being stretched to look busy ([DP-5](#dp-5)). Derived entirely from
+behaviour the agent already performs.
+*Proven by:* `notebook.test.ts` → `describe('sparkline (issue #106)')` and
+`describe('activityByDay (issue #106)')`, and `cli.test.ts` → the human
+activity-line test and the `stats --json … activity` test (both issue #106).
+
 ### 4.13 Notebook descriptions & metadata
 
 <a id="fr-desc-001"></a>
