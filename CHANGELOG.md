@@ -10,6 +10,19 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **Serendipity surfacing provenance (`serendipity` in `nb stats`, FR-STATS-004 / #114).**
+  `serendipity` was defined (`relevant ∧ arrived-unbidden`) but not measurable: the log carried
+  no surfacing provenance, so an upvote could not be told apart as push- vs pull-delivered.
+  `nb search` now logs the entry ids it surfaced (reusing the `entries` column — no new column),
+  so within a session an upvote on a searched entry reads back as a *pull* and one no search
+  returned as a candidate *push*. `nb stats` reports `serendipity` = push-delivered upvotes ÷
+  `upvotes` (both exposed in `--json`), beside recall-miss/precision-miss. Pull evidence is read
+  deployment-wide, so a shelf-scoped report still sees the cross-notebook search. It is published
+  as a two-sided inferred **proxy, not a bound** (a `show`-pull/recall inflates it; a same-session
+  search match deflates it) and the human line flags it with a leading `~`. The positive push
+  record — tagging the session-start injection hook's own read — is a cross-repo follow-up under
+  the #73 injection contract (see RFC 0114). The `[loop]` anomaly still treats a `search` as
+  entry-less, so hammering `search` with varying queries is still flagged.
 - **Non-blocking near-duplicate advisory on `nb add` (FR-ADD-008).** The exact-normal-form
   dedup key misses paraphrases (`"run lint before done"` vs `"lint before claiming complete"`),
   so a re-derived lesson is silently re-stored and the recall-miss goes uncounted. An accepted

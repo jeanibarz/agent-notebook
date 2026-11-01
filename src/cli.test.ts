@@ -364,8 +364,50 @@ describe('runNbCli', () => {
     expect(s.out).toContain('coverage');
     expect(s.out).toContain('recall-miss');
     expect(s.out).toContain('precision-miss');
+    expect(s.out).toContain('serendipity'); // issue #114
     // 1 accepted + 1 dedup-blocked ⇒ coverage .5 (HIGH) × recall .5 (HIGH) ⇒ churny.
     expect(s.out).toContain('readout: churny');
+  });
+
+  test('serendipity: a bare upvote is push-delivered (1.0), a searched-then-voted upvote is a pull (0.0) — issue #114', async () => {
+    process.env.NB_SESSION = 'push-sess';
+    await run(['add', 'patcher', 'bounded voted plain text memory']); // accepted
+    await run(['vote', 'patcher', 'bounded', '+1']); // upvote, NO prior search → push
+    const pushJson = JSON.parse((await run(['stats', 'patcher', '--json'])).out);
+    expect(pushJson.surfacing.upvotes).toBe(1);
+    expect(pushJson.surfacing.serendipity).toBe(1); // arrived unbidden
+    // The human table flags it as an approximate proxy, not a bound.
+    const table = await run(['stats', 'patcher']);
+    expect(table.out).toContain('serendipity');
+    expect(table.out).toContain('arrived unbidden');
+    expect(table.out).toMatch(/serendipity\s+~/); // the `~` approximate marker
+
+    // A different session that PULLS the same lesson via `search` first, then
+    // upvotes it: the upvote is a pull, so serendipity is 0 for that session.
+    process.env.NB_SESSION = 'pull-sess';
+    const searched = await run(['search', 'bounded']); // surfaces the entry, logs its id
+    expect(searched.code).toBe(0);
+    await run(['vote', 'patcher', 'bounded', '+1']); // upvote AFTER the search → pull
+    const pullJson = JSON.parse((await run(['stats', 'patcher', '--json'])).out);
+    // Deployment-wide pull evidence: the search row is shelf `-` yet the scoped
+    // `nb stats patcher` still classifies the pull-session upvote correctly.
+    expect(pullJson.surfacing.upvotes).toBe(2); // both sessions' upvotes counted
+    expect(pullJson.surfacing.serendipity).toBe(0.5); // 1 push of 2 upvotes
+  });
+
+  test('nb search records the surfaced entry ids in the usage row (issue #114 provenance)', async () => {
+    process.env.NB_SESSION = 's1';
+    await run(['add', 'patcher', 'retry with exponential backoff']); // accepted
+    await run(['search', 'retry']);
+    const searchRow = parseUsage(dir).at(-1)!;
+    expect(searchRow.command).toBe('search');
+    expect(searchRow.outcome).toBe('match');
+    expect(searchRow.entries).toEqual([entryId('retry with exponential backoff')]);
+    // A no-match search stays entry-less (keeps the failed-search gap-sensor intact).
+    await run(['search', 'nonexistentterm']);
+    const noMatch = parseUsage(dir).at(-1)!;
+    expect(noMatch.outcome).toBe('no-match');
+    expect(noMatch.entries).toEqual([]);
   });
 
   test('stats --json carries the surfacing metrics object (issue #81)', async () => {
@@ -383,6 +425,8 @@ describe('runNbCli', () => {
       recallMiss: 0.5,
       votesActedOn: 1,
       precisionMiss: 0, // one upvote, zero downvotes
+      upvotes: 1, // the single upvote (issue #114 — serendipity denominator)
+      serendipity: 1, // that upvote had no same-session search → push-delivered
       readout: 'churny',
       engagementDiagnosis: null, // engaged ⇒ no zero-engagement breakdown (issue #105)
     });

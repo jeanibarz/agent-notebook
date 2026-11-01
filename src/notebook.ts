@@ -1163,9 +1163,9 @@ export interface UsageRow {
   ms: number;
   /** Session id (from `NB_SESSION`) the call ran under; `''` when unset. */
   session: string;
-  /** Stable id(s) of the entry/entries the call touched; `[]` when none. */
+  /** Stable id(s) of the entry/entries the call touched — or, for a `search`, the ids it SURFACED (issue #114, for serendipity provenance); `[]` when none. */
   entries: string[];
-  /** Outcome token: `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` (add), `up`/`down` (vote), `removed` (rm), `merged` (merge), `split` (split), `moved`/`move-blocked` (move; `move-blocked` = the target already held a near-duplicate), `match`/`no-match`/`no-terms` (search, with the query in `note`; `no-terms` = the query had no searchable tokens, so it is NOT a coverage gap); `''` otherwise. */
+  /** Outcome token: `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` (add), `up`/`down` (vote), `removed` (rm), `merged` (merge), `split` (split), `moved`/`move-blocked` (move; `move-blocked` = the target already held a near-duplicate), `match`/`no-match`/`no-terms` (search, with the query in `note` and, for a `match`, the surfaced ids in `entries` — issue #114; `no-terms` = the query had no searchable tokens, so it is NOT a coverage gap); `''` otherwise. */
   outcome: string;
   /** For a `dedup-blocked` add: the id of the existing entry that blocked it; `''` otherwise. */
   collided: string;
@@ -1187,7 +1187,7 @@ export interface UsageRow {
 export interface UsageMeta {
   /** Overrides `NB_SESSION`; mainly for tests. Absent → read `process.env.NB_SESSION`. */
   session?: string;
-  /** Stable ids the call touched (added/voted/removed, or merge's sources + result). */
+  /** Stable ids the call touched (added/voted/removed, or merge's sources + result), or the ids a `search` surfaced (issue #114). */
   entries?: string[];
   /** Outcome token (see `UsageRow.outcome`). */
   outcome?: string;
@@ -1461,6 +1461,29 @@ export interface SurfacingMetrics {
   votesActedOn: number;
   /** **Surfacing precision-miss** — downvote rate on *pushed* lessons = downvotes ÷ `votesActedOn`. Read beside `recallMiss` so "surface everything" cannot look free. Every delivered lesson is currently treated as pushed (per [NG-007]); now that `nb search` exists, narrowing this to non-search-delivered lessons is a possible future refinement, not yet implemented. `null` when `votesActedOn` is 0. */
   precisionMiss: number | null;
+  /** Upvotes (`up`) on pushed lessons in engaged sessions — the denominator for `serendipity`. A SUBSET of `votesActedOn` (which also counts downvotes), so the serendipity sample size cannot be recovered from `votesActedOn`; it is exposed so a reader can tell `serendipity: 1.0` over one upvote from the same ratio over fifty ([DP-5]). */
+  upvotes: number;
+  /**
+   * **Serendipity** (issue #114) — the positive goal of [DP-8]: of the upvotes in
+   * engaged sessions, the share on lessons that **arrived unbidden** = push-delivered
+   * upvotes ÷ `upvotes`. "Push-delivered" is inferred as *the upvoted entry was NOT
+   * returned by any `search` in the same session* (search rows carry their surfaced
+   * ids since this issue). Read beside `recallMiss`/`precisionMiss`, its two failure
+   * modes. `null` when `upvotes` is 0.
+   *
+   * HONEST LIMIT — this is a two-sided **proxy, NOT a bound** ([DP-5]): it both
+   * over-counts push (an agent-chosen `show`-pull or in-session recall is
+   * indistinguishable from an injection — those stay in the numerator) and
+   * under-counts it (a pushed lesson that *also* surfaced in a same-session search
+   * is scored a pull). The biases point opposite ways and are of unknown relative
+   * size, and ring churn (an evicted search row, or an `entryId` changed by a
+   * merge/split/reword between search and vote) silently drops pull evidence. So the
+   * number is an approximate direction-of-travel indicator, never read as
+   * "true serendipity ≤ x". The clean one-sided signal waits on a positive push
+   * record from the session-start injection hook (RFC 0114 §Design decision; the
+   * cross-repo #73 injection contract).
+   */
+  serendipity: number | null;
   /** The coverage×surfacing 2×2 readout — `healthy` / `surfacing-failure` / `coverage-building` / `churny` — a heuristic hint, not a verdict. `null` when there is not enough data (no add attempts) to place it. */
   readout: 'healthy' | 'surfacing-failure' | 'coverage-building' | 'churny' | null;
   /**
@@ -1746,7 +1769,12 @@ export function stats(
   const LOOP_WINDOW_MS = clampInt(process.env.NB_LOOP_WINDOW_S, 120, 5, 86_400) * 1000;
   const byShelfCmd = new Map<string, number[]>();
   for (const r of recent) {
-    const target = r.entries.slice().sort().join(',');
+    // A `search` row carries the surfaced entry ids since issue #114 (for the
+    // serendipity provenance join), but the loop detector must keep treating it
+    // as entry-less: searches are grouped by shelf+command so a stuck agent
+    // hammering `search` with VARYING queries still trips the loop, exactly as
+    // before #114. Only the serendipity computation reads a search row's entries.
+    const target = r.command === 'search' ? '' : r.entries.slice().sort().join(',');
     const k = `${r.role}\u0000${r.command}\u0000${target}`;
     const arr = byShelfCmd.get(k) ?? [];
     arr.push(Date.parse(r.ts));
@@ -1959,11 +1987,29 @@ export function stats(
       engaged.add(r.session);
     }
   }
+  // Serendipity provenance (issue #114): which entry ids each session PULLED via
+  // `search`. Built from the deployment-wide `recentAll`, NOT the (possibly
+  // shelf-scoped) `recent`, because a `search` row is logged under shelf `-` and
+  // would be filtered out of a scoped `recent` — so a scoped `nb stats <shelf>`
+  // could not see the cross-notebook search that marks one of its upvotes a pull.
+  // (Same deployment-wide-reads precedent as the engagement diagnosis of #105.)
+  const searchedBySession = new Map<string, Set<string>>();
+  for (const r of recentAll) {
+    if (r.command !== 'search' || r.session === '' || r.entries.length === 0) continue;
+    let set = searchedBySession.get(r.session);
+    if (!set) {
+      set = new Set<string>();
+      searchedBySession.set(r.session, set);
+    }
+    for (const id of r.entries) set.add(id);
+  }
+
   let accepted = 0;
   let dedupBlocked = 0;
   let rejectedFull = 0;
   let up = 0;
   let down = 0;
+  let pushUp = 0; // upvotes with NO same-session search-pull evidence (serendipity numerator, #114)
   for (const r of recent) {
     if (r.session === '' || !engaged.has(r.session)) continue;
     if (r.command === 'add') {
@@ -1971,8 +2017,13 @@ export function stats(
       else if (r.outcome === 'dedup-blocked') dedupBlocked++;
       else if (r.outcome === 'rejected-full') rejectedFull++;
     } else if (r.command === 'vote') {
-      if (r.outcome === 'up') up++;
-      else if (r.outcome === 'down') down++;
+      if (r.outcome === 'up') {
+        up++;
+        // Pushed (candidate serendipity) unless a search in THIS session returned
+        // this entry id — then the agent reached it by search, i.e. a pull.
+        const pulled = searchedBySession.get(r.session)?.has(r.entries[0] ?? '') ?? false;
+        if (!pulled) pushUp++;
+      } else if (r.outcome === 'down') down++;
     }
   }
   const addAttempts = accepted + dedupBlocked + rejectedFull;
@@ -1981,6 +2032,9 @@ export function stats(
   const coverage = addAttempts ? accepted / addAttempts : null;
   const recallMiss = addAttempts ? dedupBlocked / addAttempts : null;
   const precisionMiss = votesActedOn ? down / votesActedOn : null;
+  // Serendipity (issue #114): share of upvotes on push-delivered (= not
+  // search-pulled) lessons. A two-sided proxy, not a bound — see `SurfacingMetrics.serendipity`.
+  const serendipity = up ? pushUp / up : null;
   const coverageHi = clampRate(process.env.NB_COVERAGE_HI, DEFAULT_COVERAGE_HI);
   const recallMissHi = clampRate(process.env.NB_RECALL_MISS_HI, DEFAULT_RECALL_MISS_HI);
   // The 2×2: novel-adds (coverage) LOW/HIGH × dedup-blocks (recall-miss) LOW/HIGH.
@@ -2044,6 +2098,8 @@ export function stats(
     recallMiss,
     votesActedOn,
     precisionMiss,
+    upvotes: up,
+    serendipity,
     readout,
     engagementDiagnosis,
   };

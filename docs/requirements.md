@@ -631,6 +631,15 @@ no field added to a lesson ([NG-004](#ng-004)):
   `dedup-blocked` adds ÷ `addAttempts`;
 - **precisionMiss** (downvote rate on *pushed* lessons) = downvotes ÷ `votesActedOn`,
   read beside `recallMiss` so chasing recall cannot look free;
+- **serendipity** ([#114](https://github.com/jeanibarz/agent-notebook/issues/114))
+  (share of upvotes on lessons that *arrived unbidden*) = push-delivered upvotes ÷
+  `upvotes`, where an upvote is *push-delivered* iff its entry id was **not** returned
+  by any `search` in the same session (the CLI `search` case logs its surfaced ids —
+  see [FR-SEARCH-002](#fr-search-002)); `upvotes` (= `up` votes in engaged sessions) is
+  reported alongside as its denominator, since `votesActedOn` (= `up` + `down`) cannot
+  recover it. The pull evidence is read **deployment-wide** (search rows are logged
+  under shelf `-`, so a shelf-scoped report would otherwise never see the cross-notebook
+  search that marks one of its upvotes a pull);
 - a **readout** placing (coverage, recallMiss) on the coverage×surfacing 2×2 —
   `healthy` / `surfacing-failure` / `coverage-building` / `churny` (a heuristic hint,
   not a verdict), with the LOW/HIGH cutoffs `NB_COVERAGE_HI` (default 0.5) and
@@ -648,8 +657,26 @@ no attempts within them) SHALL be `null`, never a misleading `0` ([DP-5](#dp-5))
 human table shows `null` as `—`. Every delivered lesson is currently treated as *pushed*
 for `precisionMiss` (per [NG-007](#ng-007)); now that `nb search`
 ([FR-SEARCH-001](#fr-search-001)) exists, narrowing this to *non-search-delivered* lessons
-is a possible future refinement, not yet implemented. The field is additive — the rest of the report
+is a possible future refinement, not yet implemented. `serendipity` applies exactly that
+narrowing to the *upvote* side. The field is additive — the rest of the report
 is unchanged. `--json` SHALL emit it inside the `StatsReport`.
+
+`serendipity` SHALL be published as a two-sided **proxy, never a one-sided bound**
+([DP-5](#dp-5)): it *over*-counts push (an agent-chosen `show`-pull or in-session recall
+is indistinguishable from an injection, so it stays in the numerator) **and** *under*-counts
+it (a pushed lesson that also surfaced in a same-session search is scored a pull). The two
+biases are of unknown relative size, and usage-ring churn (an evicted search row, or an
+`entryId` changed by a merge/split/reword between the search and the vote) silently drops
+pull evidence — so the rate is an approximate direction-of-travel indicator, and the
+docstring, the human `nb stats` line (a leading `~`), and the design rationale SHALL label
+it as such. A **positive** record of a push (the clean, one-sided signal) requires tagging
+the session-start injection hook's own read with a provenance marker — an attribute on work
+the hook already performs, not a synthetic write; it lives in the kookr runtime hook, is
+tracked under the #73 session-start injection contract (cross-repo), and is NOT in scope
+here (see RFC 0114). Because serendipity joins `search` provenance across notebooks by
+session id, it assumes `NB_SESSION` is a per-task id not shared by concurrent tasks (the
+same assumption as every session-scoped signal; blank sessions are excluded) — an
+epic-#73 / deployment contract, not introduced here.
 **Rationale:** The free signals ([FR-STATS-003](#fr-stats-003)) point at *which* entry
 or description needs attention; these named rates say whether the notebook is covering
 and surfacing at all. The recall-miss rate is the clearest failure (re-learning what you
@@ -722,9 +749,15 @@ and `cli.test.ts` → `describe('nb search …')`.
 
 <a id="fr-search-002"></a>
 **FR-SEARCH-002 (Should).** The CLI SHALL log each `search` to the usage ring
-([FR-USAGE-002](#fr-usage-002)) with outcome `match` or `no-match` and the query in the
-`note` field (reusing existing columns — no new column), under `shelf` `-` since it spans
-notebooks. `stats` SHALL then derive a **`failed-search`** `DiagnosticSignal`
+([FR-USAGE-002](#fr-usage-002)) with outcome `match` or `no-match`, the query in the
+`note` field, and — since [#114](https://github.com/jeanibarz/agent-notebook/issues/114)
+— the **entry ids it surfaced** in the `entries` field (all reusing existing columns — no
+new column), under `shelf` `-` since it spans notebooks. The surfaced ids give an upvote
+its *pull* provenance for `serendipity` ([FR-STATS-004](#fr-stats-004)); a `no-match`
+search has no hits, so its `entries` stays empty and the `failed-search → add` gap-sensor
+below is unaffected. The `loop` anomaly ([FR-STATS-001](#fr-stats-001)) SHALL continue to
+treat a `search` row as entry-less so repeated varying-query searches still group and trip
+it as before. `stats` SHALL then derive a **`failed-search`** `DiagnosticSignal`
 ([FR-STATS-003](#fr-stats-003)): within one session, a `no-match` search followed
 by an `accepted` `add` SHALL be flagged as a **coverage gap** the notebook did not hold,
 labelled by the agent's own query (one signal per session + added-entry; a blank session

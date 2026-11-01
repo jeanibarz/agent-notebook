@@ -165,7 +165,9 @@ notes:
   - \`nb stats\` also reports the named *surfacing metrics* (as \`surfacing\` in the StatsReport):
     coverage (novel-add rate), recall-miss (dedup-block rate — the headline alarm: a stored lesson
     was re-derived, not surfaced), precision-miss (downvote rate on pushed lessons, read beside
-    recall so "surface everything" can't look free), and a coverage×surfacing readout
+    recall so "surface everything" can't look free), serendipity (share of upvotes on lessons that
+    arrived unbidden — not pulled by a same-session search; an approximate proxy, not a bound — #114),
+    and a coverage×surfacing readout
     (healthy / surfacing-failure / coverage-building / churny). Every rate is conditioned on add/vote
     *attempts* (robust to a lazy agent) and gated on *engagement* — only sessions with a vote are
     scored, so an uninstrumented session isn't mistaken for "healthy quiet". A rate is \`null\` (shown
@@ -477,6 +479,15 @@ export async function runNbCli(
         // (the `failed-search` signal keys on `no-match`) — DP-5, never mislead.
         meta.outcome = result.terms.length === 0 ? 'no-terms' : result.groups.length > 0 ? 'match' : 'no-match';
         meta.note = query;
+        // Record WHICH entry ids this search surfaced (issue #114 — surfacing
+        // provenance). Reuses the existing `entries` column (no new column), so a
+        // later upvote on one of these ids in the same session reads back as a
+        // PULL (the agent reached it by search), distinguishing it from a PUSH
+        // (arrived unbidden) for the serendipity metric. A `no-match` has no hits,
+        // so `entries` stays empty and the `failed-search → add` gap-sensor is
+        // untouched. The loop anomaly detector deliberately keeps treating a
+        // `search` as entry-less (see `stats()`), so this does not change it.
+        meta.entries = result.groups.flatMap((g) => g.hits.map((h) => h.id));
         if (json) {
           process.stdout.write(JSON.stringify(result) + '\n');
         } else {
@@ -821,6 +832,11 @@ function renderStats(dir: string, shelf: string | undefined, windowMs: number | 
     lines.push(`    coverage        ${pct(sf.coverage)}  (${sf.addAttempts ? `${Math.round((sf.coverage ?? 0) * sf.addAttempts)}/${sf.addAttempts} attempts novel` : 'no add attempts'})`);
     lines.push(`    recall-miss     ${pct(sf.recallMiss)}  (${sf.addAttempts ? `${Math.round((sf.recallMiss ?? 0) * sf.addAttempts)}/${sf.addAttempts} re-derived — stored lesson not surfaced; the headline alarm` : 'no add attempts'})`);
     lines.push(`    precision-miss  ${pct(sf.precisionMiss)}  (${sf.votesActedOn ? `${Math.round((sf.precisionMiss ?? 0) * sf.votesActedOn)}/${sf.votesActedOn} downvotes on pushed lessons` : 'no votes'})`);
+    // Serendipity (issue #114): the positive goal — upvotes on lessons that arrived
+    // unbidden. The leading `~` and "approx" flag it as a two-sided PROXY, not a
+    // bound (a show-pull/recall inflates it; a same-session search match deflates
+    // it) — it must never be read as "true serendipity ≤ x". See SurfacingMetrics.
+    lines.push(`    serendipity    ~${pct(sf.serendipity)}  (${sf.upvotes ? `${Math.round((sf.serendipity ?? 0) * sf.upvotes)}/${sf.upvotes} upvotes arrived unbidden — approx; a proxy, not a bound` : 'no upvotes'})`);
     if (sf.readout) lines.push(`    readout: ${sf.readout} — ${READOUT_GLOSS[sf.readout]}`);
   }
   // Notebook inventory (issue #40): make memory pressure visible — a shelf at

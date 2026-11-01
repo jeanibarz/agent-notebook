@@ -1009,6 +1009,24 @@ describe('usage log + stats', () => {
     expect(rep.anomalies.some((a) => a.kind === 'loop' && a.command === 'vote')).toBe(true);
   });
 
+  test('search rows still trip the loop even with DISTINCT surfaced ids (issue #114 regression)', () => {
+    // Since #114 a `search` row carries the ids it surfaced, so varying-query
+    // searches have DISTINCT `entries`. The loop detector must keep treating a
+    // search as entry-less (group by shelf+command) so a stuck agent hammering
+    // `search` with different queries is still flagged — exactly as before #114.
+    process.env.NB_LOOP_N = '5';
+    process.env.NB_LOOP_WINDOW_S = '60';
+    const base = Date.parse('2026-10-23T10:00:00Z');
+    const rows = Array.from(
+      { length: 6 },
+      // shelf `-`, distinct entries (id0,id1,…) AND distinct queries per row.
+      (_, i) => `${new Date(base + i * 2000).toISOString()}\t-\tsearch\tok\t1ms\ts1\tid${i}\tmatch\t\t\t\tquery${i}`,
+    );
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const rep = stats(dir, { now: base + 60_000 });
+    expect(rep.anomalies.some((a) => a.kind === 'loop' && a.command === 'search')).toBe(true);
+  });
+
   test('flags a went-silent anomaly (used historically, silent recently)', () => {
     const now = Date.parse('2026-10-23T10:00:00Z');
     const old = new Date(now - 100 * 3600_000).toISOString(); // 100h ago
@@ -1469,6 +1487,69 @@ describe('surfacing metrics (issue #81)', () => {
     const sf = stats(dir, { now: Date.now(), role: 'alpha' }).surfacing;
     expect(sf.engagedSessions).toBe(1);
     expect(sf.recallMiss).toBe(1); // only alpha's dedup-block counted
+  });
+
+  // Serendipity (issue #114): of the upvotes in engaged sessions, the share on
+  // lessons that arrived unbidden (push), i.e. NOT returned by a `search` in the
+  // same session. A two-sided proxy, published null-when-no-upvotes.
+  test('a push-delivered upvote (no same-session search) counts toward serendipity', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['a1'] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.upvotes).toBe(1);
+    expect(sf.serendipity).toBe(1); // arrived unbidden
+  });
+
+  test('a pull upvote (search returned the id earlier in the session) is excluded from serendipity', () => {
+    // The search row is shelf `-` (spans notebooks) and carries the surfaced id.
+    logUsage(dir, '-', 'search', true, 1, { session: 's1', outcome: 'match', entries: ['a1'], note: 'q' });
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['a1'] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.upvotes).toBe(1);
+    expect(sf.serendipity).toBe(0); // the agent reached it by search → a pull, not serendipity
+  });
+
+  test('mixed: one pulled + one pushed upvote ⇒ serendipity 0.5', () => {
+    logUsage(dir, '-', 'search', true, 1, { session: 's1', outcome: 'match', entries: ['a1'], note: 'q' });
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['a1'] }); // pull
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['a2'] }); // push (never searched)
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.upvotes).toBe(2);
+    expect(sf.serendipity).toBe(0.5);
+  });
+
+  test('a search in a DIFFERENT session does not mark an upvote as pulled', () => {
+    logUsage(dir, '-', 'search', true, 1, { session: 's2', outcome: 'match', entries: ['a1'], note: 'q' });
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['a1'] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.serendipity).toBe(1); // s1 never searched a1 → still a push
+  });
+
+  test('the engagement gate also governs serendipity: a blank-session upvote is excluded', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: '', outcome: 'up', entries: ['a1'] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.engagedSessions).toBe(0);
+    expect(sf.upvotes).toBe(0);
+    expect(sf.serendipity).toBeNull(); // no upvotes in engaged sessions → null, never a misleading 0
+  });
+
+  test('serendipity is null when there are no upvotes (only a downvote engages the session)', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'down', entries: ['a1'] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.engagedSessions).toBe(1); // a downvote engages the session
+    expect(sf.votesActedOn).toBe(1);
+    expect(sf.upvotes).toBe(0);
+    expect(sf.serendipity).toBeNull();
+  });
+
+  test('scoped `nb stats <shelf>` still detects a pull via the deployment-wide (`-`) search row', () => {
+    // The upvote is on `patcher`; the search that pulled it is logged under `-`.
+    // A scoped report filters `recent` to patcher (dropping the `-` search), but
+    // the pull set is read from the deployment-wide rows, so the pull is still seen.
+    logUsage(dir, '-', 'search', true, 1, { session: 's1', outcome: 'match', entries: ['a1'], note: 'q' });
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['a1'] });
+    const sf = stats(dir, { now: Date.now(), shelf: 'patcher' }).surfacing;
+    expect(sf.upvotes).toBe(1);
+    expect(sf.serendipity).toBe(0); // classified as a pull despite the scope
   });
 
   test('a surfacing row older than the window is excluded', () => {
