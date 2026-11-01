@@ -1468,4 +1468,21 @@ describe('shelf terminology (role kept as a deprecated alias)', () => {
     expect(r.out).toContain('nb shelves');
     expect(r.out).not.toContain('<role>');
   });
+
+  test('help states the line cap as 50 (matching maxLines and the README), not the stale 200 (issue #116)', async () => {
+    const r = await run(['--help']);
+    expect(r.out).toContain('at most 50 lines');
+    expect(r.out).not.toContain('at most 200 lines');
+  });
+
+  test('help lists failed-search alongside the other three diagnostic signals (issue #116)', async () => {
+    const r = await run(['--help']);
+    // All four signals `nb stats` emits are documented...
+    for (const kind of ['browse-without-use', 'eviction-while-still-voted', 'vote-reversal', 'failed-search']) {
+      expect(r.out).toContain(kind);
+    }
+    // ...and failed-search is listed in the diagnostic-signals bullet itself, not only in the
+    // `nb search` description where the token already appeared. Pin the specific entry text.
+    expect(r.out).toContain('and failed-search (a search returned nothing');
+  });
 });
