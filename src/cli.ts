@@ -158,10 +158,11 @@ notes:
     extra agent action): browse-without-use (a notebook shown in a session but no entry voted
     that session — the description may over-promise), eviction-while-still-voted (the cap
     evicted an entry whose score was still above the
-    starting +1 — a useful lesson was lost), and
+    starting +1 — a useful lesson was lost),
     vote-reversal (the same entry upvoted in one session and downvoted in another — correct but
-    mis-aimed). They need \`NB_SESSION\` set to attribute calls to a session; \`--json\` includes
-    them as \`signals[]\` in the StatsReport.
+    mis-aimed), and failed-search (a search returned nothing and a lesson was then added in the
+    same session — the coverage gap that search just exposed). They need \`NB_SESSION\` set to
+    attribute calls to a session; \`--json\` includes them as \`signals[]\` in the StatsReport.
   - \`nb stats\` also reports the named *surfacing metrics* (as \`surfacing\` in the StatsReport):
     coverage (novel-add rate), recall-miss (dedup-block rate — the headline alarm: a stored lesson
     was re-derived, not surfaced), precision-miss (downvote rate on pushed lessons, read beside
@@ -176,7 +177,7 @@ notes:
     vague line: \`NB_SESSION\` unset, the retrospective nudge not landing (a notebook was opened but
     never voted), or the SessionStart hook not wired (lessons stored but nothing read them). The
     counts are \`surfacing.engagementDiagnosis\` in \`--json\` (\`null\` once any session is engaged).
-  - a notebook holds at most 200 lines; each lesson is one line of at most 200 chars.
+  - a notebook holds at most 50 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
   - every \`nb show\` line begins with the entry's short stable <id>; pass that id to vote/rm/merge
