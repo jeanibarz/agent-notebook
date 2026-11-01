@@ -99,7 +99,7 @@ question, a distinct signal, and a distinct remedy.
 | **Coverage** | Is needed knowledge *missing* from the notebook? | **novel-add rate** = accepted adds ÷ add attempts | High early (an empty notebook being filled) — expected, not a fault. Orthogonal to surfacing: coverage is about what *exists*. |
 | **Surfacing — recall** | Did a relevant lesson that *exists* fail to reach the agent? | **dedup-block rate** = blocked adds ÷ add attempts; plus `merge{duplicate}` for paraphrase re-derivations | The agent **re-derived something already stored**. Robust to task novelty (a dup is a dup, new task or old) and to agent laziness (a disengaged agent isn't in the denominator). |
 | **Surfacing — precision** | Was what the notebook *pushed* actually wanted? | **downvote rate on pushed, not-searched lessons** | The agent was shown it unbidden and judged it unhelpful. This is the counterweight to "surface everything": chasing recall alone drives precision down. |
-| **Serendipity** | Did we surface a relevant lesson the agent *wouldn't have searched for*? | **upvote on a lesson delivered by push** (injection/organization), not via a targeted search | **relevant ∧ arrived-unbidden.** This is the positive goal of DP-8; recall and precision are its two failure modes. |
+| **Serendipity** | Did we surface a relevant lesson the agent *wouldn't have searched for*? | **upvote on a lesson delivered by push** (injection/organization), *not* via a targeted search — inferred as an upvote whose entry no `search` returned in the same session (issue #114) | **relevant ∧ arrived-unbidden.** This is the positive goal of DP-8; recall and precision are its two failure modes. Measured as a two-sided **proxy**, not a bound (see below). |
 
 ### The one reading that resolves "few adds is ambiguous"
 
@@ -120,6 +120,30 @@ headline recall-miss rate is always read next to the precision-miss rate. A
 healthy notebook keeps **both** low. The dedup-block rate stays the primary
 alarm (re-learning what you already know is the clearest failure), but it is
 one half of a pair.
+
+### Serendipity is measured as an inferred proxy (issue #114)
+
+Serendipity needs **surfacing provenance**: an upvote tells us a lesson was
+*relevant*, but not whether it *arrived unbidden*. The log now records half of
+that provenance — `nb search` logs **which entry ids it returned** (reusing the
+usage-ring `entries` column, no new column, no field on a lesson). So within a
+session an upvote whose entry a search returned is a **pull** (the agent reached
+it by searching); one no search returned is a candidate **push**. `nb stats`
+reports `serendipity` = push-delivered upvotes ÷ `upvotes`, beside recall/precision.
+
+It is deliberately published as a two-sided **proxy, not a bound** (DP-5). It
+*over*-counts push — an agent-chosen `show`-pull or in-session recall is
+indistinguishable from an injection, so those stay in the numerator — and
+*under*-counts it — a pushed lesson that *also* surfaced in a same-session search
+is scored a pull. The two biases point opposite ways and are of unknown relative
+size, so the number is an approximate direction-of-travel indicator, never read
+as "true serendipity ≤ x". The clean, one-sided signal needs a **positive** record
+of a push. The chosen design (RFC 0114) is to tag the read the **session-start
+injection hook already issues** with a provenance marker — an attribute on work
+the hook already does, not a synthetic write — so a push gains a positive log
+record. That marker lives in the kookr runtime hook, tracked under the #73
+session-start injection contract (cross-repo), and is not yet implemented; until
+it lands, the proxy above is what ships.
 
 ---
 
@@ -192,6 +216,12 @@ What is implemented today (merged):
   [NG-007](./requirements.md#ng-007). A `no-match` search is logged (query in the
   usage note) so a subsequent `add` in the same session reads back as a
   `failed-search` coverage-gap signal — the signal deferred from #72 — #82.
+- **Serendipity surfacing provenance** — `nb search` logs the entry ids it
+  surfaced, so an upvote reads back as a *pull* (searched) or a candidate *push*,
+  and `nb stats` reports a `serendipity` rate (push-delivered upvotes ÷ upvotes)
+  beside recall/precision. Published as a two-sided inferred **proxy**, not a
+  bound; the positive push record (tagging the injection hook's own read) is a
+  cross-repo follow-up under the #73 injection contract — #114.
 
 Planned (Phase 2 of the umbrella):
 
