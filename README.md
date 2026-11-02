@@ -51,11 +51,17 @@ Because a notebook is a plain file in a git-backed directory, everything your ag
 
 ## Install
 
+Requires Node.js 18+.
+
 ```
 npm install -g agent-notebook
 ```
 
-Or run it straight from a clone, without installing globally:
+That's the whole install. No setup needed — the first `nb add` creates the notebook folder at `~/.agent-notebook/notebooks`.
+
+### For contributors
+
+Only needed to develop from source. Instead of installing globally, run it straight from a clone:
 
 ```
 git clone https://github.com/jeanibarz/agent-notebook.git
