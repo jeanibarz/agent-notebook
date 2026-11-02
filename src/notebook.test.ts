@@ -17,11 +17,15 @@ const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 // throws. Everything delegates to the real fs; when `events` is null and
 // `failDirFsync` is false (the default, reset in afterEach) behavior is identical
 // to the unwrapped module, so every other test is unaffected.
-const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, failDirFsync: false, failBodyFsync: false }));
+const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
+    readFileSync: ((path: Parameters<typeof actual.readFileSync>[0], opts?: Parameters<typeof actual.readFileSync>[1]) => {
+      fsHook.reads?.push(String(path)); // capture read paths (opt-in; null by default)
+      return actual.readFileSync(path, opts as never);
+    }) as typeof actual.readFileSync,
     fsyncSync: (fd: number) => {
       const isDir = actual.fstatSync(fd).isDirectory();
       fsHook.events?.push(isDir ? 'fsync-dir' : 'fsync-body');
@@ -73,6 +77,8 @@ import {
   sparkline,
   split,
   stats,
+  usageRing,
+  usageRingSlack,
   vote,
 } from './notebook.js';
 
@@ -87,6 +93,7 @@ afterEach(() => {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
+  fsHook.reads = null; // leave the shared read hook off for tests that don't opt in
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -963,11 +970,72 @@ describe('usage log + stats', () => {
     expect(Number.isNaN(Date.parse(ts))).toBe(false); // ts untouched, still ISO
   });
 
-  test('usage log is a bounded ring (oldest dropped)', () => {
+  test('usage log is a bounded ring: a compaction keeps exactly the newest usageRing() rows (issue #135)', () => {
     process.env.NB_USAGE_RING = '100';
-    for (let i = 0; i < 150; i++) logUsage(dir, 'p', 'show', true, 1);
+    const ring = usageRing(); // 100
+    const compactAt = ring + usageRingSlack(); // appends grow the file this far, then one call compacts it
+    // Tag each row so we can prove WHICH rows survived. The fast path appends
+    // cheaply until the file crosses `compactAt`; that call reads+slices the
+    // whole file back down to exactly `ring` newest rows (the rare compaction).
+    for (let i = 0; i < compactAt + 1; i++) logUsage(dir, 'p', `c${i}`, true, 1);
     const lines = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').split('\n').filter((l) => l !== '');
-    expect(lines.length).toBe(100);
+    const cmds = lines.map((l) => l.split('\t')[2]);
+    expect(lines.length).toBe(ring); // exactly the cap after overflow — oldest dropped
+    expect(cmds[cmds.length - 1]).toBe(`c${compactAt}`); // the newest row is retained…
+    expect(cmds[0]).toBe(`c${compactAt + 1 - ring}`); // …and exactly `ring` rows back is the oldest kept
+    expect(cmds).not.toContain('c0'); // the very first row was dropped
+  });
+
+  test('the append fast-path does not read or parse the whole ring (issue #135)', () => {
+    process.env.NB_USAGE_RING = '100';
+    const usage = join(dir, '.nb-usage.log');
+    const sidecar = join(dir, '.nb-usage.log.count');
+    for (let i = 0; i < 50; i++) logUsage(dir, 'p', 'show', true, 1); // fill the ring toward its cap
+    fsHook.reads = []; // capture every readFileSync path during the next append
+    let reads: string[];
+    try {
+      logUsage(dir, 'p', 'vote', true, 2); // one more plain under-cap append
+    } finally {
+      reads = fsHook.reads!;
+      fsHook.reads = null;
+    }
+    expect(reads).not.toContain(usage); // the ring file itself is never read on the hot path…
+    expect(reads.every((p) => p === sidecar)).toBe(true); // …only the tiny O(1) sidecar counter is.
+    // And the append landed as one more whole row (the rewrite path was not taken).
+    const lines = readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '');
+    expect(lines.length).toBe(51);
+  });
+
+  test('a stale sidecar cannot break the hard ring bound — small rows, default ring, one call (issue #135)', () => {
+    // No NB_USAGE_RING override: exercise the real default cap (5000). The log
+    // already holds far more than the ring, in SMALL rows whose total bytes a
+    // byte-only ceiling would miss. The sidecar is stale: it records a tiny,
+    // long-gone state, so its byte size no longer matches the grown file.
+    const ring = usageRing(); // 5000
+    const usage = join(dir, '.nb-usage.log');
+    const sidecar = join(dir, '.nb-usage.log.count');
+    const rows = Array.from({ length: ring + 2000 }, (_, i) => `${new Date().toISOString()}\tp\tc${i}\tok\t1ms\t\t\t\t\t\t\t`);
+    writeFileSync(usage, rows.join('\n') + '\n', 'utf-8');
+    writeFileSync(sidecar, '3\t200\n', 'utf-8'); // stale rows AND stale bytes — size no longer matches
+    logUsage(dir, 'p', 'heal', true, 1);
+    const lines = readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '');
+    expect(lines.length).toBe(ring); // bound restored in a single call, despite the stale sidecar
+    expect(lines[lines.length - 1].split('\t')[2]).toBe('heal'); // the new row is the newest kept
+  });
+
+  test('a torn (newline-less) row with a still-valid sidecar is not glued — the size mismatch forces the guarded path (issue #135)', () => {
+    process.env.NB_USAGE_RING = '100';
+    const usage = join(dir, '.nb-usage.log');
+    logUsage(dir, 'p', 'add', true, 1); // establishes the log and a matching sidecar
+    // Simulate an ENOSPC/crash that left the last row without its trailing `\n`
+    // but did NOT update the sidecar (so its row count still looks valid). The
+    // byte size changes, which is what the fast path uses to distrust the count.
+    writeFileSync(usage, readFileSync(usage, 'utf-8').replace(/\n$/, ''), 'utf-8');
+    logUsage(dir, 'p', 'vote', true, 2); // the next append must start a fresh row, not glue
+    const lines = readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '');
+    expect(lines.length).toBe(2); // two whole rows, not one glued row
+    expect(parseUsage(dir)).toHaveLength(2);
+    expect(parseUsage(dir).every((r) => r.command.length > 0)).toBe(true);
   });
 
   test('flags a loop anomaly (many calls in a tight window)', () => {
@@ -1165,8 +1233,8 @@ describe('usage log + stats', () => {
     // concurrent nb processes must not share one temp path or one's rename can
     // clobber the other mid-write. The temp source of the atomic rename must
     // carry this process's pid — a revert to the old shared `${file}.tmp` fails.
-    process.env.NB_USAGE_RING = '100'; // the clamp floor; fill it, then force one compact
-    for (let i = 0; i < 100; i++) logUsage(dir, 'p', 'show', true, 1); // appends (no rename yet)
+    process.env.NB_USAGE_RING = '100'; // the clamp floor; fill past the slack, then force one compact
+    for (let i = 0; i < 100 + usageRingSlack(); i++) logUsage(dir, 'p', 'show', true, 1); // appends (no rename yet)
     fsHook.renames = []; // opt in to capturing rename source paths
     try {
       logUsage(dir, 'p', 'show', true, 1); // over cap -> compacts via temp+rename
@@ -1196,7 +1264,8 @@ describe('usage log + stats', () => {
     // shelf exits 0 and still appends one usage row via the CLI's `finally`.
     const RING = 100;
     process.env.NB_USAGE_RING = String(RING);
-    for (let i = 0; i < RING; i++) logUsage(dir, 'seed', 'show', true, 1); // fill the ring so each writer trims+rewrites the whole file
+    const slack = usageRingSlack();
+    for (let i = 0; i < RING + slack; i++) logUsage(dir, 'seed', 'show', true, 1); // fill past the compaction threshold so each concurrent writer compacts (reads+rewrites) the whole file
     const env = { ...process.env, NB_DIR: dir };
     const N = 12;
     await Promise.all(
@@ -1206,7 +1275,7 @@ describe('usage log + stats', () => {
     );
     const lines = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').split('\n').filter((l) => l !== '');
     expect(lines.length).toBeGreaterThan(0);
-    expect(lines.length).toBeLessThanOrEqual(RING); // ring bound holds under contention
+    expect(lines.length).toBeLessThanOrEqual(RING + slack + N); // ring bound (plus bounded slack/concurrency overshoot) holds under contention
     // Every surviving line is a complete, well-formed usage row — no torn/partial
     // line (the corruption a shared temp path could leave).
     for (const l of lines) {
@@ -1809,7 +1878,10 @@ describe('entry-level + outcome logging (issue #67)', () => {
     for (let i = 0; i < 150; i++) {
       logUsage(dir, 'p', 'add', true, 1, { entries: [`id${i}`], outcome: 'accepted', session: 's' });
     }
-    expect(parseUsage(dir)).toHaveLength(100);
+    // Amortized compaction lets the ring overshoot by at most the slack before it
+    // is trimmed back, so the row count stays bounded (filled, never unbounded).
+    expect(parseUsage(dir).length).toBeGreaterThanOrEqual(usageRing());
+    expect(parseUsage(dir).length).toBeLessThanOrEqual(usageRing() + usageRingSlack());
   });
 
   test('logUsage with meta never throws when the log cannot be written (best-effort holds)', () => {
