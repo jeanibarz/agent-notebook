@@ -45,6 +45,20 @@ export function usageRing(): number {
   return clampInt(process.env.NB_USAGE_RING, 5000, 100, 100000);
 }
 
+/**
+ * How many rows past the ring cap the usage log is allowed to grow before a
+ * compaction trims it back (issue #135). The append fast-path tracks an
+ * approximate line count in a tiny sidecar so it never reads the whole ring; a
+ * small slack lets several appends pass between the rare read+rewrite
+ * compactions, making the common `nb` call O(1) instead of O(ring). It is a
+ * fraction of the ring (floored to a small minimum so a tiny ring still gets
+ * meaningful amortization), so the peak overshoot — and how far `stats` can
+ * briefly over-count — stays a few percent of the ring.
+ */
+export function usageRingSlack(): number {
+  return Math.max(16, Math.floor(usageRing() / 16));
+}
+
 function clampInt(raw: string | undefined, dflt: number, lo: number, hi: number): number {
   const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
   if (!Number.isFinite(n)) return dflt;
@@ -119,6 +133,58 @@ function shelfFile(dir: string, shelf: string): string {
 
 function usageFile(dir: string): string {
   return join(dir, '.nb-usage.log');
+}
+
+/**
+ * Sidecar recording the usage log's row count AND its byte size as of this
+ * process's last write, so the append fast-path can decide append-vs-compact
+ * without reading and splitting the whole ring on every `nb` call (issue #135).
+ *
+ * The byte size is the integrity check: the fast path trusts the row count only
+ * when the log's current size exactly equals the recorded size — i.e. nothing
+ * has touched the file since we wrote it. Any out-of-band change (a concurrent
+ * writer, a hand-edit, a crash that truncated a row) moves the size, so the
+ * stale count is distrusted and the call falls to the exact read+compact path,
+ * which re-derives the true count, re-applies the trailing-newline guard, and
+ * restores the hard ring bound — in a single call, at any ring size.
+ *
+ * It is a tiny dotfile next to the log — not a `*.md` shelf (`listShelves`/stats
+ * skip dotfiles) and not a `*.md.tmp` (the reap skips dotfiles), so it is never
+ * surfaced or deleted.
+ */
+function usageCountFile(dir: string): string {
+  return join(dir, '.nb-usage.log.count');
+}
+
+/** Read the sidecar `{ rows, bytes }`, or `undefined` if it is missing or unparseable. */
+function readUsageState(dir: string): { rows: number; bytes: number } | undefined {
+  try {
+    const [rowsRaw, bytesRaw] = readFileSync(usageCountFile(dir), 'utf-8').trim().split('\t');
+    const rows = Number.parseInt(rowsRaw ?? '', 10);
+    const bytes = Number.parseInt(bytesRaw ?? '', 10);
+    if (!Number.isFinite(rows) || rows < 0 || !Number.isFinite(bytes) || bytes < 0) return undefined;
+    return { rows, bytes };
+  } catch {
+    return undefined; // missing/unreadable — the caller falls back to the exact read.
+  }
+}
+
+/** The log's byte size, or -1 if it cannot be stat'd — which never equals a recorded size, so the fast path falls back to the exact read instead of dropping the row on a race/ENOENT. */
+function usageSize(file: string): number {
+  try {
+    return statSync(file).size;
+  } catch {
+    return -1;
+  }
+}
+
+/** Best-effort sidecar write; a failed/stale sidecar just forces the next call down the exact read path. */
+function writeUsageState(dir: string, rows: number, bytes: number): void {
+  try {
+    writeFileSync(usageCountFile(dir), `${rows}\t${bytes}\n`, 'utf-8');
+  } catch {
+    /* best-effort: the sidecar is only an optimisation; the exact path re-derives it. */
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1282,39 +1348,67 @@ export function logUsage(
     const line =
       `${new Date().toISOString()}\t${sanitizeUsageField(shelf)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
       `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}`;
+    const ring = usageRing();
+    const compactAt = ring + usageRingSlack();
+
+    // Fast path — the hot path on nearly every `nb` call. The sidecar records the
+    // log's row count AND byte size as of our last write, so we decide
+    // append-vs-compact WITHOUT reading or splitting the whole ring (issue #135):
+    // on a busy deployment the ring sits near its 5000-row cap, and re-reading
+    // hundreds of KB to record one line blew the "a call is a millisecond" budget.
+    //
+    // We trust the row count ONLY when the log's current size exactly equals the
+    // recorded size — proof that nothing has touched the file since we wrote it,
+    // so the count is accurate AND the file still ends with the `\n` we wrote (no
+    // row can be glued). Any out-of-band change — a concurrent writer, a
+    // hand-edit, an ENOSPC/crash-torn partial row — moves the size, so we fall
+    // through to the exact path, which re-derives the count, re-applies the
+    // trailing-newline guard, and restores the ring bound in that single call.
+    // The append here is O(1) and touches neither the preceding rows nor the
+    // inode (no rewrite, no rename).
+    const state = readUsageState(dir);
+    if (state !== undefined && state.rows < compactAt && usageSize(file) === state.bytes) {
+      const buf = `${line}\n`;
+      appendFileSync(file, buf, 'utf-8');
+      writeUsageState(dir, state.rows + 1, state.bytes + Buffer.byteLength(buf));
+      return;
+    }
+
+    // Exact path: the sidecar was missing, stale, says we have reached the
+    // threshold, or the file changed out of band — so read the real rows and
+    // re-derive the count+size. This runs on the first write, the rare compaction
+    // (once per ~slack appends), and whenever a stale estimate needs healing —
+    // never on the common append.
     const existing = existsSync(file) ? readFileSync(file, 'utf-8') : '';
     const lines = existing.split('\n').filter((l) => l !== '');
-    const ring = usageRing();
 
     if (lines.length < ring) {
-      // Under cap (the hot path on nearly every `nb` call): append the one new
-      // row in place instead of reading-slicing-rewriting the whole ring
-      // (issue #45). Monitoring sits on a path whose budget is "a call is a
-      // millisecond", so we must not rewrite thousands of unchanged bytes — nor
-      // churn an inode via rename — just to record one line. appendFileSync is a
-      // single write that never touches the preceding bytes.
-      //
-      // Guard the trailing newline: if a previous writer crashed mid-row the
-      // file may lack a final `\n`, and a blind append would glue our row onto
-      // the end of theirs. Prefix a newline in that case so each row stays whole.
+      // Still under the hard cap: append in place (no rewrite, no rename) and
+      // record the now-known count+size. Guard the trailing newline — a previous
+      // writer may have crashed mid-row leaving no final `\n`, and a blind append
+      // would glue our row onto theirs.
       const sep = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
-      appendFileSync(file, `${sep}${line}\n`, 'utf-8');
+      const buf = `${sep}${line}\n`;
+      appendFileSync(file, buf, 'utf-8');
+      writeUsageState(dir, lines.length + 1, Buffer.byteLength(existing) + Buffer.byteLength(buf));
       return;
     }
 
     // At/over cap: compact. Slice to the newest `ring` rows (oldest dropped) and
-    // atomically replace the file — this is the only path that rewrites the
-    // previous bytes, and it runs only when a plain append would exceed the ring.
+    // atomically replace the file — the only path that rewrites the previous
+    // bytes, now reached only on the rare compaction rather than every call.
     lines.push(line);
     const kept = lines.slice(lines.length - ring);
+    const body = kept.join('\n') + '\n';
     // Per-process-unique temp path: this log write runs OUTSIDE the .nb.lock
     // (it is called from the CLI's finally block), so two concurrent nb
     // processes would otherwise write and rename the same `${file}.tmp` and
     // clobber each other mid-write. The pid keeps each writer's temp distinct;
     // the rename is still atomic, so a reader sees one whole file or the other.
     const tmp = `${file}.${process.pid}.tmp`;
-    writeFileSync(tmp, kept.join('\n') + '\n', 'utf-8');
+    writeFileSync(tmp, body, 'utf-8');
     renameSync(tmp, file);
+    writeUsageState(dir, kept.length, Buffer.byteLength(body));
   } catch {
     /* monitoring is best-effort; never fail a real operation because the log write failed */
   }
