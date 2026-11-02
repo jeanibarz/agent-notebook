@@ -67,6 +67,16 @@ describe('runNbCli', () => {
     expect(show.out).toMatch(/^[0-9a-f]{6}\s+\[\+1\]\s+prefer execFileSync/m); // stable id + score
   });
 
+  test('add pluralises the line count: "1 line" on the first add, "2 lines" on the second (issue #142)', async () => {
+    const first = await run(['add', 'patcher', 'alpha lesson']);
+    expect(first.code).toBe(0);
+    expect(first.out).toBe('added — 1 line\n'); // singular, not "1 lines"
+
+    const second = await run(['add', 'patcher', 'beta lesson']);
+    expect(second.code).toBe(0);
+    expect(second.out).toBe('added — 2 lines\n'); // plural
+  });
+
   test('show --json emits { shelf, description, entries } ordered highest-score-first (issue #87)', async () => {
     // Two lessons; vote the second one up so score ordering differs from insertion order.
     await run(['add', 'patcher', 'alpha lesson']);
@@ -746,7 +756,7 @@ describe('runNbCli', () => {
       // The acceptance criterion: `printf '%s\n' 'run lint first' | nb add reviewer -`.
       const r = await run(['add', 'reviewer', '-'], 'run lint first\n');
       expect(r.code).toBe(0);
-      expect(r.out).toBe('added — 1 lines\n'); // the usual message, same as a quoted arg
+      expect(r.out).toBe('added — 1 line\n'); // the usual message, same as a quoted arg
       expect(r.err).toBe('');
       const show = await run(['show', 'reviewer']);
       expect(show.out).toContain('run lint first'); // stored verbatim, trailing newline stripped
@@ -755,7 +765,7 @@ describe('runNbCli', () => {
     test('a piped line with no trailing newline is stored just the same', async () => {
       const r = await run(['add', 'reviewer', '-'], 'no trailing newline');
       expect(r.code).toBe(0);
-      expect(r.out).toBe('added — 1 lines\n');
+      expect(r.out).toBe('added — 1 line\n');
       const show = await run(['show', 'reviewer']);
       expect(show.out).toContain('no trailing newline');
     });
@@ -789,7 +799,7 @@ describe('runNbCli', () => {
     test('a single trailing CRLF is stripped, leaving the clean line', async () => {
       const r = await run(['add', 'reviewer', '-'], 'windows line\r\n');
       expect(r.code).toBe(0);
-      expect(r.out).toBe('added — 1 lines\n');
+      expect(r.out).toBe('added — 1 line\n');
       const show = await run(['show', 'reviewer']);
       expect(show.out).toContain('windows line');
       expect(show.out).not.toContain('\r'); // the trailing CR was stripped, not stored
@@ -879,7 +889,7 @@ describe('runNbCli', () => {
 
     test('without --json the English lines are unchanged', async () => {
       const r = await run(['add', 'patcher', 'plain text path']);
-      expect(r.out).toBe('added — 1 lines\n');
+      expect(r.out).toBe('added — 1 line\n');
     });
   });
 

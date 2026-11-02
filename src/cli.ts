@@ -313,11 +313,11 @@ export async function runNbCli(
           // still emitting its `reason`, so a supervisor sees why it failed.
           process.stdout.write(JSON.stringify(r) + '\n');
           if (r.reason === 'too-long') return 1;
-        } else if (r.reason === 'duplicate') process.stdout.write(`skipped (exact duplicate already present) — ${r.size} lines\n`);
+        } else if (r.reason === 'duplicate') process.stdout.write(`skipped (exact duplicate already present) — ${plural(r.size, 'line')}\n`);
         else if (r.reason === 'empty') process.stdout.write('skipped (empty lesson)\n');
         else if (r.reason === 'too-long') throw new Error(`lesson too long (${r.length} chars > ${maxChars()} max). Rewrite it shorter as ONE complete line and retry — it was NOT truncated or stored.`);
         else {
-          process.stdout.write(`added — ${r.size} lines`);
+          process.stdout.write(`added — ${plural(r.size, 'line')}`);
           if (r.evicted) process.stdout.write(` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text})`);
           process.stdout.write('\n');
           // Non-blocking near-duplicate advisory: the lesson WAS stored (stdout

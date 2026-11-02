@@ -43,7 +43,7 @@ describe('nb invoked through an npm-style bin symlink', () => {
       env: { ...process.env, NB_DIR: dir },
       encoding: 'utf-8',
     });
-    expect(out).toContain('added — 1 lines');
+    expect(out).toContain('added — 1 line');
 
     const shown = execFileSync(binPath, ['show', 'shelf'], {
       env: { ...process.env, NB_DIR: dir },
