@@ -62,6 +62,7 @@ import {
   maxLines,
   merge,
   move,
+  nearThreshold,
   normalizeReason,
   parseUsage,
   parseWindowMs,
@@ -89,7 +90,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'agent-notebook-'));
 });
 afterEach(() => {
-  for (const k of ['NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_USAGE_RING', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ERR_RATE', 'NB_SESSION', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI']) {
+  for (const k of ['NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_USAGE_RING', 'NB_NEAR_DUP', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ERR_RATE', 'NB_SESSION', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI']) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
@@ -2804,6 +2805,88 @@ describe('window helpers (parseWindowMs / isValidWindow)', () => {
       // the mistype that parseWindowMs would otherwise silently coerce to 7d.
       expect(isValidWindow('7d')).toBe(true);
       expect(isValidWindow('7days')).toBe(false);
+    });
+  });
+});
+
+describe('env-tunable clamps (boundary + garbage)', () => {
+  // Every NB_* numeric tunable is read at call time through clampInt or
+  // clampRate (notebook.ts). The behavioral cap tests elsewhere set these vars
+  // only to valid, in-range values; these tests pin the clamp CONTRACT itself —
+  // an out-of-range value is clamped to the stated bound, and a non-numeric
+  // value falls back to the default (never NaN, which would silently disable the
+  // thing the tunable gates). A regression in a clamp bound, or a NaN leak, is
+  // invisible to the in-range tests but fails here. The asserted bounds mirror
+  // the clampInt/clampRate arguments in notebook.ts exactly; afterEach already
+  // restores every NB_* var touched here.
+
+  describe('clampInt-backed integer caps', () => {
+    // [label, getter, env var, lo, hi, default] — mirrors notebook.ts maxLines
+    // (1/5000, dflt 50), maxChars (20/2000, dflt 200), usageRing (100/100000,
+    // dflt 5000). Only the exported getters are driven directly.
+    const INT_GETTERS: ReadonlyArray<[string, () => number, string, number, number, number]> = [
+      ['maxLines', maxLines, 'NB_MAX_LINES', 1, 5000, 50],
+      ['maxChars', maxChars, 'NB_MAX_CHARS', 20, 2000, 200],
+      ['usageRing', usageRing, 'NB_USAGE_RING', 100, 100000, 5000],
+    ];
+
+    describe.each(INT_GETTERS)('%s', (_label, getter, envVar, lo, hi, dflt) => {
+      test(`below-min (${lo - 1}) clamps up to lo (${lo})`, () => {
+        process.env[envVar] = String(lo - 1);
+        expect(getter()).toBe(lo);
+      });
+
+      test(`above-max (${hi + 1}) clamps down to hi (${hi})`, () => {
+        process.env[envVar] = String(hi + 1);
+        expect(getter()).toBe(hi);
+      });
+
+      test(`a non-numeric value falls back to the default (${dflt}), never NaN`, () => {
+        process.env[envVar] = 'abc';
+        const v = getter();
+        expect(v).toBe(dflt);
+        expect(Number.isNaN(v)).toBe(false);
+      });
+
+      // clampInt parses with parseInt, and parseInt('') is NaN — so an empty
+      // string takes the default path, unlike clampRate's Number('') === 0 (see
+      // the nearThreshold block below). Pins that the two helpers diverge here.
+      test(`an empty string falls back to the default (${dflt}), never NaN`, () => {
+        process.env[envVar] = '';
+        const v = getter();
+        expect(v).toBe(dflt);
+        expect(Number.isNaN(v)).toBe(false);
+      });
+    });
+  });
+
+  describe('clampRate-backed rate (nearThreshold)', () => {
+    // nearThreshold reads NB_NEAR_DUP through clampRate → [0, 1], default 0.5
+    // (notebook.ts). clampRate uses Number(), so fractional and signed values
+    // parse, unlike the parseInt path above.
+    test('below 0 clamps up to 0', () => {
+      process.env.NB_NEAR_DUP = '-0.5';
+      expect(nearThreshold()).toBe(0);
+    });
+
+    test('above 1 clamps down to 1', () => {
+      process.env.NB_NEAR_DUP = '1.5';
+      expect(nearThreshold()).toBe(1);
+    });
+
+    test('a non-numeric value falls back to the default (0.5), never NaN', () => {
+      process.env.NB_NEAR_DUP = 'abc';
+      const v = nearThreshold();
+      expect(v).toBe(0.5);
+      expect(Number.isNaN(v)).toBe(false);
+    });
+
+    // Number('') === 0 (finite), so unlike the parseInt-backed int getters an
+    // empty string is NOT garbage to clampRate — it clamps to 0, the floor. This
+    // pins the divergence so a future author doesn't assume '' → default here.
+    test('an empty string is finite (Number("") === 0) and clamps to 0, not the default', () => {
+      process.env.NB_NEAR_DUP = '';
+      expect(nearThreshold()).toBe(0);
     });
   });
 });
