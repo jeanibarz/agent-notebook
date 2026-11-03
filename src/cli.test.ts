@@ -1,13 +1,20 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { runNbCli, settleCliExit } from './cli.js';
 import { entryId, parseUsage } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
+
+// Repo root resolved from this test file (src/cli.test.ts → ..), mirroring how
+// `../package.json` is loaded above. The terminology guards below read the
+// SOURCE README.md and cli.ts from here — the user-facing surface issue #140
+// migrated off the removed term "role".
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 let dir: string;
 const SAVED = { ...process.env };
@@ -1477,6 +1484,28 @@ describe('shelf terminology (role kept as a deprecated alias)', () => {
     expect(r.out).toContain('<shelf>');
     expect(r.out).toContain('nb shelves');
     expect(r.out).not.toContain('<role>');
+  });
+
+  // Issue #140: "role" was removed in favour of "shelf", but the guard above
+  // only covers the rendered --help. These two assert the other two user-facing
+  // surfaces the issue names — README.md and the cli.ts SOURCE (its command
+  // comments and storage-path line) — so the old vocabulary cannot silently
+  // return there either. They forbid the live `<role>` placeholder and the
+  // `<role>.md` storage path, NOT the bare word "role": a surviving `role`/
+  // `roles`/`listRoles` mention is allowed only as an explicitly-labelled
+  // deprecated alias, exactly as the acceptance criteria permit.
+  test('README teaches <shelf> as the live command vocabulary, never the removed <role> (issue #140)', () => {
+    const readme = readFileSync(join(REPO_ROOT, 'README.md'), 'utf8');
+    expect(readme).toMatch(/nb show\s+<shelf>/); // the Usage block uses <shelf>
+    expect(readme).toContain('notebooks/<shelf>.md'); // and the storage path
+    expect(readme).not.toContain('<role>'); // the removed placeholder never returns
+    expect(readme).not.toContain('<role>.md'); // nor the old storage path
+  });
+
+  test('the cli.ts source — command comments and storage-path line — uses <shelf>, never <role> (issue #140)', () => {
+    const cliSrc = readFileSync(join(REPO_ROOT, 'src', 'cli.ts'), 'utf8');
+    expect(cliSrc).toContain('notebooks/<shelf>.md'); // the storage-path line
+    expect(cliSrc).not.toContain('<role>'); // no <role> in comments, HELP, or anywhere in source
   });
 
   test('help states the line cap as 50 (matching maxLines and the README), not the stale 200 (issue #116)', async () => {
