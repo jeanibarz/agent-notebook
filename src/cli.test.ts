@@ -1508,6 +1508,24 @@ describe('shelf terminology (role kept as a deprecated alias)', () => {
     expect(cliSrc).not.toContain('<role>'); // no <role> in comments, HELP, or anywhere in source
   });
 
+  // Issue #139: the README's one-line "who this is for" must stay consistent
+  // in-product. Guard the rendered --help AND the README source so the shared
+  // developer-audience description cannot silently drift out of either surface.
+  // Two separate tests isolate each surface — a single combined check could let
+  // one surface regress undetected (the notebook's mutation-robustness lesson).
+  const AUDIENCE_LINE =
+    'developers who run AI agents and want them to carry a few durable lessons across runs';
+
+  test('help echoes the README developer-audience one-liner (issue #139)', async () => {
+    const r = await run(['--help']);
+    expect(r.out).toContain(AUDIENCE_LINE);
+  });
+
+  test('README states the developer-audience one-liner that --help echoes (issue #139)', () => {
+    const readme = readFileSync(join(REPO_ROOT, 'README.md'), 'utf8');
+    expect(readme).toContain(AUDIENCE_LINE);
+  });
+
   test('help states the line cap as 50 (matching maxLines and the README), not the stale 200 (issue #116)', async () => {
     const r = await run(['--help']);
     expect(r.out).toContain('at most 50 lines');

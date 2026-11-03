@@ -68,6 +68,8 @@ const LIST_DEFAULT_LIMIT = 50;
 
 const HELP = `nb — the Agent Notebook (bounded, voted memory, grouped in shelves)
 
+For developers who run AI agents and want them to carry a few durable lessons across runs.
+
 usage:
   nb show   <shelf> [--json]               print the notebook (highest-scored first; --json emits {shelf,description,entries})
   nb add    <shelf> "<lesson>"             add a lesson (exact dup skipped; a near-dup still adds but warns; rejected if too long, never truncated)

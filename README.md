@@ -2,6 +2,10 @@
 
 A bounded, voted, plain-text memory for AI agents — one small file (a *shelf*) per group of related lessons, no embeddings, no vector DB, no network call.
 
+**Who this is for:** developers who run AI agents and want them to carry a few durable lessons across runs.
+
+**What you get:** the agent remembers hard-won lessons, avoids repeating the same mistakes, and improves over the experience it has chosen to keep — voted by usefulness, bounded in size.
+
 A **shelf** is one `<name>.md` notebook file: a group of lessons an agent needs in the same situations. Shelves group lessons by *co-access* (needed together), not by agent role, so an agent that opens a shelf can get the lessons it looks for plus ones it might not think to search for. (Earlier versions called this unit a "role"; `role` keys, `listRoles`, `assertSafeRole` and `nb roles` remain as deprecated aliases.)
 
 <p align="center"><img src="https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/assets/cat.svg" alt="Running cat on a notebook file prints the whole plain-text memory at once — no query, no server, no embeddings." width="760"></p>
