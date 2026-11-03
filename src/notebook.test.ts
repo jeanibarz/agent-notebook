@@ -734,6 +734,57 @@ describe('operation reasons (seed-and-grow enum)', () => {
     expect(row.reason).toBe('');
     expect(row.note).toBe('');
   });
+
+  test('an over-long note is truncated (not rejected) so the ring stays byte-bounded (issue #128)', () => {
+    process.env.NB_MAX_CHARS = '50'; // small, explicit cap for the assertion
+    const huge = 'x'.repeat(10_000); // a pasted-stack-trace-sized note
+    // logUsage is a best-effort monitoring path — it must NEVER throw, even on a
+    // pathological note; a logging failure degrades, it does not crash the op.
+    expect(() => logUsage(dir, 's', 'add', true, 1, { note: huge })).not.toThrow();
+
+    const onDisk = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
+    const storedNote = parseUsage(dir)[0].note;
+    // The stored note is bounded by maxChars(): one oversized row cannot bloat
+    // the ring past ring-count x per-row cap.
+    expect(storedNote.length).toBeLessThanOrEqual(maxChars());
+    expect(storedNote.endsWith('…')).toBe(true); // truncation is marked, not silent
+    // The whole ROW is bounded too — the note no longer dominates the line. The
+    // fixed columns (ISO timestamp, shelf, command, status, ms, session, …) are a
+    // small constant, so one row stays within the cap plus a generous header
+    // budget — nothing near the 10_000-char input.
+    expect(onDisk.trimEnd().length).toBeLessThanOrEqual(maxChars() + 200);
+  });
+
+  test('the note cap truncates at EXACTLY maxChars (boundary: at-cap kept, one-over cut)', () => {
+    process.env.NB_MAX_CHARS = '50'; // cap of 50 for literal boundary assertions
+    // Exactly at the cap: stored byte-identical, no ellipsis (off-by-one guard —
+    // a `< cap` or `cap - 1` bound would wrongly truncate this).
+    logUsage(dir, 's', 'add', true, 1, { note: 'a'.repeat(50) });
+    expect(parseUsage(dir)[0].note).toBe('a'.repeat(50));
+    // One over the cap: cut to cap-1 chars + the ellipsis, length === cap exactly.
+    logUsage(dir, 's', 'add', true, 1, { note: 'b'.repeat(51) });
+    expect(parseUsage(dir)[1].note).toBe('b'.repeat(49) + '…');
+    expect(parseUsage(dir)[1].note.length).toBe(50);
+  });
+
+  test('a normal short note is stored unchanged (truncation only fires over the cap)', () => {
+    process.env.NB_MAX_CHARS = '50';
+    logUsage(dir, 's', 'add', true, 1, { note: 'found via grep' });
+    expect(parseUsage(dir)[0].note).toBe('found via grep'); // byte-identical, no ellipsis
+  });
+
+  test('an over-cap note with tabs/newlines is sanitized THEN capped, staying one 12-column row', () => {
+    process.env.NB_MAX_CHARS = '50';
+    // Structural chars must collapse to spaces (no column/row injection) AND the
+    // result must be capped — this pins the sanitize-before-cap ordering.
+    const noisy = 'c\t'.repeat(60) + '\ntail'; // > cap, laden with tabs/newlines
+    logUsage(dir, 's', 'add', true, 1, { note: noisy });
+    const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').trimEnd();
+    expect(raw.split('\t')).toHaveLength(12); // no injected columns
+    const [row] = parseUsage(dir);
+    expect(row.note.length).toBeLessThanOrEqual(maxChars());
+    expect(row.note.endsWith('…')).toBe(true);
+  });
 });
 
 describe('rm', () => {

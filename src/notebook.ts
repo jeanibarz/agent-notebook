@@ -1348,6 +1348,27 @@ function sanitizeUsageField(raw: string): string {
   return raw.replace(/[\t\r\n]+/g, ' ');
 }
 
+/**
+ * Cap the free-text usage-log note at `maxChars()`. The usage ring bounds the
+ * ROW COUNT (`usageRing`, default 5000) but NOT a row's byte size, and the
+ * `--note` is the one unbounded free-text field — the other columns are ids,
+ * enum reasons, or short tokens. Without a per-note cap, a single huge note
+ * (e.g. a pasted stack trace) makes the on-disk log grow far past the implied
+ * budget, so the count bound no longer bounds the bytes (issue #128). The note
+ * is a best-effort diagnostic annotation, never authoritative memory (unlike a
+ * lesson, which `addEntry` REJECTS when over-cap), so we TRUNCATE rather than
+ * reject — keeping `logUsage`'s never-throw contract — and mark the cut with a
+ * trailing ellipsis that stays within the cap. A sub-cap note is returned
+ * byte-identical. Reuses `maxChars()` (the lesson/description cap) so one knob
+ * bounds every per-item length; after this the log is bounded by
+ * ring-count x per-row cap.
+ */
+function capNote(note: string): string {
+  const cap = maxChars();
+  if (note.length <= cap) return note;
+  return note.slice(0, cap - 1) + '…';
+}
+
 export function logUsage(
   dir: string,
   shelf: string,
@@ -1371,7 +1392,7 @@ export function logUsage(
     const collided = sanitizeUsageField(meta.collided ?? '');
     const evicted = sanitizeUsageField(meta.evicted ?? '');
     const reason = sanitizeUsageField(meta.reason ?? '');
-    const note = sanitizeUsageField(meta.note ?? '');
+    const note = capNote(sanitizeUsageField(meta.note ?? ''));
     const line =
       `${new Date().toISOString()}\t${sanitizeUsageField(shelf)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
       `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}`;
