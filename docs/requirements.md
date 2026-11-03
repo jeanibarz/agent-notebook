@@ -497,12 +497,23 @@ BREAKING.
 
 <a id="fr-lock-001"></a>
 **FR-LOCK-001 (Must).** Every notebook mutation (`add`/`vote`/`merge`/`split`/`rm`/`move`) SHALL run
-under a `mkdir`-based spinlock on `.nb.lock`, with an acquire budget of ~2s; a lock
-older than ~10s SHALL be treated as stale and stolen. (The usage log is appended
-outside this lock — see [FR-USAGE-001](#fr-usage-001).)
+under a `mkdir`-based spinlock on `.nb.lock`. A lock whose holder has been silent
+longer than a stale-steal threshold (`NB_STALE_LOCK_MS`, default ~10s) SHALL be
+treated as abandoned by a crashed process and stolen. The acquire budget SHALL be
+*derived* as that threshold plus a grace margin (`NB_LOCK_GRACE_MS`, default ~2s),
+so it is always ≥ the threshold; otherwise a caller meeting a just-crashed holder's
+still-fresh lock would give up before the lock could ever age enough to be stolen,
+and every mutation would fail with 'locked' until the stale lock aged out. (The
+usage log is appended outside this lock — see [FR-USAGE-001](#fr-usage-001).)
 **Rationale:** Serial CLI calls on one host occasionally overlap; the lock keeps a
 concurrent `add`+`vote` from corrupting the file, and stale-steal recovers from a
-crashed process.
+crashed process — recovery that is reachable only when the acquire budget is at
+least the steal threshold (issue #133).
+*Proven by:* `notebook.test.ts` → `describe('locking (mkdir spinlock)')`, in particular
+"a crashed holder's fresh lock is reclaimed WITHIN the acquire window, not thrown (issue #133)"
+and "a genuinely live holder that keeps its lock fresh still times out, reporting the DERIVED budget"
+— the latter asserts the thrown timeout message reports the derived budget (`staleMs + grace`),
+which proves the acquire deadline is >= the steal threshold.
 
 <a id="fr-dur-001"></a>
 **FR-DUR-001 (Must).** A *notebook* write SHALL go to a temp file, be `fsync`'d,

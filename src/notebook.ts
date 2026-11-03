@@ -59,6 +59,27 @@ export function usageRingSlack(): number {
   return Math.max(16, Math.floor(usageRing() / 16));
 }
 
+/**
+ * Lock timing (ms), read at call time so a test can shrink the whole window via
+ * env. A `.nb.lock` whose holder has not touched it for `NB_STALE_LOCK_MS` is
+ * treated as abandoned by a crashed nb process and stolen; the acquire budget
+ * is DERIVED (see `withLock`) as this threshold plus `NB_LOCK_GRACE_MS`, never
+ * set independently. The derivation keeps the acquire deadline >= the stale
+ * threshold: without it (the prior 2s budget vs 10s steal threshold) a caller
+ * that met a just-crashed holder's still-fresh lock gave up — threw
+ * 'notebook is locked' — before the lock ever aged enough to be stolen, so
+ * every mutation hard-failed for ~10s after a crash instead of self-healing.
+ * The threshold stays far above fn()'s real hold time (a few ms of file I/O),
+ * so a slow-but-live holder is never robbed.
+ */
+export function staleLockMs(): number {
+  return clampInt(process.env.NB_STALE_LOCK_MS, 10_000, 100, 600_000);
+}
+/** Extra budget, past the stale threshold, to notice and steal an abandoned lock before giving up. */
+export function lockGraceMs(): number {
+  return clampInt(process.env.NB_LOCK_GRACE_MS, 2_000, 0, 600_000);
+}
+
 function clampInt(raw: string | undefined, dflt: number, lo: number, hi: number): number {
   const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
   if (!Number.isFinite(n)) return dflt;
@@ -336,16 +357,22 @@ export function setMetaValue(lines: string[], key: string, value: string): strin
 async function withLock<T>(dir: string, fn: () => T): Promise<T> {
   mkdirSync(dir, { recursive: true });
   const lock = join(dir, '.nb.lock');
-  const deadline = Date.now() + 2000;
+  const staleMs = staleLockMs();
+  // Acquire budget is the stale threshold plus a grace margin, so the deadline
+  // is always >= the threshold. A caller that meets a freshly-crashed holder's
+  // lock therefore waits long enough for it to age past staleMs and reclaim it,
+  // instead of giving up first (the fixed 2s-vs-10s mismatch, issue #133).
+  const budgetMs = staleMs + lockGraceMs();
+  const deadline = Date.now() + budgetMs;
   for (;;) {
     try {
       mkdirSync(lock); // atomic: succeeds only if it did not exist
       break;
     } catch {
       // Stale-lock recovery: a crashed nb process can leave .nb.lock behind.
-      // If the lock dir is older than the whole acquire budget, steal it.
+      // Steal it once its holder has been silent longer than the stale threshold.
       try {
-        if (Date.now() - statSync(lock).mtimeMs > 10_000) {
+        if (Date.now() - statSync(lock).mtimeMs > staleMs) {
           rmdirSync(lock);
           continue;
         }
@@ -353,7 +380,7 @@ async function withLock<T>(dir: string, fn: () => T): Promise<T> {
         /* lock vanished between mkdir and stat — just retry */
       }
       if (Date.now() > deadline) {
-        throw new Error('notebook is locked (another nb process did not release within 2s)');
+        throw new Error(`notebook is locked (another nb process did not release within ${budgetMs}ms)`);
       }
       await sleep(20);
     }
