@@ -1134,6 +1134,22 @@ describe('usage log + stats', () => {
     expect(rep.window).toBe('30m');
   });
 
+  test('exposes absolute window bounds generatedAt/windowStart as ISO-8601 (issue #132)', () => {
+    logUsage(dir, 'p', 'show', true, 1);
+    const now = Date.parse('2026-10-31T12:00:00Z');
+    const windowMs = 7 * 86_400_000;
+    const rep = stats(dir, { now, windowMs });
+    // valid ISO-8601 instants that round-trip to the sampled values
+    const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
+    expect(rep.generatedAt).toMatch(ISO);
+    expect(rep.windowStart).toMatch(ISO);
+    expect(Date.parse(rep.generatedAt)).toBe(now);
+    expect(Date.parse(rep.windowStart)).toBe(now - windowMs);
+    // generatedAt - windowStart equals the window duration, and windowStart precedes generatedAt
+    expect(Date.parse(rep.generatedAt) - Date.parse(rep.windowStart)).toBe(windowMs);
+    expect(Date.parse(rep.windowStart)).toBeLessThan(Date.parse(rep.generatedAt));
+  });
+
   test('stats exposes an ops-per-day activity array summing to totalCalls (issue #106)', () => {
     const now = Date.parse('2026-10-31T12:00:00Z');
     const DAY = 86_400_000;

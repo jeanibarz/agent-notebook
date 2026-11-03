@@ -1659,6 +1659,10 @@ export interface EngagementDiagnosis {
 
 export interface StatsReport {
   window: string;
+  /** ISO-8601 instant the report was generated (the report's `now`). */
+  generatedAt: string;
+  /** ISO-8601 instant the window opens (`generatedAt - window`). */
+  windowStart: string;
   totalCalls: number;
   perCommand: CommandStat[];
   anomalies: Anomaly[];
@@ -2273,5 +2277,17 @@ export function stats(
     windowMs,
   );
 
-  return { window, totalCalls: recent.length, perCommand, anomalies, notebooks, notebookTotals, signals, surfacing, activity };
+  return {
+    window,
+    generatedAt: new Date(now).toISOString(),
+    windowStart: new Date(now - windowMs).toISOString(),
+    totalCalls: recent.length,
+    perCommand,
+    anomalies,
+    notebooks,
+    notebookTotals,
+    signals,
+    surfacing,
+    activity,
+  };
 }
