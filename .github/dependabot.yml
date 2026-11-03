@@ -1,0 +1,19 @@
+# Dependabot keeps the SHA-pinned GitHub Actions current.
+# ci.yml and release.yml pin actions/checkout and actions/setup-node to full
+# commit SHAs (the supply-chain best practice). Pinning freezes them, so without
+# an update mechanism the pinned SHAs silently rot and miss upstream security and
+# bug fixes. Dependabot opens PRs that bump a pinned SHA to the newest release's
+# SHA, keeping the project BOTH pinned AND current, with a human review gate on
+# each bump.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # One grouped PR per week for all action bumps instead of several, to keep
+    # the review load low.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
