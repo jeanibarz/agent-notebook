@@ -9,6 +9,15 @@ on:
 permissions:
   contents: read
 
+# Cancel a superseded in-progress run when a newer commit lands on the same ref.
+# The group is keyed on the workflow + ref so each PR (refs/pull/<n>/merge) and
+# the default branch get their own lane. cancel-in-progress is gated to
+# pull_request events, so a protected `main` push run is never cancelled
+# mid-flight; only redundant PR runs are.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-and-test:
     runs-on: ${{ matrix.os }}
