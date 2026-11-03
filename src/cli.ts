@@ -48,6 +48,7 @@ import {
   search,
   setDescription,
   showJson,
+  sparkGlyphs,
   sparkline,
   split,
   stats,
@@ -779,7 +780,9 @@ function renderStats(dir: string, shelf: string | undefined, windowMs: number | 
   // Ops-per-day activity sparkline (issue #106): one glyph per rolling-24h
   // bucket, oldest (leftmost) to the 24h ending now (rightmost). A silent bucket
   // reads as the floor glyph, so "went quiet N days ago" is visible at a glance.
-  lines.push(`  activity  ${sparkline(rep.activity)}  (${rep.window}, ${rep.totalCalls} ops)`);
+  // Glyph ramp is env-selected (issue #136): Unicode blocks by default, the
+  // ASCII digit ramp under NB_ASCII or a non-UTF-8 locale. `sparkline` stays pure.
+  lines.push(`  activity  ${sparkline(rep.activity, sparkGlyphs())}  (${rep.window}, ${rep.totalCalls} ops)`);
   if (rep.perCommand.length === 0) {
     lines.push('  (no usage recorded in this window)');
   } else {

@@ -1691,27 +1691,66 @@ export function isValidWindow(raw: string | undefined): boolean {
 const SPARK_GLYPHS = '▁▂▃▄▅▆▇█';
 
 /**
- * Render a count series as a one-line Unicode block sparkline (issue #106).
- * Pure and zero-dependency — no chart library, no network.
+ * ASCII ramp, low→high, for the plain-text sparkline fallback (issue #136).
+ * Digits keep the row greppable (you can grep a specific bar height) and still
+ * convey relative height — `0` is the floor, `9` the busiest bucket. Used in a
+ * non-UTF-8 locale or when `NB_ASCII` is set; see `asciiMode` / `sparkGlyphs`.
+ */
+const SPARK_ASCII = '0123456789';
+
+/**
+ * Render a count series as a one-line sparkline (issue #106; ASCII fallback
+ * #136). Pure and zero-dependency — no chart library, no network, no env read.
+ *
+ * `glyphs` is the low→high ramp to scale over, so the ASCII/Unicode choice is a
+ * parameter rather than a second code path. It defaults to the Unicode blocks,
+ * keeping the one-argument call unchanged.
  *
  * Scaling is **zero-based**, not min–max: each bar is proportional to the
  * busiest bucket (`max`), so a **silent (0-op) bucket always reads as the floor
- * glyph `▁`** and the busiest as `█`. For a *count* plot (the "went quiet"
- * question) a zero must read as the floor; min–max scaling would both stretch a
- * nearly flat series and make a 0-op bucket indistinguishable from a nonzero
- * minimum. The identity this yields: `sparkline([0,1,2,3,4,5,6,7])` →
- * `▁▂▃▄▅▆▇█`. See RFC 0106.
+ * glyph** (`▁`, or `0` in ASCII) and the busiest as the top (`█`, or `9`). For a
+ * *count* plot (the "went quiet" question) a zero must read as the floor;
+ * min–max scaling would both stretch a nearly flat series and make a 0-op bucket
+ * indistinguishable from a nonzero minimum. The identity this yields:
+ * `sparkline([0,1,2,3,4,5,6,7])` → `▁▂▃▄▅▆▇█`. See RFC 0106.
  *
- * `[]` → `''`; an all-zero (or all-equal-at-0) series → all `▁`.
+ * `[]` → `''`; an all-zero (or all-equal-at-0) series → all floor glyphs.
  */
-export function sparkline(counts: number[]): string {
+export function sparkline(counts: number[], glyphs: string = SPARK_GLYPHS): string {
   // `Math.max(...[])` is `-Infinity` (≤ 0), so this one branch also covers the
   // empty series — `''.repeat(0)` is `''` — with no separate length guard.
   const max = Math.max(...counts);
-  if (max <= 0) return SPARK_GLYPHS[0].repeat(counts.length);
-  // 0 → index 0 (floor); max → index 7 (top). For 0 ≤ c ≤ max the index is
-  // always within [0, GLYPHS.length-1], so no clamp is needed.
-  return counts.map((c) => SPARK_GLYPHS[Math.round((c / max) * (SPARK_GLYPHS.length - 1))]).join('');
+  if (max <= 0) return glyphs[0].repeat(counts.length);
+  // 0 → index 0 (floor); max → index (len-1) (top). For 0 ≤ c ≤ max the index is
+  // always within [0, glyphs.length-1], so no clamp is needed.
+  return counts.map((c) => glyphs[Math.round((c / max) * (glyphs.length - 1))]).join('');
+}
+
+/**
+ * Whether the activity sparkline should use the ASCII ramp instead of Unicode
+ * blocks (issue #136). An explicit `NB_ASCII` is authoritative: any truthy value
+ * forces ASCII, any falsey one (`''`, `0`, `false`, `no`, `off`) forces Unicode,
+ * overriding locale autodetection. With `NB_ASCII` unset, the effective locale
+ * (`LC_ALL` → `LC_CTYPE` → `LANG`, first set wins) decides: a locale that is set
+ * but does not name UTF-8 (e.g. `C`, `POSIX`, `en_US.ISO-8859-1`) selects ASCII;
+ * an unset or UTF-8 locale keeps the Unicode default.
+ */
+export function asciiMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.NB_ASCII !== undefined) {
+    const v = env.NB_ASCII.trim().toLowerCase();
+    return v !== '' && v !== '0' && v !== 'false' && v !== 'no' && v !== 'off';
+  }
+  const locale = env.LC_ALL || env.LC_CTYPE || env.LANG;
+  return !!locale && !/utf-?8/i.test(locale);
+}
+
+/**
+ * The sparkline glyph ramp for the current environment (issue #136): the ASCII
+ * digits when `asciiMode` is on, else the Unicode blocks. Kept out of
+ * `sparkline` so that function stays pure and env-free.
+ */
+export function sparkGlyphs(env: NodeJS.ProcessEnv = process.env): string {
+  return asciiMode(env) ? SPARK_ASCII : SPARK_GLYPHS;
 }
 
 /** One rolling-24h bucket in ms, for the activity sparkline. */
