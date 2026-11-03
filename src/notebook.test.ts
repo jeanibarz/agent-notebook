@@ -92,7 +92,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'agent-notebook-'));
 });
 afterEach(() => {
-  for (const k of ['NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_USAGE_RING', 'NB_NEAR_DUP', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ERR_RATE', 'NB_SESSION', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI']) {
+  for (const k of ['NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_USAGE_RING', 'NB_NEAR_DUP', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ERR_RATE', 'NB_SESSION', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI', 'NB_STALE_LOCK_MS', 'NB_LOCK_GRACE_MS']) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
@@ -2057,11 +2057,16 @@ describe('durable writes (issue #15)', () => {
 
 describe('locking (mkdir spinlock)', () => {
   // withLock serializes every mutation behind a `.nb.lock` directory: it spins
-  // (20ms) up to a 2s acquire deadline, and steals a lock whose mtime is older
-  // than the 10s stale threshold. These tests drive that one safety-critical
-  // primitive directly — concurrency must not lose an update, a blocked op must
-  // wait and then acquire, an aged lock must be reclaimed, a live lock must make
-  // acquisition time out, and the lock must always be released.
+  // (20ms) up to an acquire deadline, and steals a lock whose mtime is older
+  // than the stale threshold. The deadline is DERIVED as staleLockMs() +
+  // lockGraceMs() so it is always >= the steal threshold — otherwise a caller
+  // meeting a just-crashed holder's still-fresh lock would give up before the
+  // lock aged enough to be stolen (issue #133: the old fixed 2s budget vs 10s
+  // threshold). These tests drive that one safety-critical primitive directly —
+  // concurrency must not lose an update, a blocked op must wait and then
+  // acquire, a crashed holder's lock must be reclaimed within the budget, a
+  // genuinely live holder must still make acquisition time out, and the lock
+  // must always be released.
   //
   // NOTE on in-process vs. cross-process: withLock's critical section (`fn()`)
   // is synchronous, so Promise.all of several mutations in ONE process can never
@@ -2071,7 +2076,7 @@ describe('locking (mkdir spinlock)', () => {
   // several OS processes, so the no-lost-update test spawns real `nb` children.
 
   test('cross-process: concurrent `nb add` invocations on one shelf all land (no lost update)', async () => {
-    const N = 8; // small, deterministic; ~N*20ms serialization ≪ each child's 2s acquire budget
+    const N = 8; // small, deterministic; ~N*20ms serialization ≪ each child's acquire budget
     const env = { ...process.env, NB_DIR: dir };
     delete env.NB_MAX_LINES; // keep the default cap (50); N is well under it, so none is evicted
     // Fire N separate processes at the same shelf simultaneously. Without the
@@ -2092,7 +2097,7 @@ describe('locking (mkdir spinlock)', () => {
     const lock = join(dir, '.nb.lock');
     mkdirSync(lock); // a live lock held by "another process" (fresh mtime → never stolen)
     let releasedAt = 0;
-    // Free the lock well within the 2s acquire budget so the spinning op gets it.
+    // Free the lock well within the acquire budget so the spinning op gets it.
     const timer = setTimeout(() => {
       releasedAt = Date.now();
       rmSync(lock, { recursive: true, force: true });
@@ -2108,12 +2113,12 @@ describe('locking (mkdir spinlock)', () => {
     expect(readEntries(dir, 'waiter')).toEqual([{ score: 1, text: 'acquired after the lock was freed' }]);
   });
 
-  test('reclaims a stale .nb.lock (mtime older than the 10s stale threshold) and completes', async () => {
+  test('reclaims an already-stale .nb.lock (mtime older than the stale threshold) and completes', async () => {
     const lock = join(dir, '.nb.lock');
     mkdirSync(lock); // a crashed nb process left the lock dir behind
-    const agedSeconds = Date.now() / 1000 - 20; // back-date mtime 20s into the past (> 10s threshold)
+    const agedSeconds = Date.now() / 1000 - 20; // back-date mtime 20s into the past (> 10s default threshold)
     utimesSync(lock, agedSeconds, agedSeconds);
-    // The next op must steal the aged lock rather than wait out the 2s deadline.
+    // The next op must steal the aged lock immediately rather than wait out the deadline.
     const r = await addEntry(dir, 'stale', 'written after stealing a stale lock');
     expect(r.added).toBe(true);
     expect(readEntries(dir, 'stale')).toEqual([{ score: 1, text: 'written after stealing a stale lock' }]);
@@ -2121,15 +2126,64 @@ describe('locking (mkdir spinlock)', () => {
     expect(existsSync(lock)).toBe(false);
   });
 
-  test('a fresh (non-stale) lock is NOT stolen: acquisition times out after ~2s', async () => {
+  test('a crashed holder’s fresh lock is reclaimed WITHIN the acquire window, not thrown (issue #133)', async () => {
+    // The bug: a crash leaves a fresh `.nb.lock`; with a 2s budget but a 10s
+    // steal threshold the next caller gave up before the lock ever aged enough
+    // to steal, so every mutation failed with 'locked' for ~10s. With the budget
+    // derived as staleMs + grace, the caller waits past staleMs and reclaims it.
+    // Shrink the window via env so the real wait is ~150ms, not ~10s.
+    process.env.NB_STALE_LOCK_MS = '150';
+    process.env.NB_LOCK_GRACE_MS = '2000'; // budget 2150ms ≫ staleMs: the steal branch is reachable
     const lock = join(dir, '.nb.lock');
-    mkdirSync(lock); // a live lock held by another process (recent mtime → never stolen)
+    mkdirSync(lock); // a crashed nb process left a FRESH lock (mtime = now) and never touches it again
     const started = Date.now();
-    // withLock spins for its 2s budget, never steals the fresh lock, then throws.
-    await expect(addEntry(dir, 'blocked', 'should never be written')).rejects.toThrow(/locked/);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(2000);
-    // The blocked op mutated nothing: no shelf file was created.
-    expect(existsSync(join(dir, 'blocked.md'))).toBe(false);
+    const r = await addEntry(dir, 'crashed', 'reclaimed a crashed holder’s fresh lock');
+    const waited = Date.now() - started;
+    expect(r.added).toBe(true); // reclaimed and wrote, did NOT throw 'locked'
+    expect(readEntries(dir, 'crashed')).toEqual([{ score: 1, text: 'reclaimed a crashed holder’s fresh lock' }]);
+    // It genuinely spun until the lock went stale (≈staleMs) and stole it — it
+    // did not acquire instantly (the lock existed) nor wait out the full budget.
+    expect(waited).toBeGreaterThanOrEqual(100);
+    expect(waited).toBeLessThan(2000);
+    expect(existsSync(lock)).toBe(false); // the stolen lock is released again
+  }, 10_000);
+
+  test('a genuinely live holder that keeps its lock fresh still times out, reporting the DERIVED budget', async () => {
+    // Acceptance #3: the 'locked' error must still fire for a live contender that
+    // never releases. A live holder keeps touching the lock, so its mtime never
+    // ages past the stale threshold and it is never stolen — unlike a crashed
+    // holder whose lock goes stale. Renew far faster than staleMs, past the budget.
+    //
+    // This also pins the derivation BEHAVIORALLY: the thrown message reports the
+    // budget withLock actually used, so asserting it equals staleMs + grace (and
+    // is therefore >= staleMs) proves the acquire deadline is derived from the
+    // steal threshold — an assertion that, unlike `staleMs + grace >= staleMs`,
+    // a revert to a fixed `deadline = now + 2000` would fail.
+    process.env.NB_STALE_LOCK_MS = '500';
+    process.env.NB_LOCK_GRACE_MS = '100'; // budget 600ms; renew interval 20ms ≪ 500ms so the lock never goes stale
+    const lock = join(dir, '.nb.lock');
+    mkdirSync(lock);
+    const renew = setInterval(() => {
+      try {
+        const now = Date.now() / 1000;
+        utimesSync(lock, now, now); // keep mtime fresh ≪ staleMs so the lock is never stolen
+      } catch {
+        /* lock removed — stop touching it */
+      }
+    }, 20);
+    try {
+      const started = Date.now();
+      const err = await addEntry(dir, 'blocked', 'should never be written').then(
+        () => { throw new Error('expected addEntry to reject with a lock timeout, but it resolved'); },
+        (e: unknown) => e as Error,
+      );
+      expect(err.message).toMatch(/notebook is locked/);
+      expect(err.message).toContain('within 600ms'); // reports staleMs(500) + grace(100), the derived budget
+      expect(Date.now() - started).toBeGreaterThanOrEqual(600); // spun the full derived budget before giving up
+    } finally {
+      clearInterval(renew);
+    }
+    expect(existsSync(join(dir, 'blocked.md'))).toBe(false); // the blocked op mutated nothing
   }, 10_000);
 
   test('releases the lock even when the operation throws (finally path)', async () => {
