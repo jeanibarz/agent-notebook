@@ -15,7 +15,7 @@
 //   (add/vote/rm/merge/move take --json: one structured result object on stdout)
 //   nb describe <shelf> ["<text>"]          set the notebook's one-line description (or print it)
 //   nb search <query> [prefix] [--any]     SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
-//   nb stats  [<shelf>] [--since 7d] [--json]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport)
+//   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport; --exit-code = exit 3 when anomalies present)
 //   nb path   [<shelf>]                     print the notebooks dir, or a shelf's file path
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
 //   nb ls / nb shelves / nb roles          aliases of `nb list` (`roles` is deprecated)
@@ -55,6 +55,7 @@ import {
   vote,
   type EngagementDiagnosis,
   type SearchResult,
+  type StatsReport,
   type UsageMeta,
 } from './notebook.js';
 
@@ -81,7 +82,7 @@ usage:
   nb move   <from> <to> <id|query>         move an entry to another shelf, keeping its score (consolidate shelves)
   nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print the current one)
   nb search <query> [prefix] [--any]      SECONDARY keyword fallback — scan all notebooks (surfacing is the primary path)
-  nb stats  [<shelf>] [--since 7d] [--json] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
+  nb stats  [<shelf>] [--since 7d] [--json] [--exit-code] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
   nb path   [<shelf>]                      print the notebooks dir, or a shelf's resolved file path
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
@@ -180,6 +181,11 @@ notes:
     vague line: \`NB_SESSION\` unset, the retrospective nudge not landing (a notebook was opened but
     never voted), or the SessionStart hook not wired (lessons stored but nothing read them). The
     counts are \`surfacing.engagementDiagnosis\` in \`--json\` (\`null\` once any session is engaged).
+  - \`nb stats --exit-code\` turns the anomaly detector into a drop-in health gate: it exits 3
+    (distinct from 1=handled error, 2=unknown command) when the window holds >=1 anomaly, and 0
+    otherwise, so \`nb stats --exit-code >/dev/null || alert\` fires on loop/went-silent/high-error-rate.
+    The flag is opt-in — WITHOUT it \`nb stats\` always exits 0 regardless of anomalies. It composes
+    with \`--since\`/\`<shelf>\`/\`--json\` (the exit code reflects the same filtered window that is printed).
   - a notebook holds at most 50 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
@@ -503,6 +509,14 @@ export async function runNbCli(
       }
       case 'stats': {
         const rest = argv.slice(1);
+        // Opt-in health gate (#129): with --exit-code, a window holding >=1
+        // anomaly exits non-zero (3 — distinct from 1=handled error /
+        // 2=unknown command) so `nb stats --exit-code >/dev/null || alert` is a
+        // drop-in cron/CI check. Without the flag the command always exits 0,
+        // exactly as before (no breaking change). `--exit-code` starts with
+        // `--`, so it is never mistaken for the shelf positional below, and it
+        // takes no value, so it never shifts the `--since` value index.
+        const wantExitCode = rest.includes('--exit-code');
         const sinceIdx = rest.indexOf('--since');
         const sinceVal = sinceIdx >= 0 ? rest[sinceIdx + 1] : undefined;
         // Share `nb add`'s refusal to silently mislead: a mistyped --since
@@ -517,15 +531,22 @@ export async function runNbCli(
         const windowMs = sinceIdx >= 0 ? parseWindowMs(sinceVal) : undefined;
         const maybeShelf = rest.find((a, i) => !a.startsWith('--') && (sinceIdx < 0 || i !== sinceIdx + 1));
         shelf = maybeShelf ?? '-';
+        // Compute the report once: both the --json dump and the human render
+        // consume it, and the --exit-code gate reads its anomaly count.
+        const rep = stats(dir, { shelf: maybeShelf, windowMs });
         // `--json` emits the raw StatsReport (stable, machine-readable) so a
         // supervising agent can act on a loop/went-silent/high-error-rate
         // anomaly without regex-parsing the human table. The --since warning
         // above stays on stderr, keeping stdout pure JSON.
         if (rest.includes('--json')) {
-          process.stdout.write(JSON.stringify(stats(dir, { shelf: maybeShelf, windowMs })) + '\n');
+          process.stdout.write(JSON.stringify(rep) + '\n');
         } else {
-          process.stdout.write(renderStats(dir, maybeShelf, windowMs) + '\n');
+          process.stdout.write(renderStats(rep, maybeShelf) + '\n');
         }
+        // The command itself succeeded (stats read cleanly); the usage log must
+        // record that, so set `ok` before the opt-in anomaly exit returns early.
+        ok = true;
+        if (wantExitCode && rep.anomalies.length > 0) return 3;
         break;
       }
       case 'path': {
@@ -775,8 +796,7 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
   return { out: lines.join('\n') + '\n', err: '' };
 }
 
-function renderStats(dir: string, shelf: string | undefined, windowMs: number | undefined): string {
-  const rep = stats(dir, { shelf, windowMs });
+function renderStats(rep: StatsReport, shelf: string | undefined): string {
   const lines: string[] = [];
   lines.push(`nb usage — ${shelf ? `shelf ${shelf}, ` : ''}window ${rep.window}, ${rep.totalCalls} calls`);
   // Ops-per-day activity sparkline (issue #106): one glyph per rolling-24h

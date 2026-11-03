@@ -213,6 +213,73 @@ describe('runNbCli', () => {
     expect(s.out).toMatch(/^\s*add\s+\d+\s+\d+%/m);
   });
 
+  // --exit-code (issue #129): the opt-in health gate. Seed a tight loop of calls
+  // so the window holds a `loop` anomaly, exactly as the anomaly-render test does,
+  // and assert the exit code across the three cases. Exit 3 is deliberate: it is
+  // distinct from 1 (handled error) and 2 (unknown command).
+  function seedLoop(): void {
+    process.env.NB_LOOP_N = '3';
+    process.env.NB_LOOP_WINDOW_S = '120';
+    const now = Date.now();
+    const rows = Array.from({ length: 4 }, (_, i) =>
+      `${new Date(now - i * 1000).toISOString()}\tpatcher\tadd\tok\t2ms`,
+    );
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+  }
+
+  test('stats --exit-code exits 3 when the window holds an anomaly', async () => {
+    seedLoop();
+    const s = await run(['stats', 'patcher', '--exit-code']);
+    expect(s.out).toContain('  anomalies:'); // the anomaly is present and printed
+    expect(s.out).not.toContain('anomalies: none');
+    expect(s.code).toBe(3); // non-zero, and distinct from 1/2
+  });
+
+  test('stats --exit-code exits 0 when the window holds no anomaly', async () => {
+    // A single healthy `add` with the default loop threshold → no anomaly.
+    await run(['add', 'patcher', 'x']);
+    const s = await run(['stats', 'patcher', '--exit-code']);
+    expect(s.out).toContain('anomalies: none');
+    expect(s.code).toBe(0);
+  });
+
+  test('stats WITHOUT --exit-code still exits 0 even when an anomaly is present (no breaking change)', async () => {
+    seedLoop();
+    const s = await run(['stats', 'patcher']); // same anomalous window, no flag
+    expect(s.out).toContain('  anomalies:'); // the anomaly is still detected and printed
+    expect(s.out).not.toContain('anomalies: none');
+    expect(s.code).toBe(0); // default behavior unchanged: always 0
+  });
+
+  test('stats --exit-code composes with --json (JSON on stdout, exit 3 on anomaly)', async () => {
+    seedLoop();
+    const s = await run(['stats', 'patcher', '--exit-code', '--json']);
+    const rep = JSON.parse(s.out);
+    expect(rep.anomalies.length).toBeGreaterThanOrEqual(1);
+    expect(s.code).toBe(3);
+  });
+
+  test('stats --exit-code composes with --since (exit 3 on the filtered window)', async () => {
+    seedLoop(); // rows are seconds old, so a 30m window still holds the loop
+    const s = await run(['stats', 'patcher', '--since', '30m', '--exit-code']);
+    expect(s.out).toContain('window 30m');
+    expect(s.code).toBe(3);
+  });
+
+  test('an exit-3 stats run still logs its own call as ok (ok=true precedes the early return)', async () => {
+    // The anomaly exit returns 3 from inside the try, BEFORE the `ok = true` after
+    // the switch. The stats case sets `ok = true` itself so the finally's logUsage
+    // records the call as a success — otherwise the self-logged `stats` row would
+    // read as an error and feed the high-error-rate detector. Guard that here: run
+    // --exit-code to exit 3, then assert every `stats` row in the log is `ok`.
+    seedLoop();
+    const s = await run(['stats', 'patcher', '--exit-code']);
+    expect(s.code).toBe(3);
+    const statsRows = parseUsage(dir).filter((r) => r.command === 'stats');
+    expect(statsRows.length).toBeGreaterThanOrEqual(1); // the call self-logged
+    expect(statsRows.every((r) => r.ok)).toBe(true); // ...and as a success, not an error
+  });
+
   test('the human stats table renders the ops-per-day activity sparkline line (issue #106)', async () => {
     // Seed a known pattern: the OLDEST 24h bucket (≈6.5 days ago) is the busiest.
     // The `stats` call self-logs one row into the NEWEST bucket, so only the
