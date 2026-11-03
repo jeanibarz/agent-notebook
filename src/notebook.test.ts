@@ -71,10 +71,12 @@ import {
   remove,
   render,
   sanitizeLesson,
+  asciiMode,
   search,
   setDescription,
   setMetaValue,
   showJson,
+  sparkGlyphs,
   sparkline,
   split,
   stats,
@@ -1313,6 +1315,106 @@ describe('sparkline (issue #106)', () => {
   test('every nonzero bucket is scaled against the max, not min–max (a near-flat series stays near the top)', () => {
     // min–max scaling would make [6,7,8] read ▁▄█; zero-based keeps all three high.
     expect(sparkline([6, 7, 8])).toBe('▆▇█');
+  });
+});
+
+describe('sparkline ASCII glyph set (issue #136)', () => {
+  const ASCII = '0123456789';
+
+  test('the default (no glyph argument) output is unchanged — still Unicode blocks', () => {
+    expect(sparkline([0, 1, 2, 3, 4, 5, 6, 7])).toBe('▁▂▃▄▅▆▇█');
+  });
+
+  test('a passed ASCII ramp conveys relative bar heights (0 floor, max top, exact scaling)', () => {
+    // 0→floor, 8→top (9), 4→round(4/8*9)=round(4.5)=5 (relative middle height).
+    expect(sparkline([0, 8, 4], ASCII)).toBe('095');
+  });
+
+  test('the ASCII render (via the real sparkGlyphs ramp) contains only ASCII, unlike the Unicode run', () => {
+    // A varied series through the *production* ramp, not a local literal: this is
+    // the acceptance criterion "the activity row contains only ASCII".
+    const series = [0, 3, 1, 7, 2, 9, 5];
+    const asciiOut = sparkline(series, sparkGlyphs({ NB_ASCII: '1' }));
+    expect(/^[\x00-\x7f]*$/.test(asciiOut)).toBe(true);
+    // The assertion is meaningful: the SAME series through the Unicode ramp is
+    // NOT all-ASCII, so the check above would fail if the ramp leaked blocks.
+    const unicodeOut = sparkline(series, sparkGlyphs({ LANG: 'en_US.UTF-8' }));
+    expect(/^[\x00-\x7f]*$/.test(unicodeOut)).toBe(false);
+  });
+
+  test('ASCII floor: an all-zero (silent) series reads as the floor digit in every slot', () => {
+    expect(sparkline([0, 0, 0], ASCII)).toBe('000');
+  });
+
+  test('ASCII scales 0..max across the full ramp (monotonic, non-decreasing heights)', () => {
+    const out = sparkline([0, 1, 2, 3, 4, 5, 6, 7, 8], ASCII);
+    expect(out).toBe('012356789');
+    const digits = [...out].map(Number);
+    for (let i = 1; i < digits.length; i++) {
+      expect(digits[i]).toBeGreaterThanOrEqual(digits[i - 1]);
+    }
+  });
+
+  test('ASCII empty input renders the empty string', () => {
+    expect(sparkline([], ASCII)).toBe('');
+  });
+});
+
+describe('asciiMode / sparkGlyphs env selection (issue #136)', () => {
+  test('NB_ASCII truthy forces ASCII and overrides a UTF-8 locale', () => {
+    for (const v of ['1', 'true', 'yes', 'on', 'anything']) {
+      const env = { NB_ASCII: v, LANG: 'en_US.UTF-8' };
+      expect(asciiMode(env)).toBe(true);
+      expect(sparkGlyphs(env)).toBe('0123456789');
+    }
+  });
+
+  test('NB_ASCII falsey forces Unicode and overrides a non-UTF-8 locale', () => {
+    for (const v of ['', '0', 'false', 'no', 'off', ' OFF ']) {
+      const env = { NB_ASCII: v, LANG: 'C' };
+      expect(asciiMode(env)).toBe(false);
+      expect(sparkGlyphs(env)).toBe('▁▂▃▄▅▆▇█');
+    }
+  });
+
+  test('with NB_ASCII unset, a non-UTF-8 locale selects ASCII', () => {
+    expect(asciiMode({ LANG: 'C' })).toBe(true);
+    expect(asciiMode({ LANG: 'POSIX' })).toBe(true);
+    expect(asciiMode({ LANG: 'en_US.ISO-8859-1' })).toBe(true);
+    expect(sparkGlyphs({ LC_ALL: 'C' })).toBe('0123456789');
+  });
+
+  test('with NB_ASCII unset, a UTF-8 locale keeps the Unicode default (case-insensitive, utf8/utf-8)', () => {
+    expect(asciiMode({ LANG: 'en_US.UTF-8' })).toBe(false);
+    expect(asciiMode({ LANG: 'en_US.utf8' })).toBe(false);
+    expect(asciiMode({ LC_CTYPE: 'fr_FR.UTF-8' })).toBe(false);
+    expect(sparkGlyphs({ LANG: 'en_US.UTF-8' })).toBe('▁▂▃▄▅▆▇█');
+  });
+
+  test('with no locale vars and no NB_ASCII, defaults to Unicode (absence is not forced ASCII)', () => {
+    expect(asciiMode({})).toBe(false);
+    expect(sparkGlyphs({})).toBe('▁▂▃▄▅▆▇█');
+  });
+
+  test('locale precedence: LC_ALL > LC_CTYPE > LANG', () => {
+    // LC_ALL (C) wins over a UTF-8 LANG → ASCII.
+    expect(asciiMode({ LC_ALL: 'C', LANG: 'en_US.UTF-8' })).toBe(true);
+    // LC_CTYPE (UTF-8) wins over a C LANG → Unicode.
+    expect(asciiMode({ LC_CTYPE: 'en_US.UTF-8', LANG: 'C' })).toBe(false);
+  });
+
+  test('locale precedence: LC_ALL outranks LC_CTYPE when both are set', () => {
+    // LC_ALL (C) wins over a UTF-8 LC_CTYPE → ASCII. Isolates the LC_ALL→LC_CTYPE
+    // ordering: swapping the two in the chain would flip this to Unicode.
+    expect(asciiMode({ LC_ALL: 'C', LC_CTYPE: 'en_US.UTF-8' })).toBe(true);
+  });
+
+  test('an empty LC_ALL is treated as unset and falls through to LANG (POSIX)', () => {
+    // `LC_ALL=` is common in real shells; POSIX treats it as unset. The `||`
+    // chain falls through to LANG=C → ASCII; a `??` chain would wrongly stop at
+    // the empty string and read it as a UTF-8-less-but-also-not-set no-op.
+    expect(asciiMode({ LC_ALL: '', LANG: 'C' })).toBe(true);
+    expect(asciiMode({ LC_ALL: '', LANG: 'en_US.UTF-8' })).toBe(false);
   });
 });
 
