@@ -787,6 +787,191 @@ describe('operation reasons (seed-and-grow enum)', () => {
   });
 });
 
+describe('usage-log TSV wire format (golden, issue #126)', () => {
+  // The usage log is a positional 12-column TSV read back by parseUsage and, for
+  // pre-upgrade rings, by any older reader that looks only at the first five
+  // columns. The behavioral round-trip tests above all go THROUGH parseUsage, so
+  // a reorder or insertion of a column would round-trip cleanly while silently
+  // mis-parsing OLD on-disk rows. These tests pin the serialized shape itself —
+  // the exact column order and count — as a byte-level fixed point, so any
+  // reorder/insert/remove fails here and becomes a deliberate, visible change.
+
+  // The documented column order (notebook.ts logUsage): ts, shelf, command, ok,
+  // ms, session, entries, outcome, collided, evicted, reason, note.
+  const COLUMN_ORDER = [
+    'ts', 'shelf', 'command', 'ok', 'ms', 'session',
+    'entries', 'outcome', 'collided', 'evicted', 'reason', 'note',
+  ] as const;
+
+  test('a fully-populated row serializes as exactly 12 tab-separated columns in the documented order', () => {
+    // Distinct, recognizable value per column so a swap of any two columns is
+    // detectable (not just a count change) — generic values would let a reorder
+    // pass. ms=1234 and ok=true pin the `1234ms` / `ok` renderings too.
+    logUsage(dir, 'myshelf', 'merge', true, 1234, {
+      session: 'sess-7',
+      entries: ['aaa', 'bbb'],
+      outcome: 'merged',
+      collided: 'ccc',
+      evicted: 'ddd:0.5',
+      reason: 'duplicate',
+      note: 'some note',
+    });
+
+    const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
+    expect(raw.endsWith('\n')).toBe(true); // rows are newline-terminated
+    // Split off the trailing newline only — NOT trimEnd(), which would also eat
+    // trailing empty columns (tabs are whitespace) and hide a dropped last column.
+    const linesWritten = raw.split('\n').filter((l) => l !== '');
+    expect(linesWritten).toHaveLength(1);
+    const cols = linesWritten[0].split('\t');
+
+    // Exactly 12 columns — a removed or injected column fails here first (an
+    // insertion pushes the width past the 12 names in COLUMN_ORDER, a removal
+    // below them).
+    expect(cols).toHaveLength(COLUMN_ORDER.length);
+
+    // Zip the row against the documented column NAMES, so the assertion reads as
+    // name→value and a reorder shifts a value onto the wrong name (not merely a
+    // wrong index). COLUMN_ORDER is thus load-bearing, not decorative.
+    const byName = Object.fromEntries(COLUMN_ORDER.map((name, i) => [name, cols[i]]));
+
+    // Column 0 is the ISO-8601 timestamp (dynamic, so matched by shape).
+    expect(byName.ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+
+    // The remaining columns are pinned to their exact literal serialization,
+    // keyed by name — a reorder or insertion fails this equality.
+    const { ts: _ts, ...rest } = byName;
+    expect(rest).toEqual({
+      shelf: 'myshelf',
+      command: 'merge',
+      ok: 'ok', // true → 'ok'
+      ms: '1234ms', // Math.round(ms) + 'ms'
+      session: 'sess-7',
+      entries: 'aaa,bbb', // comma-joined
+      outcome: 'merged',
+      collided: 'ccc',
+      evicted: 'ddd:0.5', // <id>:<finalScore>
+      reason: 'duplicate',
+      note: 'some note',
+    });
+  });
+
+  test('err status and an empty-meta row still render the fixed 12-column frame', () => {
+    // A `show`-shaped call fills no richer meta; the trailing columns must still
+    // be present (empty), keeping the frame 12 columns wide — an old reader that
+    // slices the first five columns depends on this stable prefix. session is
+    // pinned to '' so an ambient NB_SESSION cannot populate column 5.
+    logUsage(dir, 's', 'show', false, 2, { session: '' });
+    // Split on the row's own newline, not trimEnd(), so the trailing empty
+    // columns (which are tabs) are preserved and counted.
+    const line = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').split('\n').filter((l) => l !== '')[0];
+    const cols = line.split('\t');
+    expect(cols).toHaveLength(12);
+    // The stable 5-column prefix an old reader slices: shelf, command, ok, ms.
+    expect(cols.slice(1, 5)).toEqual(['s', 'show', 'err', '2ms']); // ok=false → 'err'
+    // session..note (indices 5..11) are all empty for a bare call.
+    expect(cols.slice(5)).toEqual(['', '', '', '', '', '', '']);
+  });
+
+  test('a legacy 5-column row parses with the newer columns defaulting to blank/empty', () => {
+    // The backward-compat contract: a ring written before the richer columns
+    // existed holds only ts, shelf, command, ok, ms. It must still parse, with
+    // every appended column (session…note) defaulting to blank/empty.
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      '2026-01-02T03:04:05.000Z\tp\tadd\tok\t5ms\n',
+      'utf-8',
+    );
+    const rows = parseUsage(dir);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({
+      ts: '2026-01-02T03:04:05.000Z',
+      role: 'p',
+      command: 'add',
+      ok: true,
+      ms: 5,
+      session: '',
+      entries: [],
+      outcome: '',
+      collided: '',
+      evicted: '',
+      reason: '',
+      note: '',
+    });
+  });
+
+  test('parseUsage pins the READER column order: a hand-typed 12-column row maps each field to its documented position', () => {
+    // The writer golden above pins logUsage's serialization; this pins the
+    // reader independently. parseUsage destructures positionally, so a reorder
+    // of ITS destructuring (e.g. swapping collided/evicted) would not be caught
+    // by the legacy test (whose richer columns are all blank). A distinct value
+    // per column makes any reader reorder fail this full `toEqual`.
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      '2026-01-02T03:04:05.000Z\tmyshelf\tmerge\tok\t1234ms\tsess-7\taaa,bbb\tmerged\tccc\tddd:0.5\tduplicate\tsome note\n',
+      'utf-8',
+    );
+    expect(parseUsage(dir)[0]).toEqual({
+      ts: '2026-01-02T03:04:05.000Z',
+      role: 'myshelf',
+      command: 'merge',
+      ok: true,
+      ms: 1234,
+      session: 'sess-7',
+      entries: ['aaa', 'bbb'],
+      outcome: 'merged',
+      collided: 'ccc',
+      evicted: 'ddd:0.5',
+      reason: 'duplicate',
+      note: 'some note',
+    });
+  });
+
+  test('parseUsage reads a MIXED post-upgrade ring: a legacy 5-column row followed by a full 12-column row', () => {
+    // The real on-disk state right after an upgrade: old rows written by the
+    // pre-richer-columns code, then new rows with all 12. Both must parse in one
+    // file — the legacy row with blank richer columns, the new row fully.
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      '2026-01-01T00:00:00.000Z\tp\tadd\tok\t5ms\n' +
+        '2026-01-02T03:04:05.000Z\ts\tmerge\terr\t9ms\tsess\taaa\tmerged\tccc\tddd:0.5\tduplicate\tnote\n',
+      'utf-8',
+    );
+    const rows = parseUsage(dir);
+    expect(rows).toHaveLength(2);
+    // Legacy row: richer columns default to blank/empty.
+    expect(rows[0]).toEqual({
+      ts: '2026-01-01T00:00:00.000Z',
+      role: 'p',
+      command: 'add',
+      ok: true,
+      ms: 5,
+      session: '',
+      entries: [],
+      outcome: '',
+      collided: '',
+      evicted: '',
+      reason: '',
+      note: '',
+    });
+    // Full row: every richer column is parsed into its field.
+    expect(rows[1]).toEqual({
+      ts: '2026-01-02T03:04:05.000Z',
+      role: 's',
+      command: 'merge',
+      ok: false,
+      ms: 9,
+      session: 'sess',
+      entries: ['aaa'],
+      outcome: 'merged',
+      collided: 'ccc',
+      evicted: 'ddd:0.5',
+      reason: 'duplicate',
+      note: 'note',
+    });
+  });
+});
+
 describe('rm', () => {
   test('removes an entry by substring', async () => {
     await addEntry(dir, 'd', 'keep me');
