@@ -393,6 +393,7 @@ The anomaly detection in `nb stats` (loop / went-silent / high-error-rate flags)
 - `NB_ERR_RATE` — fraction of a command's calls that failed, above which it is flagged (default `0.3` = 30%, range `0`–`1`).
 - `NB_COVERAGE_HI` — coverage at/above which the surfacing readout reads novel-adds as HIGH (default `0.5`, range `0`–`1`).
 - `NB_RECALL_MISS_HI` — recall-miss at/above which the surfacing readout reads dedup-blocks as HIGH (default `0.2`, range `0`–`1`).
+- `NB_NEAR_DUP` — trigram-Jaccard similarity at/above which an accepted `nb add` also prints a non-blocking merge suggestion (default `0.5`, range `0`–`1`; `0` disables the advisory).
 
 ## Programmatic use
 
