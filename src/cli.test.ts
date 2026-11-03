@@ -1610,3 +1610,127 @@ describe('shelf terminology (role kept as a deprecated alias)', () => {
     expect(r.out).toContain('and failed-search (a search returned nothing');
   });
 });
+
+// Issue #131: the HELP constant is hand-maintained and must stay in sync with
+// the command dispatch switch. Issue #116 was exactly this drift (help said cap
+// 200 when it was 50, and omitted a signal). The point-check help tests above
+// assert specific tokens reactively; none asserts that the FULL command set is
+// documented, so a newly-added command that forgets its HELP line would ship
+// undocumented with no failing test. These guards derive BOTH sets
+// programmatically — the dispatched commands from the `switch (cmd)` block in
+// the cli.ts source, the documented commands from the rendered `nb --help`
+// usage block — and assert they cover the same command set, in BOTH directions,
+// so the NEXT command that forgets its help entry (or a help line with no
+// dispatch) turns the suite red. Matching is on the command TOKEN, not exact
+// phrasing, so wording/alignment changes to HELP never make the guard brittle.
+describe('HELP ↔ dispatch drift guard (issue #131)', () => {
+  // Read the SOURCE, mirroring the issue-#140 terminology guards above, because
+  // the command set is not enumerable at runtime.
+  const cliSrc = readFileSync(join(REPO_ROOT, 'src', 'cli.ts'), 'utf8');
+
+  // cli.ts has exactly ONE `switch` — the command dispatch (`switch (cmd)`) — so
+  // every `case` label in the file is a dispatched command. That invariant is
+  // what makes "scan every case label" a sound way to enumerate the switch; it
+  // is pinned by its own test below, so a second switch added later fails loudly
+  // and forces this guard to be revisited rather than silently miscounting.
+  const switchCount = [...cliSrc.matchAll(/\bswitch\s*\(/g)].length;
+
+  // Dispatched command set = the `case '<cmd>':` labels (aliases included:
+  // list/ls/shelves/roles). Quote-agnostic (', ", or `) so a case written with a
+  // different quote style is still captured and still required to be documented.
+  const dispatched = [...cliSrc.matchAll(/case\s+(['"`])([^'"`]+)\1\s*:/g)].map((m) => m[2]);
+  const dispatchedSet = new Set(dispatched);
+
+  // A few commands are dispatched by `if (cmd === '…')` BEFORE the switch
+  // (`--help`/`--version` and their short aliases). Scan just that early-exit
+  // region (from the `cmd` binding to the `notebooksDir()` call) so a NEW
+  // pre-switch command cannot slip past the guard merely by not being a switch
+  // case — the #116-class drift the issue targets is "a dispatched command with
+  // no HELP line", regardless of HOW it is dispatched.
+  const fnStart = cliSrc.indexOf('const cmd = (argv[0]');
+  const preSwitchRegion = cliSrc.slice(
+    fnStart,
+    cliSrc.indexOf('const dir = notebooksDir()', fnStart),
+  );
+  const preSwitchCmds = [...preSwitchRegion.matchAll(/cmd === '([^']+)'/g)].map((m) => m[1]);
+  // The short aliases HELP deliberately omits — the long `--help`/`--version`
+  // are the documented forms. Listed explicitly so a NEW pre-switch command is
+  // never silently waved through: it must be documented, or added here on purpose.
+  const UNDOCUMENTED_PRESWITCH_ALIASES = new Set(['-h', 'help', '-v', 'version']);
+
+  // Documented command set = the first token after `nb` on each line of the
+  // rendered `nb --help` usage block (sliced at the `notes:` section so prose
+  // mentions of commands are never parsed as usage). The non-emptiness
+  // assertions stop a parser regression from letting the guards pass vacuously.
+  async function documentedTokens(): Promise<string[]> {
+    const out = (await run(['--help'])).out;
+    const start = out.indexOf('usage:');
+    expect(start).not.toBe(-1); // there must be a usage block, else parsing is vacuous
+    const notes = out.indexOf('notes:');
+    const usage = out.slice(start, notes === -1 ? out.length : notes);
+    // Only usage lines begin (after indentation) with `nb`; note lines start
+    // with `- ` or a backtick, so this anchored match captures usage tokens only.
+    const tokens = [...usage.matchAll(/^\s+nb\s+(\S+)/gm)].map((m) => m[1]);
+    expect(tokens.length).toBeGreaterThan(0); // never let an empty parse pass vacuously
+    return tokens;
+  }
+
+  test('cli.ts has exactly one command-dispatch switch, with no duplicate case labels', () => {
+    // The invariant the `case`-scan relies on; a second switch must revisit this guard.
+    expect(switchCount).toBe(1);
+    expect(dispatched.length).toBe(dispatchedSet.size);
+  });
+
+  test('every dispatched command is documented in HELP (a new command without a HELP line fails this)', async () => {
+    const documented = new Set(await documentedTokens());
+    // Named per-command so a failure says exactly which command lost its help line.
+    const undocumented = dispatched.filter((cmd) => !documented.has(cmd));
+    expect(undocumented).toEqual([]);
+  });
+
+  test('every subcommand documented in HELP is actually dispatched (no phantom help line)', async () => {
+    // A `-`-prefixed token is a flag (checked separately), not a word subcommand.
+    const documentedSubcommands = (await documentedTokens()).filter((t) => !t.startsWith('-'));
+    const undispatched = documentedSubcommands.filter((cmd) => !dispatchedSet.has(cmd));
+    expect(undispatched).toEqual([]);
+  });
+
+  test('every pre-switch command (`--help`/`--version` & aliases) is documented or a known omitted alias', async () => {
+    const documented = new Set(await documentedTokens());
+    expect(preSwitchCmds.length).toBeGreaterThan(0); // the region must still parse
+    const orphans = preSwitchCmds.filter(
+      (cmd) => !documented.has(cmd) && !UNDOCUMENTED_PRESWITCH_ALIASES.has(cmd),
+    );
+    expect(orphans).toEqual([]);
+  });
+
+  // Anti-vacuous-pass anchor: if the `case` parser silently returned an empty set
+  // the equality guards above could pass trivially, so pin that the derived
+  // dispatched set actually captured the full known current command set
+  // (show/add/vote/merge/split/rm/move/describe/search/stats/path/list + the list
+  // aliases). New commands only grow this set, so the `toContain` floor stays
+  // green as commands evolve — it asserts coverage, not an exact ceiling.
+  test('the derived dispatched set covers the full known current command set', () => {
+    for (const cmd of [
+      'show', 'add', 'vote', 'merge', 'split', 'rm', 'move',
+      'describe', 'search', 'stats', 'path', 'list', 'ls', 'shelves', 'roles',
+    ]) {
+      expect(dispatched).toContain(cmd);
+    }
+  });
+
+  // The flag "commands" HELP documents (`nb --help`, `nb --version`) are
+  // dispatched before the switch, not as cases, so the subcommand guards skip
+  // them. Assert the long forms are present and that EVERY documented flag is a
+  // real, working entrypoint (exit 0) — a phantom `nb --bogus` help line would
+  // hit the unknown-command default and exit 2, so this also guards the reverse
+  // direction for flags without pinning an exact, brittle flag set.
+  test('every documented flag command is a real working entrypoint', async () => {
+    const flags = (await documentedTokens()).filter((t) => t.startsWith('-'));
+    expect(flags).toContain('--help');
+    expect(flags).toContain('--version');
+    for (const flag of flags) {
+      expect((await run([flag])).code).toBe(0);
+    }
+  });
+});
