@@ -35,6 +35,14 @@ versions are listed plainly.
   (NG-001 amended to permit a non-blocking lexical advisory while the *blocking* decision stays
   exact-normal-form only).
 
+### Documentation
+- **README recentered on the developer audience, with the compounding payoff stated plainly (#139).**
+  The top of the README now opens with a one-line *who this is for* (developers who run AI agents and
+  want them to carry a few durable lessons across runs) and a plain payoff sentence (the agent remembers
+  hard-won lessons, avoids repeating mistakes, and improves over the experience it has chosen to keep — voted by
+  usefulness, bounded in size), instead of describing the tool mostly by what it is not. `nb --help` now
+  echoes the same one-line description so the framing is consistent in-product.
+
 ## [0.5.0] - 2026-10-31
 
 ### Fixed
