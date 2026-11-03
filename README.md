@@ -71,6 +71,30 @@ npm run build
 npm link   # puts `nb` on your PATH, pointing at this clone
 ```
 
+## Your first lesson
+
+New to `nb`? Add one lesson and read it back — that is the whole loop. Every command is `nb <command> <shelf> …`, where a **shelf** is just a notebook name you pick.
+
+1. **Add a lesson** to a shelf called `reviewer`:
+
+   ```
+   $ nb add reviewer "run lint before claiming done"
+   added — 1 line
+   ```
+
+2. **Show the shelf** to read it back:
+
+   ```
+   $ nb show reviewer
+   acf179  [+1]  run lint before claiming done
+   ```
+
+   Each line is `<id>  [<score>]  <lesson>`. The lesson enters at the `+1` floor, and `acf179` is its short stable id — derived from the text, so yours will match — which you pass to `vote`, `rm`, and `merge` later.
+
+Replace `reviewer` with any short shelf name (letters, no spaces); keep the quotes around the lesson. There is nothing to set up first: the shelf and its folder (`~/.agent-notebook/notebooks`) are created on the first `nb add`.
+
+**Reading the command reference.** Throughout this README and `nb --help`, `<angle brackets>` mark a value you must replace (`<shelf>`, `<lesson>`), and `[square brackets]` mark an optional argument you can leave out (`[--since 7d]`). Type the value or flag — never the brackets themselves.
+
 ## Guides
 
 New here, or wiring it into a real agent? These pick up where the reference below leaves off:
@@ -102,6 +126,52 @@ nb --help                               show this help
 ```
 
 Every `show` line starts with a short stable id — pass that id (or a unique prefix, or a unique text substring) to `vote`/`rm`/`merge`/`split`/`move`. An over-long `add` is rejected outright, never silently truncated, so you rewrite it shorter instead of storing a cut-off, useless lesson.
+
+### Selecting an entry — `id` vs. `query`
+
+Every command that acts on one entry — `vote`, `rm`, `merge`, `split`, `move` — takes a **selector** that is either:
+
+- an **`id`** — the short stable code at the start of each `nb show` line (e.g. `acf179`), or a unique prefix of it; or
+- a **`query`** — any unique text substring of the lesson (e.g. `lint before`).
+
+Either way the selector must match **exactly one** entry. If it matches none, or more than one, the command changes nothing and lists the candidates so you can pick the one you mean.
+
+Picking up the `reviewer` shelf from [Your first lesson](#your-first-lesson), add a second, near-duplicate lesson so there is something to select between:
+
+```
+$ nb add reviewer "run the linter first"
+added — 2 lines
+
+$ nb show reviewer
+acf179  [+1]  run lint before claiming done
+dce866  [+1]  run the linter first
+```
+
+**Vote** an entry up or down — a vote also marks it recently used, which is what keeps it from aging out:
+
+```
+$ nb vote reviewer acf179 +1
++1 → [+2] run lint before claiming done
+```
+
+**Merge** two near-duplicate entries into one line (here one selected by `id`, one by `query`); the survivor inherits the higher of the two scores:
+
+```
+$ nb merge reviewer acf179 "linter first" "run lint before every commit"
+merged two entries into one — 1 lines
+
+$ nb show reviewer
+8ddce2  [+2]  run lint before every commit
+```
+
+**Remove** an entry you no longer want:
+
+```
+$ nb rm reviewer "lint before every commit"
+removed — [+2] run lint before every commit
+```
+
+`rm` takes effect immediately and there is **no in-tool undo** — the line is gone from the notebook. Because a notebook is just a plain text file, though, a deleted lesson is recoverable with `git checkout`/`git revert` when the notebooks directory is under git (the [per-change git-versioning hook](docs/harness-setup.md) sets that up).
 
 **Splitting an overloaded entry.** `nb split` is the reverse of `merge`: it replaces one entry with two, each inheriting the original's score — for when a line turned out to be two lessons crammed together. Each half is rejected (not truncated) if too long, and a split never creates a duplicate: the two halves must differ from each other and from every surviving entry, or the split is refused and nothing changes.
 
