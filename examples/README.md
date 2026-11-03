@@ -22,3 +22,14 @@ security or data-sovereignty constraints, see the
 
 These scripts are examples to adapt, not a published API — they are intentionally
 short and commented so you can read and modify them. Each is standalone.
+
+## Status of these examples
+
+- **Claude Code is the primary target** — the [`hooks/claude-code/`](hooks/claude-code/)
+  example is written against it. The [Codex CLI](hooks/codex-cli/) pieces and any
+  other harness are a lighter-touch starting point: adapt and **test them in your
+  own setup** before relying on them. They are reference integrations, not a
+  certified, supported matrix.
+- **There is no MCP server.** `nb` is a plain, offline CLI; integrate it through
+  the hooks or the [AGENTS.md / CLAUDE.md contract](../AGENTS.md) above, not an
+  MCP endpoint.
