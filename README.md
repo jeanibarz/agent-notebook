@@ -53,6 +53,41 @@ Because a notebook is a plain file in a git-backed directory, everything your ag
 
 <p align="center"><img src="https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/assets/gitdiff.svg" alt="git diff on a notebook file: an added lesson shows as a green plus line and a recorded vote as a minus/plus score change — memory you can code-review." width="760"></p>
 
+## How it fits into your agent
+
+`nb` is a **store, not a loop.** It never runs itself: install it and walk away, and it stays an empty folder of plain-text files — nothing retrieves a lesson, nothing records one. The compounding only happens when your agent *harness* — the runner or framework around the model, such as Claude Code, Codex CLI, or your own agent loop — drives two steps around each task, one to get lessons out and one to put lessons back:
+
+- **Retrieve** — at the **start** of a task, surface the shelf that fits and inject it into the agent's context. List the notebooks so the agent can choose by description (`nb list`), then open what fits (`nb show <shelf>`). Those lessons ride along in context while the agent works — the point of the tool is that the lesson is *shown*, so the agent gets the one it would never have thought to search for.
+- **Reflect** — at the **end** of a task, fold back what the work taught: `nb vote <shelf> <id> +1|-1` on the lessons that helped or misled, and `nb add <shelf> "<lesson>"` for at most one newly learned, durable lesson (the shelf is bounded, so one sharp line is worth more than three padded ones). This is what lets the store grow and re-rank itself instead of staying frozen at whatever you first seeded it with.
+
+Omit retrieve and the agent never sees its own past lessons; omit reflect and the store never grows. With neither, `nb` is just an unused folder — which is why a fresh install looks empty and unread until the loop is wired in.
+
+### The loop, end to end
+
+```mermaid
+flowchart LR
+    A([Task starts]) --> B["① Retrieve<br/>nb list · nb show &lt;shelf&gt;"]
+    B --> C["② Agent works<br/>lessons already in context"]
+    C --> D["③ Reflect<br/>nb vote · nb add"]
+    D -.->|next task starts wiser| A
+```
+
+| When | What runs | What drives it |
+|---|---|---|
+| **Task start** | `nb list`, then `nb show <shelf>` on what fits | a SessionStart hook, or a start-of-task instruction |
+| **Agent works** | *(ordinary reasoning — the lessons are already in context)* | — |
+| **Task end** | `nb vote` on lessons used, `nb add` for a new one | a Stop / completion hook, or the same instruction |
+
+### Why a hook — recommended, not required
+
+Both steps can run from a plain **instruction** in the agent's system prompt or `AGENTS.md`: *"list the notebooks, open the ones that fit, and run a retrospective before you finish."* For a short task that is enough — the instruction is still near the top of the context when the agent wraps up, so it remembers to reflect.
+
+The reflect step is the fragile half. **The longer the task runs, the more context accumulates between that up-front instruction and the moment it matters — and the likelier the agent is to simply finish, having lost track of a retrospective it was told about only once, long ago.** A **completion-time hook** removes that dependence on memory: it fires at (or just before) the agent's stop and re-injects the reflect prompt exactly when it is needed, no matter how long the task ran or how full the context grew. That is why a hook is *recommended* rather than *required* — the loop runs without one, but a hook is the reliable way to keep the reflect step from degrading on long tasks. (A SessionStart hook that front-loads `nb list` is a smaller convenience on the retrieve side.)
+
+### Wire it up
+
+The copy-paste **reference integration** — SessionStart + retrospective hooks for **Claude Code**, and the contract + PATH wrapper for **Codex CLI** — lives in [`examples/`](examples/). The **[Harness setup guide](docs/harness-setup.md)** walks through it OS by OS, and **[AGENTS.md](AGENTS.md)** is the one-paragraph instruction itself.
+
 ## Install
 
 Requires Node.js 18+.
