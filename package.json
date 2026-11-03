@@ -14,8 +14,7 @@
     "ai-agents",
     "llm",
     "agent-memory",
-    "cli",
-    "mcp"
+    "cli"
   ],
   "type": "module",
   "engines": {
@@ -34,6 +33,7 @@
   },
   "files": [
     "dist",
+    "examples",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

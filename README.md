@@ -86,7 +86,9 @@ The reflect step is the fragile half. **The longer the task runs, the more conte
 
 ### Wire it up
 
-The copy-paste **reference integration** — SessionStart + retrospective hooks for **Claude Code**, and the contract + PATH wrapper for **Codex CLI** — lives in [`examples/`](examples/). The **[Harness setup guide](docs/harness-setup.md)** walks through it OS by OS, and **[AGENTS.md](AGENTS.md)** is the one-paragraph instruction itself.
+The copy-paste **reference integration** — SessionStart + retrospective hooks for **Claude Code**, and the contract + PATH wrapper for **Codex CLI** — lives in [`examples/`](examples/) (and ships in the npm package, so `npm install -g agent-notebook` puts the files on disk too). The **[Harness setup guide](docs/harness-setup.md)** walks through it OS by OS, and **[AGENTS.md](AGENTS.md)** is the one-paragraph instruction itself.
+
+These are **reference integrations to adapt and test in your own setup**, not a certified, supported matrix. **Claude Code is the primary target**: the hooks are written against it. The Codex CLI pieces and any other harness are a lighter-touch starting point to verify in place. There is **no MCP server** and no network call — `nb` is a plain offline CLI, and the harness drives it through the hooks or the AGENTS.md instruction.
 
 ## Install
 
