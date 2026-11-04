@@ -87,12 +87,13 @@ This is the one that compounds. Before you finish, spend a moment maintaining th
 notebook so the next run of this task starts wiser:
 
 1. **Vote the lessons you actually used.** `+1` the ones that helped; `-1` the
-   ones that were shown to you but misled or wasted your time. (The `<id>` is the
-   short code `nb show` prints at the start of each line; a unique snippet of the
-   lesson text works too. `vote` takes no `--reason` — record *why* on the `rm`
-   below, which does.)
+   ones that were shown to you but misled or wasted your time. Vote by the `<id>` —
+   the short code `nb show` prints at the start of every line, so it is already in
+   front of you. (A unique text substring also resolves, but a non-unique one is
+   *refused* — the tool then makes you pick an id anyway — so reach for the id
+   first. `vote` takes no `--reason`; record *why* on the `rm` below, which does.)
    ```sh
-   nb vote "<shelf>" <id> +1
+   nb vote "<shelf>" <id> +1        # e.g. nb vote change-verifier c5a082 +1
    nb vote "<shelf>" <id> -1
    ```
 2. **Prune what proved incorrect or obsolete.**
