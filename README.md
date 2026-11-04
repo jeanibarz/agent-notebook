@@ -505,7 +505,7 @@ const shown: ShowResult = showJson(dir, 'build-and-test');
 // stats reads the recent-usage log (a bounded buffer of recorded calls) and rolls
 // it up per command over a window (default 7 days), flagging anomalies — a
 // command looping, no longer being called, or erroring often. Pass windowMs (in
-// milliseconds) to narrow the window; pass { shelf } to scope to one shelf, or
+// milliseconds) to set the window; pass { shelf } to scope to one shelf, or
 // omit it for a deployment-wide view. getDescription, showJson and stats are
 // synchronous reads (no await).
 const report: StatsReport = stats(dir, { windowMs: 24 * 60 * 60 * 1000 });
