@@ -1609,6 +1609,33 @@ describe('shelf terminology (role kept as a deprecated alias)', () => {
     expect(readme).toContain(AUDIENCE_LINE);
   });
 
+  // Issue #167: the README 'Programmatic use' snippet is the only API surface a
+  // library consumer reads. It omitted `move` (a headline score-preserving
+  // feature, #103) and the description/showJson/stats API, so those real exports
+  // were invisible to docs readers and invited re-implementing add+rm (which
+  // loses score). Guard each one inside the Programmatic-use fenced block so it
+  // can't silently fall out again — assert the demonstrated *call*, not just the
+  // word, so an incidental mention elsewhere doesn't satisfy the check.
+  test('README Programmatic use demonstrates move/describe/showJson/stats (issue #167)', () => {
+    const readme = readFileSync(join(REPO_ROOT, 'README.md'), 'utf8');
+    const block = /## Programmatic use\n\n```ts\n([\s\S]*?)\n```/.exec(readme);
+    expect(block).not.toBeNull();
+    const snippet = block![1];
+    for (const call of [
+      'await move(dir,',
+      'await setDescription(dir,',
+      'getDescription(dir,',
+      'showJson(dir,',
+      'stats(dir,',
+    ]) {
+      expect(snippet).toContain(call);
+    }
+    // ...and they are imported from the package, not just called.
+    for (const sym of ['move', 'setDescription', 'getDescription', 'showJson', 'stats']) {
+      expect(snippet).toMatch(new RegExp(`^\\s*${sym},\\s*$`, 'm'));
+    }
+  });
+
   test('help states the line cap as 50 (matching maxLines and the README), not the stale 200 (issue #116)', async () => {
     const r = await run(['--help']);
     expect(r.out).toContain('at most 50 lines');
