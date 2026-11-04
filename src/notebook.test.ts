@@ -17,7 +17,7 @@ const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 // throws. Everything delegates to the real fs; when `events` is null and
 // `failDirFsync` is false (the default, reset in afterEach) behavior is identical
 // to the unwrapped module, so every other test is unaffected.
-const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false }));
+const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
@@ -36,6 +36,13 @@ vi.mock('node:fs', async (importOriginal) => {
     renameSync: ((from: Parameters<typeof actual.renameSync>[0], to: Parameters<typeof actual.renameSync>[1]) => {
       fsHook.events?.push('rename');
       fsHook.renames?.push(String(from)); // capture the temp source path (opt-in; null by default)
+      // Opt-in crash injection: fail the atomic rename for exactly one target
+      // file (the final `<shelf>.md`, not the temp), so a test can simulate an
+      // interruption of a specific write. The attempt is still recorded above, so
+      // `renames` preserves the real write order even for the write that throws.
+      if (fsHook.failRenameTo !== null && String(to) === fsHook.failRenameTo) {
+        throw new Error(`EIO: injected rename failure for ${fsHook.failRenameTo}`);
+      }
       return actual.renameSync(from, to);
     }) as typeof actual.renameSync,
   };
@@ -1078,6 +1085,35 @@ describe('move (score-preserving cross-shelf move, issue #103)', () => {
     await addEntry(dir, 'from', 'incoming lesson');
     await move(dir, 'from', 'to', 'incoming');
     expect(getDescription(dir, 'to')).toBe('broad lessons for this repo');
+  });
+
+  test('writes the TARGET first, so an interrupted SOURCE rewrite leaves a duplicate, never a lost lesson', async () => {
+    // Crash-safety invariant (see notebook.ts move): the lesson is persisted in
+    // the TARGET before it is dropped from the SOURCE. If the two writes were
+    // reordered, an interruption between them would LOSE the lesson instead of
+    // duplicating it. Pin the order by injecting a failure on the SECOND write
+    // (the source rewrite) and proving the lesson survives in BOTH shelves.
+    await addEntry(dir, 'from', 'crash-safety lesson');
+    await vote(dir, 'from', 'crash-safety', 1); // +2: prove score-bearing data, not just presence
+    const fromFile = join(dir, 'from.md');
+    const toFile = join(dir, 'to.md');
+    fsHook.renames = []; // record write order via the atomic-rename seam (deterministic, no real crash)
+    fsHook.failRenameTo = fromFile; // make ONLY the source rewrite's rename throw — the target write still commits
+    try {
+      // The source rewrite fails, so move rejects — but the target write already committed.
+      await expect(move(dir, 'from', 'to', 'crash-safety')).rejects.toThrow(/injected rename failure/);
+      // The target was written FIRST: its rename ran and committed before the source's.
+      expect(fsHook.renames).toEqual([`${toFile}.tmp`, `${fromFile}.tmp`]);
+    } finally {
+      fsHook.renames = null; // leave the shared hook as the other tests expect it
+      fsHook.failRenameTo = null;
+    }
+    // Duplicate, not loss: the lesson is present in the target (first write) AND
+    // still present in the source (its rewrite never committed) — both carry the
+    // full +2 score. Had the writes been reordered, the source rewrite would have
+    // failed FIRST and the target would be empty, so this pins the ordering.
+    expect(readEntries(dir, 'to')).toEqual([{ score: 2, text: 'crash-safety lesson' }]);
+    expect(readEntries(dir, 'from')).toEqual([{ score: 2, text: 'crash-safety lesson' }]);
   });
 });
 
