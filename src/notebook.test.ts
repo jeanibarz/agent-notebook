@@ -64,6 +64,7 @@ import {
   move,
   nearThreshold,
   normalizeReason,
+  notebookExists,
   parseUsage,
   parseWindowMs,
   readEntries,
@@ -3156,6 +3157,33 @@ describe('failed-search → add gap signal (issue #82)', () => {
     logUsage(dir, '-', 'search', true, 1, { session: '', outcome: 'no-match', note: 'q' });
     logUsage(dir, 'reviewer', 'add', true, 1, { session: '', outcome: 'accepted', entries: ['zzz999'] });
     expect(stats(dir).signals.some((s) => s.kind === 'failed-search')).toBe(false);
+  });
+});
+
+// issue #166 — `notebookExists` lets a caller tell a never-created shelf apart
+// from an existing but empty one (both of which `readEntries` returns `[]` for).
+describe('notebookExists / showJson exists flag (issue #166)', () => {
+  test('false for a never-created shelf, true once the file exists', async () => {
+    expect(notebookExists(dir, 'ghost')).toBe(false); // nothing written yet
+    expect(readEntries(dir, 'ghost')).toEqual([]); // same empty read as an empty shelf
+
+    // A describe-only shelf writes the file (metadata, no lessons): it now exists
+    // though it holds no entries — exactly the case `render()` calls "(… empty)".
+    await setDescription(dir, 'ghost', 'd');
+    expect(notebookExists(dir, 'ghost')).toBe(true);
+    expect(readEntries(dir, 'ghost')).toEqual([]);
+
+    // An added lesson keeps it existing.
+    await addEntry(dir, 'ghost', 'a lesson');
+    expect(notebookExists(dir, 'ghost')).toBe(true);
+  });
+
+  test('showJson carries exists: false for a missing shelf, true for a describe-only one', async () => {
+    expect(showJson(dir, 'ghost').exists).toBe(false);
+    await setDescription(dir, 'ghost', 'd');
+    const sh = showJson(dir, 'ghost');
+    expect(sh.exists).toBe(true);
+    expect(sh.entries).toEqual([]); // additive flag, entries stays empty
   });
 });
 

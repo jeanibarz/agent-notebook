@@ -115,10 +115,54 @@ describe('runNbCli', () => {
     expect(plainIds).toEqual(parsed.entries.map((e: { id: string }) => e.id));
   });
 
-  test('show --json on an empty notebook yields { description: null, entries: [] } and exits 0 (issue #87)', async () => {
+  test('show --json on a never-created notebook yields { description: null, entries: [], exists: false } and exits 0 (issues #87, #166)', async () => {
     const r = await run(['show', 'solo', '--json']);
     expect(r.code).toBe(0);
-    expect(JSON.parse(r.out)).toEqual({ role: 'solo', shelf: 'solo', description: null, entries: [] });
+    // `solo` was never created, so `exists` is false; `entries` stays `[]` for
+    // backward compatibility (issue #166 adds `exists`, it does not change `entries`).
+    expect(JSON.parse(r.out)).toEqual({ role: 'solo', shelf: 'solo', description: null, entries: [], exists: false });
+  });
+
+  // issue #166 — `nb show` must tell a never-created shelf (e.g. a typo) apart
+  // from a real empty notebook, so a mistake is never reported as "empty" (DP-5).
+  describe('show distinguishes a missing shelf from an empty one (issue #166)', () => {
+    test('a never-created shelf prints a distinct "no notebook" line on stderr, exit 0, no "is empty"', async () => {
+      const r = await run(['show', 'typoshelf']);
+      expect(r.code).toBe(0); // not found is not an error
+      expect(r.err).toContain('no notebook for shelf "typoshelf"');
+      expect(r.err).toContain('nb list'); // points the reader at how to find real shelves
+      expect(r.out).not.toContain('is empty'); // the misleading message is gone
+      expect(r.out).toBe(''); // nothing on stdout for an absent shelf
+    });
+
+    test('a describe-only (existing but empty) shelf still prints "(… is empty)" on stdout — distinct from missing', async () => {
+      await run(['describe', 'drafts', 'where half-baked lessons go']); // creates the file, no lessons
+      const r = await run(['show', 'drafts']);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('# desc: where half-baked lessons go');
+      expect(r.out).toContain('(notebook for shelf "drafts" is empty)'); // reserved for an existing empty shelf
+      expect(r.err).not.toContain('no notebook for shelf'); // NOT the missing-shelf path
+    });
+
+    test('a populated shelf is unaffected — it prints its lessons, not either empty-state line', async () => {
+      await run(['add', 'drafts', 'keep lessons under 200 chars']);
+      const r = await run(['show', 'drafts']);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('keep lessons under 200 chars');
+      expect(r.out).not.toContain('is empty');
+      expect(r.err).not.toContain('no notebook for shelf');
+    });
+
+    test('--json: a describe-only shelf reports exists:true with entries:[], a never-created one exists:false', async () => {
+      await run(['describe', 'drafts', 'd']); // existing but empty
+      const existing = JSON.parse((await run(['show', 'drafts', '--json'])).out);
+      expect(existing.exists).toBe(true);
+      expect(existing.entries).toEqual([]);
+
+      const missing = JSON.parse((await run(['show', 'ghost', '--json'])).out);
+      expect(missing.exists).toBe(false);
+      expect(missing.entries).toEqual([]);
+    });
   });
 
   test('vote by the id shown in `show` succeeds', async () => {
@@ -615,7 +659,10 @@ describe('runNbCli', () => {
     expect(r.err).toMatch(/too long/i);
     expect(r.err).toMatch(/retry/i);
     const show = await run(['show', 'patcher']);
-    expect(show.out).toContain('is empty');
+    // Nothing was stored, so the shelf was never created: `show` reports it as
+    // missing (issue #166), not as a real empty notebook.
+    expect(show.err).toContain('no notebook for shelf "patcher"');
+    expect(show.out).toBe('');
   });
 
   test('add past NB_MAX_LINES evicts the lowest-scored entry and names it in the output', async () => {
@@ -869,8 +916,8 @@ describe('runNbCli', () => {
       expect(r.err).toMatch(/multi-line/i);
       expect(r.err).toMatch(/one entry = one line/i);
       const show = await run(['show', 'reviewer']);
-      expect(show.out).toContain('is empty'); // not stored, and definitely not flattened
-      expect(show.out).not.toContain('line one line two');
+      expect(show.err).toContain('no notebook for shelf "reviewer"'); // not stored → shelf never created (issue #166)
+      expect(show.out).not.toContain('line one line two'); // and definitely not flattened
     });
 
     test('CRLF and lone-CR line breaks are refused too, not flattened to a space', async () => {
@@ -883,7 +930,7 @@ describe('runNbCli', () => {
         expect(r.err).toMatch(/multi-line/i);
       }
       const show = await run(['show', 'reviewer']);
-      expect(show.out).toContain('is empty'); // none of them were stored
+      expect(show.err).toContain('no notebook for shelf "reviewer"'); // none stored → never created (issue #166)
     });
 
     test('a single trailing CRLF is stripped, leaving the clean line', async () => {
@@ -900,7 +947,7 @@ describe('runNbCli', () => {
       expect(r.code).toBe(0);
       expect(r.out).toContain('skipped (empty lesson)');
       const show = await run(['show', 'reviewer']);
-      expect(show.out).toContain('is empty');
+      expect(show.err).toContain('no notebook for shelf "reviewer"'); // empty lesson skipped → never created (issue #166)
     });
 
     test('--json composes with the stdin operand', async () => {
@@ -942,7 +989,7 @@ describe('runNbCli', () => {
       expect(r.code).toBe(1); // exit code unchanged from the text path
       expect(parseOnly(r.out)).toMatchObject({ added: false, reason: 'too-long', length: 60 });
       const show = await run(['show', 'patcher']);
-      expect(show.out).toContain('is empty'); // and it was not stored
+      expect(show.err).toContain('no notebook for shelf "patcher"'); // not stored → shelf never created (issue #166)
     });
 
     test('vote --json prints a parseable VoteResult', async () => {
