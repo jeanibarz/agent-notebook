@@ -41,6 +41,7 @@ import {
   merge,
   move,
   normalizeReason,
+  notebookExists,
   notebooksDir,
   parseWindowMs,
   remove,
@@ -353,7 +354,17 @@ export async function runNbCli(
           // so a reader sees what the notebook is *for* before its contents.
           const desc = getDescription(dir, shelf);
           if (desc) process.stdout.write(`# desc: ${desc}\n`);
-          process.stdout.write(render(dir, shelf) + '\n');
+          // A shelf that was never created (e.g. a typo) must not read as a real
+          // empty notebook — that would mislead (DP-5, issue #166). Say "no
+          // notebook" on stderr, matching the empty-state convention `list` and
+          // `describe` use, and reserve render()'s "(... is empty)" on stdout for
+          // a shelf whose file exists but holds no lessons. Not found is not an
+          // error, so exit stays 0 (like `describe`'s read path).
+          if (!notebookExists(dir, shelf)) {
+            process.stderr.write(`no notebook for shelf "${shelf}" — run \`nb list\` to see existing shelves\n`);
+          } else {
+            process.stdout.write(render(dir, shelf) + '\n');
+          }
         }
         break;
       }

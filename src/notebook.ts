@@ -459,6 +459,18 @@ function sleep(ms: number): Promise<void> {
 // read / write
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether a shelf has a notebook file on disk. A read of a nonexistent shelf is
+ * not an error anywhere (`readEntries` returns `[]`), but the two cases — a shelf
+ * that exists and holds no lessons vs. one that was never created (e.g. a typo) —
+ * must be told apart so `nb show` never calls a missing shelf "empty" (DP-5,
+ * issue #166). Callers branch on this to pick the message; the read paths stay
+ * unchanged and keep exit 0.
+ */
+export function notebookExists(dir: string, shelf: string): boolean {
+  return existsSync(shelfFile(dir, shelf));
+}
+
 export function readEntries(dir: string, shelf: string): Entry[] {
   const file = shelfFile(dir, shelf);
   if (!existsSync(file)) return [];
@@ -1040,6 +1052,14 @@ export interface ShowResult {
   shelf: string;
   description: string | null;
   entries: ShowEntry[];
+  /**
+   * Whether the shelf file exists on disk. An additive field (issue #166): it
+   * lets a consumer tell a never-created shelf (`exists: false`) from an existing
+   * one that holds no lessons (`exists: true`, `entries: []`), which both yield an
+   * empty `entries` array. Kept distinct from `entries` so the array stays
+   * backward-compatible.
+   */
+  exists: boolean;
 }
 
 /**
@@ -1047,7 +1067,9 @@ export interface ShowResult {
  * reuses the same `ordered(readEntries(...))` ordering and the same stable
  * `entryId`, so an agent recovers each entry's id/score/text without
  * regex-parsing the human output `render()` produces. An empty notebook yields
- * an empty `entries` array and a `null` description — never an error.
+ * an empty `entries` array and a `null` description — never an error. The
+ * additive `exists` flag distinguishes a never-created shelf from an existing
+ * empty one (issue #166), both of which have `entries: []`.
  */
 export function showJson(dir: string, shelf: string): ShowResult {
   const ord = ordered(readEntries(dir, shelf));
@@ -1056,6 +1078,7 @@ export function showJson(dir: string, shelf: string): ShowResult {
     shelf,
     description: getDescription(dir, shelf),
     entries: ord.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text })),
+    exists: notebookExists(dir, shelf),
   };
 }
 
