@@ -67,6 +67,7 @@ import {
   parseUsage,
   parseWindowMs,
   readEntries,
+  reapLeftoverTemps,
   readMetaLines,
   remove,
   render,
@@ -2449,11 +2450,12 @@ describe('locking (mkdir spinlock)', () => {
   });
 });
 
-describe('reaps leftover *.md.tmp on lock acquire (issue #46)', () => {
-  // A crash between writeFileDurable's `<shelf>.md.tmp` and its rename leaves an
-  // orphaned temp in the notebooks dir that nothing else removes. The next locked
-  // mutation sweeps it — only this writer's `*.md.tmp` convention, never a real
-  // notebook or the usage log.
+describe('reaps leftover temps on lock acquire (issues #46, #163)', () => {
+  // A crash between an atomic write's temp and its rename leaves an orphan in the
+  // notebooks dir that nothing else removes. The next locked mutation sweeps this
+  // writer's two temp conventions — `<shelf>.md.tmp` (writeFileDurable, #46) and
+  // `.nb-usage.log.<pid>.tmp` (usage-log compaction, #163) — and never a real
+  // notebook, the live usage log, its `.count` sidecar, or the `.nb.lock`.
 
   test('a planted shelf.md.tmp is removed by the next locked mutation', async () => {
     const orphan = join(dir, 'shelf.md.tmp');
@@ -2476,24 +2478,55 @@ describe('reaps leftover *.md.tmp on lock acquire (issue #46)', () => {
     expect(existsSync(join(dir, 'keepme.md'))).toBe(true);
   });
 
-  test('the usage log and its per-pid temp are not reaped (dotfile / not *.md.tmp)', async () => {
+  test('an orphaned usage-log temp is reaped by the next locked mutation, log + count survive (issue #163)', async () => {
+    // A crash between the compaction's `writeFileSync(tmp)` and its `renameSync`
+    // leaves a `.nb-usage.log.<pid>.tmp` orphan. Plant one alongside the live log
+    // and its sidecar, then run an UNRELATED locked mutation.
     const usage = join(dir, '.nb-usage.log');
-    const usageTmp = join(dir, `.nb-usage.log.${process.pid}.tmp`);
-    writeFileSync(usage, 'usage rows', 'utf-8');
+    const count = join(dir, '.nb-usage.log.count');
+    // A foreign pid (not this process): the orphan is left by a *crashed* writer,
+    // so this models the real scenario and guards against a pid-filtering regression.
+    const usageTmp = join(dir, '.nb-usage.log.999999.tmp');
+    writeFileSync(usage, 'usage rows\n', 'utf-8');
+    writeFileSync(count, '1\t11\n', 'utf-8');
     writeFileSync(usageTmp, 'a usage-log temp mid-compact', 'utf-8');
     await addEntry(dir, 'patcher', 'triggers a reap');
-    // Neither the log nor its temp matches the `*.md.tmp` convention (and both are
-    // dotfiles), so the reap leaves them untouched.
+    // The orphan temp is gone; the live log and its `.count` sidecar (no `.tmp`
+    // suffix) are untouched.
+    expect(existsSync(usageTmp)).toBe(false);
     expect(existsSync(usage)).toBe(true);
-    expect(existsSync(usageTmp)).toBe(true);
+    expect(existsSync(count)).toBe(true);
+  });
+
+  test('reap removes only the usage-log temp — live log, .count sidecar, and .nb.lock all survive (issue #163)', () => {
+    // Direct unit test: the `.nb.lock` directory exists only while a lock is held
+    // (withLock rmdirs it on release), so a black-box mutation can't observe its
+    // survival — call reapLeftoverTemps under a planted lock instead. This pins
+    // the surgical match: only `.nb-usage.log.<pid>.tmp` is removed.
+    const usage = join(dir, '.nb-usage.log');
+    const count = join(dir, '.nb-usage.log.count');
+    const lock = join(dir, '.nb.lock');
+    // Foreign pid: the orphan is a crashed writer's, and the match is pid-agnostic.
+    const usageTmp = join(dir, '.nb-usage.log.424242.tmp');
+    writeFileSync(usage, 'usage rows\n', 'utf-8');
+    writeFileSync(count, '1\t11\n', 'utf-8');
+    mkdirSync(lock); // the lock is a directory, as withLock creates it
+    writeFileSync(usageTmp, 'a usage-log temp mid-compact', 'utf-8');
+
+    reapLeftoverTemps(dir);
+
+    expect(existsSync(usageTmp)).toBe(false);
+    expect(existsSync(usage)).toBe(true);
+    expect(existsSync(count)).toBe(true);
+    expect(existsSync(lock)).toBe(true);
   });
 
   test('a dotfile *.md.tmp is NOT reaped (the dotfile guard, isolated)', async () => {
     // A shelf name never starts with `.` (assertSafeShelf), so `.hidden.md.tmp` is
-    // not our convention even though it ends in `.md.tmp`. This isolates the
-    // `name.startsWith('.')` half of the guard: unlike the usage-log temp (which
-    // is excluded by the suffix check too), only a dotfile that DOES end in
-    // `.md.tmp` can prove the dotfile branch is load-bearing.
+    // not the shelf-temp convention even though it ends in `.md.tmp`, and it is not
+    // the usage-log convention either (it lacks the `.nb-usage.log.` prefix). This
+    // isolates the `!name.startsWith('.')` half of the shelf-temp guard: a dotfile
+    // that DOES end in `.md.tmp` proves that guard is load-bearing.
     const hidden = join(dir, '.hidden.md.tmp');
     writeFileSync(hidden, 'a dotfile that ends in .md.tmp', 'utf-8');
     await addEntry(dir, 'patcher', 'triggers a reap');

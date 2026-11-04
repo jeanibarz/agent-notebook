@@ -19,7 +19,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, rmdirSync, unlinkSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 /** Hard caps, read at call time so they can be tuned by env without a code change (and set per-test). */
 export function maxLines(): number {
@@ -170,8 +170,9 @@ function usageFile(dir: string): string {
  * restores the hard ring bound — in a single call, at any ring size.
  *
  * It is a tiny dotfile next to the log — not a `*.md` shelf (`listShelves`/stats
- * skip dotfiles) and not a `*.md.tmp` (the reap skips dotfiles), so it is never
- * surfaced or deleted.
+ * skip dotfiles) and, lacking a `.tmp` suffix, not matched by either reap
+ * convention (shelf `*.md.tmp` or usage-log `.nb-usage.log.*.tmp`), so it is
+ * never surfaced or deleted.
  */
 function usageCountFile(dir: string): string {
   return join(dir, '.nb-usage.log.count');
@@ -398,32 +399,50 @@ async function withLock<T>(dir: string, fn: () => T): Promise<T> {
 }
 
 /**
- * Reap orphaned notebook temp files left behind by a crashed writer. A durable
- * notebook write goes to `<shelf>.md.tmp` and is renamed over `<shelf>.md`
- * (writeFileDurable); if the process dies between creating that temp and the
- * rename, the `.md.tmp` orphan lingers in the notebooks dir forever — nothing
- * else removes it, and it clutters directory listings, backups, and a
- * git-tracked notebooks dir. We sweep it here, under the just-acquired mkdir
- * lock, which serializes every mutation — so any `*.md.tmp` we see is dead
- * crash debris, never a rename in flight by a live writer. Scope is deliberately
- * narrow to this writer's own convention:
- *   - only `*.md.tmp` — never a real `*.md` notebook, never the usage log or its
- *     per-pid `.nb-usage.log.<pid>.tmp` temp (a dotfile, excluded below too);
- *   - only the top level of `dir` (readdirSync is not recursive);
- *   - never a dotfile — a shelf name never starts with `.` (assertSafeShelf), so a
- *     `.x.md.tmp` is not ours to remove.
+ * Reap orphaned temp files left behind by a crashed writer. This writer leaves
+ * two temp conventions in the notebooks dir, each from an interrupted atomic
+ * write-then-rename; if the process dies before the rename, the temp lingers
+ * forever (nothing else removes it), cluttering directory listings, backups, and
+ * a git-tracked notebooks dir:
+ *   - `<shelf>.md.tmp` from a durable notebook write (writeFileDurable), renamed
+ *     over `<shelf>.md`;
+ *   - `.nb-usage.log.<pid>.tmp` from a usage-log compaction (issue #163), renamed
+ *     over `.nb-usage.log`.
+ * We sweep both here under the just-acquired mkdir lock, which serializes every
+ * mutation — so a shelf temp we see is dead crash debris, never a rename in
+ * flight. A usage-log temp is different: it is written OUTSIDE this lock (from the
+ * CLI's finally block), so in a rare window we may reap one a live writer created
+ * but has not yet renamed. That is deliberately acceptable and strictly bounded:
+ * the writer's `renameSync` then fails with ENOENT, which it already swallows
+ * (usage logging is best-effort), costing at most that one compaction's monitoring
+ * row — never a lost lesson and never corruption, since the rename is atomic. The
+ * case we actually care about is the common one: a crashed writer's leftover temp
+ * that nothing else removes.
+ * Scope is deliberately narrow to this writer's own conventions:
+ *   - shelf temps: only `*.md.tmp`, and never a dotfile — a shelf name never
+ *     starts with `.` (assertSafeShelf), so a `.x.md.tmp` is not ours to remove;
+ *   - usage-log temps: only names of the exact form `<basename>.*.tmp` where
+ *     `<basename>` is the usage log's (`.nb-usage.log`) — so never the live log
+ *     itself, never its `.nb-usage.log.count` sidecar (no `.tmp` suffix), never
+ *     the `.nb.lock`;
+ *   - only the top level of `dir` (readdirSync is not recursive).
  * Best-effort: any failure (a racing unlink, a permission error) is swallowed so
  * a stale temp can never block a real mutation.
  */
-function reapLeftoverTemps(dir: string): void {
+export function reapLeftoverTemps(dir: string): void {
   let names: string[];
   try {
     names = readdirSync(dir);
   } catch {
     return; // dir unreadable — nothing to reap
   }
+  // `.nb-usage.log.` — the live log's basename plus the dot that precedes the
+  // per-pid segment, so the live log and its `.count` sidecar never match.
+  const usageTmpPrefix = `${basename(usageFile(dir))}.`;
   for (const name of names) {
-    if (name.startsWith('.') || !name.endsWith('.md.tmp')) continue;
+    const isShelfTemp = !name.startsWith('.') && name.endsWith('.md.tmp');
+    const isUsageTemp = name.startsWith(usageTmpPrefix) && name.endsWith('.tmp');
+    if (!isShelfTemp && !isUsageTemp) continue;
     try {
       unlinkSync(join(dir, name));
     } catch {
