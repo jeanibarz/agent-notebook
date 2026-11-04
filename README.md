@@ -395,6 +395,14 @@ The anomaly detection in `nb stats` (loop / went-silent / high-error-rate flags)
 - `NB_RECALL_MISS_HI` — recall-miss at/above which the surfacing readout reads dedup-blocks as HIGH (default `0.2`, range `0`–`1`).
 - `NB_NEAR_DUP` — trigram-Jaccard similarity at/above which an accepted `nb add` also prints a non-blocking merge suggestion (default `0.5`, range `0`–`1`; `0` disables the advisory).
 
+### Other environment variables
+
+A few more env vars tune rendering and concurrency rather than `nb stats`. Like the knobs above, the lock timings are clamped to their stated bounds, and an unset or unparseable value falls back to the default:
+
+- `NB_ASCII` — force the [activity sparkline](#activity-sparkline)'s glyph ramp to ASCII digits instead of the Unicode blocks, for accessibility or a non-UTF-8 terminal. Any **truthy** value forces ASCII; any **falsey** one (`''`, `0`, `false`, `no`, `off`) forces Unicode; both override locale autodetection. **Unset**, the effective locale (`LC_ALL` → `LC_CTYPE` → `LANG`, first set wins) decides — a locale that is set but does not name UTF-8 (e.g. `C`, `POSIX`) selects ASCII, while an unset or UTF-8 locale keeps the Unicode default.
+- `NB_STALE_LOCK_MS` — milliseconds a `.nb.lock` may go untouched before it is treated as abandoned by a crashed `nb` process and stolen, so a crash can't wedge the notebook (default `10000`, range `100`–`600000`).
+- `NB_LOCK_GRACE_MS` — extra time, past the stale threshold, a caller waits to notice and steal an abandoned lock before giving up with `notebook is locked`; the acquire budget is derived as `NB_STALE_LOCK_MS + NB_LOCK_GRACE_MS`, never set independently (default `2000`, range `0`–`600000`).
+
 ## Programmatic use
 
 ```ts
