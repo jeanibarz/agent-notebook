@@ -19,7 +19,8 @@ You have a bounded, voted, plain-text memory via the `nb` command. Use it:
 - **At the end of the task — a short retrospective (do this before you finish),**
   on the notebooks you opened:
   1. `nb vote <shelf> <id> +1` for each lesson that actually helped. (The `<id>` is
-     the short code `nb show` prints; a unique snippet of the lesson text works too.)
+     the short code `nb show` prints at the start of every line — use it; a
+     non-unique text snippet is refused, so the id is the reliable selector.)
   2. `nb vote <shelf> <id> -1` for any shown to you that misled. (`vote` takes no
      `--reason`; record *why* on the `rm` below.)
   3. `nb rm <shelf> <id> --reason obsolete` for anything incorrect / no longer true.

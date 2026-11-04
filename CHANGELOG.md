@@ -36,6 +36,14 @@ versions are listed plainly.
   exact-normal-form only).
 
 ### Documentation
+- **Retrospective contract now steers `vote` to the id, not a text snippet.** `nb stats` showed
+  `vote` erroring on ~22% of 325 calls, and dozens of `browse-without-use` sessions (a shelf shown
+  but never voted) — because the injected contract advertised "a unique snippet of the lesson text
+  works too" as an equal to the id, and a *non-unique* snippet is refused (`notebook.ts` lists the
+  candidate ids). The `AGENTS.md` §④ retrospective step and the Codex `AGENTS.snippet.md` now tell
+  the agent to vote by the `<id>` `nb show` already prints at each line start (with a worked example),
+  and frame a text substring as refused-if-ambiguous rather than a casual equal — removing the
+  invitation to the error path that was also suppressing the end-of-task retrospective.
 - **README recentered on the developer audience, with the compounding payoff stated plainly (#139).**
   The top of the README now opens with a one-line *who this is for* (developers who run AI agents and
   want them to carry a few durable lessons across runs) and a plain payoff sentence (the agent remembers
