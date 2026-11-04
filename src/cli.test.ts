@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runNbCli, settleCliExit } from './cli.js';
+import { runNbCli, settleCliExit, closestCommand, KNOWN_COMMANDS } from './cli.js';
 import { entryId, parseUsage } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
@@ -566,6 +566,22 @@ describe('runNbCli', () => {
     const r = await run(['frobnicate', 'patcher']);
     expect(r.code).toBe(2);
     expect(r.err).toContain('unknown command');
+  });
+
+  test('a typo of a real command suggests the nearest one, keeping exit 2 and the --help pointer', async () => {
+    const r = await run(['stat']);
+    expect(r.code).toBe(2); // exit code is unchanged by the suggestion
+    expect(r.err).toContain('unknown command "stat"'); // prefix preserved
+    expect(r.err).toContain('Did you mean `stats`?');
+    expect(r.err).toContain('nb --help'); // pointer preserved
+  });
+
+  test('a far-off unknown command gives no suggestion (no overconfident guess)', async () => {
+    const r = await run(['frobnicate']);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('unknown command "frobnicate"');
+    expect(r.err).not.toContain('Did you mean');
+    expect(r.err).toContain('nb --help');
   });
 
   test('a missing required argument exits 1', async () => {
@@ -1731,6 +1747,61 @@ describe('HELP ↔ dispatch drift guard (issue #131)', () => {
     expect(flags).toContain('--version');
     for (const flag of flags) {
       expect((await run([flag])).code).toBe(0);
+    }
+  });
+});
+
+describe('closestCommand (did-you-mean, issue #171)', () => {
+  test('a one-edit typo resolves to the nearest command', () => {
+    expect(closestCommand('stat')).toBe('stats'); // insertion
+    expect(closestCommand('lis')).toBe('list'); // deletion; canonical beats `ls` alias
+    expect(closestCommand('serach')).toBe('search'); // transposition (two edits)
+    expect(closestCommand('mov')).toBe('move');
+    expect(closestCommand('desribe')).toBe('describe');
+  });
+
+  test('the prefix branch resolves an abbreviation only at >= 3 chars (past the edit budget)', () => {
+    // `desc`/`sea` are too far for an edit-distance match, so ONLY the prefix
+    // branch can resolve them — which pins that it fires at all.
+    expect(closestCommand('desc')).toBe('describe'); // 4 chars, clean prefix of `describe`
+    expect(closestCommand('sea')).toBe('search'); // 3 chars (edit distance 3) — the inclusive boundary
+    // A 2-char prefix of real commands (`show`/`shelves`) must NOT resolve: it
+    // is below the length gate AND too far for an edit match. This pins `>= 3`
+    // against a loosening mutation (e.g. `>= 1`), which would wrongly yield `show`.
+    expect(closestCommand('sh')).toBeUndefined();
+  });
+
+  test('a far-off or too-short input yields no suggestion', () => {
+    expect(closestCommand('frobnicate')).toBeUndefined();
+    expect(closestCommand('xyzzy')).toBeUndefined();
+    expect(closestCommand('')).toBeUndefined();
+    expect(closestCommand('x')).toBeUndefined(); // a lone char must not match a 2-letter alias
+  });
+
+  test('an exact command is not "suggested" as a correction of itself', () => {
+    // A known command short-circuits to undefined (it is not a typo to recover
+    // from, and never reaches the unknown-command path anyway).
+    expect(closestCommand('stats')).toBeUndefined();
+  });
+
+  // Drift guard: the suggestion table must stay in sync with the dispatch, or a
+  // newly added command would silently never be suggested. Mirror the source
+  // scan the HELP-drift guard uses to enumerate dispatched commands.
+  test('KNOWN_COMMANDS covers every dispatched command', () => {
+    const cliSrc = readFileSync(join(REPO_ROOT, 'src', 'cli.ts'), 'utf8');
+    const dispatched = [...cliSrc.matchAll(/case\s+(['"`])([^'"`]+)\1\s*:/g)].map((m) => m[2]);
+    expect(dispatched.length).toBeGreaterThan(0); // never pass vacuously
+    const known = new Set(KNOWN_COMMANDS);
+    const missing = dispatched.filter((cmd) => !known.has(cmd));
+    expect(missing).toEqual([]);
+  });
+
+  test('every KNOWN_COMMANDS entry is a real entrypoint (not a phantom)', async () => {
+    // A word command that is NOT dispatched would hit the unknown-command
+    // default and exit 2; a real one never does. `help`/`version` are the
+    // pre-switch word forms, also real entrypoints.
+    for (const cmd of KNOWN_COMMANDS) {
+      expect((await run([cmd])).code).not.toBe(2);
     }
   });
 });

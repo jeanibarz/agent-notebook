@@ -214,6 +214,80 @@ function parseDelta(arg: string): number {
   throw new Error('vote direction must be +1 or -1');
 }
 
+/**
+ * Every command `nb` dispatches — the switch `case` labels plus the two
+ * pre-switch word commands (`help`/`version`). Canonical names come first so a
+ * tie in `closestCommand` resolves to the preferred form (e.g. `lis` → `list`,
+ * not the `ls` alias). Kept in sync with the dispatch by a drift guard in
+ * cli.test.ts, so a new command missing here fails the suite loudly rather than
+ * silently dropping out of the did-you-mean suggestions (issue #171).
+ */
+export const KNOWN_COMMANDS = [
+  'show', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
+  'search', 'stats', 'path', 'list', 'ls', 'shelves', 'roles',
+  'help', 'version',
+] as const;
+
+/** Levenshtein edit distance between two strings (zero-dependency, O(a·b)). */
+function editDistance(a: string, b: string): number {
+  // Single rolling row keeps it allocation-light; command names are tiny.
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const curr = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        prev[j] + 1, // deletion
+        curr[j - 1] + 1, // insertion
+        prev[j - 1] + cost, // substitution
+      );
+    }
+    prev = curr;
+  }
+  return prev[b.length];
+}
+
+/**
+ * Nearest known command to an unknown input, or `undefined` when nothing is
+ * close enough to suggest confidently (issue #171). Two cheap, zero-dependency
+ * signals: a small Levenshtein distance (≤ 2, and strictly under the input
+ * length so a 1–2 char stub can't match half the table), or `input` being a
+ * prefix of a command (≥ 3 chars, catching abbreviations like `desc` →
+ * `describe` that edit distance alone would miss). The Levenshtein match wins
+ * when both fire; a far-off input matches neither and yields no suggestion.
+ */
+export function closestCommand(
+  input: string,
+  commands: readonly string[] = KNOWN_COMMANDS,
+): string | undefined {
+  const needle = input.trim().toLowerCase();
+  if (needle === '') return undefined;
+  // An exact command is not a typo to recover from (and never reaches the
+  // unknown-command path anyway) — never "suggest" the input back to itself.
+  if (commands.includes(needle)) return undefined;
+
+  let best: string | undefined;
+  let bestDist = Infinity;
+  for (const cmd of commands) {
+    const d = editDistance(needle, cmd);
+    if (d < bestDist) {
+      bestDist = d;
+      best = cmd;
+    }
+  }
+  // A close typo: within a small edit budget AND not so short that the distance
+  // swamps the input (keeps `x`/`ab` from matching an unrelated 2-letter alias).
+  if (best !== undefined && bestDist <= 2 && bestDist < needle.length) return best;
+
+  // Otherwise an abbreviation: `input` is a prefix of a command (first match
+  // wins under the canonical-first ordering), e.g. `desc` → `describe`.
+  if (needle.length >= 3) {
+    const prefixHit = commands.find((cmd) => cmd.startsWith(needle));
+    if (prefixHit) return prefixHit;
+  }
+  return undefined;
+}
+
 export async function runNbCli(
   argv: string[],
   readStdin: () => Promise<string> = readStdinDefault,
@@ -602,9 +676,16 @@ export async function runNbCli(
         }
         break;
       }
-      default:
-        process.stderr.write(`nb: unknown command "${cmd}". Try \`nb --help\`.\n`);
+      default: {
+        // Forgiving-not-rejecting (like a bad --since/--limit): if the input is
+        // an obvious typo of a real command, point at the nearest one so a `nb
+        // stat` recovers in one line instead of a round-trip to --help. Exit
+        // stays 2 and the --help pointer stays put (issue #171).
+        const suggestion = closestCommand(cmd);
+        const hint = suggestion ? `Did you mean \`${suggestion}\`? ` : '';
+        process.stderr.write(`nb: unknown command "${cmd}". ${hint}Try \`nb --help\`.\n`);
         return 2;
+      }
     }
     ok = true;
     return 0;
