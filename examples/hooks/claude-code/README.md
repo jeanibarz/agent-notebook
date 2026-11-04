@@ -33,6 +33,7 @@ per-project `.claude/settings.json`.
 | Var | Default | Purpose |
 |---|---|---|
 | `NB_DIR` | `~/.agent-notebook/notebooks` | where notebooks (and retro sentinels) live |
+| `NB_RETRO_TTL_DAYS` | `7` | how many days a `.retro-<session>` sentinel survives before `nb-retrospective.sh` prunes it (see [below](#how-the-retrospective-nudge-avoids-looping)) |
 | `NB_SESSION` | — | set it (e.g. to Claude Code's session id) to unlock the per-session [surfacing metrics](../../../README.md#surfacing-metrics) in `nb stats` |
 | `NB_BIN` | `nb` | point at the [git-versioning wrapper](../../nb-git-wrapper.mjs) to commit each change |
 
@@ -59,3 +60,13 @@ the first stop in a session — whether a subagent's or the main agent's — cla
 sentinel: **one nudge per whole session**, not one per subagent. Treat it as a
 backstop; the reliable driver of each subagent's retrospective is the contract it
 was given.
+
+Nothing used to remove those `.retro-<session>` files, so on a busy machine they
+piled up unbounded — invisible to `nb list` (dotfiles are filtered) but real
+clutter in backups, a git-tracked `NB_DIR`, and directory scans. To bound the
+pile, the hook prunes after claiming each session's sentinel: it sweeps `NB_DIR`
+and unlinks every `.retro-*` entry whose mtime is older than `NB_RETRO_TTL_DAYS`
+(default **7**). The whole sweep is best-effort and wrapped in `try/catch`, so a
+failed `readdir`/`stat`/`unlink` never blocks the stop. Keep the TTL comfortably
+above your longest plausible session so an in-flight sentinel is never reaped
+early; the session's own sentinel is just-written and so never a prune candidate.

@@ -39,6 +39,24 @@ const sentinel = path.join(sentinelDir, `.retro-${session}`);
 if (fs.existsSync(sentinel)) process.exit(0);
 try { fs.writeFileSync(sentinel, new Date().toISOString()); } catch {}
 
+// Bound the sentinel pile (issue #165): having claimed this session's sentinel,
+// sweep `.retro-*` files older than a TTL so they never accumulate without
+// bound. Best-effort only — every step is wrapped so a failed readdir/stat/
+// unlink can never block the stop. The TTL (days, default 7, overridable via
+// NB_RETRO_TTL_DAYS) must stay well above any plausible session length so an
+// in-flight session's sentinel is never reaped early; our own, just written, is
+// fresh and so never a prune candidate.
+try {
+  const ttlDays = Number(process.env.NB_RETRO_TTL_DAYS);
+  const ttlMs = (Number.isFinite(ttlDays) && ttlDays > 0 ? ttlDays : 7) * 86400000;
+  const cutoff = Date.now() - ttlMs;
+  for (const name of fs.readdirSync(sentinelDir)) {
+    if (!name.startsWith('.retro-')) continue;
+    const p = path.join(sentinelDir, name);
+    try { if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p); } catch {}
+  }
+} catch {}
+
 const reason = [
   `Before finishing, run the agent-notebook retrospective on the notebooks you opened this task (one pass, then stop):`,
   `  1. nb vote <shelf> <id> +1     — each lesson that actually helped`,
