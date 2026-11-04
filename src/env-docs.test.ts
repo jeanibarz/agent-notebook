@@ -16,9 +16,13 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 // honesty of each entry allows — anything user-facing belongs in the docs, not
 // here. An internal/test-only var is exempted EXPLICITLY (so the exemption is
 // auditable) rather than slipping through silently.
-//   - NB_TEST_NODE_VERSION: test-harness-only override (src/check-node-for-tests)
-//     used to simulate an unsupported Node version; never read by shipping code
-//     and nothing a user would set, so it is not a documented knob.
+//   - NB_TEST_NODE_VERSION: test-harness-only override (read by
+//     scripts/check-node-for-tests.mjs, exercised in
+//     src/check-node-for-tests.test.ts) used to simulate an unsupported Node
+//     version; never read by shipping code and nothing a user would set, so it
+//     is not a documented knob. It only appears in a *.test.ts file today, so
+//     the test-file exclusion already drops it — this entry is the explicit,
+//     auditable exemption point should it ever be referenced from shipping code.
 const ALLOW_LIST = new Set<string>(['NB_TEST_NODE_VERSION']);
 
 // Scan the SHIPPING sources only: `src/*.ts` minus `*.test.ts`. Test files read
