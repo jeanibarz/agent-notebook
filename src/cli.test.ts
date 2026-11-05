@@ -2480,6 +2480,22 @@ describe('closestShelf (shelf did-you-mean, issue #200)', () => {
     expect(closestShelf('', ['patcher'])).toBeUndefined();
   });
 
+  test('the edit-distance budget is capped at <= 2 — a distance-3 input does not resolve', () => {
+    // `reviewing` is edit distance 3 from `reviewer` (long enough that the
+    // length-swamp guard passes) and is NOT a prefix of any candidate, so ONLY
+    // the `<= 2` gate can reject it. This pins the UPPER bound against a
+    // loosening mutation (`<= 2` → `<= 3`), which would wrongly yield `reviewer`.
+    // Mirrors the prefix-branch negative above, applied to the Levenshtein branch.
+    expect(closestShelf('reviewing', ['patcher', 'reviewer'])).toBeUndefined();
+  });
+
+  test('a match whose distance equals the input length does not resolve (length-swamp guard)', () => {
+    // `xy` is edit distance 2 from both `ab` and `cd` — i.e. distance === length.
+    // The strict `bestDist < needle.length` guard must reject it; this pins that
+    // strict `<` against a `<=` mutation, which would wrongly yield `ab`.
+    expect(closestShelf('xy', ['ab', 'cd'])).toBeUndefined();
+  });
+
   test('an existing shelf name is not "suggested" as a correction of itself', () => {
     expect(closestShelf('patcher', ['patcher', 'reviewer'])).toBeUndefined();
   });
@@ -2527,6 +2543,23 @@ describe('mutations distinguish a missing shelf from an empty one (issue #200)',
     expect(r.code).toBe(1);
     expect(r.err).toContain('notebook for shelf "drafts" is empty'); // the core empty throw still fires
     expect(r.err).not.toContain('no notebook for shelf'); // NOT the missing-shelf path
+  });
+
+  test('rm/split/move on an existing-but-empty shelf also still report "is empty", not "no notebook"', async () => {
+    // The guard is shared, but pin every command so a future change that wrongly
+    // intercepted an existing-empty shelf for rm/split/move (not just vote) is
+    // caught. Each must fall through to the core "is empty" throw.
+    await run(['describe', 'drafts', 'where half-baked lessons go']); // existing file, no lessons
+    for (const argv of [
+      ['rm', 'drafts', 'x'],
+      ['split', 'drafts', 'x', 'half one', 'half two'],
+      ['move', 'drafts', 'target', 'x'], // `drafts` is the (empty) SOURCE
+    ]) {
+      const r = await run(argv);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('is empty'); // core empty throw, not the missing-shelf path
+      expect(r.err).not.toContain('no notebook for shelf');
+    }
   });
 
   test('rm and split on a never-created shelf take the same "no notebook" path', async () => {
