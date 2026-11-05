@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -2097,5 +2098,136 @@ describe('closestCommand (did-you-mean, issue #171)', () => {
     for (const cmd of KNOWN_COMMANDS) {
       expect((await run([cmd])).code).not.toBe(2);
     }
+  });
+});
+
+// Issue #187: `nb completion <bash|zsh>` prints a static, dependency-free
+// completion script. These guard the acceptance criteria — each shell prints a
+// valid, sourceable script and exits 0; the script completes the known command
+// set; the shipped examples/completion/ scripts never drift from the emitter;
+// and no runtime dependency is introduced.
+describe('nb completion (shell completion, issue #187)', () => {
+  // `<shell> -n` is a parse-only (no-exec) syntax check reading the script from
+  // stdin. It proves the emitted script is actually sourceable, not just
+  // non-empty. Guarded on the shell being present so the suite stays green on a
+  // host without zsh (and, defensively, without bash).
+  function shellPresent(shell: string): boolean {
+    try {
+      execFileSync(shell, ['--version'], { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  test('bash: prints a sourceable script and exits 0', async () => {
+    const r = await run(['completion', 'bash']);
+    expect(r.code).toBe(0);
+    expect(r.err).toBe(''); // clean stdout-only emission
+    // The registration line is what makes it a completion script, not just text.
+    expect(r.out).toContain('complete -F _nb_complete nb');
+    expect(r.out).toContain('compgen -W');
+    if (shellPresent('bash')) {
+      // `bash -n` throws (non-zero exit) on any syntax error.
+      expect(() => execFileSync('bash', ['-n'], { input: r.out })).not.toThrow();
+    }
+  });
+
+  test('zsh: prints a sourceable script and exits 0', async () => {
+    const r = await run(['completion', 'zsh']);
+    expect(r.code).toBe(0);
+    expect(r.err).toBe('');
+    expect(r.out.startsWith('#compdef nb')).toBe(true);
+    expect(r.out).toContain('compdef _nb nb');
+    // Dual-mode guard so a file installed on $fpath as `_nb` also works, not just
+    // the `eval`/source path (funcstack idiom).
+    expect(r.out).toContain('funcstack[1]');
+    if (shellPresent('zsh')) {
+      expect(() => execFileSync('zsh', ['-n'], { input: r.out })).not.toThrow();
+    }
+  });
+
+  test('the completion script completes the full known command set', async () => {
+    const out = (await run(['completion', 'bash'])).out;
+    // Every dispatched/known command must be offerable at the subcommand
+    // position, so a new command added to KNOWN_COMMANDS is completed too.
+    for (const cmd of KNOWN_COMMANDS) {
+      expect(out).toContain(cmd);
+    }
+    // The new command completes itself (anti-regression on the interpolation).
+    expect(out).toMatch(/compgen -W "[^"]*\bcompletion\b[^"]*"/);
+  });
+
+  test('the script wires dynamic shelf completion via `nb list`, guarded', async () => {
+    const out = (await run(['completion', 'bash'])).out;
+    // Shelf names come from `nb list`, and the lookup swallows stderr/failure so
+    // it can never hang or error the shell (the issue's load-bearing risk).
+    expect(out).toContain('nb list 2>/dev/null');
+    // `show` (the acceptance-criteria example) is among the shelf-completing cmds.
+    expect(out).toMatch(/case "\$cmd" in[\s\S]*\bshow\b/);
+  });
+
+  test('bash: sourcing the script completes commands and shelf names end-to-end', async () => {
+    // The behavioral guard the string-match tests above can't give: it sources
+    // the real emitted script and drives `_nb_complete` with stubbed COMP_WORDS,
+    // so a broken awk shelf-parse or a wrong COMP_CWORD index would turn it red.
+    // Needs bash (present on the Linux dev/CI host) and the built CLI (pretest
+    // builds dist/); skip cleanly where either is absent rather than fail.
+    const cliJs = join(REPO_ROOT, 'dist', 'cli.js');
+    if (!shellPresent('bash') || !existsSync(cliJs)) return;
+    await run(['add', 'alpha', 'first lesson']);
+    await run(['add', 'beta', 'second lesson']);
+    const script = (await run(['completion', 'bash'])).out;
+    // Stub `nb` to the built CLI (so `nb list` inside the script hits our temp
+    // NB_DIR), source the script, then simulate three TAB positions.
+    const harness = [
+      `nb() { node ${JSON.stringify(cliJs)} "$@"; }`,
+      script,
+      '_sim() { COMP_WORDS=("$@"); COMP_CWORD=$(( $# - 1 )); _nb_complete; echo "${COMPREPLY[*]}"; }',
+      '_sim nb ""', // subcommand position → commands
+      '_sim nb show ""', // shelf position → shelf names
+      '_sim nb add alpha ""', // lesson position → nothing
+    ].join('\n');
+    const result = execFileSync('bash', ['-c', harness], {
+      env: { ...process.env, NB_DIR: dir },
+      encoding: 'utf8',
+    });
+    const [cmdsLine, shelvesLine, lessonLine] = result.split('\n');
+    const cmds = cmdsLine.split(/\s+/).filter(Boolean);
+    expect(cmds).toContain('show'); // nb <TAB> offers the command set
+    expect(cmds).toContain('completion');
+    expect(shelvesLine.split(/\s+/).filter(Boolean).sort()).toEqual(['alpha', 'beta']); // nb show <TAB>
+    expect(lessonLine.trim()).toBe(''); // free-text operand position offers nothing (no stale leak)
+  });
+
+  test('a missing shell is a bad-args error (exit 1), not an unknown command (exit 2)', async () => {
+    const r = await run(['completion']);
+    expect(r.code).toBe(1);
+    expect(r.err).toMatch(/shell/);
+  });
+
+  test('an unsupported shell exits 1 and names the supported shells', async () => {
+    const r = await run(['completion', 'fish']);
+    expect(r.code).toBe(1);
+    expect(r.err).toMatch(/bash/);
+    expect(r.err).toMatch(/zsh/);
+  });
+
+  test('the shipped examples/completion/ scripts match the emitter (no drift)', async () => {
+    const bash = (await run(['completion', 'bash'])).out;
+    const zsh = (await run(['completion', 'zsh'])).out;
+    const shippedBash = readFileSync(join(REPO_ROOT, 'examples', 'completion', 'nb.bash'), 'utf8');
+    const shippedZsh = readFileSync(join(REPO_ROOT, 'examples', 'completion', 'nb.zsh'), 'utf8');
+    // Byte-for-byte: regenerate with `node dist/cli.js completion <shell> >
+    // examples/completion/nb.<shell>` if this fails.
+    expect(shippedBash).toBe(bash);
+    expect(shippedZsh).toBe(zsh);
+  });
+
+  test('introduces no runtime dependency (completion is static text)', () => {
+    const pkg = createRequire(import.meta.url)('../package.json') as {
+      dependencies?: Record<string, string>;
+    };
+    expect(pkg.dependencies ?? {}).toEqual({});
   });
 });
