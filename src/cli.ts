@@ -16,7 +16,7 @@
 //   nb describe <shelf> ["<text>"]          set the notebook's one-line description (or print it)
 //   nb search <query> [prefix] [--any]     SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
 //   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport; --exit-code = exit 3 when anomalies present)
-//   nb path   [<shelf> | --usage]           print the notebooks dir, a shelf's file path, or the usage-log path
+//   nb path   [<shelf> | --usage] [--json]   print the notebooks dir, a shelf's file path, or the usage-log path (--json = {dir, shelf, path} object)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
 //   nb ls / nb shelves / nb roles          aliases of `nb list` (`roles` is deprecated)
 //   nb --help                              this help
@@ -87,8 +87,8 @@ usage:
   nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print the current one)
   nb search <query> [prefix] [--any]      SECONDARY keyword fallback — scan all notebooks (surfacing is the primary path)
   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
-  nb path   [<shelf>]                      print the notebooks dir, or a shelf's resolved file path
-  nb path   --usage                        print the resolved usage-log path (to tail -F or back it up)
+  nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's resolved file path (--json emits a {dir, shelf, path} object)
+  nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
   nb shelves [prefix] [--limit N]         alias of \`nb list\`
@@ -319,9 +319,10 @@ export async function runNbCli(
   // `--json` on a mutation (add/vote/rm/merge) emits the library's structured
   // result object on stdout and nothing else, so a supervisor can branch on
   // `reason`/`score` without regex-parsing the English line. `show` also honors
-  // it (emitting a ShowResult); `stats` reads it from its own arg slice. Strip it
-  // before positional parsing (like `stats`, it is a flag, not a shelf/lesson);
-  // `path`/`shelves` ignore it. Exit codes are unchanged (a too-long add still exits 1).
+  // it (emitting a ShowResult); `stats` reads it from its own arg slice; `path`
+  // emits a `{dir, shelf, path}` object (issue #185). Strip it before positional
+  // parsing (like `stats`, it is a flag, not a shelf/lesson); `shelves` ignores
+  // it. Exit codes are unchanged (a too-long add still exits 1).
   const json = argv.includes('--json');
   let args = json ? argv.filter((a) => a !== '--json') : argv;
   // `--reason <code>` / `--note "<text>"` attach an optional, never-required
@@ -649,20 +650,40 @@ export async function runNbCli(
         // plain-text promise relies on, so nobody has to hard-code
         // `$NB_DIR | ~/.agent-notebook/notebooks/<shelf>.md`. Output is a BARE path
         // (no decoration) so it pipes into `cat`/`$(...)`.
-        const maybeShelf = argv[1];
+        //
+        // Read from `args` (the `--json` flag already stripped upstream), NOT the
+        // raw `argv` — otherwise `nb path --json` is silently taken as a shelf
+        // *named* `--json` and prints `<dir>/--json.md` (issue #185).
+        const maybeShelf = args[1];
+        // The resolved FILE this invocation points at, or null when it resolves to
+        // the notebooks dir itself (the no-shelf case). `dir` is always the
+        // notebooks dir; `shelfName` is the shelf, or null when none.
+        let file: string | null = null;
+        let shelfName: string | null = null;
         if (maybeShelf === '--usage') {
           // `--usage` resolves the internal usage-log path (issue #169) so a
           // supervisor can tail/rotate/back-up it without hard-coding
           // `.nb-usage.log`. A `--`-prefixed flag can never be a shelf name
           // (assertSafeShelf rejects it), so it can't collide with the branch
           // below. Still a bare path (no decoration), so it pipes into tail/$(...).
-          process.stdout.write(usageFile(dir) + '\n');
+          file = usageFile(dir);
         } else if (maybeShelf == null || maybeShelf === '') {
-          process.stdout.write(dir + '\n');
+          // No shelf — resolves to the notebooks dir itself (file stays null).
         } else {
           shelf = maybeShelf;
+          shelfName = maybeShelf;
           assertSafeShelf(shelf); // reuse the existing escape-proof shelf check
-          process.stdout.write(join(dir, `${shelf}.md`) + '\n');
+          file = join(dir, `${shelf}.md`);
+        }
+        if (json) {
+          // Mirror `describe --json` / `list --json`: one object on stdout so a
+          // supervisor can read the notebooks dir (and resolved file) as stable
+          // fields instead of special-casing `path`, the one read command that
+          // used to emit only a bare string (issue #185).
+          process.stdout.write(JSON.stringify({ dir, shelf: shelfName, path: file }) + '\n');
+        } else {
+          // Bare path, byte-for-byte unchanged: the resolved file, or the dir.
+          process.stdout.write((file ?? dir) + '\n');
         }
         break;
       }

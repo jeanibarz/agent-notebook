@@ -775,6 +775,60 @@ describe('runNbCli', () => {
     expect(r.err).toMatch(/invalid shelf name/);
   });
 
+  describe('path --json (issue #185)', () => {
+    test('path --json emits {dir, shelf:null, path:null}, NOT a shelf named --json', async () => {
+      const r = await run(['path', '--json']);
+      expect(r.code).toBe(0);
+      // Regression: `--json` must be consumed as the flag, never taken as a
+      // shelf literally named `--json` (which printed `<dir>/--json.md`).
+      expect(r.out).not.toContain('--json.md');
+      expect(JSON.parse(r.out)).toEqual({ dir, shelf: null, path: null });
+      expect(r.err).toBe(''); // one object on stdout only
+    });
+
+    test('path <shelf> --json emits {dir, shelf, path} for the resolved file', async () => {
+      const r = await run(['path', 'reviewer', '--json']);
+      expect(r.code).toBe(0);
+      expect(JSON.parse(r.out)).toEqual({
+        dir,
+        shelf: 'reviewer',
+        path: join(dir, 'reviewer.md'),
+      });
+      expect(r.err).toBe('');
+    });
+
+    test('--json before the shelf is parsed the same (flag order is irrelevant)', async () => {
+      const r = await run(['path', '--json', 'reviewer']);
+      expect(r.code).toBe(0);
+      expect(JSON.parse(r.out)).toEqual({
+        dir,
+        shelf: 'reviewer',
+        path: join(dir, 'reviewer.md'),
+      });
+    });
+
+    test('path --usage --json carries the usage-log path in the object (shelf:null)', async () => {
+      const r = await run(['path', '--usage', '--json']);
+      expect(r.code).toBe(0);
+      expect(JSON.parse(r.out)).toEqual({ dir, shelf: null, path: usageFile(dir) });
+      expect(r.err).toBe('');
+    });
+
+    test('--json leaves the bare (non-JSON) outputs byte-for-byte unchanged', async () => {
+      // The three acceptance cases without --json must be exactly as before.
+      expect((await run(['path'])).out).toBe(`${dir}\n`);
+      expect((await run(['path', 'reviewer'])).out).toBe(`${join(dir, 'reviewer.md')}\n`);
+      expect((await run(['path', '--usage'])).out).toBe(`${usageFile(dir)}\n`);
+    });
+
+    test('--json does not disable the safe-shelf guard (still exit 1, no JSON)', async () => {
+      const r = await run(['path', '../escape', '--json']);
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/invalid shelf name/);
+      expect(r.out).toBe(''); // nothing emitted on stdout when rejected
+    });
+  });
+
   describe('list / ls / shelves — the notebook index (issue #71)', () => {
     test('empty/absent notebooks dir prints a friendly note on stderr, empty stdout, exit 0', async () => {
       const r = await run(['list']);
