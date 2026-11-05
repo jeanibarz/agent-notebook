@@ -1745,6 +1745,80 @@ describe('nb describe (issue #70)', () => {
     expect(r.code).toBe(0);
     expect(r.err).toContain('no description set for shelf "patcher"'); // read path, nothing stored
   });
+
+  // Issue #190: `describe <shelf> -` reads the description from stdin, the same
+  // escape hatch `add <shelf> -` offers — so an agent can pipe a long or
+  // punctuation-heavy description without shell-quoting it.
+  describe('describe <shelf> - reads the description from stdin (issue #190)', () => {
+    test('happy path: a single piped line is stored as the description', async () => {
+      // The acceptance criterion: `printf 'my trigger' | nb describe patcher -`.
+      const r = await run(['describe', 'patcher', '-'], 'my trigger');
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('description set for shelf "patcher": my trigger');
+      expect(r.err).toBe('');
+      expect((await run(['describe', 'patcher'])).out).toBe('my trigger\n'); // stored verbatim
+    });
+
+    test('a trailing newline is stripped, leaving the clean description', async () => {
+      const r = await run(['describe', 'patcher', '-'], 'piped trigger\n');
+      expect(r.code).toBe(0);
+      expect((await run(['describe', 'patcher'])).out).toBe('piped trigger\n'); // no stray newline
+    });
+
+    test('multi-line stdin is REFUSED (exit 1) and nothing is stored, not flattened', async () => {
+      // Same contract as `add -`: a one-line field must not silently absorb a
+      // second piped line (sanitizeDesc would collapse the break into a space).
+      const r = await run(['describe', 'patcher', '-'], 'line one\nline two\n');
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/multi-line/i);
+      expect((await run(['describe', 'patcher'])).err).toContain('no description set'); // not stored
+    });
+
+    test('a lone-CR / CRLF multi-line is refused too, not flattened to a space', async () => {
+      // `readOneLine` collapses \r like \n, so every line-ending convention must
+      // trigger the same refusal — mirrors the `add -` CRLF test (issue #38).
+      for (const raw of ['one\r\ntwo\r\n', 'alpha\rbeta']) {
+        const r = await run(['describe', 'patcher', '-'], raw);
+        expect(r.code).toBe(1);
+        expect(r.err).toMatch(/multi-line/i);
+      }
+      expect((await run(['describe', 'patcher'])).err).toContain('no description set'); // none stored
+    });
+
+    test('--json composes with the stdin operand', async () => {
+      // --json is stripped before positional parsing, so `-` is still args[2].
+      const r = await run(['describe', 'patcher', '-', '--json'], 'json piped\n');
+      expect(r.code).toBe(0);
+      expect(JSON.parse(r.out)).toEqual({ role: 'patcher', shelf: 'patcher', desc: 'json piped', set: true });
+    });
+
+    test('empty stdin clears the description (an empty operand, same as `""`)', async () => {
+      // Deliberate difference from `add -` (which skips an empty lesson, since a
+      // notebook cannot hold an empty entry): an empty description is a valid
+      // state, so piping nothing is an empty operand and clears — consistent with
+      // `describe <shelf> ""`. Pinned so the choice is explicit, not accidental.
+      await run(['describe', 'patcher', 'temporary']);
+      const r = await run(['describe', 'patcher', '-'], '');
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('description cleared');
+      expect((await run(['describe', 'patcher'])).err).toContain('no description set');
+    });
+
+    test('the literal empty-string operand still clears (not confused with stdin)', async () => {
+      await run(['describe', 'patcher', 'temporary']);
+      const clear = await run(['describe', 'patcher', '']); // `""`, not `-`
+      expect(clear.code).toBe(0);
+      expect(clear.out).toContain('description cleared');
+      expect((await run(['describe', 'patcher'])).err).toContain('no description set');
+    });
+
+    test('no operand still prints the current description (read path intact)', async () => {
+      await run(['describe', 'patcher', 'the trigger']);
+      const get = await run(['describe', 'patcher']);
+      expect(get.code).toBe(0);
+      expect(get.out).toBe('the trigger\n');
+    });
+  });
 });
 
 describe('nb search — the demoted keyword fallback (issue #82)', () => {
