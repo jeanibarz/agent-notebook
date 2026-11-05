@@ -34,6 +34,7 @@ import { pathToFileURL } from 'node:url';
 
 import {
   addEntry,
+  asciiMode,
   assertSafeShelf,
   classifyError,
   coverageHi,
@@ -1184,13 +1185,37 @@ function renderConfig(rows: ConfigRow[]): { out: string } {
 }
 
 /**
+ * Fixed display width for the trigger/description column in the human `nb list`
+ * and `nb search` renderers (issue #211). Deterministic — a sane fixed width, no
+ * terminal probing — so the output is stable and testable.
+ */
+const DESC_COL_WIDTH = 80;
+
+/**
+ * Bound a one-line trigger/description to `width` display chars for the human
+ * renderers so a long (up to `maxChars()` = 200) description or top lesson can't
+ * wrap and shatter the aligned `name  count  desc` columns of `nb list` / the
+ * shelf lines of `nb search` (issue #211). Over-width text is cut and closed with
+ * an ellipsis — `…`, or `...` under `asciiMode` (the non-UTF-8 / `NB_ASCII`
+ * fallback, issue #136) — and the result (ellipsis included) never exceeds
+ * `width`. The `--json` paths (`listNotebooks` / `search`) are untouched and keep
+ * emitting the full, untruncated text.
+ */
+function truncateCol(text: string, width: number = DESC_COL_WIDTH): string {
+  if (text.length <= width) return text;
+  const ell = asciiMode() ? '...' : '…';
+  return text.slice(0, Math.max(0, width - ell.length)) + ell;
+}
+
+/**
  * Render the notebook index for `nb list`/`ls`/`shelves`/`roles`. Returns `{out, err}` so
  * the caller writes the body to stdout (pipe-clean) and a friendly empty-state
  * note to stderr, exactly like `nb roles` did. One header line, then one row per
  * notebook: `  <name>  <count>  <description>`, name left-padded and count
  * right-aligned so the columns line up. A notebook with no `# desc:` shows its
  * top-scored lesson instead, suffixed `(auto)`. The header reads `N` when every
- * match is shown, or `shown of total` when `--limit` truncated the list.
+ * match is shown, or `shown of total` when `--limit` truncated the list. A long
+ * description/trigger is bounded by `truncateCol` so it can't wrap the row.
  */
 function renderList(dir: string, prefix: string | undefined, limit: number): { out: string; err: string } {
   const listing = listNotebooks(dir, { prefix, limit });
@@ -1208,7 +1233,7 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
   const countWidth = listing.rows.reduce((w, r) => Math.max(w, String(r.lessons).length), 0);
   for (const r of listing.rows) {
     const trigger = r.desc ?? r.auto; // explicit description, else the (auto) top lesson
-    const descPart = trigger ? `  ${trigger}${r.desc === null ? '  (auto)' : ''}` : '';
+    const descPart = trigger ? `  ${truncateCol(trigger)}${r.desc === null ? '  (auto)' : ''}` : '';
     lines.push(`  ${r.shelf.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`);
   }
   return { out: lines.join('\n') + '\n', err: '' };
@@ -1253,7 +1278,7 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
       `(secondary fallback — lessons are normally surfaced to you, not searched)`,
   ];
   for (const g of result.groups) {
-    const descPart = g.desc ? `  — ${g.desc}` : '';
+    const descPart = g.desc ? `  — ${truncateCol(g.desc)}` : '';
     const descOnly = g.hits.length === 0 ? '  (description match)' : g.descMatched ? '  (+description match)' : '';
     lines.push(`  ${g.shelf}${descPart}${descOnly}`);
     for (const h of g.hits) {
