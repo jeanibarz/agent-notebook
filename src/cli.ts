@@ -17,6 +17,7 @@
 //   nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
 //   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport; --exit-code = exit 3 when anomalies present)
 //   nb path   [<shelf> | --usage] [--json]   print the notebooks dir, a shelf's file path, or the usage-log path (--json = {dir, shelf, path} object)
+//   nb config [--json]                      print the effective (post-clamp) NB_* tunables as name=value (--json = object keyed by name)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
 //   nb ls / nb shelves / nb roles          aliases of `nb list` (`roles` is deprecated)
 //   nb completion <bash|zsh>               print a static shell-completion script to source
@@ -34,29 +35,42 @@ import {
   addEntry,
   assertSafeShelf,
   classifyError,
+  coverageHi,
   entryId,
+  errMin,
+  errRate,
   getDescription,
   isValidWindow,
   listNotebooks,
+  lockGraceMs,
   logUsage,
+  loopN,
+  loopWindowSec,
   maxChars,
+  maxLines,
   merge,
   move,
   NbError,
+  nearThreshold,
   normalizeReason,
   notebookExists,
   notebooksDir,
   parseWindowMs,
+  recallMissHi,
   remove,
   render,
   search,
   setDescription,
   showJson,
+  silentHours,
   sparkGlyphs,
   sparkline,
   split,
+  staleLockMs,
   stats,
   usageFile,
+  usageRing,
+  usageRingSlack,
   vote,
   type EngagementDiagnosis,
   type SearchResult,
@@ -100,6 +114,7 @@ usage:
   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
   nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's resolved file path (--json emits a {dir, shelf, path} object)
   nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
+  nb config [--json]                       print the effective (post-clamp) NB_* tunables as name=value (--json emits an object keyed by tunable name)
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
   nb shelves [prefix] [--limit N]         alias of \`nb list\`
@@ -212,6 +227,13 @@ notes:
   - every \`nb show\` line begins with the entry's short stable <id>; pass that id to vote/rm/merge
     (a unique id prefix works too). A unique text substring also selects an entry; an ambiguous one is refused.
   - storage: $NB_DIR or ~/.agent-notebook/notebooks/<shelf>.md (plain text, git-diffable).
+  - \`nb config\` prints every effective (post-clamp) tunable as \`name=value\`, each read from the live
+    getter the hot path uses, so you never re-derive it by hand from the env var, its default and its
+    clamp. Each line is tagged with its source: \`(default)\` (the var is unset), \`(env NB_*)\` (the var is
+    set — the printed value is still the post-clamp effective value, so an out-of-range or non-numeric
+    value is clamped/ignored and may differ from what you exported), or \`(derived …)\`. \`--json\` emits one
+    object keyed by tunable name, each \`{ value, source, env }\`. Read-only — it mutates nothing, and is
+    scoped to CONFIGURATION (the knobs), distinct from \`nb stats\` (usage, anomalies, engagement).
   - \`nb completion <bash|zsh>\` prints a static, dependency-free completion script to stdout.
     Source it with \`eval "$(nb completion bash)"\` (or the zsh form) to tab-complete the command set
     and, where a command takes a shelf, existing shelf names (looked up via \`nb list\`, guarded so it
@@ -248,7 +270,7 @@ function parseDelta(arg: string): number {
  */
 export const KNOWN_COMMANDS = [
   'show', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
-  'search', 'stats', 'path', 'completion', 'list', 'ls', 'shelves', 'roles',
+  'search', 'stats', 'path', 'config', 'completion', 'list', 'ls', 'shelves', 'roles',
   'help', 'version',
 ] as const;
 
@@ -864,6 +886,29 @@ export async function runNbCli(
         }
         break;
       }
+      case 'config': {
+        // Read-only introspection (issue #188): print every effective, post-clamp
+        // tunable as `name=value`, each read from the SAME live getter the hot
+        // path uses, so an operator never has to re-derive a value by hand from
+        // the env var + its default + its clamp. Scoped to CONFIGURATION (the
+        // knobs), deliberately distinct from `nb stats` (usage/anomalies/
+        // engagement). The shared `finally` appends its one usage row; the shelf
+        // column stays `-` because the command reads global config, not a shelf.
+        const rows = effectiveConfig();
+        if (json) {
+          // One object keyed by tunable name; each carries the effective value,
+          // its source (env/default/derived), and the env var that overrides it,
+          // so a supervisor can branch on the live value without regex-parsing
+          // the human lines. The value is always the post-clamp effective value.
+          const obj: Record<string, { value: number; source: ConfigSource; env: string | null }> = {};
+          for (const r of rows) obj[r.name] = { value: r.value, source: configSource(r.env), env: r.env };
+          process.stdout.write(JSON.stringify(obj) + '\n');
+        } else {
+          const { out } = renderConfig(rows);
+          process.stdout.write(out);
+        }
+        break;
+      }
       case 'list':
       case 'ls':
       case 'shelves':
@@ -1050,6 +1095,80 @@ const READOUT_GLOSS: Record<'healthy' | 'surfacing-failure' | 'coverage-building
   'coverage-building': 'a young notebook filling gaps',
   churny: 'gaps and poor surfacing',
 };
+
+/** Where a tunable's effective value came from: a set env var, the built-in default, or a derived value with no own env var. */
+type ConfigSource = 'env' | 'default' | 'derived';
+
+/** One `nb config` row: the tunable's config name, the value its live getter resolves to RIGHT NOW, and the env var that overrides it (null for a derived value). */
+interface ConfigRow {
+  name: string;
+  value: number;
+  env: string | null;
+}
+
+/**
+ * The effective, post-clamp tunables `nb config` reports (issue #188). Every
+ * value comes from the SAME exported getter the hot path uses, so a printed
+ * value can never drift from the value `nb` actually runs under — the honest way
+ * to surface a post-clamp value without re-reading the env (and re-copying every
+ * default + clamp) here, which is exactly the #116-class drift the #131 guard
+ * exists to prevent. `usageRingSlack` is DERIVED from `usageRing` and has no env
+ * var of its own (env `null`).
+ */
+function effectiveConfig(): ConfigRow[] {
+  return [
+    { name: 'maxLines', value: maxLines(), env: 'NB_MAX_LINES' },
+    { name: 'maxChars', value: maxChars(), env: 'NB_MAX_CHARS' },
+    { name: 'nearThreshold', value: nearThreshold(), env: 'NB_NEAR_DUP' },
+    { name: 'usageRing', value: usageRing(), env: 'NB_USAGE_RING' },
+    { name: 'usageRingSlack', value: usageRingSlack(), env: null },
+    { name: 'staleLockMs', value: staleLockMs(), env: 'NB_STALE_LOCK_MS' },
+    { name: 'lockGraceMs', value: lockGraceMs(), env: 'NB_LOCK_GRACE_MS' },
+    { name: 'loopN', value: loopN(), env: 'NB_LOOP_N' },
+    { name: 'loopWindowSec', value: loopWindowSec(), env: 'NB_LOOP_WINDOW_S' },
+    { name: 'silentHours', value: silentHours(), env: 'NB_SILENT_H' },
+    { name: 'errMin', value: errMin(), env: 'NB_ERR_MIN' },
+    { name: 'errRate', value: errRate(), env: 'NB_ERR_RATE' },
+    { name: 'coverageHi', value: coverageHi(), env: 'NB_COVERAGE_HI' },
+    { name: 'recallMissHi', value: recallMissHi(), env: 'NB_RECALL_MISS_HI' },
+  ];
+}
+
+/**
+ * Classify where a tunable's effective value comes from. A tunable with no env
+ * var of its own (`env === null`) is `derived`; otherwise it is `env` when the
+ * variable is DEFINED and `default` when it is unset (absent from the
+ * environment). This is a statement about the ENVIRONMENT, not the value: a
+ * set-but-out-of-range, non-numeric, or even blank var still reads `env`, while
+ * the value `nb config` prints is always the post-clamp effective one.
+ *
+ * The test is `!== undefined`, NOT "non-blank": a var set to the empty string IS
+ * set, and for a rate getter `clampRate` resolves `''` to `0` (via `Number('')`),
+ * which is the value the hot path actually uses — so it must read `(env …)`, not
+ * `(default)`. Tagging that `default` would print `errRate=0 (default)` while the
+ * real default is `0.3`: a value/tag pair that silently misleads, the exact thing
+ * FR-CONFIG-001 and DP-5 forbid.
+ */
+function configSource(env: string | null): ConfigSource {
+  if (env === null) return 'derived';
+  return process.env[env] !== undefined ? 'env' : 'default';
+}
+
+/**
+ * Render `nb config` for the human path. One `name=value` line per tunable, the
+ * `name=value` column left-padded so the source tags line up. The tag names the
+ * source: `(default)`, `(env NB_*)`, or `(derived from usageRing)`. Returns
+ * `{ out }` (stdout only) — there is no error/empty state, the table is fixed.
+ */
+function renderConfig(rows: ConfigRow[]): { out: string } {
+  const pairW = rows.reduce((w, r) => Math.max(w, `${r.name}=${r.value}`.length), 0);
+  const lines = rows.map((r) => {
+    const src = configSource(r.env);
+    const tag = src === 'env' ? `(env ${r.env})` : src === 'derived' ? '(derived from usageRing)' : '(default)';
+    return `${`${r.name}=${r.value}`.padEnd(pairW)}  ${tag}`;
+  });
+  return { out: lines.join('\n') + '\n' };
+}
 
 /**
  * Render the notebook index for `nb list`/`ls`/`shelves`/`roles`. Returns `{out, err}` so

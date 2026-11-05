@@ -10,6 +10,26 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb config` prints the effective (post-clamp) `NB_*` tunables (FR-CONFIG-001 / #188).**
+  Every knob is read at call time and *clamped* to its range, so the value `nb` actually runs
+  under is not always the one you exported; there was no command that surfaced it, so when behavior
+  looked wrong (a cap evicting too hard, a loop detector firing early, a near-dup over-warning) an
+  operator had to re-derive the effective value by hand from the env var, its default, and its
+  clamp. `nb config` now prints each effective tunable as `name=value` — the caps, near-dup
+  threshold, usage ring + derived slack, lock timings, and the `nb stats` anomaly/readout
+  thresholds — each read from the **same exported getter the hot path uses**, so a printed value
+  can never drift from the value in force. Each line is tagged with its source: `(default)` (var
+  unset), `(env NB_*)` (var set — the printed value is still the post-clamp effective one, so an
+  out-of-range or non-numeric value shows up corrected, never silently misrepresented, DP-5), or
+  `(derived …)`. `nb config --json` emits one object keyed by tunable name, each `{ value, source,
+  env }`. Read-only (it mutates nothing) and scoped to *configuration*, deliberately distinct from
+  `nb stats` (usage, anomalies, engagement). To surface the `nb stats` thresholds without copying
+  their clamp logic into a second place (the #116-class drift the #131 guard guards against), the
+  inline threshold constants in `stats()` were extracted into exported getters
+  (`loopN`/`loopWindowSec`/`silentHours`/`errMin`/`errRate`/`coverageHi`/`recallMissHi`) that
+  `stats()` now calls — a behavior-preserving refactor (same defaults, same clamps). `config` is
+  added to `KNOWN_COMMANDS`/HELP/dispatch so the drift guard stays green and shell completion
+  learns it.
 - **`nb search --limit N` bounds results like `nb list` (FR-SEARCH-001 / #186).** `nb list`
   takes `--limit` (default 50) so the index stays flat as notebooks grow, but `nb search` had no
   result bound — a common term (or `--any`) on a many-shelf deployment dumped every matching

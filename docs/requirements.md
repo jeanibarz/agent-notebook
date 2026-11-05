@@ -468,7 +468,7 @@ existing `# desc:` metadata, adding no field to a lesson.
 <a id="fr-cli-001"></a>
 **FR-CLI-001 (Must).** `nb` SHALL implement: `show`, `add <shelf> ("<lesson>"|-)`,
 `vote`, `merge`, `split <shelf> <id|query> "<a>" "<b>"`,
-`rm`, `move <from> <to> <id|query>`, `describe <shelf> ["<text>"]`, `stats [<shelf>] [--since <N{d,h,m}>] [--json]`, `path [<shelf>]`,
+`rm`, `move <from> <to> <id|query>`, `describe <shelf> ["<text>"]`, `stats [<shelf>] [--since <N{d,h,m}>] [--json]`, `path [<shelf>]`, `config [--json]`,
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`), `--help`, `--version`.
 The `-` lesson operand of `add` reads from stdin per
 [FR-ADD-007](#fr-add-007). The optional `[--reason <code>] [--note "<text>"]` flags are
@@ -501,6 +501,26 @@ contract, never removed or renamed; the deprecated keys, `listRoles`, `assertSaf
 and `nb roles` SHALL keep working and SHALL be removed only in a later release marked
 BREAKING.
 *Proven by:* `cli.test.ts` and `notebook.test.ts` → "shelf terminology (role kept as a deprecated alias)".
+
+<a id="fr-config-001"></a>
+**FR-CONFIG-001 (Should).** `nb config` SHALL print every effective (post-clamp) tunable
+as `name=value`, one per line — `maxLines`, `maxChars`, `nearThreshold`, `usageRing`,
+`usageRingSlack`, `staleLockMs`, `lockGraceMs`, and the `nb stats` thresholds
+`loopN`/`loopWindowSec`/`silentHours`/`errMin`/`errRate`/`coverageHi`/`recallMissHi` — each
+read from the SAME exported getter the hot path uses (see [§7](#7-configuration)), so a
+printed value can never drift from the value in force. Each line SHALL be tagged with its
+source: `(default)` when the backing `NB_*` var is unset, `(env NB_*)` when it is set, or
+`(derived …)` for a value computed from another (`usageRingSlack`). Because the printed value
+is always the post-clamp effective one, a set-but-out-of-range or non-numeric var reads `env`
+while its value is shown corrected — the pair never silently misleads ([DP-5](#dp-5)).
+`nb config --json` SHALL emit one object keyed by tunable name, each value
+`{ value, source, env }`. `nb config` SHALL be read-only (it mutates no notebook) and is scoped
+to *configuration*, distinct from `nb stats` (usage, anomalies, engagement). To surface the
+`nb stats` thresholds without duplicating their clamp logic, `stats()` reads them through those
+exported getters rather than inline — a behavior-preserving extraction (same defaults, same
+clamps). The command is in `KNOWN_COMMANDS`/HELP/dispatch so the [FR-CLI-001](#fr-cli-001) drift
+guard stays green.
+*Proven by:* `cli.test.ts` → `describe('config — effective (post-clamp) tunables (issue #188)')`.
 
 ### 4.11 Durability & concurrency
 
@@ -924,6 +944,7 @@ to the default (integer vars also fall back on a non-numeric string).
 | `NB_SESSION` | _(unset → blank)_ | — | Session id a caller/hook sets; recorded per usage row ([FR-USAGE-002](#fr-usage-002)) to group a session's calls. |
 | `NB_MAX_LINES` | 50 | 1–5000 | `maxLines` — entries per notebook (a deliberately tight default so eviction pressure stays meaningful and a notebook keeps only what earns its place; raise it for a shelf that genuinely needs more). |
 | `NB_MAX_CHARS` | 200 | 20–2000 | `maxChars` — characters per lesson. |
+| `NB_NEAR_DUP` | 0.5 | 0–1 | `nearThreshold` — trigram-Jaccard similarity at/above which an accepted `add` prints a non-blocking merge advisory ([FR-ADD-008](#fr-add-008)); `0` disables it. |
 | `NB_USAGE_RING` | 5000 | 100–100000 | `usageRing` — rows in the usage log. |
 | `NB_LOOP_N` | 10 | 2–1000 | Loop anomaly: call count threshold. |
 | `NB_LOOP_WINDOW_S` | 120 | 5–86400 | Loop anomaly: window (seconds). |

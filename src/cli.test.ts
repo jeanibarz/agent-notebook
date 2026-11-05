@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -827,6 +827,134 @@ describe('runNbCli', () => {
       expect(r.code).toBe(1);
       expect(r.err).toMatch(/invalid shelf name/);
       expect(r.out).toBe(''); // nothing emitted on stdout when rejected
+    });
+  });
+
+  describe('config — effective (post-clamp) tunables (issue #188)', () => {
+    // The getters read live env, so clear every tunable var first for a
+    // deterministic default baseline, then restore the environment after. (The
+    // outer afterEach only resets a subset; this block touches more of them.)
+    const TUNABLES = [
+      'NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_NEAR_DUP', 'NB_USAGE_RING',
+      'NB_STALE_LOCK_MS', 'NB_LOCK_GRACE_MS', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S',
+      'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ERR_RATE', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI',
+    ];
+    const savedTunables: Record<string, string | undefined> = {};
+    beforeEach(() => {
+      for (const k of TUNABLES) {
+        savedTunables[k] = process.env[k];
+        delete process.env[k];
+      }
+    });
+    afterEach(() => {
+      for (const k of TUNABLES) {
+        if (savedTunables[k] === undefined) delete process.env[k];
+        else process.env[k] = savedTunables[k];
+      }
+    });
+
+    // Every tunable config must surface, with its built-in default value. This
+    // list is the acceptance criterion: cap, char cap, near-dup threshold, usage
+    // ring + slack, lock timings, and the stats anomaly/readout thresholds.
+    const DEFAULTS: Array<[string, string]> = [
+      ['maxLines', '50'], ['maxChars', '200'], ['nearThreshold', '0.5'],
+      ['usageRing', '5000'], ['usageRingSlack', '312'], ['staleLockMs', '10000'],
+      ['lockGraceMs', '2000'], ['loopN', '10'], ['loopWindowSec', '120'],
+      ['silentHours', '48'], ['errMin', '5'], ['errRate', '0.3'],
+      ['coverageHi', '0.5'], ['recallMissHi', '0.2'],
+    ];
+
+    test('prints every effective tunable as name=value (defaults), one line each, exit 0', async () => {
+      const r = await run(['config']);
+      expect(r.code).toBe(0);
+      expect(r.err).toBe('');
+      for (const [name, value] of DEFAULTS) {
+        expect(r.out).toContain(`${name}=${value}`);
+      }
+      // Exactly one line per tunable, nothing extra.
+      expect(r.out.trimEnd().split('\n')).toHaveLength(DEFAULTS.length);
+    });
+
+    test('each default line is tagged (default); the derived one is tagged derived', async () => {
+      const r = await run(['config']);
+      expect(r.out).toMatch(/^maxLines=50\s+\(default\)$/m);
+      expect(r.out).toMatch(/^usageRingSlack=312\s+\(derived from usageRing\)$/m);
+    });
+
+    test('--json emits one object keyed by tunable name, each { value, source, env }', async () => {
+      const r = await run(['config', '--json']);
+      expect(r.code).toBe(0);
+      expect(r.out.trim().split('\n')).toHaveLength(1); // exactly one JSON object on stdout
+      const obj = JSON.parse(r.out);
+      expect(Object.keys(obj).sort()).toEqual(DEFAULTS.map(([n]) => n).sort());
+      expect(obj.maxLines).toEqual({ value: 50, source: 'default', env: 'NB_MAX_LINES' });
+      // The derived value has no env var of its own.
+      expect(obj.usageRingSlack).toEqual({ value: 312, source: 'derived', env: null });
+      // Values are real numbers, not stringified — a supervisor can branch on them.
+      expect(typeof obj.errRate.value).toBe('number');
+      expect(obj.errRate.value).toBe(0.3);
+    });
+
+    test('an env override is reflected in the value and tagged (env NB_*)', async () => {
+      process.env.NB_MAX_LINES = '123';
+      expect((await run(['config'])).out).toMatch(/^maxLines=123\s+\(env NB_MAX_LINES\)$/m);
+      const j = JSON.parse((await run(['config', '--json'])).out);
+      expect(j.maxLines).toEqual({ value: 123, source: 'env', env: 'NB_MAX_LINES' });
+    });
+
+    test('an out-of-range env override prints the POST-CLAMP value, still source=env (DP-5)', async () => {
+      process.env.NB_MAX_CHARS = '99999'; // above the 2000 ceiling → clamped
+      const j = JSON.parse((await run(['config', '--json'])).out);
+      expect(j.maxChars).toEqual({ value: 2000, source: 'env', env: 'NB_MAX_CHARS' });
+      expect((await run(['config'])).out).toMatch(/^maxChars=2000\s+\(env NB_MAX_CHARS\)$/m);
+    });
+
+    test('a NON-NUMERIC env clamps back to the default value yet still reads source=env (DP-5)', async () => {
+      // The subtle half of DP-5: `clampInt('abc', …)` falls back to the default
+      // (50), so value EQUALS the default — but the var IS set, so source must be
+      // `env`, derived from `process.env`, not inferred from value-vs-default. A
+      // mutation computing source by comparing value to the default would pass
+      // every other test but fail this one.
+      process.env.NB_MAX_LINES = 'abc';
+      const j = JSON.parse((await run(['config', '--json'])).out);
+      expect(j.maxLines).toEqual({ value: 50, source: 'env', env: 'NB_MAX_LINES' });
+      expect((await run(['config'])).out).toMatch(/^maxLines=50\s+\(env NB_MAX_LINES\)$/m);
+    });
+
+    test('a blank env var reads source=env, not default, matching the value the getter yields (DP-5)', async () => {
+      // A var set to the empty string IS set: `clampRate` resolves '' to 0 (via
+      // Number('')), the value the hot path uses. Tagging that `default` would
+      // print `errRate=0 (default)` while the real default is 0.3 — the exact
+      // misleading value/tag pair FR-CONFIG-001 forbids. source must read `env`.
+      process.env.NB_ERR_RATE = '';
+      const j = JSON.parse((await run(['config', '--json'])).out);
+      expect(j.errRate).toEqual({ value: 0, source: 'env', env: 'NB_ERR_RATE' });
+      expect((await run(['config'])).out).toMatch(/^errRate=0\s+\(env NB_ERR_RATE\)$/m);
+    });
+
+    test('config reuses the live getter, so a set stats threshold is surfaced (no drift)', async () => {
+      process.env.NB_LOOP_N = '7';
+      const j = JSON.parse((await run(['config', '--json'])).out);
+      expect(j.loopN).toEqual({ value: 7, source: 'env', env: 'NB_LOOP_N' });
+    });
+
+    test('config mutates nothing — no shelf file is created or changed', async () => {
+      // Pre-seed a real shelf and snapshot its bytes, so this guards against a
+      // regression that MODIFIES an existing notebook — not just the near-trivial
+      // "creates no file in an empty dir" case (a `config` that rewrote a shelf
+      // would slip past that).
+      await run(['add', 'seeded', 'a durable lesson']);
+      const file = join(dir, 'seeded.md');
+      const before = readFileSync(file, 'utf8');
+      const filesBefore = readdirSync(dir).filter((f) => f.endsWith('.md')).sort();
+
+      await run(['config']);
+      await run(['config', '--json']);
+
+      // The pre-seeded shelf is byte-identical, and config added no new shelf.
+      // (.nb-usage.log is the only side effect, shared by every read command.)
+      expect(readFileSync(file, 'utf8')).toBe(before);
+      expect(readdirSync(dir).filter((f) => f.endsWith('.md')).sort()).toEqual(filesBefore);
     });
   });
 
