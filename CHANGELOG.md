@@ -76,6 +76,18 @@ versions are listed plainly.
   (NG-001 amended to permit a non-blocking lexical advisory while the *blocking* decision stays
   exact-normal-form only).
 
+### Fixed
+- **A `vote`/`rm`/`split`/`move` on a never-created shelf now reads as a typo, not an empty
+  notebook (FR-CLI-006 / #200).** These commands threw `notebook for shelf "X" is empty` for a
+  shelf that was *never created*, mislabeling a mistyped name as a real-but-empty notebook — so an
+  agent would seed a brand-new lesson onto the wrong (nonexistent) shelf instead of correcting the
+  name, silently fragmenting memory across typo shelves. The CLI now checks existence first (as
+  `nb show` has since #166) and reports `no notebook for shelf "X"`, appending an advisory `did you
+  mean "<nearest>"?` when a close existing shelf is found — the shelf sibling of the command
+  did-you-mean (#171), over the same `editDistance`. An *existing but empty* shelf still reports
+  `is empty`; the hint never auto-corrects; and the core mutation functions are unchanged. For
+  `move`, only the source is guarded — a never-created target is still created like `add`.
+
 ### Documentation
 - **Retrospective contract now steers `vote` to the id, not a text snippet.** `nb stats` showed
   `vote` erroring on ~22% of 325 calls, and dozens of `browse-without-use` sessions (a shelf shown
