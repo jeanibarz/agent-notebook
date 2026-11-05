@@ -53,6 +53,7 @@ import {
   addEntry,
   assertSafeRole,
   assertSafeShelf,
+  classifyError,
   dedupKey,
   diagnoseEngagement,
   entryId,
@@ -70,6 +71,8 @@ import {
   merge,
   move,
   nearThreshold,
+  NbError,
+  ERROR_CLASSES,
   normalizeReason,
   notebookExists,
   parseUsage,
@@ -797,7 +800,7 @@ describe('operation reasons (seed-and-grow enum)', () => {
 });
 
 describe('usage-log TSV wire format (golden, issue #126)', () => {
-  // The usage log is a positional 12-column TSV read back by parseUsage and, for
+  // The usage log is a positional 13-column TSV read back by parseUsage and, for
   // pre-upgrade rings, by any older reader that looks only at the first five
   // columns. The behavioral round-trip tests above all go THROUGH parseUsage, so
   // a reorder or insertion of a column would round-trip cleanly while silently
@@ -806,13 +809,15 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
   // reorder/insert/remove fails here and becomes a deliberate, visible change.
 
   // The documented column order (notebook.ts logUsage): ts, shelf, command, ok,
-  // ms, session, entries, outcome, collided, evicted, reason, note.
+  // ms, session, entries, outcome, collided, evicted, reason, note, errorClass.
+  // `errorClass` (issue #176) is the trailing column — appended after `note` so a
+  // pre-#176 row (which ends at `note`) still reads every prior field in place.
   const COLUMN_ORDER = [
     'ts', 'shelf', 'command', 'ok', 'ms', 'session',
-    'entries', 'outcome', 'collided', 'evicted', 'reason', 'note',
+    'entries', 'outcome', 'collided', 'evicted', 'reason', 'note', 'errorClass',
   ] as const;
 
-  test('a fully-populated row serializes as exactly 12 tab-separated columns in the documented order', () => {
+  test('a fully-populated row serializes as exactly 13 tab-separated columns in the documented order', () => {
     // Distinct, recognizable value per column so a swap of any two columns is
     // detectable (not just a count change) — generic values would let a reorder
     // pass. ms=1234 and ok=true pin the `1234ms` / `ok` renderings too.
@@ -824,6 +829,7 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       evicted: 'ddd:0.5',
       reason: 'duplicate',
       note: 'some note',
+      errorClass: 'too_long',
     });
 
     const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
@@ -834,8 +840,8 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
     expect(linesWritten).toHaveLength(1);
     const cols = linesWritten[0].split('\t');
 
-    // Exactly 12 columns — a removed or injected column fails here first (an
-    // insertion pushes the width past the 12 names in COLUMN_ORDER, a removal
+    // Exactly 13 columns — a removed or injected column fails here first (an
+    // insertion pushes the width past the 13 names in COLUMN_ORDER, a removal
     // below them).
     expect(cols).toHaveLength(COLUMN_ORDER.length);
 
@@ -862,12 +868,13 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       evicted: 'ddd:0.5', // <id>:<finalScore>
       reason: 'duplicate',
       note: 'some note',
+      errorClass: 'too_long',
     });
   });
 
-  test('err status and an empty-meta row still render the fixed 12-column frame', () => {
+  test('err status and an empty-meta row still render the fixed 13-column frame', () => {
     // A `show`-shaped call fills no richer meta; the trailing columns must still
-    // be present (empty), keeping the frame 12 columns wide — an old reader that
+    // be present (empty), keeping the frame 13 columns wide — an old reader that
     // slices the first five columns depends on this stable prefix. session is
     // pinned to '' so an ambient NB_SESSION cannot populate column 5.
     logUsage(dir, 's', 'show', false, 2, { session: '' });
@@ -875,17 +882,17 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
     // columns (which are tabs) are preserved and counted.
     const line = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').split('\n').filter((l) => l !== '')[0];
     const cols = line.split('\t');
-    expect(cols).toHaveLength(12);
+    expect(cols).toHaveLength(13);
     // The stable 5-column prefix an old reader slices: shelf, command, ok, ms.
     expect(cols.slice(1, 5)).toEqual(['s', 'show', 'err', '2ms']); // ok=false → 'err'
-    // session..note (indices 5..11) are all empty for a bare call.
-    expect(cols.slice(5)).toEqual(['', '', '', '', '', '', '']);
+    // session..errorClass (indices 5..12) are all empty for a bare call.
+    expect(cols.slice(5)).toEqual(['', '', '', '', '', '', '', '']);
   });
 
   test('a legacy 5-column row parses with the newer columns defaulting to blank/empty', () => {
     // The backward-compat contract: a ring written before the richer columns
     // existed holds only ts, shelf, command, ok, ms. It must still parse, with
-    // every appended column (session…note) defaulting to blank/empty.
+    // every appended column (session…errorClass) defaulting to blank/empty.
     writeFileSync(
       join(dir, '.nb-usage.log'),
       '2026-01-02T03:04:05.000Z\tp\tadd\tok\t5ms\n',
@@ -906,10 +913,11 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       evicted: '',
       reason: '',
       note: '',
+      errorClass: '',
     });
   });
 
-  test('parseUsage pins the READER column order: a hand-typed 12-column row maps each field to its documented position', () => {
+  test('parseUsage pins the READER column order: a hand-typed 13-column row maps each field to its documented position', () => {
     // The writer golden above pins logUsage's serialization; this pins the
     // reader independently. parseUsage destructures positionally, so a reorder
     // of ITS destructuring (e.g. swapping collided/evicted) would not be caught
@@ -917,7 +925,7 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
     // per column makes any reader reorder fail this full `toEqual`.
     writeFileSync(
       join(dir, '.nb-usage.log'),
-      '2026-01-02T03:04:05.000Z\tmyshelf\tmerge\tok\t1234ms\tsess-7\taaa,bbb\tmerged\tccc\tddd:0.5\tduplicate\tsome note\n',
+      '2026-01-02T03:04:05.000Z\tmyshelf\tmerge\tok\t1234ms\tsess-7\taaa,bbb\tmerged\tccc\tddd:0.5\tduplicate\tsome note\ttoo_long\n',
       'utf-8',
     );
     expect(parseUsage(dir)[0]).toEqual({
@@ -933,17 +941,18 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       evicted: 'ddd:0.5',
       reason: 'duplicate',
       note: 'some note',
+      errorClass: 'too_long',
     });
   });
 
-  test('parseUsage reads a MIXED post-upgrade ring: a legacy 5-column row followed by a full 12-column row', () => {
+  test('parseUsage reads a MIXED post-upgrade ring: a legacy 5-column row followed by a full 13-column row', () => {
     // The real on-disk state right after an upgrade: old rows written by the
-    // pre-richer-columns code, then new rows with all 12. Both must parse in one
+    // pre-richer-columns code, then new rows with all 13. Both must parse in one
     // file — the legacy row with blank richer columns, the new row fully.
     writeFileSync(
       join(dir, '.nb-usage.log'),
       '2026-01-01T00:00:00.000Z\tp\tadd\tok\t5ms\n' +
-        '2026-01-02T03:04:05.000Z\ts\tmerge\terr\t9ms\tsess\taaa\tmerged\tccc\tddd:0.5\tduplicate\tnote\n',
+        '2026-01-02T03:04:05.000Z\ts\tmerge\terr\t9ms\tsess\taaa\tmerged\tccc\tddd:0.5\tduplicate\tnote\tbad_args\n',
       'utf-8',
     );
     const rows = parseUsage(dir);
@@ -962,6 +971,7 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       evicted: '',
       reason: '',
       note: '',
+      errorClass: '',
     });
     // Full row: every richer column is parsed into its field.
     expect(rows[1]).toEqual({
@@ -977,7 +987,183 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       evicted: 'ddd:0.5',
       reason: 'duplicate',
       note: 'note',
+      errorClass: 'bad_args',
     });
+  });
+});
+
+describe('error-class usage column (issue #176)', () => {
+  test('classifyError reads an NbError class and defaults everything else to `other`', () => {
+    expect(classifyError(new NbError('too_long', 'x'))).toBe('too_long');
+    expect(classifyError(new NbError('ambiguous_selector', 'x'))).toBe('ambiguous_selector');
+    expect(classifyError(new NbError('bad_args', 'x'))).toBe('bad_args');
+    // A plain Error (or any non-NbError throw) is never guessed from its message.
+    expect(classifyError(new Error('lesson too long — looks like too_long but is plain'))).toBe('other');
+    expect(classifyError('a bare string throw')).toBe('other');
+    expect(classifyError(undefined)).toBe('other');
+  });
+
+  test('ERROR_CLASSES is the exact, ordered wire enum (a documented TSV contract)', () => {
+    // Pin the exact contents+order, not a self-referential loop: the column is a
+    // wire format read by `nb stats` and documented in the README, so adding,
+    // removing, or reordering a class is a deliberate, visible change — and
+    // `other` (the escape hatch) must always be present and last.
+    expect([...ERROR_CLASSES]).toEqual([
+      'too_long',
+      'ambiguous_selector',
+      'no_match',
+      'multiline_refused',
+      'bad_args',
+      'unknown_subcommand',
+      'other',
+    ]);
+  });
+
+  test('an NbError keeps the plain-Error message (stderr/behaviour unchanged)', () => {
+    const e = new NbError('no_match', 'no entry matches "zzz"');
+    expect(e).toBeInstanceOf(Error);
+    expect(e.message).toBe('no entry matches "zzz"');
+    expect(e.errorClass).toBe('no_match');
+  });
+
+  test('the error class round-trips through the usage log', () => {
+    logUsage(dir, 's', 'add', false, 2, { errorClass: 'too_long' });
+    expect(parseUsage(dir)[0].errorClass).toBe('too_long');
+  });
+
+  test('a successful call records a blank error class', () => {
+    logUsage(dir, 's', 'show', true, 1);
+    expect(parseUsage(dir)[0].errorClass).toBe('');
+  });
+
+  test('resolveSelector throws a classified NbError: no_match vs ambiguous_selector', async () => {
+    await addEntry(dir, 'd', 'alpha lesson one');
+    await addEntry(dir, 'd', 'alpha lesson two');
+    // No entry matches → no_match.
+    await expect(vote(dir, 'd', 'zzzzznope', 1)).rejects.toMatchObject({ errorClass: 'no_match' });
+    // A substring matching BOTH entries → ambiguous_selector.
+    await expect(vote(dir, 'd', 'alpha', 1)).rejects.toMatchObject({ errorClass: 'ambiguous_selector' });
+  });
+
+  test('each converted mutating-op throw carries the right NbError class (per-site, not just one)', async () => {
+    process.env.NB_MAX_CHARS = '20';
+    const LONG = 'z'.repeat(50);
+    // Seed a shelf with two distinct entries so merge/split have real targets.
+    await addEntry(dir, 's', 'first real lesson');
+    await addEntry(dir, 's', 'second real lesson');
+    // Pin ONE throw site per (op, class) so swapping a class string in merge /
+    // split / move / describe is caught — not only the vote selector sites.
+    // too_long sites:
+    await expect(merge(dir, 's', 'first', 'second', LONG)).rejects.toMatchObject({ errorClass: 'too_long' });
+    await expect(split(dir, 's', 'first', LONG, 'ok half')).rejects.toMatchObject({ errorClass: 'too_long' });
+    await expect(setDescription(dir, 's', LONG)).rejects.toMatchObject({ errorClass: 'too_long' });
+    // bad_args sites:
+    await expect(merge(dir, 's', 'first', 'first', 'combined lesson')).rejects.toMatchObject({ errorClass: 'bad_args' }); // same entry twice
+    await expect(move(dir, 'x', 'x', 'first')).rejects.toMatchObject({ errorClass: 'bad_args' }); // same source/target shelf
+    let caught: unknown;
+    try { assertSafeShelf('bad/name'); } catch (e) { caught = e; }
+    expect(classifyError(caught)).toBe('bad_args'); // an invalid shelf name is bad_args
+    // no_match site: an empty shelf has nothing to act on.
+    await expect(vote(dir, 'empty-shelf', 'anything', 1)).rejects.toMatchObject({ errorClass: 'no_match' });
+    await expect(move(dir, 'empty-shelf', 'dest', 'anything')).rejects.toMatchObject({ errorClass: 'no_match' });
+  });
+
+  test('stats breaks a high-error-rate anomaly down by error class (issue #176)', () => {
+    process.env.NB_ERR_MIN = '4';
+    process.env.NB_ERR_RATE = '0.5';
+    const now = Date.now();
+    // 10 `add` calls: 7 errors (5 too_long, 2 bad_args) + 3 ok → 70% error rate.
+    const classes = [
+      'too_long', 'too_long', 'too_long', 'too_long', 'too_long', // 5
+      'bad_args', 'bad_args', // 2
+    ];
+    const rows: string[] = [];
+    classes.forEach((cls, i) => {
+      rows.push(`${new Date(now - i * 1000).toISOString()}\tp\tadd\terr\t2ms\t\t\t\t\t\t\t\t${cls}`);
+    });
+    for (let i = 0; i < 3; i++) rows.push(`${new Date(now - (i + 10) * 1000).toISOString()}\tp\tadd\tok\t2ms`);
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+
+    const rep = stats(dir, { now });
+    const anomaly = rep.anomalies.find((a) => a.kind === 'high-error-rate' && a.command === 'add');
+    expect(anomaly).toBeDefined();
+    // The detail names the dominant class first with its share of the 7 errors.
+    expect(anomaly!.detail).toContain('70% errors over 10 calls');
+    expect(anomaly!.detail).toContain('too_long 71%'); // 5/7
+    expect(anomaly!.detail).toContain('bad_args 29%'); // 2/7
+    // The classes are ordered most-common first.
+    expect(anomaly!.detail.indexOf('too_long')).toBeLessThan(anomaly!.detail.indexOf('bad_args'));
+  });
+
+  test('equal-count error classes break the tie alphabetically (stable line order)', () => {
+    process.env.NB_ERR_MIN = '2';
+    process.env.NB_ERR_RATE = '0.5';
+    const now = Date.now();
+    // Two classes with the SAME count (1 each): without a tie-break the order is
+    // Map-insertion; the alphabetical tie-break must put `bad_args` before
+    // `no_match` regardless of which was logged first. Log `no_match` FIRST so a
+    // dropped tie-break (insertion order) would wrongly print it first.
+    const rows = [
+      `${new Date(now - 1000).toISOString()}\tp\tvote\terr\t2ms\t\t\t\t\t\t\t\tno_match`,
+      `${new Date(now - 2000).toISOString()}\tp\tvote\terr\t2ms\t\t\t\t\t\t\t\tbad_args`,
+    ];
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const rep = stats(dir, { now });
+    const anomaly = rep.anomalies.find((a) => a.kind === 'high-error-rate' && a.command === 'vote')!;
+    expect(anomaly.detail).toContain('bad_args 50%, no_match 50%'); // alphabetical, not insertion order
+  });
+
+  test('pre-#176 error rows (no class) are bucketed as `unclassified`, not a misleading `other`', () => {
+    process.env.NB_ERR_MIN = '4';
+    process.env.NB_ERR_RATE = '0.5';
+    const now = Date.now();
+    // Five legacy 5-column error rows — written before the error-class column existed.
+    const rows = Array.from({ length: 5 }, (_, i) =>
+      `${new Date(now - i * 1000).toISOString()}\tp\tvote\terr\t2ms`,
+    );
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const rep = stats(dir, { now });
+    const anomaly = rep.anomalies.find((a) => a.kind === 'high-error-rate' && a.command === 'vote');
+    expect(anomaly).toBeDefined();
+    expect(anomaly!.detail).toContain('unclassified 100%');
+    expect(anomaly!.detail).not.toContain('other');
+  });
+
+  test('a mixed ring (legacy + classified errors) shares one denominator: the full error count', () => {
+    process.env.NB_ERR_MIN = '3';
+    process.env.NB_ERR_RATE = '0.5';
+    const now = Date.now();
+    // 4 errors: 2 classified too_long, 2 legacy (no class) → each bucket is 50%
+    // of the 4-error total, proving `unclassified` sits beside a real class and
+    // the denominator is the whole error count, not just the classified rows.
+    const rows = [
+      `${new Date(now - 1000).toISOString()}\tp\tadd\terr\t2ms\t\t\t\t\t\t\t\ttoo_long`,
+      `${new Date(now - 2000).toISOString()}\tp\tadd\terr\t2ms\t\t\t\t\t\t\t\ttoo_long`,
+      `${new Date(now - 3000).toISOString()}\tp\tadd\terr\t2ms`, // legacy 5-column
+      `${new Date(now - 4000).toISOString()}\tp\tadd\terr\t2ms`, // legacy 5-column
+    ];
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const rep = stats(dir, { now });
+    const anomaly = rep.anomalies.find((a) => a.kind === 'high-error-rate' && a.command === 'add')!;
+    expect(anomaly.detail).toContain('too_long 50%');
+    expect(anomaly.detail).toContain('unclassified 50%');
+  });
+
+  test('a degenerate NB_ERR_RATE=0 flags a zero-error command with the generic phrase, not an empty breakdown', () => {
+    // NB_ERR_RATE=0 means "flag at any error rate", so a command with ZERO errors
+    // trips the anomaly. There are no error rows to classify, so the detail falls
+    // back to the generic phrase rather than a trailing "— " with nothing after.
+    process.env.NB_ERR_MIN = '2';
+    process.env.NB_ERR_RATE = '0';
+    const now = Date.now();
+    const rows = Array.from({ length: 3 }, (_, i) =>
+      `${new Date(now - i * 1000).toISOString()}\tp\tshow\tok\t1ms`,
+    );
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const rep = stats(dir, { now });
+    const anomaly = rep.anomalies.find((a) => a.kind === 'high-error-rate' && a.command === 'show')!;
+    expect(anomaly.detail).toContain('broken or not behaving as expected');
+    expect(anomaly.detail).not.toMatch(/—\s*$/); // no dangling em-dash with an empty breakdown
   });
 });
 
@@ -1229,7 +1415,7 @@ describe('usage log + stats', () => {
     const rows = raw.split('\n').filter((l) => l !== '');
     expect(rows.length).toBe(1); // the CR/LF did not spawn extra rows
     const cols = rows[0].split('\t');
-    expect(cols.length).toBe(12); // five base + five richer + two reason columns, all tabs collapsed
+    expect(cols.length).toBe(13); // five base + five richer + two reason columns + errorClass, all tabs collapsed
     expect(cols[1]).toBe('evil role drop table'); // shelf: tab+CR+LF all collapsed to single spaces
     // stats still parses it as one call attributed to the sanitized command.
     const rep = stats(dir, { now: Date.now() });
@@ -1572,8 +1758,9 @@ describe('usage log + stats', () => {
     // Every surviving line is a complete, well-formed usage row — no torn/partial
     // line (the corruption a shared temp path could leave).
     for (const l of lines) {
-      // Five base columns, the five richer ones, then the two reason columns (all empty for a `show`).
-      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){7}$/);
+      // Five base columns, the five richer ones, the two reason columns, then the
+      // trailing errorClass column (all empty for a successful `show`).
+      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){8}$/);
     }
     // No stray temp file lingered: every writer's rename consumed its own temp.
     expect(readdirSync(dir).filter((f) => f.startsWith('.nb-usage.log.') && f.endsWith('.tmp'))).toEqual([]);

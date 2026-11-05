@@ -377,9 +377,32 @@ Every `nb` call appends one tab-delimited row to the usage ring (`.nb-usage.log`
 - the **entry id(s)** the call touched — the added/voted/removed entry, (for `merge`) the two sources plus the merged result, or (for `split`) the source plus the two produced entries;
 - a **session id** read from the `NB_SESSION` environment variable (a hook or supervising agent sets it so calls can be grouped; absent → blank, and co-access simply isn't computed);
 - the **outcome** — for `add`, `accepted` or `dedup-blocked` (and on a block, the colliding entry's id); for `vote`, `up` or `down`; `removed` / `merged` / `split` for `rm` / `merge` / `split`; `match` / `no-match` for `search` (with the query kept in the note, so a failed search becomes a gap signal); plus, when an `add` evicts, which entry left and its final score;
-- the optional **operation reason** — a per-op enum code and free-text note attached to any mutating op (`add`/`merge`/`rm`/`split`/`describe`, via `--reason`/`--note`); it lives in the log, never in a lesson.
+- the optional **operation reason** — a per-op enum code and free-text note attached to any mutating op (`add`/`merge`/`rm`/`split`/`describe`, via `--reason`/`--note`); it lives in the log, never in a lesson;
+- an **error class** when the call exited non-zero — one terse token from a fixed, small enum so a high-error-rate anomaly can be split by cause (see [below](#diagnosing-errors-by-class)). A successful call leaves it blank.
 
 This is richer *logging* only — the notebook file and the one-line lesson are untouched (it adds no field to an entry). Older rows written before this change are still read correctly; their extra columns are simply blank. Logging stays best-effort: a logging failure never fails a real `nb` operation, and the ring stays bounded by `NB_USAGE_RING`.
+
+### Diagnosing errors by class
+
+Every non-zero `nb` call records a terse **error class** (issue #176) so a `high-error-rate` anomaly becomes *actionable* instead of a dead-end flag. The classes are a fixed, small enum — a code-chosen token, never free text, user input, a lesson, or any PII, consistent with the log's terse TSV contract:
+
+| class | meaning |
+|---|---|
+| `too_long` | a lesson / description / merge / split result over the char cap was rejected |
+| `ambiguous_selector` | a selector matched more than one entry — pick the one you mean by its id |
+| `no_match` | a selector matched no entry (or the shelf/notebook to act on was empty) |
+| `multiline_refused` | `nb add … -` was piped more than one line (one entry = one line) |
+| `bad_args` | a missing / malformed argument or flag, or an invalid shelf name |
+| `unknown_subcommand` | an unknown `nb` command (commonly an agent guessing a name, e.g. `nb upvote`) |
+| `other` | anything not yet classified — the escape hatch and the growth thermostat |
+
+With this, `nb stats` breaks a `high-error-rate` anomaly down by class, naming the single likely cause so the operator has a lever:
+
+```
+[high-error-rate] add: 41% errors over 250 calls — too_long 78%, bad_args 14%, other 8%
+```
+
+Percentages are of the command's error total, rounded (so they need not sum to exactly 100%), most-common first. Rows written before this change carry no class and are bucketed as `unclassified` (kept distinct from a genuine `other`, so a freshly-upgraded window reads honestly rather than as a misleading "other 100%").
 
 ### Tuning `nb stats`
 

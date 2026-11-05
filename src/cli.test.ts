@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1091,6 +1091,82 @@ describe('runNbCli', () => {
       process.env.NB_SESSION = 'cli-session-7';
       await run(['add', 'patcher', 'session threaded lesson']);
       expect(parseUsage(dir).at(-1)!.session).toBe('cli-session-7');
+    });
+
+    test('an over-length add logs errorClass too_long and exits 1 (issue #176)', async () => {
+      process.env.NB_MAX_CHARS = '20';
+      const r = await run(['add', 'patcher', 'x'.repeat(50)]);
+      expect(r.code).toBe(1); // the add was rejected, not stored
+      const row = parseUsage(dir).at(-1)!;
+      expect(row.ok).toBe(false);
+      expect(row.errorClass).toBe('too_long');
+    });
+
+    test('an over-length add --json also logs too_long (same class on both exit paths)', async () => {
+      process.env.NB_MAX_CHARS = '20';
+      const r = await run(['add', 'patcher', 'y'.repeat(50), '--json']);
+      expect(r.code).toBe(1);
+      expect(parseUsage(dir).at(-1)!.errorClass).toBe('too_long');
+    });
+
+    test('an ambiguous vote selector logs errorClass ambiguous_selector (issue #176)', async () => {
+      await run(['add', 'patcher', 'alpha first lesson']);
+      await run(['add', 'patcher', 'alpha second lesson']);
+      const r = await run(['vote', 'patcher', 'alpha', '+1']); // matches both
+      expect(r.code).toBe(1);
+      expect(parseUsage(dir).at(-1)!.errorClass).toBe('ambiguous_selector');
+    });
+
+    test('a vote selector that matches nothing logs errorClass no_match', async () => {
+      await run(['add', 'patcher', 'only lesson']);
+      const r = await run(['vote', 'patcher', 'zzzznope', '+1']);
+      expect(r.code).toBe(1);
+      expect(parseUsage(dir).at(-1)!.errorClass).toBe('no_match');
+    });
+
+    test('a bad vote direction logs errorClass bad_args', async () => {
+      await run(['add', 'patcher', 'only lesson']);
+      const r = await run(['vote', 'patcher', 'only', 'sideways']);
+      expect(r.code).toBe(1);
+      expect(parseUsage(dir).at(-1)!.errorClass).toBe('bad_args');
+    });
+
+    test('a missing argument logs errorClass bad_args', async () => {
+      const r = await run(['add']); // missing <shelf>
+      expect(r.code).toBe(1);
+      expect(parseUsage(dir).at(-1)!.errorClass).toBe('bad_args');
+    });
+
+    test('multi-line stdin to `add -` logs errorClass multiline_refused', async () => {
+      const r = await run(['add', 'patcher', '-'], 'line one\nline two\n');
+      expect(r.code).toBe(1);
+      expect(parseUsage(dir).at(-1)!.errorClass).toBe('multiline_refused');
+    });
+
+    test('an unknown command logs errorClass unknown_subcommand (agents guessing names)', async () => {
+      const r = await run(['upvote', 'patcher', 'alpha']);
+      expect(r.code).toBe(2);
+      expect(parseUsage(dir).at(-1)!.errorClass).toBe('unknown_subcommand');
+    });
+
+    test('a non-NbError failure falls back to errorClass other (catch-path classifyError)', async () => {
+      // Make `weird.md` a DIRECTORY so `show weird` reads it with readFileSync and
+      // throws a plain EISDIR Error — NOT an NbError — exercising the catch block's
+      // `meta.errorClass ??= classifyError(e)` fallback to `other`. NB_DIR itself
+      // stays a real directory, so the finally's logUsage still records the row.
+      mkdirSync(join(dir, 'weird.md'));
+      const r = await run(['show', 'weird']);
+      expect(r.code).toBe(1);
+      const row = parseUsage(dir).at(-1)!;
+      expect(row.ok).toBe(false);
+      expect(row.errorClass).toBe('other');
+    });
+
+    test('a successful command logs a blank error class', async () => {
+      await run(['add', 'patcher', 'a fine lesson']);
+      const row = parseUsage(dir).at(-1)!;
+      expect(row.ok).toBe(true);
+      expect(row.errorClass).toBe('');
     });
 
     test('a read-only command (show) logs blank richer fields', async () => {
