@@ -153,7 +153,14 @@ function shelfFile(dir: string, shelf: string): string {
   return join(dir, `${shelf}.md`);
 }
 
-function usageFile(dir: string): string {
+/**
+ * Resolved path of the usage ring, `<dir>/.nb-usage.log`. Exported so a
+ * supervisor can tail (`tail -F` — compaction replaces the file via rename) or
+ * back up the log via `nb path --usage` (or this helper) instead of hard-coding
+ * the filename — the same coupling `nb path` was added to remove (issue #14,
+ * #169). The filename may change; always resolve it through here.
+ */
+export function usageFile(dir: string): string {
   return join(dir, '.nb-usage.log');
 }
 

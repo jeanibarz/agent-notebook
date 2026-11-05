@@ -160,7 +160,7 @@ nb move   <from> <to> <id|query>         move an entry to another shelf, keeping
 nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print it)
 nb search <query> [prefix] [--any]      SECONDARY keyword fallback — scan all notebooks (surfacing is primary)
 nb stats  [<shelf>] [--since 7d] [--json] usage analytics + anomaly/diagnostic flags + surfacing metrics (--json emits the raw StatsReport)
-nb path   [<shelf>]                      print the notebooks dir, or a shelf's resolved file path
+nb path   [<shelf> | --usage]            print the notebooks dir, a shelf's resolved file path, or (--usage) the usage-log path
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lessons, description)
 nb ls / nb shelves                       aliases of `nb list` (`nb roles` still works, deprecated)
 nb --help                               show this help
@@ -257,7 +257,7 @@ It reads exactly one line: a single trailing newline is stripped, and **multi-li
 
 **Storage order vs. display order.** `nb show` sorts highest-scored first, but the `<shelf>.md` file on disk is stored in *recency order* — least-recently-touched first — not sorted by score, so a raw `cat` of the file looks unordered, and that is intentional, not a bug. A *touch* (a vote of either sign, an add, or a merge/split's new lesson) moves its line to the end, so the top of the file is the stalest lesson. That ordering is the recency signal eviction needs (at zero character cost — no timestamp), carried only in line position: ids are content-derived so they stay stable across reordering, and when the notebook is full the lowest-scored line is evicted (ties → stalest) and the stalest survivor is aged a point. The one cost is that a vote is now a line *move* (a ~2-line git diff) rather than a one-line in-place edit. Read a notebook with `nb show`, not by eyeballing the file. ([Full rationale.](docs/eviction-and-aging.md))
 
-`NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than the 50-line / 200-char defaults. You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory and `nb path <shelf>` the resolved file, so `cat "$(nb path reviewer)"` or `git diff "$(nb path reviewer)"` just works.
+`NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than the 50-line / 200-char defaults. You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory, `nb path <shelf>` the resolved file, and `nb path --usage` the usage-log path, so `cat "$(nb path reviewer)"`, `git diff "$(nb path reviewer)"`, or `tail -F "$(nb path --usage)"` just works. (Use `tail -F`, not `-f`: the usage log is periodically compacted by writing a new file and renaming it into place, so a `-f` tail following the old inode would silently go stale.) The usage-log filename may change, so resolve it through `nb path --usage` rather than hard-coding it.
 
 ### Discovering notebooks — `nb list`
 
