@@ -27,9 +27,14 @@ this.
 
 ```
 npm install
-npm run build   # tsc, then chmod +x dist/cli.js
-npm test        # vitest run
+npm run typecheck   # tsc --noEmit — fast type check, no build output
+npm run build       # tsc, then chmod +x dist/cli.js
+npm test            # vitest run
 ```
+
+`npm run typecheck` is the quickest inner-loop check: it reports type errors
+without emitting `dist/` or touching the `chmod` step, so a type-only failure
+surfaces on its own.
 
 The tests exec the built `dist/` output, so a stale build gives misleading
 results — `npm test` runs the build first via its `pretest` hook.
