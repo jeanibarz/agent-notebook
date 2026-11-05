@@ -392,7 +392,16 @@ same function (`listRoles === listShelves`); `assertSafeRole` likewise aliases
 
 <a id="fr-path-001"></a>
 **FR-PATH-001 (Should).** `nb path` SHALL print `NB_DIR`; `nb path <shelf>` SHALL
-print `<NB_DIR>/<shelf>.md` as a bare path (pipe-friendly, no decoration).
+print `<NB_DIR>/<shelf>.md`; `nb path --usage` SHALL print the resolved usage-log
+path (`<NB_DIR>/.nb-usage.log`) — each a bare path (pipe-friendly, no decoration).
+`--usage` is the only recognized flag; any other `--`-prefixed token is treated as
+a shelf name and rejected by the safe-shelf check, so `--usage` cannot collide with
+a shelf (a `--`-prefixed shelf name is unreachable). **Rationale:** the usage-log
+filename is an internal detail a supervisor must not hard-code to tail/back it up
+([#169](https://github.com/jeanibarz/agent-notebook/issues/169)) — the same
+`$NB_DIR/<file>` coupling `nb path` was introduced ([#14](https://github.com/jeanibarz/agent-notebook/issues/14)) to remove.
+*Proven by:* `cli.test.ts` → the `path --usage …` and `path with an unrecognized
+--flag …` cases.
 
 <a id="fr-list-001"></a>
 **FR-LIST-001 (Should).** `listNotebooks(dir, {prefix?, limit?})` SHALL return the

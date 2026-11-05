@@ -16,7 +16,7 @@
 //   nb describe <shelf> ["<text>"]          set the notebook's one-line description (or print it)
 //   nb search <query> [prefix] [--any]     SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
 //   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport; --exit-code = exit 3 when anomalies present)
-//   nb path   [<shelf>]                     print the notebooks dir, or a shelf's file path
+//   nb path   [<shelf> | --usage]           print the notebooks dir, a shelf's file path, or the usage-log path
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
 //   nb ls / nb shelves / nb roles          aliases of `nb list` (`roles` is deprecated)
 //   nb --help                              this help
@@ -55,6 +55,7 @@ import {
   sparkline,
   split,
   stats,
+  usageFile,
   vote,
   type EngagementDiagnosis,
   type SearchResult,
@@ -87,6 +88,7 @@ usage:
   nb search <query> [prefix] [--any]      SECONDARY keyword fallback — scan all notebooks (surfacing is the primary path)
   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
   nb path   [<shelf>]                      print the notebooks dir, or a shelf's resolved file path
+  nb path   --usage                        print the resolved usage-log path (to tail -F or back it up)
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
   nb shelves [prefix] [--limit N]         alias of \`nb list\`
@@ -648,7 +650,14 @@ export async function runNbCli(
         // `$NB_DIR | ~/.agent-notebook/notebooks/<shelf>.md`. Output is a BARE path
         // (no decoration) so it pipes into `cat`/`$(...)`.
         const maybeShelf = argv[1];
-        if (maybeShelf == null || maybeShelf === '') {
+        if (maybeShelf === '--usage') {
+          // `--usage` resolves the internal usage-log path (issue #169) so a
+          // supervisor can tail/rotate/back-up it without hard-coding
+          // `.nb-usage.log`. A `--`-prefixed flag can never be a shelf name
+          // (assertSafeShelf rejects it), so it can't collide with the branch
+          // below. Still a bare path (no decoration), so it pipes into tail/$(...).
+          process.stdout.write(usageFile(dir) + '\n');
+        } else if (maybeShelf == null || maybeShelf === '') {
           process.stdout.write(dir + '\n');
         } else {
           shelf = maybeShelf;

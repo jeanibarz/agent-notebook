@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runNbCli, settleCliExit, closestCommand, KNOWN_COMMANDS } from './cli.js';
-import { entryId, parseUsage } from './notebook.js';
+import { entryId, parseUsage, usageFile } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
@@ -746,6 +746,31 @@ describe('runNbCli', () => {
 
   test('path with an unsafe shelf name is rejected by the existing safe-shelf check', async () => {
     const r = await run(['path', '../escape']);
+    expect(r.code).toBe(1);
+    expect(r.err).toMatch(/invalid shelf name/);
+  });
+
+  test('path --usage prints the resolved usage-log path (issue #169)', async () => {
+    const r = await run(['path', '--usage']);
+    expect(r.code).toBe(0);
+    // Output is the usageFile() layout under the active notebooks dir — not a
+    // path reconstructed in the test — so this stays correct if the resolution
+    // logic moves, while the regex below independently pins the current literal
+    // filename as the documented contract. Bare path, pipeable into tail -F/$(...).
+    expect(r.out).toBe(`${usageFile(dir)}\n`);
+    expect(r.out.trimEnd()).toMatch(/\/\.nb-usage\.log$/);
+    // Clean stdout-only: a flag is never routed to the shelf branch, so nothing
+    // (not even an "invalid shelf name" error) lands on stderr.
+    expect(r.err).toBe('');
+  });
+
+  test('path with an unrecognized --flag is rejected, never silently treated as the dir (issue #169)', async () => {
+    // `--usage` is the ONLY recognized flag; any other `--`-prefixed token falls
+    // through to the shelf branch, where assertSafeShelf rejects it. This is why
+    // `--usage` cannot collide with a shelf literally named `--usage` — such a
+    // name is unreachable — and it guards against a typo'd flag quietly printing
+    // the notebooks dir.
+    const r = await run(['path', '--bogus']);
     expect(r.code).toBe(1);
     expect(r.err).toMatch(/invalid shelf name/);
   });

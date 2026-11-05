@@ -10,6 +10,15 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb path --usage` prints the resolved usage-log path (FR-PATH-001 / #169).** `nb path`
+  exposed the notebooks dir and `<shelf>.md` paths but nothing printed the usage-log path, so a
+  supervisor had to hard-code `$NB_DIR/.nb-usage.log` to tail or back it up — the same coupling
+  `nb path` was added (#14) to remove, which would break silently if the internal filename ever
+  changed. `nb path --usage` now prints `<NB_DIR>/.nb-usage.log` as a bare path (pipe-friendly,
+  no decoration), and `usageFile(dir)` is exported for programmatic use. `--usage` is the only
+  recognized flag; any other `--`-prefixed token is rejected by the safe-shelf check, so it can
+  never collide with a shelf name. (Tail with `tail -F`: the log is a self-compacting ring
+  replaced by write-then-rename, so a `-f` tail on the old inode would go stale.)
 - **Serendipity surfacing provenance (`serendipity` in `nb stats`, FR-STATS-004 / #114).**
   `serendipity` was defined (`relevant ∧ arrived-unbidden`) but not measurable: the log carried
   no surfacing provenance, so an upvote could not be told apart as push- vs pull-delivered.
