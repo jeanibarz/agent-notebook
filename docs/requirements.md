@@ -787,8 +787,18 @@ terms-matched, then score, then file order; groups SHALL rank by their best hit
 (description-only matches last), ties by shelf name — all deterministic. Each hit SHALL
 carry the entry's stable **id**, so the agent can `vote` it afterwards. `prefix` SHALL
 scope by shelf name (the `.` namespace convention); an empty/whitespace query SHALL yield
-no terms and no groups (never an error). `nb search <query> [prefix] [--any] [--json]` is
-the CLI form; `--json` SHALL emit the raw `SearchResult`. Search SHALL be **keyword-only**
+no terms and no groups (never an error). An optional `limit` SHALL bound the number of
+notebook **groups** returned, after ranking (highest-relevance first), so search stays
+bounded as notebooks grow exactly as `--limit` bounds `nb list`; the CLI SHALL default it
+to **50** when `--limit` is omitted and SHALL parse `--limit` with the same forgiving
+semantics as `list` (a non-integer warns on stderr and falls back to the default). The
+limit SHALL bound only what is returned/printed: the `SearchResult` SHALL also carry
+`total` (the full pre-limit match count) and `surfacedIds` (every id surfaced across the
+full result), and the gap-sensor `match`/`no-match` outcome ([FR-STATS-003](#fr-stats-003))
+and the `#114` surfacing provenance SHALL be computed on the full result, so a small
+`--limit` (even `0`) can never flip a real match into a `no-match`. `nb search <query>
+[prefix] [--any] [--limit N] [--json]` is the CLI form; `--json` SHALL emit the raw
+`SearchResult`. Search SHALL be **keyword-only**
 — plain substring over terms, no embeddings or similarity ranking ([NG-001](#ng-001)).
 **Rationale:** Search is a **secondary convenience**, explicitly demoted below surfacing
 ([DP-8](#dp-8), [NG-007](#ng-007)): the highest-value lesson is the one the agent would
@@ -803,7 +813,10 @@ and `cli.test.ts` → `describe('nb search …')`.
 ([FR-USAGE-002](#fr-usage-002)) with outcome `match` or `no-match`, the query in the
 `note` field, and — since [#114](https://github.com/jeanibarz/agent-notebook/issues/114)
 — the **entry ids it surfaced** in the `entries` field (all reusing existing columns — no
-new column), under `shelf` `-` since it spans notebooks. The surfaced ids give an upvote
+new column), under `shelf` `-` since it spans notebooks. Both the `match`/`no-match`
+outcome and the surfaced ids SHALL be computed on the **full** pre-`limit` result
+([FR-SEARCH-001](#fr-search-001)), so a `--limit` bounds only what is printed and never
+changes what is logged. The surfaced ids give an upvote
 its *pull* provenance for `serendipity` ([FR-STATS-004](#fr-stats-004)); a `no-match`
 search has no hits, so its `entries` stays empty and the `failed-search → add` gap-sensor
 below is unaffected. The `loop` anomaly ([FR-STATS-001](#fr-stats-001)) SHALL continue to
