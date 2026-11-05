@@ -161,6 +161,7 @@ nb describe <shelf> ["<text>"]           set the notebook's one-line description
 nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback — scan all notebooks (surfacing is primary)
 nb stats  [<shelf>] [--since 7d] [--json] usage analytics + anomaly/diagnostic flags + surfacing metrics (--json emits the raw StatsReport)
 nb path   [<shelf> | --usage]            print the notebooks dir, a shelf's resolved file path, or (--usage) the usage-log path
+nb config [--json]                       print the effective (post-clamp) NB_* tunables as name=value (--json: object keyed by name)
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lessons, description)
 nb ls / nb shelves                       aliases of `nb list` (`nb roles` still works, deprecated)
 nb completion <bash|zsh>                print a shell-completion script to source (see below)
@@ -442,6 +443,30 @@ A few more env vars tune rendering and concurrency rather than `nb stats`. Like 
 - `NB_ASCII` — force the [activity sparkline](#activity-sparkline)'s glyph ramp to ASCII digits instead of the Unicode blocks, for accessibility or a non-UTF-8 terminal. Any **truthy** value forces ASCII; any **falsey** one (`''`, `0`, `false`, `no`, `off`) forces Unicode; both override locale autodetection. **Unset**, the effective locale (`LC_ALL` → `LC_CTYPE` → `LANG`, first set wins) decides — a locale that is set but does not name UTF-8 (e.g. `C`, `POSIX`) selects ASCII, while an unset or UTF-8 locale keeps the Unicode default.
 - `NB_STALE_LOCK_MS` — milliseconds a `.nb.lock` may go untouched before it is treated as abandoned by a crashed `nb` process and stolen, so a crash can't wedge the notebook (default `10000`, range `100`–`600000`).
 - `NB_LOCK_GRACE_MS` — extra time, past the stale threshold, a caller waits to notice and steal an abandoned lock before giving up with `notebook is locked`; the acquire budget is derived as `NB_STALE_LOCK_MS + NB_LOCK_GRACE_MS`, never set independently (default `2000`, range `0`–`600000`).
+
+### Inspecting the effective configuration — `nb config`
+
+Every knob above is read at call time and *clamped* to its range, so the value `nb` actually runs under is not always the one you exported — an out-of-range or non-numeric value is silently corrected to a bound or the default. Rather than re-derive that by hand from the env var, its default, and its clamp, ask `nb` for the effective (post-clamp) values:
+
+```sh
+$ nb config
+maxLines=50         (default)
+maxChars=200        (default)
+nearThreshold=0.5   (default)
+usageRing=5000      (default)
+usageRingSlack=312  (derived from usageRing)
+staleLockMs=10000   (default)
+lockGraceMs=2000    (default)
+loopN=10            (default)
+loopWindowSec=120   (default)
+silentHours=48      (default)
+errMin=5            (default)
+errRate=0.3         (default)
+coverageHi=0.5      (default)
+recallMissHi=0.2    (default)
+```
+
+Each line is one effective tunable as `name=value`, read from the same getter the hot path uses — so what `nb config` prints is exactly what the caps, the near-dup advisory, the lock timings, and the `nb stats` anomaly/readout thresholds run with. The tag names the source: `(default)` when the env var is unset, `(env NB_*)` when it is set (the printed value is still the post-clamp effective one, so a value you set out of range shows up corrected), or `(derived …)` for a value computed from another (`usageRingSlack`). `nb config --json` emits one object keyed by tunable name — `{ "maxLines": { "value": 50, "source": "default", "env": "NB_MAX_LINES" }, … }` — for a supervisor to read without parsing the lines. It is read-only, and scoped to *configuration* (the knobs), distinct from `nb stats` (usage, anomalies, engagement).
 
 ## Programmatic use
 

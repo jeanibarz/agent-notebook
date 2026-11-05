@@ -17,7 +17,7 @@ _nb_complete() {
 
   # Position 1: the subcommand itself.
   if [ "$cword" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "show add vote merge split rm move describe search stats path completion list ls shelves roles help version" -- "$cur") )
+    COMPREPLY=( $(compgen -W "show add vote merge split rm move describe search stats path config completion list ls shelves roles help version" -- "$cur") )
     return 0
   fi
 

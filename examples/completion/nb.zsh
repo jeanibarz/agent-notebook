@@ -13,7 +13,7 @@
 # discarded, and any failure degrades quietly to no suggestions.
 _nb() {
   local -a _nb_commands
-  _nb_commands=(show add vote merge split rm move describe search stats path completion list ls shelves roles help version)
+  _nb_commands=(show add vote merge split rm move describe search stats path config completion list ls shelves roles help version)
 
   # Position 1 (CURRENT counts from 1, with words[1] = "nb"): the subcommand.
   if (( CURRENT == 2 )); then

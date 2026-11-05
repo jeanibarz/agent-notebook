@@ -80,6 +80,42 @@ export function lockGraceMs(): number {
   return clampInt(process.env.NB_LOCK_GRACE_MS, 2_000, 0, 600_000);
 }
 
+// `nb stats` anomaly/readout thresholds, read at call time and clamped exactly
+// like the caps above. `stats()` calls these getters instead of re-reading the
+// env inline, so `nb config` can print each effective (post-clamp) value from
+// the SAME source the detector uses — the surfaced value can never drift from
+// the value `nb` actually runs under (the #116-class drift the #131 guard and
+// issue #188 exist to prevent). The native unit matches the `NB_*` name
+// (`…_S` → seconds, `…_H` → hours); `stats()` scales to ms at the call site.
+/** Loop anomaly: how many same-shelf+command+target calls inside the window trip it. */
+export function loopN(): number {
+  return clampInt(process.env.NB_LOOP_N, 10, 2, 1000);
+}
+/** Loop anomaly: the window, in seconds (`stats()` multiplies by 1000 to compare timestamps). */
+export function loopWindowSec(): number {
+  return clampInt(process.env.NB_LOOP_WINDOW_S, 120, 5, 86_400);
+}
+/** Went-silent anomaly: silence threshold, in hours (`stats()` multiplies by 3_600_000). */
+export function silentHours(): number {
+  return clampInt(process.env.NB_SILENT_H, 48, 1, 24 * 365);
+}
+/** High-error-rate anomaly: minimum calls before the failure fraction is judged. */
+export function errMin(): number {
+  return clampInt(process.env.NB_ERR_MIN, 5, 1, 10_000);
+}
+/** High-error-rate anomaly: minimum failure fraction (0–1); a bad value falls back to the default, never NaN (which would disable detection). */
+export function errRate(): number {
+  return clampRate(process.env.NB_ERR_RATE, 0.3);
+}
+/** Surfacing readout ([FR-STATS-004]): coverage ≥ this reads as novel-adds HIGH. */
+export function coverageHi(): number {
+  return clampRate(process.env.NB_COVERAGE_HI, DEFAULT_COVERAGE_HI);
+}
+/** Surfacing readout ([FR-STATS-004]): recall-miss ≥ this reads as dedup-blocks HIGH. */
+export function recallMissHi(): number {
+  return clampRate(process.env.NB_RECALL_MISS_HI, DEFAULT_RECALL_MISS_HI);
+}
+
 function clampInt(raw: string | undefined, dflt: number, lo: number, hi: number): number {
   const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
   if (!Number.isFinite(n)) return dflt;
@@ -2142,8 +2178,8 @@ export function stats(
   //     — is not mistaken for a stuck agent, while hammering a single entry (or a
   //     repeated entry-less call such as `show <shelf>`) still trips it. Entry-less
   //     calls share the empty target, preserving the original shelf+command grouping.
-  const LOOP_N = clampInt(process.env.NB_LOOP_N, 10, 2, 1000);
-  const LOOP_WINDOW_MS = clampInt(process.env.NB_LOOP_WINDOW_S, 120, 5, 86_400) * 1000;
+  const LOOP_N = loopN();
+  const LOOP_WINDOW_MS = loopWindowSec() * 1000;
   const byShelfCmd = new Map<string, number[]>();
   for (const r of recent) {
     // A `search` row carries the surfaced entry ids since issue #114 (for the
@@ -2175,7 +2211,7 @@ export function stats(
   }
 
   // (2) went-silent: a command used historically but not at all in the recent window.
-  const SILENT_MS = clampInt(process.env.NB_SILENT_H, 48, 1, 24 * 365) * 3600_000;
+  const SILENT_MS = silentHours() * 3600_000;
   const lastSeen = new Map<string, number>();
   for (const r of all) {
     const t = Date.parse(r.ts);
@@ -2193,9 +2229,8 @@ export function stats(
   }
 
   // (3) high-error-rate: enough calls and a high failure fraction.
-  const ERR_MIN = clampInt(process.env.NB_ERR_MIN, 5, 1, 10_000);
-  const rawRate = Number(process.env.NB_ERR_RATE);
-  const ERR_RATE = Number.isFinite(rawRate) ? Math.min(1, Math.max(0, rawRate)) : 0.3; // bad value → default, not NaN (which disables detection)
+  const ERR_MIN = errMin();
+  const ERR_RATE = errRate(); // bad value → default, not NaN (which disables detection)
   for (const c of perCommand) {
     if (c.calls >= ERR_MIN && c.errorRate >= ERR_RATE) {
       // Break the rate down by error class (issue #176) so the anomaly names a
@@ -2421,13 +2456,13 @@ export function stats(
   // Serendipity (issue #114): share of upvotes on push-delivered (= not
   // search-pulled) lessons. A two-sided proxy, not a bound — see `SurfacingMetrics.serendipity`.
   const serendipity = up ? pushUp / up : null;
-  const coverageHi = clampRate(process.env.NB_COVERAGE_HI, DEFAULT_COVERAGE_HI);
-  const recallMissHi = clampRate(process.env.NB_RECALL_MISS_HI, DEFAULT_RECALL_MISS_HI);
+  const coverageHiThr = coverageHi();
+  const recallMissHiThr = recallMissHi();
   // The 2×2: novel-adds (coverage) LOW/HIGH × dedup-blocks (recall-miss) LOW/HIGH.
   let readout: SurfacingMetrics['readout'] = null;
   if (coverage !== null && recallMiss !== null) {
-    const coverageHigh = coverage >= coverageHi;
-    const recallHigh = recallMiss >= recallMissHi;
+    const coverageHigh = coverage >= coverageHiThr;
+    const recallHigh = recallMiss >= recallMissHiThr;
     readout = coverageHigh
       ? (recallHigh ? 'churny' : 'coverage-building')
       : (recallHigh ? 'surfacing-failure' : 'healthy');
