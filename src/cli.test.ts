@@ -199,6 +199,61 @@ describe('runNbCli', () => {
     expect(down2.out).toContain('[+0]'); // signed-zero formatting from fmt()
   });
 
+  test('a comma-separated id list votes every entry at once', async () => {
+    await run(['add', 'patcher', 'alpha one']);
+    await run(['add', 'patcher', 'beta two']);
+    await run(['add', 'patcher', 'gamma three']);
+    const idA = entryId('alpha one');
+    const idG = entryId('gamma three');
+    const v = await run(['vote', 'patcher', `${idA},${idG}`, '+1']);
+    expect(v.code).toBe(0);
+    // One output line per landed vote, both at +2; beta untouched.
+    expect(v.out).toContain('alpha one');
+    expect(v.out).toContain('gamma three');
+    expect(v.out).not.toContain('beta two');
+    expect((v.out.match(/\[\+2\]/g) ?? [])).toHaveLength(2);
+  });
+
+  test('batch vote is best-effort: a stale id is reported on stderr, the rest land', async () => {
+    await run(['add', 'patcher', 'alpha one']);
+    const idA = entryId('alpha one');
+    const v = await run(['vote', 'patcher', `${idA},ffffff`, '+1']);
+    expect(v.code).toBe(0); // one landed → success
+    expect(v.out).toContain('[+2]');
+    expect(v.err).toContain('ffffff');
+  });
+
+  test('batch vote exits non-zero when NO id resolves', async () => {
+    await run(['add', 'patcher', 'alpha one']);
+    const v = await run(['vote', 'patcher', 'ffffff,eeeeee', '+1']);
+    expect(v.code).toBe(1);
+    expect(v.err).toContain('ffffff');
+    expect(v.err).toContain('eeeeee');
+  });
+
+  test('--json on a batch emits the per-id result array', async () => {
+    await run(['add', 'patcher', 'alpha one']);
+    await run(['add', 'patcher', 'beta two']);
+    const idA = entryId('alpha one');
+    const idB = entryId('beta two');
+    const v = await run(['vote', 'patcher', `${idA},${idB}`, '+1', '--json']);
+    expect(v.code).toBe(0);
+    const parsed = JSON.parse(v.out);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed.map((r: { id: string }) => r.id)).toEqual([idA, idB]);
+    expect(parsed.every((r: { score: number }) => r.score === 2)).toBe(true);
+  });
+
+  test('a text selector containing a comma is NOT treated as an id list', async () => {
+    // Guards the id-only batch rule: "build, then test" has a comma but is not a
+    // list of bare hex ids, so it must resolve as a single substring selector.
+    await run(['add', 'patcher', 'build, then test the change']);
+    const v = await run(['vote', 'patcher', 'build, then test', '+1']);
+    expect(v.code).toBe(0);
+    expect(v.out).toContain('[+2]');
+    expect(v.out).toContain('build, then test the change');
+  });
+
   test('stats --since labels the window and returns 0', async () => {
     await run(['add', 'patcher', 'x']);
     const s = await run(['stats', 'patcher', '--since', '30m']);

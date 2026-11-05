@@ -7,7 +7,7 @@
 //   nb show   <shelf> [--json]              print the notebook (--json → structured {shelf,description,entries})
 //   nb add    <shelf> "<lesson>"            dedup-skip, score +1, write, trim (lowest-score out)
 //   nb add    <shelf> -                     read the one-line lesson from stdin (multi-line refused)
-//   nb vote   <shelf> <id|query> +1|-1      adjust an entry's score
+//   nb vote   <shelf> <id|query> +1|-1      adjust an entry's score (id-list <id1,id2,…> votes several at once)
 //   nb merge  <shelf> <idA> <idB> "<merged>"  consolidate two entries into one
 //   nb split  <shelf> <id|query> "<a>" "<b>"   cut one overloaded entry into two
 //   nb rm     <shelf> <id|query>            delete an entry judged useless
@@ -78,6 +78,7 @@ import {
   usageRing,
   usageRingSlack,
   vote,
+  voteMany,
   type EngagementDiagnosis,
   type SearchResult,
   type StatsReport,
@@ -111,6 +112,7 @@ usage:
   nb add    <shelf> "<lesson>"             add a lesson (exact dup skipped; a near-dup still adds but warns; rejected if too long, never truncated)
   nb add    <shelf> -                      read the lesson from stdin (one line; multi-line is refused)
   nb vote   <shelf> <id|query> +1|-1       upvote/downvote an entry you used
+  nb vote   <shelf> <id1,id2,…> +1|-1      batch: vote several ids at once with one delta (one lock, one write)
   nb merge  <shelf> <idA> <idB> "<merged>" consolidate two entries into one
   nb split  <shelf> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
   nb rm     <shelf> <id|query>             delete an entry
@@ -142,6 +144,15 @@ notes:
     shelf, the selector is absent/ambiguous, or the target already holds a
     near-duplicate; the moved entry is admitted like a newcomer, so a full target
     ages/evicts its stalest OTHER line, never the lesson you moved.
+  - \`nb vote <shelf> <id1,id2,…> +1|-1\` votes SEVERAL entries with one delta in a
+    single call — the end-of-session retro promoting/demoting a handful of lessons
+    at once (N calls → 1, under one lock and one write). It is BATCH only when the
+    operand is a comma-separated list of ≥2 BARE HEX ids (the ids \`nb show\` prints);
+    a single token, or any comma-part that is not a bare hex id, stays one
+    (possibly text) selector, so \`nb vote s "build, then test" +1\` is unchanged.
+    Best-effort: each id is resolved independently, an unresolved one (stale or
+    ambiguous) is reported on stderr WITHOUT aborting the rest, and the call exits
+    non-zero only if NONE landed. \`--json\` emits the per-id result array.
   - \`nb add <shelf> -\` reads the lesson from stdin (one line, so a supervising agent
     can pipe it in without shell-quoting). It reads exactly one line: a trailing
     newline is stripped and multi-line input is REFUSED (exit 1), never flattened —
@@ -681,6 +692,41 @@ export async function runNbCli(
         const selector = need(args[2], 'id|query');
         const delta = parseDelta(need(args[3], '+1|-1'));
         requireExistingShelf(dir, shelf);
+        // Batch form: a comma-separated list of ≥2 BARE HEX ids votes them all
+        // with one delta, one lock, one write — the end-of-session retro
+        // promoting several lessons at once (N calls → 1). It is id-only on
+        // purpose: a single token, or any comma-part that is not a bare hex id,
+        // stays a single (possibly text) selector, so `nb vote s "build, then
+        // test" +1` still resolves as one substring and the old behavior is
+        // untouched.
+        const ids = parseVoteIdList(selector);
+        if (ids) {
+          const sign = delta > 0 ? '+1' : '-1';
+          const results = await voteMany(dir, shelf, ids, delta);
+          const landed = results.filter((r) => r.id !== undefined);
+          const failed = results.filter((r) => r.error !== undefined);
+          meta.entries = landed.map((r) => r.id as string);
+          meta.outcome = delta > 0 ? 'up' : 'down';
+          if (json) {
+            process.stdout.write(JSON.stringify(results) + '\n');
+          } else {
+            for (const r of landed) process.stdout.write(`${sign} → [${fmt(r.score as number)}] ${r.text}\n`);
+            // Failures go to stderr so stdout stays a clean list of the votes
+            // that landed; the first line of each selector's error is enough.
+            for (const r of failed) {
+              process.stderr.write(`✗ ${r.selector}: ${(r.error as string).split('\n')[0]}\n`);
+            }
+          }
+          if (landed.length === 0) {
+            // Nothing landed — surface it as an error (non-zero, logged as err)
+            // like a single failed vote, so a wholly-wrong batch is not silent.
+            meta.errorClass = 'no_match';
+            return 1;
+          }
+          // At least one vote landed → best-effort success (exit 0); any per-id
+          // failures were already reported on stderr above.
+          break;
+        }
         const r = await vote(dir, shelf, selector, delta);
         meta.entries = [entryId(r.text)];
         meta.outcome = delta > 0 ? 'up' : 'down';
@@ -1065,6 +1111,26 @@ export async function runNbCli(
 function need(v: string | undefined, name: string): string {
   if (v == null || v === '') throw new NbError('bad_args', `missing <${name}> argument`);
   return v;
+}
+
+/**
+ * Decide whether a `vote` selector is a BATCH of ids or a single selector.
+ * Returns the trimmed id list only when the argument is a comma-separated run of
+ * ≥2 bare hex tokens (the shape `nb show` prints, e.g. `3f9a2c,8bd7fe,ee5c9e`);
+ * otherwise `null`, so one token OR any non-hex comma-part (a text substring that
+ * happens to contain a comma) falls through to the unchanged single-selector
+ * path. Id-only on purpose: batch voting by fuzzy text would reintroduce exactly
+ * the ambiguity the id selector exists to avoid.
+ */
+function parseVoteIdList(selector: string): string[] | null {
+  if (!selector.includes(',')) return null;
+  const parts = selector
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '');
+  if (parts.length < 2) return null;
+  if (!parts.every((p) => /^[0-9a-f]+$/i.test(p))) return null;
+  return parts;
 }
 
 /**

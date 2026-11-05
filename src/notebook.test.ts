@@ -98,6 +98,7 @@ import {
   usageRing,
   usageRingSlack,
   vote,
+  voteMany,
 } from './notebook.js';
 import { runNbCli } from './cli.js';
 
@@ -142,6 +143,73 @@ describe('add / read / render', () => {
 
   test('empty notebook renders a friendly message', () => {
     expect(render(dir, 'nobody')).toContain('is empty');
+  });
+});
+
+describe('voteMany (batch vote)', () => {
+  test('applies one delta to several ids and persists all score changes', async () => {
+    await addEntry(dir, 'v', 'alpha');
+    await addEntry(dir, 'v', 'bravo');
+    await addEntry(dir, 'v', 'charlie');
+    const res = await voteMany(dir, 'v', [entryId('alpha'), entryId('charlie')], 1);
+    expect(res.map((r) => r.id)).toEqual([entryId('alpha'), entryId('charlie')]);
+    expect(res.every((r) => r.error === undefined)).toBe(true);
+    const byText = Object.fromEntries(readEntries(dir, 'v').map((e) => [e.text, e.score]));
+    expect(byText).toEqual({ alpha: 2, bravo: 1, charlie: 2 });
+  });
+
+  test('best-effort: an unresolved id is reported but never aborts the rest', async () => {
+    await addEntry(dir, 'v', 'alpha');
+    await addEntry(dir, 'v', 'bravo');
+    const res = await voteMany(dir, 'v', [entryId('alpha'), 'ffffff', entryId('bravo')], 1);
+    const landed = res.filter((r) => r.id !== undefined);
+    const failed = res.filter((r) => r.error !== undefined);
+    expect(landed.map((r) => r.id)).toEqual([entryId('alpha'), entryId('bravo')]);
+    expect(failed).toHaveLength(1);
+    expect(failed[0].selector).toBe('ffffff');
+    const byText = Object.fromEntries(readEntries(dir, 'v').map((e) => [e.text, e.score]));
+    expect(byText).toEqual({ alpha: 2, bravo: 2 });
+  });
+
+  test('when no id resolves, nothing is written and every item carries an error', async () => {
+    await addEntry(dir, 'v', 'alpha');
+    const res = await voteMany(dir, 'v', ['ffffff', 'eeeeee'], 1);
+    expect(res.every((r) => r.error !== undefined && r.id === undefined)).toBe(true);
+    expect(readEntries(dir, 'v')).toEqual([{ score: 1, text: 'alpha' }]);
+  });
+
+  test('a repeated id votes twice but the file keeps exactly one row for it', async () => {
+    await addEntry(dir, 'v', 'alpha');
+    const res = await voteMany(dir, 'v', [entryId('alpha'), entryId('alpha')], 1);
+    expect(res).toHaveLength(2);
+    const entries = readEntries(dir, 'v');
+    expect(entries).toEqual([{ score: 3, text: 'alpha' }]); // +1 base, +1, +1
+  });
+
+  test('touched entries move to the fresh end in first-touch order (recency preserved)', async () => {
+    await addEntry(dir, 'v', 'alpha'); // oldest
+    await addEntry(dir, 'v', 'bravo');
+    await addEntry(dir, 'v', 'charlie'); // newest
+    // File order is least-recently-touched first: alpha, bravo, charlie.
+    await voteMany(dir, 'v', [entryId('charlie'), entryId('alpha')], 1);
+    // charlie then alpha are touched → they move to the end in that order; bravo
+    // (untouched) is now the stalest, so file order is bravo, charlie, alpha.
+    expect(readEntries(dir, 'v').map((e) => e.text)).toEqual(['bravo', 'charlie', 'alpha']);
+  });
+
+  test('a batch downvote lowers every targeted score', async () => {
+    await addEntry(dir, 'v', 'alpha');
+    await addEntry(dir, 'v', 'bravo');
+    await voteMany(dir, 'v', [entryId('alpha'), entryId('bravo')], -1);
+    const byText = Object.fromEntries(readEntries(dir, 'v').map((e) => [e.text, e.score]));
+    expect(byText).toEqual({ alpha: 0, bravo: 0 });
+  });
+
+  test('rejects a bad delta, an empty selector list, and an empty shelf', async () => {
+    await addEntry(dir, 'v', 'alpha');
+    await expect(voteMany(dir, 'v', [entryId('alpha')], 2)).rejects.toThrow(/delta/);
+    await expect(voteMany(dir, 'v', [], 1)).rejects.toThrow(/at least one/);
+    await expect(voteMany(dir, 'empty', [entryId('alpha')], 1)).rejects.toThrow(/empty/);
   });
 });
 
