@@ -125,15 +125,16 @@ const RESERVED_SHELVES = new Set(['readme']);
 
 export function assertSafeShelf(shelf: string): void {
   if (shelf.length > MAX_SHELF_LEN) {
-    throw new Error(
+    throw new NbError(
+      'bad_args',
       `invalid shelf name: ${JSON.stringify(shelf)} (too long: ${shelf.length} chars, max ${MAX_SHELF_LEN})`,
     );
   }
   if (!SAFE_SHELF.test(shelf) || shelf.includes('..')) {
-    throw new Error(`invalid shelf name: ${JSON.stringify(shelf)} (allowed: letters, digits, . _ @ -)`);
+    throw new NbError('bad_args', `invalid shelf name: ${JSON.stringify(shelf)} (allowed: letters, digits, . _ @ -)`);
   }
   if (RESERVED_SHELVES.has(shelf.toLowerCase())) {
-    throw new Error(`invalid shelf name: ${JSON.stringify(shelf)} (reserved: a README.md is not a notebook)`);
+    throw new NbError('bad_args', `invalid shelf name: ${JSON.stringify(shelf)} (reserved: a README.md is not a notebook)`);
   }
 }
 
@@ -764,9 +765,9 @@ function selectIndex(entries: Entry[], selector: string): number {
   // caller re-votes the real lesson by id instead of re-guessing a keyword
   // (the observed failure: agents vote by a topic word absent from the text).
   if (matches.length === 0) {
-    throw new Error(`no entry matches ${JSON.stringify(selector)}. Pick the one you mean by its id:\n${listHint(entries)}`);
+    throw new NbError('no_match', `no entry matches ${JSON.stringify(selector)}. Pick the one you mean by its id:\n${listHint(entries)}`);
   }
-  throw new Error(`"${selector}" matches ${matches.length} entries — pick one by its id:\n${listHint(matches.map((x) => x.e))}`);
+  throw new NbError('ambiguous_selector', `"${selector}" matches ${matches.length} entries — pick one by its id:\n${listHint(matches.map((x) => x.e))}`);
 }
 
 export interface VoteResult {
@@ -776,9 +777,9 @@ export interface VoteResult {
 
 export function vote(dir: string, shelf: string, selector: string, delta: number): Promise<VoteResult> {
   return withLock(dir, () => {
-    if (delta !== 1 && delta !== -1) throw new Error('vote delta must be +1 or -1');
+    if (delta !== 1 && delta !== -1) throw new NbError('bad_args', 'vote delta must be +1 or -1');
     const entries = readEntries(dir, shelf);
-    if (entries.length === 0) throw new Error(`notebook for shelf "${shelf}" is empty`);
+    if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     entries[idx].score += delta;
     // A vote is a touch: move the entry to the fresh END so storage stays in
@@ -797,12 +798,12 @@ export function merge(dir: string, shelf: string, selA: string, selB: string, me
     const entries = readEntries(dir, shelf);
     const ia = selectIndex(entries, selA);
     const ib = selectIndex(entries, selB);
-    if (ia === ib) throw new Error('merge needs two different entries');
+    if (ia === ib) throw new NbError('bad_args', 'merge needs two different entries');
     const sources: [string, string] = [entryId(entries[ia].text), entryId(entries[ib].text)];
     const text = sanitizeLesson(mergedLesson);
-    if (text === '') throw new Error('merged lesson is empty');
+    if (text === '') throw new NbError('bad_args', 'merged lesson is empty');
     if (text.length > maxChars()) {
-      throw new Error(`merged lesson is ${text.length} chars; max is ${maxChars()} — shorten it`);
+      throw new NbError('too_long', `merged lesson is ${text.length} chars; max is ${maxChars()} — shorten it`);
     }
     // Keep the usefulness: the merged line inherits the higher of the two scores.
     const score = Math.max(entries[ia].score, entries[ib].score);
@@ -846,7 +847,7 @@ export function split(
 ): Promise<SplitResult> {
   return withLock(dir, () => {
     const entries = readEntries(dir, shelf);
-    if (entries.length === 0) throw new Error(`notebook for shelf "${shelf}" is empty`);
+    if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     const original = entries[idx];
     const score = original.score; // both halves inherit the overloaded entry's score
@@ -854,17 +855,17 @@ export function split(
     const textA = sanitizeLesson(lessonA);
     const textB = sanitizeLesson(lessonB);
     for (const [which, text] of [['A', textA], ['B', textB]] as const) {
-      if (text === '') throw new Error(`split lesson ${which} is empty`);
+      if (text === '') throw new NbError('bad_args', `split lesson ${which} is empty`);
       if (text.length > maxChars()) {
         // Reject rather than truncate, exactly as merge/add do: a cut-off lesson
         // is often useless, so the agent retries with a shorter *complete* one.
-        throw new Error(`split lesson ${which} is ${text.length} chars; max is ${maxChars()} — shorten it`);
+        throw new NbError('too_long', `split lesson ${which} is ${text.length} chars; max is ${maxChars()} — shorten it`);
       }
     }
     const keyA = dedupKey(textA);
     const keyB = dedupKey(textB);
     if (keyA === keyB) {
-      throw new Error('the two split lessons are duplicates of each other — split into two distinct lessons');
+      throw new NbError('bad_args', 'the two split lessons are duplicates of each other — split into two distinct lessons');
     }
     // Everything except the entry being split; the split must not duplicate any
     // of these. The original is leaving, so a half may legitimately echo it.
@@ -872,7 +873,8 @@ export function split(
     for (const [which, key, text] of [['A', keyA, textA], ['B', keyB, textB]] as const) {
       const collider = remaining.find((e) => dedupKey(e.text) === key);
       if (collider) {
-        throw new Error(
+        throw new NbError(
+          'bad_args',
           `split lesson ${which} ("${text}") duplicates an existing entry (${entryId(collider.text)}) — a split never creates a duplicate`,
         );
       }
@@ -889,7 +891,7 @@ export function split(
 export function remove(dir: string, shelf: string, selector: string): Promise<VoteResult> {
   return withLock(dir, () => {
     const entries = readEntries(dir, shelf);
-    if (entries.length === 0) throw new Error(`notebook for shelf "${shelf}" is empty`);
+    if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     const [gone] = entries.splice(idx, 1);
     writeEntries(dir, shelf, entries);
@@ -942,10 +944,10 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
     assertSafeShelf(fromShelf);
     assertSafeShelf(toShelf);
     if (fromShelf === toShelf) {
-      throw new Error(`move needs two different shelves (source and target are both "${fromShelf}")`);
+      throw new NbError('bad_args', `move needs two different shelves (source and target are both "${fromShelf}")`);
     }
     const source = readEntries(dir, fromShelf);
-    if (source.length === 0) throw new Error(`notebook for shelf "${fromShelf}" is empty`);
+    if (source.length === 0) throw new NbError('no_match', `notebook for shelf "${fromShelf}" is empty`);
     const idx = selectIndex(source, selector);
     const moving = source[idx];
     const id = entryId(moving.text);
@@ -1025,7 +1027,7 @@ export function setDescription(dir: string, shelf: string, text: string): Promis
     const clean = sanitizeLesson(text);
     if (clean.length > maxChars()) {
       // Reject rather than truncate, exactly as add/merge/split do.
-      throw new Error(`description is ${clean.length} chars; max is ${maxChars()} — shorten it`);
+      throw new NbError('too_long', `description is ${clean.length} chars; max is ${maxChars()} — shorten it`);
     }
     const entries = readEntries(dir, shelf);
     const meta = setMetaValue(readMetaLines(dir, shelf), DESC_KEY, clean);
@@ -1290,6 +1292,57 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
 // usage log + monitoring
 // ---------------------------------------------------------------------------
 
+/**
+ * The fixed, small error-class enum (issue #176). When a command exits non-zero
+ * the usage log records ONE of these terse tokens so `nb stats` can split a
+ * high-error-rate anomaly by cause (over-length vs misuse vs ambiguous selector)
+ * instead of flagging an undiagnosable "41% errors". It is deliberately a closed
+ * enum of code-chosen tokens — never free text, never user input, never a lesson
+ * or a PII-bearing message — consistent with the log's terse TSV contract and the
+ * data-protection rule that only bounded, non-user values enter the log. `other`
+ * is the escape hatch (and the growth thermostat, like `REASON_ENUMS`): an error
+ * that is not yet classified falls here rather than inventing a speculative code.
+ */
+export const ERROR_CLASSES = [
+  'too_long', // a lesson/description/split/merge over the char cap was rejected
+  'ambiguous_selector', // a selector matched >1 entry — the caller must pick by id
+  'no_match', // a selector matched no entry (and no notebook/shelf to act on)
+  'multiline_refused', // `add … -` was piped more than one line
+  'bad_args', // a missing/malformed argument or flag, or an invalid shelf name
+  'unknown_subcommand', // an unknown `nb` command (agents guessing names)
+  'other', // anything not (yet) classified — the escape hatch
+] as const;
+
+export type ErrorClass = (typeof ERROR_CLASSES)[number];
+
+/**
+ * An error that carries its `ErrorClass` so the CLI's log-write path can record a
+ * bounded cause WITHOUT parsing the (user-influenced, drift-prone) message. The
+ * message is unchanged from a plain `Error`, so existing stderr output and tests
+ * are byte-identical — only the extra `errorClass` field is new. Thrown at the
+ * semantically-meaningful sites (selector resolution, over-length rejection,
+ * argument validation); everything else stays a plain `Error` and classifies as
+ * `other` via `classifyError`.
+ */
+export class NbError extends Error {
+  readonly errorClass: ErrorClass;
+  constructor(errorClass: ErrorClass, message: string) {
+    super(message);
+    this.name = 'NbError';
+    this.errorClass = errorClass;
+  }
+}
+
+/**
+ * Map a thrown value to its `ErrorClass`. An `NbError` reports its own class; any
+ * other throw (a plain `Error`, a lock timeout, an unexpected bug) is `other` —
+ * so the log never guesses a cause from message text. The CLI calls this in its
+ * catch block to fill the usage row's error-class column for a non-zero exit.
+ */
+export function classifyError(e: unknown): ErrorClass {
+  return e instanceof NbError ? e.errorClass : 'other';
+}
+
 export interface UsageRow {
   ts: string;
   role: string;
@@ -1310,6 +1363,8 @@ export interface UsageRow {
   reason: string;
   /** Optional free-text note accompanying the reason; `''` when none. */
   note: string;
+  /** Terse error-class token (`ERROR_CLASSES`) when the call exited non-zero; `''` on success and on pre-#176 rows. */
+  errorClass: string;
 }
 
 /**
@@ -1334,6 +1389,12 @@ export interface UsageMeta {
   reason?: string;
   /** Optional free-text note accompanying the reason. */
   note?: string;
+  /**
+   * Error class to record when this call exited non-zero (issue #176). Set only
+   * by the CLI's failure paths — on a success it is absent and the column is
+   * blank. A fixed enum value (`ErrorClass`), never free text.
+   */
+  errorClass?: ErrorClass;
 }
 
 /**
@@ -1424,10 +1485,12 @@ export function logUsage(
     const file = usageFile(dir);
     // `shelf`, `command`, and every meta field are caller-supplied (and
     // `session` comes from an env var a hook sets); sanitize each so a tab/CR/LF
-    // cannot split the row or shift a column and mis-align parseUsage. The five
-    // richer columns are appended AFTER the original five, so an old reader that
+    // cannot split the row or shift a column and mis-align parseUsage. The richer
+    // columns are appended AFTER the original five, so an old reader that
     // looks only at the first five still parses, and an old row missing them
-    // round-trips as blank (backward-compatible — see parseUsage).
+    // round-trips as blank (backward-compatible — see parseUsage). `errorClass`
+    // is the newest column and goes LAST (issue #176), so a pre-#176 row — which
+    // ends at `note` — reads it as blank rather than mis-aligning any prior field.
     const session = sanitizeUsageField(meta.session ?? process.env.NB_SESSION ?? '');
     const entries = (meta.entries ?? []).map(sanitizeUsageField).join(',');
     const outcome = sanitizeUsageField(meta.outcome ?? '');
@@ -1435,9 +1498,12 @@ export function logUsage(
     const evicted = sanitizeUsageField(meta.evicted ?? '');
     const reason = sanitizeUsageField(meta.reason ?? '');
     const note = capNote(sanitizeUsageField(meta.note ?? ''));
+    // A fixed enum token (never user text), but sanitize anyway for uniformity so
+    // no column can ever be split — it is a no-op on a well-formed enum value.
+    const errorClass = sanitizeUsageField(meta.errorClass ?? '');
     const line =
       `${new Date().toISOString()}\t${sanitizeUsageField(shelf)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
-      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}`;
+      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}`;
     const ring = usageRing();
     const compactAt = ring + usageRingSlack();
 
@@ -1511,9 +1577,11 @@ export function parseUsage(dir: string): UsageRow[] {
   for (const line of readFileSync(file, 'utf-8').split('\n')) {
     if (line.trim() === '') continue;
     // Positional parse, tolerant of old five-column rows: the richer columns
-    // (session…evicted) are undefined on a pre-upgrade row and default to
+    // (session…errorClass) are undefined on a pre-upgrade row and default to
     // blank/empty, so a ring written before this change still reads cleanly.
-    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note] =
+    // `errorClass` (issue #176) is the trailing column: a pre-#176 row ends at
+    // `note`, so it is undefined here and defaults to `''`.
+    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note, errorClass] =
       line.split('\t');
     if (!ts || !command) continue;
     rows.push({
@@ -1529,6 +1597,7 @@ export function parseUsage(dir: string): UsageRow[] {
       evicted: evicted ?? '',
       reason: reason ?? '',
       note: note ?? '',
+      errorClass: errorClass ?? '',
     });
   }
   return rows;
@@ -1934,6 +2003,29 @@ function globalStoredLessons(dir: string, notebooks: NotebookStat[], scope: stri
 }
 
 /**
+ * Summarize a set of error rows as a `class pct%` breakdown, most-common first
+ * (issue #176) — e.g. `too_long 78%, bad_args 14%, other 8%`. Percentages are
+ * rounded whole numbers of the error total, so they may not sum to exactly 100%
+ * (an honest rounding artefact, not a bug). A pre-#176 error row carries no class
+ * (`errorClass === ''`); it is bucketed as `unclassified` — kept distinct from a
+ * genuine `other` so a freshly-upgraded window reads "unclassified 100%" (wait
+ * for data) rather than a misleading "other 100%" ([DP-5]). Ties break by label
+ * for a stable line.
+ */
+function errorClassBreakdown(errRows: UsageRow[]): string {
+  const counts = new Map<string, number>();
+  for (const r of errRows) {
+    const key = r.errorClass || 'unclassified';
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const total = errRows.length;
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([cls, n]) => `${cls} ${Math.round((n / total) * 100)}%`)
+    .join(', ');
+}
+
+/**
  * Monitoring without a monitoring system: read the usage ring, roll up per
  * command, and flag the three anomalies that matter — an agent looping on a
  * command (stuck), a command that went silent (it probably broke), and a
@@ -2048,10 +2140,19 @@ export function stats(
   const ERR_RATE = Number.isFinite(rawRate) ? Math.min(1, Math.max(0, rawRate)) : 0.3; // bad value → default, not NaN (which disables detection)
   for (const c of perCommand) {
     if (c.calls >= ERR_MIN && c.errorRate >= ERR_RATE) {
+      // Break the rate down by error class (issue #176) so the anomaly names a
+      // lever: `too_long 78%, bad_args 14%, other 8%` tells the operator the
+      // single likely cause instead of a dead-end "broken". Falls back to the
+      // generic phrase only when there are no error rows to classify (a
+      // degenerate NB_ERR_RATE=0 config flags a 0-error command).
+      const errRows = (byCmd.get(c.command) ?? []).filter((r) => !r.ok);
+      const breakdown = errRows.length
+        ? errorClassBreakdown(errRows)
+        : 'broken or not behaving as expected';
       anomalies.push({
         kind: 'high-error-rate',
         command: c.command,
-        detail: `${Math.round(c.errorRate * 100)}% errors over ${c.calls} calls — broken or not behaving as expected`,
+        detail: `${Math.round(c.errorRate * 100)}% errors over ${c.calls} calls — ${breakdown}`,
       });
     }
   }

@@ -32,6 +32,7 @@ import { pathToFileURL } from 'node:url';
 import {
   addEntry,
   assertSafeShelf,
+  classifyError,
   entryId,
   getDescription,
   isValidWindow,
@@ -40,6 +41,7 @@ import {
   maxChars,
   merge,
   move,
+  NbError,
   normalizeReason,
   notebookExists,
   notebooksDir,
@@ -212,7 +214,7 @@ function parseDelta(arg: string): number {
   const t = arg.trim();
   if (t === '+1' || t === '1' || t === '++') return 1;
   if (t === '-1' || t === '--') return -1;
-  throw new Error('vote direction must be +1 or -1');
+  throw new NbError('bad_args', 'vote direction must be +1 or -1');
 }
 
 /**
@@ -386,6 +388,11 @@ export async function runNbCli(
         // still logs, so meta must already be set.
         meta.entries = r.id ? [r.id] : [];
         meta.outcome = r.reason === 'added' ? 'accepted' : r.reason === 'duplicate' ? 'dedup-blocked' : r.reason;
+        // A too-long add exits non-zero on BOTH paths below (the `--json` branch
+        // returns 1, the human branch throws), so record its error class here —
+        // before either path — so the shared `finally` logs it (issue #176). An
+        // `empty` add is NOT an error (it exits 0), so it gets no class.
+        if (r.reason === 'too-long') meta.errorClass = 'too_long';
         if (r.collidedId) meta.collided = r.collidedId;
         // An accepted add that resembled an existing entry records that entry id
         // in the same `collided` column; `outcome` stays `accepted`, so the pair
@@ -694,6 +701,10 @@ export async function runNbCli(
         // stays 2 and the --help pointer stays put (issue #171).
         const suggestion = closestCommand(cmd);
         const hint = suggestion ? `Did you mean \`${suggestion}\`? ` : '';
+        // An unknown command — commonly an agent guessing a subcommand name
+        // (e.g. `nb upvote`, `nb +1`). Record it so `nb stats` can tell these
+        // apart from genuine misuse of a real command (issue #176).
+        meta.errorClass = 'unknown_subcommand';
         process.stderr.write(`nb: unknown command "${cmd}". ${hint}Try \`nb --help\`.\n`);
         return 2;
       }
@@ -701,6 +712,11 @@ export async function runNbCli(
     ok = true;
     return 0;
   } catch (e) {
+    // Record the error class for the usage log unless a non-throwing failure
+    // path above already set one (e.g. a too-long add). `classifyError` reads the
+    // class off an `NbError` and falls back to `other` for anything else — never
+    // parsing the message (issue #176).
+    meta.errorClass ??= classifyError(e);
     process.stderr.write(`nb ${cmd}: ${e instanceof Error ? e.message : String(e)}\n`);
     return 1;
   } finally {
@@ -710,7 +726,7 @@ export async function runNbCli(
 }
 
 function need(v: string | undefined, name: string): string {
-  if (v == null || v === '') throw new Error(`missing <${name}> argument`);
+  if (v == null || v === '') throw new NbError('bad_args', `missing <${name}> argument`);
   return v;
 }
 
@@ -723,7 +739,7 @@ function need(v: string | undefined, name: string): string {
 function extractOption(args: string[], flag: string): { value?: string; rest: string[] } {
   const i = args.indexOf(flag);
   if (i === -1) return { rest: args };
-  if (i + 1 >= args.length) throw new Error(`${flag} needs a value`);
+  if (i + 1 >= args.length) throw new NbError('bad_args', `${flag} needs a value`);
   return { value: args[i + 1], rest: args.slice(0, i).concat(args.slice(i + 2)) };
 }
 
@@ -738,7 +754,8 @@ function extractOption(args: string[], flag: string): { value?: string; rest: st
 function readOneLine(raw: string): string {
   const body = raw.replace(/\r\n$|\r$|\n$/, '');
   if (/[\r\n]/.test(body)) {
-    throw new Error(
+    throw new NbError(
+      'multiline_refused',
       'refusing multi-line stdin — a lesson is one line (one entry = one line). ' +
         'Pipe exactly one line, or pass the lesson as a single quoted argument.',
     );
