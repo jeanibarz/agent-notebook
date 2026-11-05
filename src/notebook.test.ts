@@ -1499,6 +1499,49 @@ describe('shelf safety', () => {
     // A shelf that merely contains "readme" is still a legitimate notebook.
     expect(() => assertSafeShelf('readme-notes')).not.toThrow();
   });
+
+  test('rejects Windows reserved device names (issue #205): a silent data sink on Windows', async () => {
+    // On Windows `CON, PRN, AUX, NUL, COM1-9, LPT1-9` are devices, not files —
+    // case-insensitively and even with an extension, so `nul.md` resolves to the
+    // NUL device. A shelf stored as `<shelf>.md` named `nul` would make `nb add`
+    // write to the null device: the write "succeeds" but the lesson is discarded.
+    // Reserve them like `readme` so the failure is a clear error on every platform.
+    for (const name of ['nul', 'con', 'prn', 'aux', 'com1', 'com9', 'lpt1', 'lpt9']) {
+      expect(() => assertSafeShelf(name)).toThrow(/reserved: a Windows device name/);
+    }
+    // The reserve is case-insensitive (the device resolves regardless of case).
+    expect(() => assertSafeShelf('NUL')).toThrow(/reserved: a Windows device name/);
+    expect(() => assertSafeShelf('Com1')).toThrow(/reserved: a Windows device name/);
+    // An extension does not rescue it: Windows resolves the device from the segment
+    // before the first `.`, so `nul.notes` → `nul.notes.md` → the NUL device too.
+    expect(() => assertSafeShelf('nul.notes')).toThrow(/reserved: a Windows device name/);
+    expect(() => assertSafeShelf('con.v2')).toThrow(/reserved: a Windows device name/);
+    // The rejection is a classified `bad_args` NbError (a user input error), like
+    // the other shelf-name guards — not an uncaught internal fault.
+    expect(() => assertSafeShelf('nul')).toThrow(expect.objectContaining({ errorClass: 'bad_args' }));
+    // The reserve blocks a real write before any file is touched.
+    await expect(addEntry(dir, 'nul', 'a lesson')).rejects.toThrow(/reserved: a Windows device name/);
+    expect(existsSync(join(dir, 'nul.md'))).toBe(false);
+
+    // A name that merely CONTAINS a reserved device substring is a legitimate
+    // notebook — the match is anchored to the WHOLE pre-extension segment, both
+    // ends. Suffix matches (`icon`, `bacon`, `mycom1` end in a device name) pin the
+    // leading `^`; prefix/substring matches (`console`, `com10`) pin the trailing
+    // `$`. These must all stay valid (acceptance criterion).
+    for (const name of [
+      'console', 'aux-notes', 'communication', 'content', 'com10', 'lpt10', 'nullable', 'conference',
+      'icon', 'bacon', 'mycom1',
+    ]) {
+      expect(() => assertSafeShelf(name)).not.toThrow();
+    }
+    // Boundary: only COM1-9 / LPT1-9 are reserved — COM0 and LPT0 are NOT Windows
+    // devices, so they stay valid and pin the `[1-9]` (not `[0-9]`) digit class.
+    expect(() => assertSafeShelf('com0')).not.toThrow();
+    expect(() => assertSafeShelf('lpt0')).not.toThrow();
+    // A reserved device name only in an interior segment is not reserved (Windows
+    // resolves the device from the leading segment only), so `review.con` is fine.
+    expect(() => assertSafeShelf('review.con')).not.toThrow();
+  });
 });
 
 describe('listShelves', () => {
