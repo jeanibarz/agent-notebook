@@ -30,13 +30,24 @@
 # LOGS
 #   $NB_DIR/.nb-backup.log  (rotated at ~1 MB)
 # LOCK
-#   /tmp/agent-notebook-backup.lock  (prevents overlapping runs where flock exists)
+#   ${XDG_RUNTIME_DIR:-$NB_DIR}/.nb-backup.lock  (prevents overlapping runs where
+#   flock exists). User-scoped on purpose: a fixed world-writable /tmp path lets
+#   any other user on a shared host squat or symlink-attack it (CWE-377).
 
 set -uo pipefail
 
 NB_DIR="${NB_DIR:-${HOME}/.agent-notebook/notebooks}"
 LOG_FILE="${NB_DIR}/.nb-backup.log"
-LOCK_FILE="/tmp/agent-notebook-backup.lock"
+# Keep the lock in a user-owned, non-shared location so it can't collide with or
+# be squatted/symlink-attacked by another user on a multi-user host (CWE-377).
+# Prefer the per-user runtime dir (0700, private); else the user-owned NB_DIR,
+# where `.nb-backup.*` is already gitignored by the recipe so the lock never gets
+# committed. Both avoid the old fixed world-writable /tmp path. Fall back to
+# NB_DIR too when XDG_RUNTIME_DIR is set but not a writable directory — otherwise
+# `exec 9>` below would fail and the run would silently skip itself.
+LOCK_DIR="${XDG_RUNTIME_DIR:-${NB_DIR}}"
+[ -d "$LOCK_DIR" ] && [ -w "$LOCK_DIR" ] || LOCK_DIR="${NB_DIR}"
+LOCK_FILE="${LOCK_DIR}/.nb-backup.lock"
 TIMESTAMP="$(date -Iseconds 2>/dev/null || date)"
 DATESTAMP="$(date -I 2>/dev/null || date +%Y-%m-%d)"
 

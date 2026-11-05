@@ -1,0 +1,146 @@
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+
+// Guards issue #210: nb-backup.sh must NOT open its single-instance lock on a
+// fixed, world-writable `/tmp/agent-notebook-backup.lock` (CWE-377). On a
+// multi-user host that shared path lets any other user squat the lock (denying
+// your backup) or plant a symlink that `exec 9>` follows and truncates. The
+// lock must be user-scoped: the per-user `$XDG_RUNTIME_DIR` (0700, private) when
+// it points at a writable dir, else the user-owned `$NB_DIR`. We drive the REAL
+// script and assert its behavior, and pin that the fixed shared path is gone.
+const here = dirname(fileURLToPath(import.meta.url));
+const root = join(here, '..');
+const script = join(root, 'examples', 'nb-backup.sh');
+const source = readFileSync(script, 'utf-8');
+
+const hasFlock = spawnSync('flock', ['--version'], { stdio: 'ignore' }).status === 0;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+let dir: string;
+let xdg: string;
+
+/** A throwaway NB_DIR that is a git repo with no remote, so the script creates
+ *  its lock, finds nothing to push, and exits 0 without touching the network. */
+function seedRepo(): void {
+  execFileSync('git', ['init', '-q', dir]);
+  execFileSync('git', ['-C', dir, 'config', 'user.email', 't@t'], { stdio: 'ignore' });
+  execFileSync('git', ['-C', dir, 'config', 'user.name', 't'], { stdio: 'ignore' });
+}
+
+/** Run the real script; `xdgDir === null` removes XDG_RUNTIME_DIR from the env,
+ *  a string (including '') sets it. Returns the script's exit code. */
+function run(xdgDir: string | null): number {
+  const env: NodeJS.ProcessEnv = { ...process.env, NB_DIR: dir };
+  if (xdgDir === null) delete env.XDG_RUNTIME_DIR;
+  else env.XDG_RUNTIME_DIR = xdgDir;
+  const r = spawnSync('bash', [script], { env, encoding: 'utf-8' });
+  return r.status ?? 1;
+}
+
+/** The lock patterns the shipped git-versioning recipe tells users to gitignore. */
+function recipeGitignoreLine(): string {
+  const doc = readFileSync(join(root, 'docs', 'harness-setup.md'), 'utf-8');
+  const line = doc.split('\n').find((l) => l.includes('printf') && l.includes('> .gitignore'));
+  expect(line, 'recipe should contain a `printf ... > .gitignore` line').toBeTruthy();
+  return line!;
+}
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'agent-notebook-backup-nbdir-'));
+  xdg = mkdtempSync(join(tmpdir(), 'agent-notebook-backup-xdg-'));
+  seedRepo();
+});
+afterEach(() => {
+  rmSync(dir, { recursive: true, force: true });
+  rmSync(xdg, { recursive: true, force: true });
+});
+
+describe('nb-backup.sh lock path is user-scoped (issue #210, CWE-377)', () => {
+  test('the fixed world-writable /tmp lock path is gone from the source', () => {
+    expect(source).not.toContain('/tmp/agent-notebook-backup.lock');
+    // The lock dir must be derived from a per-user location, never a fixed /tmp
+    // name, and the lock file hangs off it.
+    expect(source).toMatch(/LOCK_DIR="\$\{XDG_RUNTIME_DIR:-\$\{?NB_DIR\}?\}"/);
+    expect(source).toMatch(/LOCK_FILE="\$\{?LOCK_DIR\}?\/\.nb-backup\.lock"/);
+  });
+
+  test.skipIf(!hasFlock)('with a writable XDG_RUNTIME_DIR, the lock lands in that private per-user dir', () => {
+    expect(run(xdg)).toBe(0);
+    expect(existsSync(join(xdg, '.nb-backup.lock'))).toBe(true);
+    // Not inside the repo, and not the old shared /tmp name.
+    expect(existsSync(join(dir, '.nb-backup.lock'))).toBe(false);
+  });
+
+  test.skipIf(!hasFlock)('without XDG_RUNTIME_DIR, the lock falls back to the user-owned NB_DIR', () => {
+    expect(run(null)).toBe(0);
+    expect(existsSync(join(dir, '.nb-backup.lock'))).toBe(true);
+  });
+
+  test.skipIf(!hasFlock)('an empty XDG_RUNTIME_DIR is treated as unset, not as "/" (pins `:-`, not `-`)', () => {
+    // A `-` instead of `:-` would make XDG_RUNTIME_DIR="" expand to "" and write
+    // the lock at `/.nb-backup.lock`; `:-` must fall back to NB_DIR instead.
+    expect(run('')).toBe(0);
+    expect(existsSync(join(dir, '.nb-backup.lock'))).toBe(true);
+    expect(existsSync('/.nb-backup.lock')).toBe(false);
+  });
+
+  test.skipIf(!hasFlock)('XDG_RUNTIME_DIR set to a non-writable/absent dir falls back to NB_DIR (no silent skip)', () => {
+    // If `exec 9>` targeted an unwritable XDG dir it would fail and the run would
+    // silently skip. The guard must fall back to the user-owned NB_DIR instead.
+    const gone = join(xdg, 'does-not-exist');
+    expect(run(gone)).toBe(0);
+    expect(existsSync(join(dir, '.nb-backup.lock'))).toBe(true);
+    expect(existsSync(join(gone, '.nb-backup.lock'))).toBe(false);
+  });
+
+  test.skipIf(!hasFlock)('the NB_DIR fallback lock is gitignored by the shipped recipe, so it is never committed', () => {
+    // Use the exact patterns the git-versioning recipe writes, not a local guess,
+    // so this test fails if the recipe ever stops covering the lock file.
+    const recipeLine = recipeGitignoreLine();
+    expect(recipeLine).toContain('.nb-backup.*'); // the pattern that must cover the lock
+    const patterns = [...recipeLine.matchAll(/'([^']*)'/g)].map((m) => m[1]).filter((t) => t !== '%s\\n');
+    writeFileSync(join(dir, '.gitignore'), patterns.join('\n') + '\n', 'utf-8');
+
+    expect(run(null)).toBe(0);
+    // The lock must actually have been created — otherwise the status check below
+    // is vacuous.
+    expect(existsSync(join(dir, '.nb-backup.lock'))).toBe(true);
+    const tracked = execFileSync('git', ['-C', dir, 'status', '--porcelain'], { encoding: 'utf-8' });
+    expect(tracked).not.toContain('.nb-backup.lock');
+
+    // Control: without the recipe's .gitignore, git WOULD see the lock — proving
+    // the assertion above can fail, so it is the gitignore doing the work.
+    unlinkSync(join(dir, '.gitignore'));
+    const bare = execFileSync('git', ['-C', dir, 'status', '--porcelain'], { encoding: 'utf-8' });
+    expect(bare).toContain('.nb-backup.lock');
+  });
+
+  test.skipIf(!hasFlock)('a second run skips (exit 0) while another holds the lock — the lock still works', async () => {
+    const lockPath = join(dir, '.nb-backup.lock');
+    const ready = join(dir, '.holder-ready');
+    const release = join(dir, '.holder-release');
+    writeFileSync(release, '', 'utf-8'); // holder waits while this exists
+    // Holder: acquire the exact lock path the script will use, signal readiness,
+    // hold until the test deletes `release`. Marker-file sync, no timing races.
+    const holder = spawn(
+      'bash',
+      ['-c', `exec 9>"${lockPath}"; flock -x -n 9 || exit 3; : > "${ready}"; while [ -e "${release}" ]; do sleep 0.02; done`],
+      { stdio: 'ignore' },
+    );
+    try {
+      for (let i = 0; i < 250 && !existsSync(ready); i++) await sleep(20); // up to ~5s
+      expect(existsSync(ready), 'holder should have acquired the lock').toBe(true);
+
+      expect(run(null)).toBe(0); // contended run skips cleanly, not errors
+      const logTxt = readFileSync(join(dir, '.nb-backup.log'), 'utf-8');
+      expect(logTxt).toContain('another nb-backup run is in progress');
+    } finally {
+      unlinkSync(release); // let the holder exit and release the lock
+      await new Promise<void>((res) => holder.on('exit', () => res()));
+    }
+  });
+});
