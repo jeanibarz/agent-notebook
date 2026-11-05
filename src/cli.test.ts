@@ -385,6 +385,37 @@ describe('runNbCli', () => {
     expect(s.out).not.toContain('nb usage —'); // the human table is NOT emitted
   });
 
+  // Issue #204: the README's "Machine-readable `nb stats`" section documents the
+  // StatsReport shape as the one `--json` contract promised "stable". Drift there
+  // is a silent broken promise — #132 added `generatedAt`/`windowStart` but the
+  // documented shape string omitted them. Guard the shape against the REAL emitted
+  // report (not a hand-copied key list) so any future added/renamed top-level field
+  // must be reflected in the README or this fails.
+  test('README documents every StatsReport top-level key, field-for-field (issue #204)', async () => {
+    await run(['add', 'patcher', 'x']); // one row so a real report is emitted
+    const s = await run(['stats', 'patcher', '--json']);
+    expect(s.code).toBe(0);
+    const emittedKeys = Object.keys(JSON.parse(s.out)).sort();
+
+    // Extract the documented shape list from the README's StatsReport interface note.
+    const readme = readFileSync(join(REPO_ROOT, 'README.md'), 'utf8');
+    const m = readme.match(/exported `StatsReport` interface \(`\{([^}]*)\}`\)/);
+    expect(m).not.toBeNull();
+    const documentedKeys = m![1]
+      .split(',')
+      .map((f) => f.trim().replace(/\[\]$/, '')) // drop the `[]` array marker
+      .filter(Boolean)
+      .sort();
+
+    // Round-trip: the documented shape and the emitted object carry the SAME keys —
+    // neither a field the code emits but the README omits (the #204 gap), nor a
+    // phantom field the README lists but the code never emits.
+    expect(documentedKeys).toEqual(emittedKeys);
+    // The two bounds #132 added are present (regression-pins the specific gap).
+    expect(documentedKeys).toContain('generatedAt');
+    expect(documentedKeys).toContain('windowStart');
+  });
+
   test('--json composes with --since and a shelf, warning on stderr while stdout stays pure JSON', async () => {
     await run(['add', 'patcher', 'x']);
     const s = await run(['stats', 'patcher', '--since', '7days', '--json']); // bad window + shelf + json
