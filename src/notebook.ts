@@ -375,14 +375,7 @@ export function isMetaLine(line: string): boolean {
  * (forward-compatible), rewriting only the key it actually changes.
  */
 export function readMetaLines(dir: string, shelf: string): string[] {
-  const file = shelfFile(dir, shelf);
-  if (!existsSync(file)) return [];
-  const out: string[] = [];
-  for (const line of readFileSync(file, 'utf-8').split('\n')) {
-    if (META_RE.test(line)) out.push(line);
-    else break; // first entry (or blank) ends the leading metadata block
-  }
-  return out;
+  return readShelf(dir, shelf).metaLines;
 }
 
 /** The value of metadata `key` within a set of raw metadata lines, or `null` if absent. */
@@ -539,22 +532,50 @@ export function notebookExists(dir: string, shelf: string): boolean {
 }
 
 export function readEntries(dir: string, shelf: string): Entry[] {
+  return readShelf(dir, shelf).entries;
+}
+
+/** A shelf's full contents from a single disk read: its leading metadata block and its entries. */
+export interface ShelfContents {
+  /** The leading `# key: value` block, verbatim — identical to {@link readMetaLines}. */
+  metaLines: string[];
+  /** The parsed entries after the metadata block — identical to {@link readEntries}. */
+  entries: Entry[];
+}
+
+/**
+ * Read a shelf file ONCE and return both its leading metadata block and its
+ * entries, split in a single scan. `readEntries` and `readMetaLines` each open
+ * and parse `<shelf>.md` on their own, so a caller that needs both — the
+ * discovery hot path `listNotebooks`, `search`, `showJson`, and the `show`
+ * command — otherwise reads and parses the same file twice per shelf (issue
+ * #201, against the "a call is a millisecond" promise). This collapses that to
+ * one `readFileSync` + one scan with byte-identical semantics: the leading run
+ * of `# key:` lines is the metadata (exactly {@link readMetaLines}'s
+ * leading-block-only rule), and from the first non-metadata line every line
+ * parses as an entry (exactly {@link readEntries}), so a mid-file `# key:` line
+ * stays a tolerated score-0 lesson ([FR-MODEL-003]). A missing file yields empty
+ * metadata and entries, never an error.
+ */
+export function readShelf(dir: string, shelf: string): ShelfContents {
   const file = shelfFile(dir, shelf);
-  if (!existsSync(file)) return [];
-  const out: Entry[] = [];
-  // Skip the leading `# key: value` metadata block (notebook descriptions etc.):
-  // those lines are notebook-level context, not lessons, so they must not become
-  // score-0 entries. The block ends at the first non-metadata line; from there,
-  // every line parses as an entry exactly as before (a mid-file `# key:` line
-  // stays a tolerated bare lesson — see readMetaLines / FR-MODEL-003).
+  if (!existsSync(file)) return { metaLines: [], entries: [] };
+  const metaLines: string[] = [];
+  const entries: Entry[] = [];
+  // One scan splits the file: the leading run of `# key:` lines is metadata, and
+  // the first non-metadata line flips `inMeta` so every remaining line parses as
+  // an entry — matching readMetaLines (leading block) and readEntries (the rest).
   let inMeta = true;
   for (const line of readFileSync(file, 'utf-8').split('\n')) {
-    if (inMeta && META_RE.test(line)) continue;
+    if (inMeta && META_RE.test(line)) {
+      metaLines.push(line);
+      continue;
+    }
     inMeta = false;
     const e = parseLine(line);
-    if (e && e.text !== '') out.push(e);
+    if (e && e.text !== '') entries.push(e);
   }
-  return out;
+  return { metaLines, entries };
 }
 
 /**
@@ -1140,11 +1161,14 @@ export interface ShowResult {
  * empty one (issue #166), both of which have `entries: []`.
  */
 export function showJson(dir: string, shelf: string): ShowResult {
-  const ord = ordered(readEntries(dir, shelf));
+  // One read for both entries and description (issue #201): the structured show
+  // used to read the shelf twice (readEntries + getDescription→readMetaLines).
+  const { metaLines, entries } = readShelf(dir, shelf);
+  const ord = ordered(entries);
   return {
     role: shelf,
     shelf,
-    description: getDescription(dir, shelf),
+    description: getMetaValue(metaLines, DESC_KEY),
     entries: ord.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text })),
     exists: notebookExists(dir, shelf),
   };
@@ -1152,7 +1176,18 @@ export function showJson(dir: string, shelf: string): ShowResult {
 
 /** Render a notebook for injection / `show`: a stable id + score, highest score first (most useful on top). */
 export function render(dir: string, shelf: string): string {
-  const ord = ordered(readEntries(dir, shelf));
+  return renderEntries(shelf, readEntries(dir, shelf));
+}
+
+/**
+ * Render a shelf's already-read entries — the single-read core of {@link render}.
+ * `render` reads the file itself; a caller that already holds the entries (the
+ * `show` command, which reads the shelf once via {@link readShelf}) calls this
+ * directly so it does not re-read the file (issue #201). Output is byte-identical
+ * to the old inline rendering, including the "(… is empty)" line for no entries.
+ */
+export function renderEntries(shelf: string, entries: Entry[]): string {
+  const ord = ordered(entries);
   if (ord.length === 0) return `(notebook for shelf "${shelf}" is empty)`;
   return ord
     .map((x) => {
@@ -1236,8 +1271,10 @@ export function listNotebooks(dir: string, opts: ListOptions = {}): NotebookList
   const matches = listShelves(dir)
     .filter((shelf) => shelf.startsWith(prefix))
     .map((shelf): NotebookSummary => {
-      const entries = readEntries(dir, shelf);
-      const desc = getDescription(dir, shelf);
+      // One read per shelf for both the lesson count and the description (issue
+      // #201): the index used to read each file twice (readEntries + getDescription).
+      const { metaLines, entries } = readShelf(dir, shelf);
+      const desc = getMetaValue(metaLines, DESC_KEY);
       // Fall back to the top-scored lesson only when there is no explicit
       // description; `ordered` is score-desc with an insertion-order tie-break.
       const auto = desc === null && entries.length > 0 ? ordered(entries)[0].e.text : null;
@@ -1346,8 +1383,10 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
 
   const groups: SearchGroup[] = [];
   for (const shelf of listShelves(dir).filter((r) => r.startsWith(prefix))) {
-    const entries = readEntries(dir, shelf);
-    const desc = getDescription(dir, shelf);
+    // One read per shelf for both entries and description (issue #201): the
+    // keyword scan used to read each file twice (readEntries + getDescription).
+    const { metaLines, entries } = readShelf(dir, shelf);
+    const desc = getMetaValue(metaLines, DESC_KEY);
     // Tag each hit with its file-order index so equal (matched, score) hits keep a
     // stable, insertion-order sequence ([DP-3]); the index is dropped from output.
     const tagged = entries

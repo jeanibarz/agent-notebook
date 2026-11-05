@@ -38,10 +38,12 @@ import {
   assertSafeShelf,
   classifyError,
   coverageHi,
+  DESC_KEY,
   entryId,
   errMin,
   errRate,
   getDescription,
+  getMetaValue,
   isValidWindow,
   listNotebooks,
   listShelves,
@@ -60,8 +62,9 @@ import {
   notebooksDir,
   parseWindowMs,
   recallMissHi,
+  readShelf,
   remove,
-  render,
+  renderEntries,
   search,
   setDescription,
   showJson,
@@ -587,9 +590,13 @@ export async function runNbCli(
           // regex-parsing the human output. Same ordering as `render()`.
           process.stdout.write(JSON.stringify(showJson(dir, shelf)) + '\n');
         } else {
+          // One read for both the description header and the rendered lessons
+          // (issue #201): this branch used to read the shelf twice
+          // (getDescription then render→readEntries).
+          const { metaLines, entries } = readShelf(dir, shelf);
           // Print the one-line description (if any) as a header above the lessons,
           // so a reader sees what the notebook is *for* before its contents.
-          const desc = getDescription(dir, shelf);
+          const desc = getMetaValue(metaLines, DESC_KEY);
           if (desc) process.stdout.write(`# desc: ${desc}\n`);
           // A shelf that was never created (e.g. a typo) must not read as a real
           // empty notebook — that would mislead (DP-5, issue #166). Say "no
@@ -600,7 +607,7 @@ export async function runNbCli(
           if (!notebookExists(dir, shelf)) {
             process.stderr.write(`no notebook for shelf "${shelf}" — run \`nb list\` to see existing shelves\n`);
           } else {
-            process.stdout.write(render(dir, shelf) + '\n');
+            process.stdout.write(renderEntries(shelf, entries) + '\n');
           }
         }
         break;

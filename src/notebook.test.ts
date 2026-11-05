@@ -80,8 +80,10 @@ import {
   readEntries,
   reapLeftoverTemps,
   readMetaLines,
+  readShelf,
   remove,
   render,
+  renderEntries,
   sanitizeLesson,
   asciiMode,
   search,
@@ -97,6 +99,7 @@ import {
   usageRingSlack,
   vote,
 } from './notebook.js';
+import { runNbCli } from './cli.js';
 
 let dir: string;
 const SAVED = { ...process.env };
@@ -3661,6 +3664,137 @@ describe('notebookExists / showJson exists flag (issue #166)', () => {
     const sh = showJson(dir, 'ghost');
     expect(sh.exists).toBe(true);
     expect(sh.entries).toEqual([]); // additive flag, entries stays empty
+  });
+});
+
+describe('single-pass shelf read — list/search/show read each file once (issue #201)', () => {
+  // Count how many times each `<shelf>.md` is read via readFileSync. Only shelf
+  // files end in `.md`; the usage log (`.nb-usage.log`) and its `.count` sidecar
+  // never match, so this isolates the per-shelf disk reads the issue targets.
+  const countShelfReads = (reads: string[]): Record<string, number> => {
+    const counts: Record<string, number> = {};
+    for (const p of reads) {
+      const m = /([^/\\]+)\.md$/.exec(p);
+      if (m) counts[m[1]] = (counts[m[1]] ?? 0) + 1;
+    }
+    return counts;
+  };
+
+  // Seed three shelves, each with a `# desc:` line AND entries, so both the
+  // metadata read and the entries read have real work to do (the double-read
+  // the old code paid). `lint` appears in each so a single `search` term hits all.
+  const seedShelves = async (): Promise<void> => {
+    for (const s of ['alpha', 'beta', 'gamma']) {
+      await addEntry(dir, s, `first ${s} lesson`);
+      await addEntry(dir, s, `second ${s} lesson about lint`);
+      await setDescription(dir, s, `when working on ${s}`);
+    }
+  };
+
+  // Run `fn` with the readFileSync spy on, returning its result and read paths.
+  const withReadSpy = async <T>(fn: () => T | Promise<T>): Promise<{ result: T; reads: string[] }> => {
+    fsHook.reads = [];
+    try {
+      const result = await fn();
+      return { result, reads: fsHook.reads! };
+    } finally {
+      fsHook.reads = null;
+    }
+  };
+
+  test('listNotebooks reads each shelf file exactly once', async () => {
+    await seedShelves();
+    const { result, reads } = await withReadSpy(() => listNotebooks(dir));
+    expect(result.rows.map((r) => r.shelf)).toEqual(['alpha', 'beta', 'gamma']);
+    expect(countShelfReads(reads)).toEqual({ alpha: 1, beta: 1, gamma: 1 });
+  });
+
+  test('search reads each shelf file exactly once', async () => {
+    await seedShelves();
+    const { result, reads } = await withReadSpy(() => search(dir, 'lint'));
+    expect(result.groups.map((g) => g.shelf)).toEqual(['alpha', 'beta', 'gamma']);
+    expect(countShelfReads(reads)).toEqual({ alpha: 1, beta: 1, gamma: 1 });
+  });
+
+  test('showJson reads the shelf file exactly once', async () => {
+    await seedShelves();
+    const { result, reads } = await withReadSpy(() => showJson(dir, 'alpha'));
+    expect(result.description).toBe('when working on alpha');
+    // Exact entries (id/score/text/order), so a wrong read wouldn't slip past a
+    // mere length check.
+    expect(result.entries).toEqual([
+      { id: entryId('first alpha lesson'), score: 1, text: 'first alpha lesson' },
+      { id: entryId('second alpha lesson about lint'), score: 1, text: 'second alpha lesson about lint' },
+    ]);
+    expect(countShelfReads(reads)).toEqual({ alpha: 1 });
+  });
+
+  test('the `nb show` CLI branch (no --json) reads the shelf file exactly once', async () => {
+    // The actual changed call site (cli.ts show branch) — it used to read twice
+    // (getDescription then render→readEntries). Drive it in-process so the fs spy
+    // sees its reads; swallow its stdout/stderr and point NB_DIR at the temp dir.
+    await seedShelves();
+    const savedDir = process.env.NB_DIR;
+    const origOut = process.stdout.write.bind(process.stdout);
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.env.NB_DIR = dir;
+    // @ts-expect-error — test shim swallowing the command's writes
+    process.stdout.write = () => true;
+    // @ts-expect-error — test shim swallowing the command's writes
+    process.stderr.write = () => true;
+    try {
+      const { result, reads } = await withReadSpy(() => runNbCli(['show', 'alpha']));
+      expect(result).toBe(0); // exit 0
+      expect(countShelfReads(reads)).toEqual({ alpha: 1 });
+    } finally {
+      process.stdout.write = origOut;
+      process.stderr.write = origErr;
+      if (savedDir === undefined) delete process.env.NB_DIR;
+      else process.env.NB_DIR = savedDir;
+    }
+  });
+
+  test('readShelf keeps a mid-file `# key:` line out of metadata and as a score-0 lesson (FR-MODEL-003)', () => {
+    const shelf = 'midmeta';
+    // Hand-written file: a two-line leading metadata block, a scored entry, then a
+    // `# key:`-shaped line sitting AMONG the entries. Only the leading run is
+    // metadata; the mid-file line must stay an ordinary score-0 lesson. Literal
+    // expectations (not a comparison to readMetaLines/readEntries, which now
+    // delegate to readShelf) so a regression that flipped `inMeta` back on would
+    // fail here.
+    writeFileSync(
+      join(dir, `${shelf}.md`),
+      '# desc: leading description\n' +
+        '# owner: alice\n' +
+        '+2\ta real lesson\n' +
+        '# notakey: a mid-file pseudo-meta line\n',
+      'utf-8',
+    );
+    const { metaLines, entries } = readShelf(dir, shelf);
+    expect(metaLines).toEqual(['# desc: leading description', '# owner: alice']);
+    expect(entries).toEqual([
+      { score: 2, text: 'a real lesson' },
+      { score: 0, text: '# notakey: a mid-file pseudo-meta line' },
+    ]);
+  });
+
+  test('readShelf returns empty metadata and entries for a never-created shelf', () => {
+    expect(readShelf(dir, 'never-created')).toEqual({ metaLines: [], entries: [] });
+  });
+
+  test('renderEntries renders ids+scores highest-first, with the empty line verbatim', async () => {
+    await addEntry(dir, 'r', 'first lesson');
+    await addEntry(dir, 'r', 'second lesson'); // equal +1 scores → insertion-order tie-break
+    // Literal expected output pins the format (two-space gaps, `[+N]` sign,
+    // score-desc order) directly, not by comparison to `render` (which now
+    // delegates to `renderEntries`).
+    expect(renderEntries('r', readEntries(dir, 'r'))).toBe(
+      `${entryId('first lesson')}  [+1]  first lesson\n` +
+        `${entryId('second lesson')}  [+1]  second lesson`,
+    );
+    // No entries → the exact empty-notebook line the `show` command prints for an
+    // existing-but-empty shelf.
+    expect(renderEntries('empty-shelf', [])).toBe('(notebook for shelf "empty-shelf" is empty)');
   });
 });
 
