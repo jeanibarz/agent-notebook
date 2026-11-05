@@ -159,6 +159,23 @@ const MAX_SHELF_LEN = 128;
  */
 const RESERVED_SHELVES = new Set(['readme']);
 
+/**
+ * Windows reserved device basenames (issue #205). On Windows `CON, PRN, AUX, NUL,
+ * COM1-9, LPT1-9` are devices, not files — case-insensitively, and even carrying an
+ * extension: `nul.md` resolves to the NUL device, not a `nul.md` file. A shelf is
+ * stored as `<shelf>.md`, so a shelf named `nul` would make `nb add nul "lesson"`
+ * write to the null device: the write "succeeds", the lesson is discarded, and
+ * `nb show nul` reads back empty — a silent, unrecoverable memory loss. We reject
+ * these names up front, like `readme`, so the failure is a clear error on every
+ * platform instead of a Windows-only data sink.
+ *
+ * The match is against the segment before the first `.` (Windows resolves the device
+ * from that leading segment regardless of trailing extensions, so `nul.notes` → the
+ * NUL device too), and it is anchored to the whole segment — `console`, `aux-notes`
+ * and `com10` contain a reserved substring but are not reserved names, and stay valid.
+ */
+const WINDOWS_RESERVED_DEVICE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
 export function assertSafeShelf(shelf: string): void {
   if (shelf.length > MAX_SHELF_LEN) {
     throw new NbError(
@@ -171,6 +188,12 @@ export function assertSafeShelf(shelf: string): void {
   }
   if (RESERVED_SHELVES.has(shelf.toLowerCase())) {
     throw new NbError('bad_args', `invalid shelf name: ${JSON.stringify(shelf)} (reserved: a README.md is not a notebook)`);
+  }
+  if (WINDOWS_RESERVED_DEVICE.test(shelf.split('.')[0]!)) {
+    throw new NbError(
+      'bad_args',
+      `invalid shelf name: ${JSON.stringify(shelf)} (reserved: a Windows device name — ${shelf.split('.')[0]!.toUpperCase()} resolves to a device, not a file)`,
+    );
   }
 }
 
