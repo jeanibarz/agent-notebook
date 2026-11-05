@@ -1125,6 +1125,93 @@ describe('runNbCli', () => {
       expect(r.out).not.toContain('nb.lock');
       expect(r.out).not.toContain('notes');
     });
+
+    describe('a long description is truncated to one bounded row, not wrapped (issue #211)', () => {
+      // A full-width (maxChars = 200) description/trigger, printed raw, wraps across
+      // terminal lines and shatters the aligned `name  count  desc` columns. The
+      // human renderer must cut it to a sane fixed width with a trailing ellipsis.
+      const longDesc = 'A'.repeat(100) + 'B'.repeat(100); // 200 chars, well over the 80-col cap
+
+      // Pin the ellipsis glyph so these assertions don't flake on the host locale:
+      // `asciiMode()` flips to the `...` fallback when NB_ASCII is unset AND the
+      // locale is non-UTF-8 (e.g. `LANG=C` in a minimal CI container). Forcing
+      // NB_ASCII='0' keeps the Unicode-ellipsis tests deterministic; the one ASCII
+      // test below sets '1' and afterEach restores the original either way.
+      let prevAscii: string | undefined;
+      beforeEach(() => {
+        prevAscii = process.env.NB_ASCII;
+        process.env.NB_ASCII = '0';
+      });
+      afterEach(() => {
+        if (prevAscii === undefined) delete process.env.NB_ASCII;
+        else process.env.NB_ASCII = prevAscii;
+      });
+
+      test('nb list shows the description ellipsized and never prints the hidden tail', async () => {
+        await run(['describe', 'reviewer', longDesc]);
+        const r = await run(['list']);
+        expect(r.code).toBe(0);
+        const row = r.out.trimEnd().split('\n')[1];
+        // One bounded row: the first 79 chars + a single-char ellipsis, and the
+        // dropped `B…` tail never reaches the terminal.
+        expect(row).toContain('A'.repeat(79) + '…');
+        expect(row).not.toContain('B');
+        expect(row).not.toContain('A'.repeat(80)); // the 80th char is the ellipsis, not another A
+      });
+
+      test('the (auto) top-lesson trigger is truncated the same way', async () => {
+        await run(['add', 'reviewer', longDesc]); // no desc set → the lesson is the (auto) trigger
+        const r = await run(['list']);
+        const row = r.out.trimEnd().split('\n')[1];
+        expect(row).toContain('A'.repeat(79) + '…');
+        expect(row).toContain('(auto)'); // the tag still follows the bounded trigger
+        expect(row).not.toContain('B');
+      });
+
+      test('a description exactly at the 80-col cap is printed in full, no ellipsis', async () => {
+        const exact = 'A'.repeat(80); // == the cap: the early-return (<=) path, untouched
+        await run(['describe', 'reviewer', exact]);
+        const r = await run(['list']);
+        const row = r.out.trimEnd().split('\n')[1];
+        expect(row).toContain(exact);
+        expect(row).not.toContain('…'); // nothing was cut, so no ellipsis is appended
+      });
+
+      test('one char over the cap is cut to 79 chars + ellipsis', async () => {
+        const over = 'A'.repeat(81); // 81 > 80: the first over-width length
+        await run(['describe', 'reviewer', over]);
+        const r = await run(['list']);
+        const row = r.out.trimEnd().split('\n')[1];
+        expect(row).toContain('A'.repeat(79) + '…');
+        expect(row).not.toContain('A'.repeat(80)); // the 80th A was dropped for the ellipsis
+      });
+
+      test('a short description is printed verbatim', async () => {
+        await run(['describe', 'reviewer', 'a short trigger']);
+        const r = await run(['list']);
+        const row = r.out.trimEnd().split('\n')[1];
+        expect(row).toContain('a short trigger');
+        expect(row).not.toContain('…');
+      });
+
+      test('under NB_ASCII the ellipsis is the three-dot fallback, still within the cap', async () => {
+        process.env.NB_ASCII = '1'; // afterEach restores the original
+        await run(['describe', 'reviewer', longDesc]);
+        const r = await run(['list']);
+        const row = r.out.trimEnd().split('\n')[1];
+        expect(row).toContain('A'.repeat(77) + '...'); // 77 chars + 3-dot ellipsis = 80
+        expect(row).not.toContain('A'.repeat(78)); // reject a width+1 blowout (A×78 + '...')
+        expect(row).not.toContain('…');
+        expect(row).not.toContain('B');
+      });
+
+      test('--json still emits the full, untruncated description', async () => {
+        await run(['describe', 'reviewer', longDesc]);
+        const r = await run(['list', '--json']);
+        const parsed = JSON.parse(r.out);
+        expect(parsed.rows[0].desc).toBe(longDesc); // all 200 chars, nothing clipped
+      });
+    });
   });
 
   describe('add <shelf> - reads the lesson from stdin (issue #38)', () => {
@@ -1908,6 +1995,41 @@ describe('nb search — the demoted keyword fallback (issue #82)', () => {
     expect(parsed.groups).toHaveLength(1);
     expect(parsed.groups[0].shelf).toBe('reviewer');
     expect(parsed.groups[0].hits[0].id).toBe(entryId('run the build before vitest'));
+  });
+
+  describe("a long shelf description doesn't blow out the group line (issue #211)", () => {
+    const longDesc = 'A'.repeat(100) + 'B'.repeat(100); // 200 chars, over the 80-col cap
+
+    // Pin the Unicode ellipsis so the assertion doesn't flake under a non-UTF-8
+    // host locale (NB_ASCII unset + LANG=C would flip asciiMode() to `...`).
+    let prevAscii: string | undefined;
+    beforeEach(() => {
+      prevAscii = process.env.NB_ASCII;
+      process.env.NB_ASCII = '0';
+    });
+    afterEach(() => {
+      if (prevAscii === undefined) delete process.env.NB_ASCII;
+      else process.env.NB_ASCII = prevAscii;
+    });
+
+    test('the human shelf line ellipsizes the description', async () => {
+      await run(['add', 'reviewer', 'findme marker lesson']);
+      await run(['describe', 'reviewer', longDesc]);
+      const r = await run(['search', 'findme']);
+      expect(r.code).toBe(0);
+      const shelfLine = r.out.split('\n').find((l) => l.includes('reviewer'))!;
+      expect(shelfLine).toContain('A'.repeat(79) + '…');
+      expect(shelfLine).not.toContain('A'.repeat(80)); // reject a width+1 blowout (A×80 + '…')
+      expect(shelfLine).not.toContain('B');
+    });
+
+    test('--json still emits the full, untruncated shelf description', async () => {
+      await run(['add', 'reviewer', 'findme marker lesson']);
+      await run(['describe', 'reviewer', longDesc]);
+      const r = await run(['search', 'findme', '--json']);
+      const parsed = JSON.parse(r.out);
+      expect(parsed.groups[0].desc).toBe(longDesc); // all 200 chars, nothing clipped
+    });
   });
 
   test('--limit N bounds the printed notebook groups and the header reads "N of total" (issue #186)', async () => {
