@@ -14,6 +14,7 @@
 //   nb move   <from> <to> <id|query>        relocate an entry across shelves, score intact
 //   (add/vote/rm/merge/move take --json: one structured result object on stdout)
 //   nb describe <shelf> ["<text>"]          set the notebook's one-line description (or print it)
+//   nb describe <shelf> -                   read the one-line description from stdin (multi-line refused)
 //   nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
 //   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport; --exit-code = exit 3 when anomalies present)
 //   nb path   [<shelf> | --usage] [--json]   print the notebooks dir, a shelf's file path, or the usage-log path (--json = {dir, shelf, path} object)
@@ -110,6 +111,7 @@ usage:
   nb rm     <shelf> <id|query>             delete an entry
   nb move   <from> <to> <id|query>         move an entry to another shelf, keeping its score (consolidate shelves)
   nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print the current one)
+  nb describe <shelf> -                    read the description from stdin (one line; multi-line is refused)
   nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback — scan all notebooks (surfacing is the primary path)
   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
   nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's resolved file path (--json emits a {dir, shelf, path} object)
@@ -172,6 +174,8 @@ notes:
     current one. The description is a *trigger* — "the situation in which you should open me" —
     so \`nb show\` and a bare list can tell what a notebook is for without reading its lessons.
     It is capped like a lesson (rejected, not truncated, if too long); an empty text clears it.
+    A text operand of \`-\` reads the one-line description from stdin (multi-line refused), the
+    same escape hatch \`add -\` offers so an agent can pipe it in without shell-quoting.
     The \`# key: value\` block round-trips through every mutation and never becomes a lesson.
   - \`nb list\` (aliases \`ls\`, \`shelves\`; \`roles\` is the deprecated old name) is the notebook index: one richest-first line per notebook —
     name, lesson count, and description — so you can pick which notebook to open WITHOUT reading any
@@ -723,7 +727,16 @@ export async function runNbCli(
         // *present* operand (clears the description), so we branch on presence
         // (args.length), not on emptiness.
         if (args.length > 2) {
-          const r = await setDescription(dir, shelf, args[2]);
+          // A text operand of `-` means "read the description from stdin" — the
+          // same escape hatch `add -` offers (issue #38), so a supervising agent
+          // can pipe a long or punctuation-heavy description without
+          // shell-quoting it. Read exactly one line via `readOneLine`
+          // (multi-line input is refused, not flattened), identical to `add -`.
+          // `-` is distinct from the present-but-empty operand `""`, which still
+          // clears — so we only reach stdin when the operand is literally `-`.
+          let text = args[2]!;
+          if (text === '-') text = readOneLine(await readStdin());
+          const r = await setDescription(dir, shelf, text);
           meta.outcome = r.desc === null ? 'desc-cleared' : 'described';
           // `--reason`/`--note` are stripped above (so they can't be mistaken
           // for the description text); record them in the usage log, never in
