@@ -40,6 +40,7 @@
   ],
   "scripts": {
     "build": "tsc && chmod +x dist/cli.js",
+    "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
     "test": "node scripts/check-node-for-tests.mjs && vitest run",
     "test:watch": "vitest",
