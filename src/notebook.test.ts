@@ -342,6 +342,134 @@ describe('caps', () => {
     expect(byText.aaa).toBe(2);
     expect(byText.ddd).toBe(1);
   });
+
+  // ---------------------------------------------------------------------------
+  // Randomized invariant sweep (issue #189)
+  // ---------------------------------------------------------------------------
+  //
+  // The cap tests above are fixed scenarios. This one drives MANY seeded,
+  // deterministic add/vote sequences through the real addEntry/vote path and
+  // asserts, after every op, the invariants enforceCap must never break
+  // (docs/eviction-and-aging.md). It is a property test with a hand-rolled PRNG
+  // (no fast-check — the same zero-dependency stance as the round-trip suite
+  // below), so a future refactor of the eviction/decay ordering that slips past
+  // the three hand-written cases fails loudly and reproducibly.
+  //
+  // Every assertion is an INDEPENDENT oracle computed from the before/after
+  // state (storage order = recency, least-recently-touched first) and the
+  // public addEntry/vote result — never a re-derivation of enforceCap's own
+  // code — so the test cannot tautologically agree with a buggy implementation:
+  //   1. the stored entry count never exceeds maxLines();
+  //   2. the entry an add just created is always still present afterward, enters
+  //      at +1, and is never the one it reports evicted (newcomers are protected);
+  //   3. every stored score is an integer (no fractional decay);
+  //   4. when an add evicts from a full notebook: the evicted line is the
+  //      lowest-scored one, ties broken by staleness (topmost in storage order);
+  //      EXACTLY ONE surviving non-protected line — the stalest survivor — is
+  //      docked EXACTLY ONE point; every other survivor is unchanged;
+  //   5. a vote applies ±delta to its target and moves it to the fresh end — the
+  //      recency signal the staleness targeting in (4) is built on.
+  test('randomized add/vote sequences never break the cap/eviction/decay invariants', async () => {
+    // A tiny self-contained PRNG (mulberry32): deterministic given its seed, so
+    // every sequence — and any failure — reproduces exactly. Zero dependency,
+    // matching the round-trip generator below.
+    const mulberry32 = (seed: number) => {
+      let a = seed >>> 0;
+      return () => {
+        a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    };
+
+    const SEQUENCES = 300; // "a few hundred" op sequences (acceptance criterion)
+    const OPS = 6; // ops/sequence; each op is a durable fsync write, so keep it lean
+    const BASE_SEED = 0x5eed;
+    let evictionsSeen = 0; // guard against a vacuous run (did eviction ever fire?)
+
+    for (let seq = 0; seq < SEQUENCES; seq++) {
+      const rng = mulberry32(BASE_SEED + seq);
+      // cap >= 2 so an eviction always leaves at least one surviving
+      // non-protected line to dock (invariant 4); kept small (2..4) so a notebook
+      // fills fast and the eviction+decay path is exercised densely.
+      const cap = 2 + Math.floor(rng() * 3); // 2..4
+      process.env.NB_MAX_LINES = String(cap);
+      const shelf = `fuzz${seq}`;
+      let counter = 0; // monotonic → every lesson text is unique (no dedup blocks)
+
+      for (let op = 0; op < OPS; op++) {
+        const before = readEntries(dir, shelf); // storage order: index 0 = stalest
+        const beforeScore = new Map(before.map((e) => [e.text, e.score]));
+        const doVote = before.length > 0 && rng() < 0.4;
+        let after: ReturnType<typeof readEntries>;
+
+        if (doVote) {
+          // A vote never grows the notebook, so it can neither evict nor decay.
+          const victim = before[Math.floor(rng() * before.length)];
+          const delta = rng() < 0.5 ? 1 : -1;
+          await vote(dir, shelf, entryId(victim.text), delta);
+          after = readEntries(dir, shelf);
+          // (5) the vote applied ±delta and the touched line moved to the fresh end.
+          const moved = after[after.length - 1];
+          expect(moved.text).toBe(victim.text);
+          expect(moved.score).toBe(victim.score + delta);
+        } else {
+          const text = `lesson ${seq}-${counter++}`;
+          const res = await addEntry(dir, shelf, text);
+          expect(res.added).toBe(true); // unique + short → always accepted
+          after = readEntries(dir, shelf);
+          const afterScore = new Map(after.map((e) => [e.text, e.score]));
+
+          // (2) the just-added entry survives, enters at +1, and is never evicted.
+          expect(afterScore.get(text)).toBe(1);
+          if (res.evicted) expect(res.evicted.text).not.toBe(text);
+
+          // (4) an eviction happens only when the add overflowed a full notebook.
+          if (res.evicted) {
+            evictionsSeen++;
+            expect(before.length).toBe(cap); // the notebook was full
+
+            // Eviction oracle: the removed line is the lowest-scored, ties broken
+            // by staleness — i.e. the FIRST entry in storage order whose score is
+            // the minimum. Derived from `before` alone, not from enforceCap.
+            const minScore = Math.min(...before.map((e) => e.score));
+            const expectedEvicted = before.find((e) => e.score === minScore);
+            expect(res.evicted.score).toBe(minScore);
+            expect(res.evicted.text).toBe(expectedEvicted?.text);
+            expect(afterScore.has(res.evicted.text)).toBe(false); // and it is gone
+
+            // Dock oracle: the stalest surviving non-protected line — the first in
+            // storage order that was NOT evicted — loses exactly 1 point; every
+            // other survivor is unchanged, and no one else is docked.
+            const expectedDock = before.find((e) => e.text !== res.evicted!.text);
+            let docked = 0;
+            for (const [t, s0] of beforeScore) {
+              if (t === res.evicted.text) continue; // the evicted line
+              const s1 = afterScore.get(t);
+              expect(s1).not.toBeUndefined(); // every survivor is kept
+              if (t === expectedDock?.text) {
+                expect(s1).toBe(s0 - 1); // the one decayed line, docked by exactly 1
+                docked++;
+              } else {
+                expect(s1).toBe(s0); // all other survivors unchanged
+              }
+            }
+            expect(docked).toBe(1); // exactly one survivor docked
+          }
+        }
+
+        // (1) + (3): hold after EVERY op, add or vote.
+        expect(after.length).toBeLessThanOrEqual(cap);
+        for (const e of after) expect(Number.isInteger(e.score)).toBe(true);
+      }
+    }
+
+    // The sweep is only meaningful if it actually drove the eviction+decay path
+    // many times; a run that never filled a notebook would satisfy invariant 4
+    // vacuously. This floor fails such a degenerate run loudly.
+    expect(evictionsSeen).toBeGreaterThan(100);
+  }, 120_000);
 });
 
 describe('serialization round-trip', () => {
