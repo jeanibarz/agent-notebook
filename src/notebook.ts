@@ -1789,7 +1789,27 @@ export interface EngagementDiagnosis {
   causes: ('blank-session' | 'retrospective-not-landing' | 'injection-hook')[];
 }
 
+/**
+ * The current `StatsReport` wire-format version (issue #172). Starts at `1` and
+ * is a single integer so a consumer can detect a breaking change in the `--json`
+ * contract without diffing every field.
+ *
+ * Bump policy — increment by exactly 1 on any **breaking** change: removing or
+ * renaming a field, changing a field's type or meaning, or changing an array's
+ * ordering that a consumer relies on. Do **not** bump for a purely **additive**
+ * change — adding a field, or a new `anomalies`/`signals` kind — which is how
+ * this report has grown (issues #18, #40, #72, #81, #106, #132). When you bump,
+ * update the README's "Machine-readable `nb stats`" section alongside the number.
+ */
+export const STATS_SCHEMA_VERSION = 1;
+
 export interface StatsReport {
+  /**
+   * Wire-format version of this report (issue #172). See `STATS_SCHEMA_VERSION`
+   * for the value and the bump policy. A consumer compares it to the version it
+   * was written against to detect a breaking change in the `--json` contract.
+   */
+  schemaVersion: number;
   window: string;
   /** ISO-8601 instant the report was generated (the report's `now`). */
   generatedAt: string;
@@ -2442,6 +2462,7 @@ export function stats(
   );
 
   return {
+    schemaVersion: STATS_SCHEMA_VERSION,
     window,
     generatedAt: new Date(now).toISOString(),
     windowStart: new Date(now - windowMs).toISOString(),

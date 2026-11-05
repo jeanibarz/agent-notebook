@@ -92,6 +92,7 @@ import {
   sparkline,
   split,
   stats,
+  STATS_SCHEMA_VERSION,
   usageRing,
   usageRingSlack,
   vote,
@@ -1586,6 +1587,41 @@ describe('usage log + stats', () => {
     logUsage(dir, 'p', 'add', true, 2);
     const rep = stats(dir, { now: Date.now() });
     expect(rep.anomalies).toHaveLength(0);
+  });
+
+  test('stamps the report with schemaVersion = STATS_SCHEMA_VERSION (issue #172)', () => {
+    logUsage(dir, 'p', 'show', true, 1);
+    const rep = stats(dir, { now: Date.now() });
+    // present, an integer, and currently pinned to 1 — a consumer reads this to
+    // detect a breaking wire-format change.
+    expect(rep.schemaVersion).toBe(STATS_SCHEMA_VERSION);
+    expect(rep.schemaVersion).toBe(1);
+    expect(Number.isInteger(rep.schemaVersion)).toBe(true);
+  });
+
+  test('StatsReport top-level shape is frozen — a new field forces a conscious schemaVersion bump (issue #172)', () => {
+    logUsage(dir, 'p', 'show', true, 1);
+    const rep = stats(dir, { now: Date.now() });
+    // Golden shape: the exact set of top-level keys the --json contract emits.
+    // Adding/removing/renaming a field makes this fail on purpose — when you do,
+    // update this list AND decide whether STATS_SCHEMA_VERSION must bump (any
+    // rename/removal/type change is breaking; a purely additive field is not).
+    expect(Object.keys(rep).sort()).toEqual(
+      [
+        'activity',
+        'anomalies',
+        'generatedAt',
+        'notebookTotals',
+        'notebooks',
+        'perCommand',
+        'schemaVersion',
+        'signals',
+        'surfacing',
+        'totalCalls',
+        'window',
+        'windowStart',
+      ].sort(),
+    );
   });
 
   test('labels a sub-hour window in minutes (not rounded to 1h)', () => {
