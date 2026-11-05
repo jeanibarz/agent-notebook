@@ -502,6 +502,22 @@ and `nb roles` SHALL keep working and SHALL be removed only in a later release m
 BREAKING.
 *Proven by:* `cli.test.ts` and `notebook.test.ts` → "shelf terminology (role kept as a deprecated alias)".
 
+<a id="fr-cli-006"></a>
+**FR-CLI-006 (Should).** A mutating command that names a shelf (`vote`, `rm`, `split`,
+`move`) SHALL, when that shelf does not exist on disk (`notebookExists` is
+false), fail with `no notebook for shelf "<name>"` rather than the core selector/empty
+`"… is empty"` throw — so a mistyped shelf reads as a typo, not as a real empty notebook
+that invites seeding a new lesson on the wrong shelf. When an existing shelf is a close
+match (by the same `editDistance` closest-match rule as the command did-you-mean,
+issue #171) it SHALL append an advisory `did you mean
+"<nearest>"?`; otherwise it SHALL point the reader at `nb list`. The hint is ADVISORY and
+SHALL NOT auto-correct, the error keeps the `no_match` class (exit `1`), and a shelf whose
+file exists but holds no lessons is untouched — it still takes the core "is empty" throw,
+preserving the `show` exists-vs-empty split (issue #166). For `move` only the source shelf
+is guarded; a never-created *target* is created like `add`. The core mutation functions are
+unchanged (the guard lives in the CLI, as it does for `show`).
+*Proven by:* `cli.test.ts` → `describe('mutations distinguish a missing shelf from an empty one (issue #200)')` and `describe('closestShelf (shelf did-you-mean, issue #200)')`.
+
 <a id="fr-config-001"></a>
 **FR-CONFIG-001 (Should).** `nb config` SHALL print every effective (post-clamp) tunable
 as `name=value`, one per line — `maxLines`, `maxChars`, `nearThreshold`, `usageRing`,

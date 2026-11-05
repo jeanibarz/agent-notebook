@@ -44,6 +44,7 @@ import {
   getDescription,
   isValidWindow,
   listNotebooks,
+  listShelves,
   lockGraceMs,
   logUsage,
   loopN,
@@ -438,44 +439,90 @@ function editDistance(a: string, b: string): number {
 }
 
 /**
+ * Nearest candidate to an unknown input, or `undefined` when nothing is close
+ * enough to suggest confidently. Two cheap, zero-dependency signals: a small
+ * Levenshtein distance (≤ 2, and strictly under the input length so a 1–2 char
+ * stub can't match half the set), or `input` being a prefix of a candidate
+ * (≥ 3 chars, catching abbreviations like `desc` → `describe` that edit distance
+ * alone would miss). The Levenshtein match wins when both fire; a far-off input
+ * matches neither and yields no suggestion. Ties resolve to the EARLIER
+ * candidate (strict `<`), so a caller that wants a canonical form preferred over
+ * an alias lists it first. Shared by `closestCommand` (over commands, issue
+ * #171) and `closestShelf` (over existing shelf names, issue #200).
+ */
+function closestMatch(input: string, candidates: readonly string[]): string | undefined {
+  const needle = input.trim().toLowerCase();
+  if (needle === '') return undefined;
+  // An exact candidate is not a typo to recover from (and never reaches the
+  // recovery path anyway) — never "suggest" the input back to itself.
+  if (candidates.includes(needle)) return undefined;
+
+  let best: string | undefined;
+  let bestDist = Infinity;
+  for (const cand of candidates) {
+    const d = editDistance(needle, cand);
+    if (d < bestDist) {
+      bestDist = d;
+      best = cand;
+    }
+  }
+  // A close typo: within a small edit budget AND not so short that the distance
+  // swamps the input (keeps `x`/`ab` from matching an unrelated 2-letter name).
+  if (best !== undefined && bestDist <= 2 && bestDist < needle.length) return best;
+
+  // Otherwise an abbreviation: `input` is a prefix of a candidate (first match
+  // wins under the caller's ordering), e.g. `desc` → `describe`.
+  if (needle.length >= 3) {
+    const prefixHit = candidates.find((cand) => cand.startsWith(needle));
+    if (prefixHit) return prefixHit;
+  }
+  return undefined;
+}
+
+/**
  * Nearest known command to an unknown input, or `undefined` when nothing is
- * close enough to suggest confidently (issue #171). Two cheap, zero-dependency
- * signals: a small Levenshtein distance (≤ 2, and strictly under the input
- * length so a 1–2 char stub can't match half the table), or `input` being a
- * prefix of a command (≥ 3 chars, catching abbreviations like `desc` →
- * `describe` that edit distance alone would miss). The Levenshtein match wins
- * when both fire; a far-off input matches neither and yields no suggestion.
+ * close enough to suggest confidently (issue #171). See `closestMatch`.
  */
 export function closestCommand(
   input: string,
   commands: readonly string[] = KNOWN_COMMANDS,
 ): string | undefined {
-  const needle = input.trim().toLowerCase();
-  if (needle === '') return undefined;
-  // An exact command is not a typo to recover from (and never reaches the
-  // unknown-command path anyway) — never "suggest" the input back to itself.
-  if (commands.includes(needle)) return undefined;
+  return closestMatch(input, commands);
+}
 
-  let best: string | undefined;
-  let bestDist = Infinity;
-  for (const cmd of commands) {
-    const d = editDistance(needle, cmd);
-    if (d < bestDist) {
-      bestDist = d;
-      best = cmd;
-    }
-  }
-  // A close typo: within a small edit budget AND not so short that the distance
-  // swamps the input (keeps `x`/`ab` from matching an unrelated 2-letter alias).
-  if (best !== undefined && bestDist <= 2 && bestDist < needle.length) return best;
+/**
+ * Nearest existing shelf to a mistyped one, or `undefined` when none is close
+ * (issue #200). The shelf sibling of `closestCommand`: a mutation that names a
+ * shelf which was never created is almost always a typo, so — exactly as an
+ * unknown command points at the nearest real command — we point at the nearest
+ * real shelf. Purely advisory: it never auto-corrects. Callers pass the live
+ * shelf set, `listShelves(dir)` (already sorted, so ties resolve alphabetically).
+ */
+export function closestShelf(input: string, shelves: readonly string[]): string | undefined {
+  return closestMatch(input, shelves);
+}
 
-  // Otherwise an abbreviation: `input` is a prefix of a command (first match
-  // wins under the canonical-first ordering), e.g. `desc` → `describe`.
-  if (needle.length >= 3) {
-    const prefixHit = commands.find((cmd) => cmd.startsWith(needle));
-    if (prefixHit) return prefixHit;
-  }
-  return undefined;
+/**
+ * Guard a mutation (`vote`/`split`/`rm`/`move`) that names a shelf: if the shelf
+ * was never created, the op cannot run, but letting the core selector/empty
+ * throw call it an *empty* notebook mislabels a typo — and so sends an agent to
+ * seed a brand-new lesson onto the wrong (nonexistent) shelf, silently
+ * fragmenting memory across typo shelves (issue #200). Mirror `show`'s
+ * exists-vs-empty split (issue #166): say `no notebook for shelf "X"` and,
+ * unlike the generic empty-state error, point at the nearest existing shelf when
+ * one is close (did-you-mean). A shelf whose file exists but holds no lessons is
+ * NOT intercepted here — it still reaches the core "is empty" throw, so the #166
+ * distinction is preserved. Advisory only; keeps the `no_match` class (exit 1).
+ * An unsafe shelf name still throws `bad_args` first (via `notebookExists` →
+ * `shelfFile` → `assertSafeShelf`), exactly as the core call would.
+ */
+function requireExistingShelf(dir: string, shelf: string): void {
+  if (notebookExists(dir, shelf)) return;
+  const near = closestShelf(shelf, listShelves(dir));
+  const hint = near
+    ? ` — did you mean "${near}"? (run \`nb list\` to see existing shelves)`
+    : ' — run `nb list` to see existing shelves';
+  throw new NbError('no_match', `no notebook for shelf "${shelf}"${hint}`);
 }
 
 export async function runNbCli(
@@ -626,6 +673,7 @@ export async function runNbCli(
         shelf = need(args[1], 'shelf');
         const selector = need(args[2], 'id|query');
         const delta = parseDelta(need(args[3], '+1|-1'));
+        requireExistingShelf(dir, shelf);
         const r = await vote(dir, shelf, selector, delta);
         meta.entries = [entryId(r.text)];
         meta.outcome = delta > 0 ? 'up' : 'down';
@@ -656,6 +704,7 @@ export async function runNbCli(
         const selector = need(args[2], 'id|query');
         const lessonA = need(args[3], 'lessonA');
         const lessonB = need(args[4], 'lessonB');
+        requireExistingShelf(dir, shelf);
         const r = await split(dir, shelf, selector, lessonA, lessonB);
         const { reason, note } = normalizeReason('split', reasonArg, noteArg);
         // Log the source + both produced ids, the outcome, and the reason/note —
@@ -671,6 +720,7 @@ export async function runNbCli(
       case 'rm': {
         shelf = need(args[1], 'shelf');
         const selector = need(args[2], 'id|query');
+        requireExistingShelf(dir, shelf);
         const r = await remove(dir, shelf, selector);
         meta.entries = [entryId(r.text)];
         meta.outcome = 'removed';
@@ -692,6 +742,10 @@ export async function runNbCli(
         // leaves); the moved id is in `meta.entries`, so a reader sees which
         // lesson relocated even though the op spans two shelves.
         shelf = from;
+        // Only the SOURCE is guarded: `move` auto-creates the target like `add`,
+        // so a never-created target is intentional, but a never-created source is
+        // the same typo the core would mislabel "is empty" (issue #200).
+        requireExistingShelf(dir, from);
         const r = await move(dir, from, to, selector);
         meta.entries = [r.id];
         meta.outcome = r.reason === 'moved' ? 'moved' : 'move-blocked';

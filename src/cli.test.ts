@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runNbCli, settleCliExit, closestCommand, KNOWN_COMMANDS } from './cli.js';
+import { runNbCli, settleCliExit, closestCommand, closestShelf, KNOWN_COMMANDS } from './cli.js';
 import { entryId, parseUsage, usageFile } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
@@ -2453,6 +2453,148 @@ describe('closestCommand (did-you-mean, issue #171)', () => {
     for (const cmd of KNOWN_COMMANDS) {
       expect((await run([cmd])).code).not.toBe(2);
     }
+  });
+});
+
+describe('closestShelf (shelf did-you-mean, issue #200)', () => {
+  test('a one-edit typo resolves to the nearest existing shelf', () => {
+    expect(closestShelf('reviewr', ['patcher', 'reviewer'])).toBe('reviewer'); // deletion
+    expect(closestShelf('patchr', ['patcher', 'reviewer'])).toBe('patcher'); // deletion
+    expect(closestShelf('ptacher', ['patcher', 'reviewer'])).toBe('patcher'); // transposition (two edits)
+  });
+
+  test('the prefix branch resolves an abbreviation only at >= 3 chars', () => {
+    // `rev` is too far for an edit-distance match (distance 5 to `reviewer`), so
+    // ONLY the prefix branch can resolve it — pinning that the branch fires.
+    expect(closestShelf('rev', ['reviewer', 'patcher'])).toBe('reviewer');
+    // A 2-char input is below the length gate AND too far for an edit match, so
+    // it must NOT resolve — guards `>= 3` against a loosening mutation (`>= 1`),
+    // which would wrongly yield `reviewer` from its `re` prefix.
+    expect(closestShelf('re', ['reviewer', 'patcher'])).toBeUndefined();
+  });
+
+  test('a far-off, too-short, or empty-set input yields no suggestion', () => {
+    expect(closestShelf('frobnicate', ['patcher', 'reviewer'])).toBeUndefined();
+    expect(closestShelf('x', ['ab', 'cd'])).toBeUndefined(); // a lone char must not match
+    expect(closestShelf('anything', [])).toBeUndefined(); // no shelves exist yet
+    expect(closestShelf('', ['patcher'])).toBeUndefined();
+  });
+
+  test('the edit-distance budget is capped at <= 2 — a distance-3 input does not resolve', () => {
+    // `reviewing` is edit distance 3 from `reviewer` (long enough that the
+    // length-swamp guard passes) and is NOT a prefix of any candidate, so ONLY
+    // the `<= 2` gate can reject it. This pins the UPPER bound against a
+    // loosening mutation (`<= 2` → `<= 3`), which would wrongly yield `reviewer`.
+    // Mirrors the prefix-branch negative above, applied to the Levenshtein branch.
+    expect(closestShelf('reviewing', ['patcher', 'reviewer'])).toBeUndefined();
+  });
+
+  test('a match whose distance equals the input length does not resolve (length-swamp guard)', () => {
+    // `xy` is edit distance 2 from both `ab` and `cd` — i.e. distance === length.
+    // The strict `bestDist < needle.length` guard must reject it; this pins that
+    // strict `<` against a `<=` mutation, which would wrongly yield `ab`.
+    expect(closestShelf('xy', ['ab', 'cd'])).toBeUndefined();
+  });
+
+  test('an existing shelf name is not "suggested" as a correction of itself', () => {
+    expect(closestShelf('patcher', ['patcher', 'reviewer'])).toBeUndefined();
+  });
+
+  test('ties resolve to the earlier (already sorted) candidate', () => {
+    // `listShelves` returns a sorted list; `ax` sits one edit from both `aa` and
+    // `az`, and the strict `<` keeps the first — so the suggestion is stable.
+    expect(closestShelf('ax', ['aa', 'az'])).toBe('aa');
+  });
+});
+
+// Issue #200 — a mutation (vote/rm/split/move) on a shelf that was never created
+// must read as a typo ("no notebook"), with a nearest-shelf did-you-mean, NOT as
+// a real empty notebook ("is empty"). It extends the #166 exists-vs-empty split
+// (previously `show`-only) to the mutating commands, reusing the #171
+// closest-match pattern over shelf names.
+describe('mutations distinguish a missing shelf from an empty one (issue #200)', () => {
+  test('vote on a never-created shelf says "no notebook", not "is empty", and exits 1', async () => {
+    const r = await run(['vote', 'missingshelf', 'x', '+1']);
+    expect(r.code).toBe(1); // a mutation on nothing is still an error (unlike read-only `show`)
+    expect(r.err).toContain('no notebook for shelf "missingshelf"');
+    expect(r.err).not.toContain('is empty'); // the misleading message is gone
+  });
+
+  test('vote names the nearest existing shelf when one is close (did-you-mean)', async () => {
+    await run(['add', 'patcher', 'prefer execFileSync, array args']); // a real shelf to be near
+    const r = await run(['vote', 'pather', 'x', '+1']); // typo of `patcher`
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('no notebook for shelf "pather"');
+    expect(r.err).toContain('did you mean "patcher"?');
+  });
+
+  test('no shelf is suggested when none is close — the reader is pointed at `nb list`', async () => {
+    await run(['add', 'patcher', 'some lesson']); // exists but nowhere near the typo
+    const r = await run(['vote', 'zzzzzz', 'x', '+1']);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('no notebook for shelf "zzzzzz"');
+    expect(r.err).not.toContain('did you mean');
+    expect(r.err).toContain('nb list'); // still points the reader at how to find real shelves
+  });
+
+  test('an existing-but-empty shelf still reports "is empty" — the #166 distinction preserved', async () => {
+    await run(['describe', 'drafts', 'where half-baked lessons go']); // creates the file, no lessons
+    const r = await run(['vote', 'drafts', 'x', '+1']);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('notebook for shelf "drafts" is empty'); // the core empty throw still fires
+    expect(r.err).not.toContain('no notebook for shelf'); // NOT the missing-shelf path
+  });
+
+  test('rm/split/move on an existing-but-empty shelf also still report "is empty", not "no notebook"', async () => {
+    // The guard is shared, but pin every command so a future change that wrongly
+    // intercepted an existing-empty shelf for rm/split/move (not just vote) is
+    // caught. Each must fall through to the core "is empty" throw.
+    await run(['describe', 'drafts', 'where half-baked lessons go']); // existing file, no lessons
+    for (const argv of [
+      ['rm', 'drafts', 'x'],
+      ['split', 'drafts', 'x', 'half one', 'half two'],
+      ['move', 'drafts', 'target', 'x'], // `drafts` is the (empty) SOURCE
+    ]) {
+      const r = await run(argv);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('is empty'); // core empty throw, not the missing-shelf path
+      expect(r.err).not.toContain('no notebook for shelf');
+    }
+  });
+
+  test('rm and split on a never-created shelf take the same "no notebook" path', async () => {
+    const rm = await run(['rm', 'missingshelf', 'x']);
+    expect(rm.code).toBe(1);
+    expect(rm.err).toContain('no notebook for shelf "missingshelf"');
+    expect(rm.err).not.toContain('is empty');
+
+    const split = await run(['split', 'missingshelf', 'x', 'half one', 'half two']);
+    expect(split.code).toBe(1);
+    expect(split.err).toContain('no notebook for shelf "missingshelf"');
+    expect(split.err).not.toContain('is empty');
+  });
+
+  test('move guards the SOURCE shelf (never-created) but still auto-creates a new target', async () => {
+    // Missing source → the typo path.
+    const missingSrc = await run(['move', 'missingsrc', 'target', 'x']);
+    expect(missingSrc.code).toBe(1);
+    expect(missingSrc.err).toContain('no notebook for shelf "missingsrc"');
+    expect(missingSrc.err).not.toContain('is empty');
+
+    // A real source + a never-created target still succeeds: move creates the
+    // target like `add`, so the guard must NOT block a missing target.
+    await run(['add', 'patcher', 'relocate me']);
+    const ok = await run(['move', 'patcher', 'brandnewtarget', 'relocate me']);
+    expect(ok.code).toBe(0);
+    expect((await run(['show', 'brandnewtarget'])).out).toContain('relocate me');
+  });
+
+  test('a real-shelf mutation is unaffected — the guard only fires on a missing shelf', async () => {
+    await run(['add', 'patcher', 'alpha lesson']);
+    const r = await run(['vote', 'patcher', 'alpha', '+1']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('[+2] alpha lesson'); // vote landed and scored, exactly as before
+    expect(r.err).toBe('');
   });
 });
 
