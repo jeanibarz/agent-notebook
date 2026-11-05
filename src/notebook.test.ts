@@ -3489,10 +3489,57 @@ describe('search — the demoted keyword fallback (issue #82)', () => {
     expect(r.groups.map((g) => g.shelf)).toEqual(['withhit', 'desconly']); // hits first, desc-only last
   });
 
+  test('limit bounds the returned groups to the top-ranked N, after ranking (issue #186)', async () => {
+    // Three notebooks all match "lock" with an entry hit; relevance tie-breaks by
+    // shelf name, so the bounded set is the first N in that deterministic order.
+    await addEntry(dir, 'aaa', 'the lock is held');
+    await addEntry(dir, 'bbb', 'release the lock');
+    await addEntry(dir, 'ccc', 'lock contention');
+    const full = search(dir, 'lock');
+    expect(full.groups.map((g) => g.shelf)).toEqual(['aaa', 'bbb', 'ccc']);
+    const bounded = search(dir, 'lock', { limit: 2 });
+    expect(bounded.groups.map((g) => g.shelf)).toEqual(['aaa', 'bbb']); // top-2, same ranking
+  });
+
+  test('limit leaves total and surfacedIds on the FULL result; groups alone are bounded (#186, #114)', async () => {
+    await addEntry(dir, 'aaa', 'the lock is held');
+    await addEntry(dir, 'bbb', 'release the lock');
+    await addEntry(dir, 'ccc', 'lock contention');
+    const r = search(dir, 'lock', { limit: 1 });
+    expect(r.groups).toHaveLength(1); // only the display is capped
+    expect(r.total).toBe(3); // the gap-sensor still sees all three matches
+    // Every matching id is surfaced, including the two in the elided groups.
+    expect(r.surfacedIds.sort()).toEqual(
+      [entryId('the lock is held'), entryId('release the lock'), entryId('lock contention')].sort(),
+    );
+  });
+
+  test('limit 0 returns no groups yet still reports the match (total>0) — the gap-sensor stays intact', async () => {
+    await addEntry(dir, 'r', 'a stored lesson about locks');
+    const r = search(dir, 'locks', { limit: 0 });
+    expect(r.groups).toEqual([]); // nothing printed
+    expect(r.total).toBe(1); // but it WAS a match — a limit can never fabricate a no-match
+    expect(r.surfacedIds).toEqual([entryId('a stored lesson about locks')]);
+  });
+
+  test('a negative limit clamps to 0 (no groups), never a backwards slice', async () => {
+    await addEntry(dir, 'r', 'a stored lesson about locks');
+    const r = search(dir, 'locks', { limit: -5 });
+    expect(r.groups).toEqual([]);
+    expect(r.total).toBe(1);
+  });
+
+  test('omitting limit is unbounded — every matching notebook is returned', async () => {
+    for (const shelf of ['a', 'b', 'c', 'd', 'e']) await addEntry(dir, shelf, 'lock lesson');
+    const r = search(dir, 'lock');
+    expect(r.groups).toHaveLength(5);
+    expect(r.total).toBe(5);
+  });
+
   test('an empty / whitespace query yields no terms and no groups (never throws)', async () => {
     await addEntry(dir, 'r', 'something');
-    expect(search(dir, '   ')).toEqual({ terms: [], groups: [] });
-    expect(search(dir, '')).toEqual({ terms: [], groups: [] });
+    expect(search(dir, '   ')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [] });
+    expect(search(dir, '')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [] });
   });
 
   test('no match returns an empty group list (the gap-sensor case)', async () => {

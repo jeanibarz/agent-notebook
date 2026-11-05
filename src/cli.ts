@@ -14,7 +14,7 @@
 //   nb move   <from> <to> <id|query>        relocate an entry across shelves, score intact
 //   (add/vote/rm/merge/move take --json: one structured result object on stdout)
 //   nb describe <shelf> ["<text>"]          set the notebook's one-line description (or print it)
-//   nb search <query> [prefix] [--any]     SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
+//   nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
 //   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport; --exit-code = exit 3 when anomalies present)
 //   nb path   [<shelf> | --usage] [--json]   print the notebooks dir, a shelf's file path, or the usage-log path (--json = {dir, shelf, path} object)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
@@ -71,6 +71,16 @@ import {
  */
 const LIST_DEFAULT_LIMIT = 50;
 
+/**
+ * Default notebook-group cap for `nb search` when `--limit` is not given (issue
+ * #186). Mirrors `LIST_DEFAULT_LIMIT`: search groups ARE notebooks, so the same
+ * generous bound keeps a normal result set whole while capping a common term (or
+ * `--any`) that would otherwise dump every notebook on a large deployment. The
+ * bound shapes only what is printed — the gap-sensor outcome and #114 surfacing
+ * provenance are always computed on the full, unbounded result.
+ */
+const SEARCH_DEFAULT_LIMIT = 50;
+
 const HELP = `nb — the Agent Notebook (bounded, voted memory, grouped in shelves)
 
 For developers who run AI agents and want them to carry a few durable lessons across runs.
@@ -85,7 +95,7 @@ usage:
   nb rm     <shelf> <id|query>             delete an entry
   nb move   <from> <to> <id|query>         move an entry to another shelf, keeping its score (consolidate shelves)
   nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print the current one)
-  nb search <query> [prefix] [--any]      SECONDARY keyword fallback — scan all notebooks (surfacing is the primary path)
+  nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback — scan all notebooks (surfacing is the primary path)
   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
   nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's resolved file path (--json emits a {dir, shelf, path} object)
   nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
@@ -160,7 +170,10 @@ notes:
     the query's terms — no embeddings or semantic ranking): it scans every notebook's lessons and
     descriptions, AND-over-terms by default (\`--any\` for OR), and groups the hits by notebook,
     most-relevant-first, printing each lesson's id so you can \`vote\` it later. A bare \`prefix\` scopes
-    by name (the \`.\` convention, e.g. \`nb search lock review.\`); \`--json\` emits the raw SearchResult.
+    by name (the \`.\` convention, e.g. \`nb search lock review.\`); \`--limit N\` bounds the notebook groups
+    (default ${SEARCH_DEFAULT_LIMIT}, like \`nb list\`) so a common term can't dump every notebook — the header then
+    reads "N of total"; \`--json\` emits the raw SearchResult. The limit shapes only what is shown: a
+    \`failed-search\` coverage gap and the surfaced-id provenance are always computed on the full result.
     A search that finds nothing is also a signal: it is logged so a later \`add\` in the same session
     reads back as a \`failed-search\` coverage gap in \`nb stats\`.
   - \`nb stats\` also surfaces free *diagnostic signals* read straight from the usage log (no
@@ -571,10 +584,25 @@ export async function runNbCli(
         // out the boolean `--any` (OR instead of AND), leaving the query at
         // args[1] and an optional positional name prefix at args[2].
         const any = args.includes('--any');
-        const searchArgs = any ? args.filter((a) => a !== '--any') : args;
+        const withoutAny = any ? args.filter((a) => a !== '--any') : args;
+        // Pull out `--limit N` BEFORE reading positionals, so its value token is
+        // never mistaken for the name prefix. Forgiving parse, identical to
+        // `list`: an unparseable value warns on stderr (stdout/JSON stays clean)
+        // and falls back to the default rather than rejecting.
+        const { value: limitRaw, rest: searchArgs } = extractOption(withoutAny, '--limit');
+        let limit = SEARCH_DEFAULT_LIMIT;
+        if (limitRaw !== undefined) {
+          if (/^\d+$/.test(limitRaw.trim())) {
+            limit = Number.parseInt(limitRaw, 10);
+          } else {
+            process.stderr.write(
+              `nb ${cmd}: unrecognized --limit '${limitRaw}' (use a non-negative integer); showing ${SEARCH_DEFAULT_LIMIT}\n`,
+            );
+          }
+        }
         const query = need(searchArgs[1], 'query');
         const prefix = searchArgs[2]; // optional positional prefix (undefined → all notebooks)
-        const result = search(dir, query, { prefix, any });
+        const result = search(dir, query, { prefix, any, limit });
         // Log the search so the `failed-search → add` gap-sensor can read it back:
         // outcome `match`/`no-match` plus the query in `note` (no new log column).
         // A no-match is NOT an error — the command succeeded, it just found
@@ -582,7 +610,9 @@ export async function runNbCli(
         // with no searchable terms (e.g. all whitespace) is logged as `no-terms`,
         // NOT `no-match`, so an empty query can never masquerade as a coverage gap
         // (the `failed-search` signal keys on `no-match`) — DP-5, never mislead.
-        meta.outcome = result.terms.length === 0 ? 'no-terms' : result.groups.length > 0 ? 'match' : 'no-match';
+        // `result.total` is the FULL pre-`limit` match count, so `--limit` (even
+        // `0`) never flips a real match into a `no-match` coverage gap (issue #186).
+        meta.outcome = result.terms.length === 0 ? 'no-terms' : result.total > 0 ? 'match' : 'no-match';
         meta.note = query;
         // Record WHICH entry ids this search surfaced (issue #114 — surfacing
         // provenance). Reuses the existing `entries` column (no new column), so a
@@ -592,7 +622,9 @@ export async function runNbCli(
         // so `entries` stays empty and the `failed-search → add` gap-sensor is
         // untouched. The loop anomaly detector deliberately keeps treating a
         // `search` as entry-less (see `stats()`), so this does not change it.
-        meta.entries = result.groups.flatMap((g) => g.hits.map((h) => h.id));
+        // `surfacedIds` is the FULL pre-`limit` set, so the provenance (and the
+        // serendipity proxy that joins on it) stays independent of `--limit`.
+        meta.entries = result.surfacedIds;
         if (json) {
           process.stdout.write(JSON.stringify(result) + '\n');
         } else {
@@ -908,20 +940,29 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
 function renderSearch(query: string, any: boolean, result: SearchResult): { out: string; err: string } {
   const mode = any ? 'OR' : 'AND';
   if (result.groups.length === 0) {
-    // Distinguish "no searchable terms" from "searched, found nothing" — only the
-    // latter is the logged gap signal.
+    // Three distinct empty renders, only ONE of which is the logged coverage gap.
+    // Key the gap message on `result.total` (the FULL pre-limit count), NOT on the
+    // bounded `groups.length`: otherwise `--limit 0` on a real match would print
+    // "no lessons match … recorded as a possible coverage gap" while the usage log
+    // correctly recorded a `match` — telling the user the opposite of the truth.
     const err =
       result.terms.length === 0
         ? `nb search: no searchable terms in "${query}"\n`
-        : `no lessons match "${query}" (${mode}) — search is the secondary path (lessons are surfaced to you, ` +
-          `not searched); this miss was recorded as a possible coverage gap\n`;
+        : result.total === 0
+          ? `no lessons match "${query}" (${mode}) — search is the secondary path (lessons are surfaced to you, ` +
+            `not searched); this miss was recorded as a possible coverage gap\n`
+          : `${result.total} notebook${result.total === 1 ? '' : 's'} match "${query}" (${mode}) but --limit hid them all — ` +
+            `raise --limit to see them (this was a match, not a coverage gap)\n`;
     return { out: '', err };
   }
   const hitCount = result.groups.reduce((n, g) => n + g.hits.length, 0);
   const nbCount = result.groups.length;
+  // When `--limit` truncated the groups, read "N of total" like `nb list`, so the
+  // caller can tell the result was capped (and widen `--limit` if they need more).
+  const nbClause = nbCount < result.total ? `${nbCount} of ${result.total}` : `${nbCount}`;
   const lines = [
     `agent-notebook search — "${query}" (${mode} over ${result.terms.length} term${result.terms.length === 1 ? '' : 's'}): ` +
-      `${hitCount} hit${hitCount === 1 ? '' : 's'} in ${nbCount} notebook${nbCount === 1 ? '' : 's'} ` +
+      `${hitCount} hit${hitCount === 1 ? '' : 's'} in ${nbClause} notebook${result.total === 1 ? '' : 's'} ` +
       `(secondary fallback — lessons are normally surfaced to you, not searched)`,
   ];
   for (const g of result.groups) {

@@ -1225,13 +1225,36 @@ export interface SearchOptions {
   prefix?: string;
   /** OR-over-terms instead of the default AND (a hit needs every term). */
   any?: boolean;
+  /**
+   * Cap the number of notebook `groups` returned, after ranking — so `search`
+   * stays bounded as notebooks grow, exactly as `--limit` bounds `nb list`
+   * (issue #186). Absent → unbounded (the CLI supplies its own default). A
+   * negative value clamps to `0`. Only `groups` is bounded: `total` and
+   * `surfacedIds` are always the FULL pre-limit result, so the limit never
+   * perturbs the gap-sensor outcome or #114 surfacing provenance.
+   */
+  limit?: number;
 }
 
 export interface SearchResult {
   /** The lowercased, whitespace-split query terms actually searched; empty when the query had no word tokens. */
   terms: string[];
-  /** Matching notebooks, most-relevant-first (by their best hit); description-only matches sort last. Empty on no match. */
+  /** Matching notebooks, most-relevant-first (by their best hit); description-only matches sort last. Bounded to `opts.limit` (issue #186); empty on no match. */
   groups: SearchGroup[];
+  /**
+   * Total matching notebooks BEFORE `limit` (mirrors `NotebookListing.total`).
+   * The `failed-search → add` gap-sensor keys on `total > 0`, NOT on
+   * `groups.length`, so a small `--limit` (even `0`) can never flip a real
+   * match into a `no-match` in the usage log (issue #186, preserving #114).
+   */
+  total: number;
+  /**
+   * Every entry id surfaced across the FULL pre-`limit` result, best-first —
+   * the #114 surfacing provenance the usage log records. Kept on the full
+   * result so the serendipity proxy stays independent of the display `limit`
+   * and keeps its documented conservative (one-sided) bias (issue #186).
+   */
+  surfacedIds: string[];
 }
 
 /**
@@ -1253,7 +1276,7 @@ export interface SearchResult {
  */
 export function search(dir: string, query: string, opts: SearchOptions = {}): SearchResult {
   const terms = query.toLowerCase().split(/\s+/).filter((t) => t !== '');
-  if (terms.length === 0) return { terms: [], groups: [] };
+  if (terms.length === 0) return { terms: [], groups: [], total: 0, surfacedIds: [] };
   const prefix = opts.prefix ?? '';
   const needAll = !opts.any;
   const isHit = (matched: number): boolean => (needAll ? matched === terms.length : matched >= 1);
@@ -1292,7 +1315,15 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
     const bs = b.hits.length ? b.hits[0].score : -Infinity;
     return bm - am || bs - as || a.shelf.localeCompare(b.shelf);
   });
-  return { terms, groups };
+
+  // The gap-sensor outcome (`total`) and #114 surfacing provenance
+  // (`surfacedIds`) are computed on the FULL ranked result; only the returned
+  // `groups` are bounded. So `--limit 0` still reports a `match` and still
+  // records which ids the query reached — the limit shapes output, never the log.
+  const total = groups.length;
+  const surfacedIds = groups.flatMap((g) => g.hits.map((h) => h.id));
+  const bounded = opts.limit != null ? groups.slice(0, Math.max(0, opts.limit)) : groups;
+  return { terms, groups: bounded, total, surfacedIds };
 }
 
 // ---------------------------------------------------------------------------

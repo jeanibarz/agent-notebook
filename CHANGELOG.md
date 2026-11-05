@@ -10,6 +10,18 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb search --limit N` bounds results like `nb list` (FR-SEARCH-001 / #186).** `nb list`
+  takes `--limit` (default 50) so the index stays flat as notebooks grow, but `nb search` had no
+  result bound — a common term (or `--any`) on a many-shelf deployment dumped every matching
+  notebook's hits to stdout, the exact "discovery cost grows with the corpus" problem. `search()`
+  now takes an optional `limit` that bounds the returned notebook **groups** after ranking, and the
+  `search` CLI case parses `--limit` with the same forgiving semantics as `list` (a bad value warns
+  on stderr and falls back to the default `50`); the human header then reads `N of total notebooks`.
+  The bound shapes only what is returned/printed: `SearchResult` now also carries `total` (the full
+  pre-limit match count) and `surfacedIds` (every id surfaced across the full result), and the
+  `failed-search` gap-sensor outcome and the `#114` surfacing provenance are computed on that full
+  result — so a small `--limit` (even `0`) can never turn a real `match` into a `no-match` coverage
+  gap. `--json` reflects the bounded `groups` plus the two full-result fields.
 - **`nb path --usage` prints the resolved usage-log path (FR-PATH-001 / #169).** `nb path`
   exposed the notebooks dir and `<shelf>.md` paths but nothing printed the usage-log path, so a
   supervisor had to hard-code `$NB_DIR/.nb-usage.log` to tail or back it up — the same coupling

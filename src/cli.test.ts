@@ -1676,6 +1676,71 @@ describe('nb search — the demoted keyword fallback (issue #82)', () => {
     expect(parsed.groups[0].hits[0].id).toBe(entryId('run the build before vitest'));
   });
 
+  test('--limit N bounds the printed notebook groups and the header reads "N of total" (issue #186)', async () => {
+    await run(['add', 'aaa', 'the lock is held']);
+    await run(['add', 'bbb', 'release the lock']);
+    await run(['add', 'ccc', 'lock contention']);
+    const r = await run(['search', 'lock', '--limit', '2']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('in 2 of 3 notebooks'); // capped, and says so
+    expect(r.out).toContain('aaa'); // top-2 by the deterministic ranking
+    expect(r.out).toContain('bbb');
+    expect(r.out).not.toContain('\n  ccc'); // the third group is elided
+  });
+
+  test('--limit never turns a real match into a no-match gap, and surfaced ids stay full (#186, #114)', async () => {
+    await run(['add', 'aaa', 'the lock is held']);
+    await run(['add', 'bbb', 'release the lock']);
+    await run(['add', 'ccc', 'lock contention']);
+    // A limit smaller than the match count — even 0 — must still log a `match`.
+    await run(['search', 'lock', '--limit', '0']);
+    const row = parseUsage(dir).filter((x) => x.command === 'search').at(-1)!;
+    expect(row.outcome).toBe('match'); // the gap-sensor is computed on the FULL result
+    expect(row.entries.sort()).toEqual(
+      [entryId('the lock is held'), entryId('release the lock'), entryId('lock contention')].sort(),
+    );
+  });
+
+  test('--limit 0 that hides a real match reports "matched but hidden", NOT a coverage gap', async () => {
+    await run(['add', 'reviewer', 'a lesson about locks']);
+    const r = await run(['search', 'locks', '--limit', '0']);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(''); // nothing printed — all groups hidden
+    // The stderr note must NOT emit the real gap message (it WAS a match, logged as `match`).
+    expect(r.err).not.toContain('recorded as a possible coverage gap');
+    expect(r.err).toMatch(/1 notebook match(es)? "locks".*but --limit hid them all/);
+  });
+
+  test('--json reflects the bounded group set while total/surfacedIds stay on the full result (issue #186)', async () => {
+    await run(['add', 'aaa', 'the lock is held']);
+    await run(['add', 'bbb', 'release the lock']);
+    await run(['add', 'ccc', 'lock contention']);
+    const r = await run(['search', 'lock', '--limit', '1', '--json']);
+    expect(r.code).toBe(0);
+    const parsed = JSON.parse(r.out);
+    expect(parsed.groups).toHaveLength(1); // bounded
+    expect(parsed.total).toBe(3); // full match count
+    expect(parsed.surfacedIds).toHaveLength(3); // full provenance
+  });
+
+  test('an unparseable --limit warns on stderr and falls back to the default (like `list`)', async () => {
+    await run(['add', 'reviewer', 'a lesson about locks']);
+    const r = await run(['search', 'locks', '--limit', 'abc']);
+    expect(r.code).toBe(0);
+    expect(r.err).toMatch(/unrecognized --limit 'abc'.*showing 50/); // names the default it fell back to
+    expect(r.out).toContain('reviewer'); // still shown with the default bound
+  });
+
+  test('--limit composes with --any and a positional prefix without being read as the prefix', async () => {
+    await run(['add', 'review.security', 'sanitize the lock input']);
+    await run(['add', 'review.perf', 'cache the lock lookup']);
+    await run(['add', 'patcher', 'the lock is a spinlock']);
+    const r = await run(['search', 'lock', 'review.', '--any', '--limit', '1']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('in 1 of 2 notebooks'); // scoped to review.*, then bounded to 1
+    expect(r.out).not.toContain('patcher'); // prefix still scoped, not swallowed by --limit
+  });
+
   test('the search is logged with a match/no-match outcome and the query in note (the gap-sensor row)', async () => {
     await run(['add', 'reviewer', 'a lesson about caching']);
     await run(['search', 'caching']);

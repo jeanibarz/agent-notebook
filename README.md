@@ -158,7 +158,7 @@ nb split  <shelf> <id|query> "<a>" "<b>" cut one overloaded entry into two (reve
 nb rm     <shelf> <id|query>             delete an entry
 nb move   <from> <to> <id|query>         move an entry to another shelf, keeping its score (consolidate shelves)
 nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print it)
-nb search <query> [prefix] [--any]      SECONDARY keyword fallback — scan all notebooks (surfacing is primary)
+nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback — scan all notebooks (surfacing is primary)
 nb stats  [<shelf>] [--since 7d] [--json] usage analytics + anomaly/diagnostic flags + surfacing metrics (--json emits the raw StatsReport)
 nb path   [<shelf> | --usage]            print the notebooks dir, a shelf's resolved file path, or (--usage) the usage-log path
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lessons, description)
@@ -329,7 +329,7 @@ agent-notebook search — "build vitest" (AND over 2 terms): 1 hit in 1 notebook
     d7497d  [+1]  run the build before vitest
 ```
 
-A bare `prefix` scopes by name (`nb search lock review.`), and `--json` emits the raw `SearchResult` (`{ terms, groups[] }`).
+A bare `prefix` scopes by name (`nb search lock review.`). `--limit N` bounds the notebook groups (default 50, like [`nb list`](#discovering-notebooks--nb-list)) so a common term can't dump every notebook — the header then reads `N of total notebooks`, and a bad value warns on stderr and falls back to the default. The limit shapes only what is shown: the `failed-search` coverage-gap signal and the surfaced-id provenance are always computed on the full result, so a small `--limit` never turns a real match into a recorded gap. `--json` emits the raw `SearchResult` (`{ terms, groups[], total, surfacedIds[] }`), where `groups` is the bounded set and `total` / `surfacedIds` are the full pre-limit result.
 
 **A failed search is itself a signal.** When a search finds nothing it is not an error (exit 0) — it is logged (with your query), so that if you then `add` a lesson in the same session, `nb stats` reads the pair back as a **`failed-search`** diagnostic signal: a coverage gap the notebook did not hold, labelled by your own query. High search volume for a topic is exactly where *surfacing* is failing for that topic, and you flag it for free just by using the tool.
 
