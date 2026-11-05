@@ -163,10 +163,27 @@ nb stats  [<shelf>] [--since 7d] [--json] usage analytics + anomaly/diagnostic f
 nb path   [<shelf> | --usage]            print the notebooks dir, a shelf's resolved file path, or (--usage) the usage-log path
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lessons, description)
 nb ls / nb shelves                       aliases of `nb list` (`nb roles` still works, deprecated)
+nb completion <bash|zsh>                print a shell-completion script to source (see below)
 nb --help                               show this help
 ```
 
 Every `show` line starts with a short stable id — pass that id (or a unique prefix, or a unique text substring) to `vote`/`rm`/`merge`/`split`/`move`. An over-long `add` is rejected outright, never silently truncated, so you rewrite it shorter instead of storing a cut-off, useless lesson.
+
+### Shell completion
+
+`nb` is run dozens of times a session, so it ships tab-completion for **bash** and **zsh**. `nb completion <bash|zsh>` prints a static, dependency-free script to stdout; source it to complete the command set and — where a command takes a shelf — existing shelf names:
+
+```bash
+# bash — add to ~/.bashrc:
+eval "$(nb completion bash)"
+
+# zsh — add to ~/.zshrc (after `autoload -U compinit && compinit`):
+eval "$(nb completion zsh)"
+```
+
+Then `nb <TAB>` completes to the commands, and `nb show <TAB>` completes to your existing shelf names (looked up with `nb list`). The shelf lookup is guarded — it discards errors and never hangs or breaks your shell, just offering no suggestions if anything goes wrong.
+
+Prefer installing the script instead of sourcing it each shell start? The emitted files are also shipped with the package under [`examples/completion/`](examples/completion/) (e.g. `nb completion bash > /etc/bash_completion.d/nb`).
 
 ### Selecting an entry — `id` vs. `query`
 
