@@ -141,7 +141,7 @@ you can `git diff` and `git revert`.
 ```sh
 cd "$(nb path)"          # the notebooks directory (NB_DIR)
 git init
-printf '%s\n' '.nb-usage.log' '.nb.lock' '*.tmp' '.retro-*' '.nb-backup.log*' > .gitignore
+printf '%s\n' '.nb-usage.log*' '.nb.lock' '*.tmp' '.retro-*' '.nb-backup.*' > .gitignore
 git add -A && git commit -m "init agent-notebook store"
 ```
 
