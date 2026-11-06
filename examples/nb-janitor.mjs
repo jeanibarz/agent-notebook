@@ -169,6 +169,15 @@ function readUsage(dir) {
 }
 
 // ---- git history (optional) ----------------------------------------------
+// gitHistory distinguishes three outcomes so section 4 can report them apart:
+//   null         — NB_DIR is not a git repo (no .git); growth trends unavailable
+//                  because versioning is simply not enabled.
+//   GIT_FAILED   — .git exists but `git log` failed (its 5s timeout on a huge
+//                  repo, git's "dubious ownership" refusal on a shared host, a
+//                  corrupt repo, or git missing from PATH). The repo IS versioned;
+//                  the tool just could not read it this run.
+//   Commit[]     — history read successfully (possibly empty).
+const GIT_FAILED = Symbol('git-failed');
 function gitHistory(dir, days) {
   if (!existsSync(join(dir, '.git'))) return null;
   try {
@@ -188,7 +197,7 @@ function gitHistory(dir, days) {
       });
     return commits;
   } catch {
-    return null;
+    return GIT_FAILED;
   }
 }
 
@@ -264,7 +273,7 @@ lessonDups.sort((x, y) => y.sim - x.sim);
 
 // 4) volume over time & silence
 let volume = null;
-if (history) {
+if (Array.isArray(history)) {
   const byDay = {};
   const byCmd = {};
   for (const c of history) {
@@ -499,6 +508,8 @@ if (volume)
         ? ` — ${Object.entries(volume.byCmd).map(([k, v]) => `${k}:${v}`).join('  ')}`
         : ''),
   );
+else if (history === GIT_FAILED)
+  out.push('  (git history unavailable — git failed, timed out, or refused access (dubious ownership / corrupt repo / git not on PATH); NB_DIR is versioned but could not be read this run)');
 else out.push('  (NB_DIR is not a git repo — enable git-versioning for growth trends: harness-setup.md#git-versioning)');
 if (report.usageRows === 0) out.push('  (no usage log yet — set NB_SESSION and use the notebooks to populate it)');
 if (silentShelves.length === 0) out.push('  ✅ no shelf has gone silent in the window.');
