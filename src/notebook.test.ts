@@ -4069,6 +4069,122 @@ describe('single-pass shelf read — list/search/show read each file once (issue
   });
 });
 
+describe('single shelf read per mutation — add/vote/voteMany/merge/split read the file once (issue #251)', () => {
+  // The mutation hot path used to read each shelf twice: once for entries
+  // (readEntries) and again for the metadata block inside writeEntries
+  // (readMetaLines). Reading once via readShelf and passing metaLines through
+  // collapses that to a single read, exactly as remove() already did (issue #209).
+  // These tests pin BOTH halves of the fix: one shelf read per mutation, and a
+  // byte-for-byte-preserved metadata block (no observable behavior change).
+
+  // Count readFileSync hits per `<shelf>.md`. Only shelf files end in `.md`; the
+  // usage log and its `.count` sidecar never match, so this isolates the per-shelf
+  // disk reads the issue targets.
+  const countShelfReads = (reads: string[]): Record<string, number> => {
+    const counts: Record<string, number> = {};
+    for (const p of reads) {
+      const m = /([^/\\]+)\.md$/.exec(p);
+      if (m) counts[m[1]] = (counts[m[1]] ?? 0) + 1;
+    }
+    return counts;
+  };
+
+  // Run `fn` with the readFileSync spy on, returning its result and read paths.
+  const withReadSpy = async <T>(fn: () => T | Promise<T>): Promise<{ result: T; reads: string[] }> => {
+    fsHook.reads = [];
+    try {
+      const result = await fn();
+      return { result, reads: fsHook.reads! };
+    } finally {
+      fsHook.reads = null;
+    }
+  };
+
+  // The shelf file's leading `# key:` metadata block as raw bytes (every line up
+  // to the first non-metadata line) — what a mutation must round-trip untouched.
+  const metaBlock = (shelf: string): string => {
+    const out: string[] = [];
+    for (const line of readFileSync(join(dir, `${shelf}.md`), 'utf-8').split('\n')) {
+      if (line.startsWith('# ')) out.push(line);
+      else break;
+    }
+    return out.join('\n');
+  };
+
+  // Seed a shelf with a TWO-line metadata block (a known `# desc:` key plus an
+  // unknown `# owner:` key, to exercise the forward-compatible round-trip of an
+  // unrecognized key) AND real entries, so both the metadata and the entries read
+  // have work to do — the double read the old code paid on every mutation.
+  const seed = async (shelf: string, ...lessons: string[]): Promise<void> => {
+    for (const l of lessons) await addEntry(dir, shelf, l);
+    await setDescription(dir, shelf, `when working on ${shelf}`);
+    const file = join(dir, `${shelf}.md`);
+    // Prepend an unknown metadata key by hand (setDescription only writes `# desc:`).
+    writeFileSync(file, '# owner: alice\n' + readFileSync(file, 'utf-8'), 'utf-8');
+  };
+
+  test('addEntry reads the shelf once and preserves the metadata block', async () => {
+    await seed('add', 'first add lesson');
+    const meta = metaBlock('add');
+    expect(meta).toBe('# owner: alice\n# desc: when working on add');
+    const { result, reads } = await withReadSpy(() => addEntry(dir, 'add', 'a brand new lesson'));
+    expect(result.added).toBe(true);
+    expect(result.size).toBe(2); // the new lesson joined the seeded one
+    expect(countShelfReads(reads)).toEqual({ add: 1 }); // one read, not two
+    expect(metaBlock('add')).toBe(meta); // byte-for-byte metadata round-trip
+    // The new lesson is on disk alongside the original — behavior is unchanged.
+    expect(readEntries(dir, 'add').map((e) => e.text)).toEqual(['first add lesson', 'a brand new lesson']);
+  });
+
+  test('vote reads the shelf once and preserves the metadata block', async () => {
+    await seed('vote', 'a votable lesson');
+    const meta = metaBlock('vote');
+    const { result, reads } = await withReadSpy(() => vote(dir, 'vote', 'a votable lesson', 1));
+    expect(result).toEqual({ text: 'a votable lesson', score: 2 }); // +1 applied
+    expect(countShelfReads(reads)).toEqual({ vote: 1 });
+    expect(metaBlock('vote')).toBe(meta);
+    // Re-read from disk: the bumped score must have been PERSISTED, not just
+    // returned (a return-value-only check can't see a write that dropped it).
+    expect(readEntries(dir, 'vote')).toEqual([{ score: 2, text: 'a votable lesson' }]);
+  });
+
+  test('voteMany reads the shelf once and preserves the metadata block', async () => {
+    await seed('votemany', 'lesson one', 'lesson two');
+    const meta = metaBlock('votemany');
+    const { result, reads } = await withReadSpy(() => voteMany(dir, 'votemany', ['lesson one', 'lesson two'], 1));
+    expect(result.map((r) => r.score)).toEqual([2, 2]); // both bumped under one read+write
+    expect(countShelfReads(reads)).toEqual({ votemany: 1 });
+    expect(metaBlock('votemany')).toBe(meta);
+    // Both bumped scores must be PERSISTED (not just reported), with the touched
+    // entries kept in their fresh-end order.
+    expect(readEntries(dir, 'votemany')).toEqual([
+      { score: 2, text: 'lesson one' },
+      { score: 2, text: 'lesson two' },
+    ]);
+  });
+
+  test('merge reads the shelf once and preserves the metadata block', async () => {
+    await seed('merge', 'alpha lesson', 'beta lesson');
+    const meta = metaBlock('merge');
+    const { result, reads } = await withReadSpy(() => merge(dir, 'merge', 'alpha lesson', 'beta lesson', 'merged lesson'));
+    expect(result.added).toBe(true);
+    expect(result.size).toBe(1); // 2 → 1
+    expect(countShelfReads(reads)).toEqual({ merge: 1 });
+    expect(metaBlock('merge')).toBe(meta);
+    expect(readEntries(dir, 'merge').map((e) => e.text)).toEqual(['merged lesson']);
+  });
+
+  test('split reads the shelf once and preserves the metadata block', async () => {
+    await seed('split', 'overloaded lesson');
+    const meta = metaBlock('split');
+    const { result, reads } = await withReadSpy(() => split(dir, 'split', 'overloaded lesson', 'first half', 'second half'));
+    expect(result.size).toBe(2); // 1 → 2
+    expect(countShelfReads(reads)).toEqual({ split: 1 });
+    expect(metaBlock('split')).toBe(meta);
+    expect(readEntries(dir, 'split').map((e) => e.text)).toEqual(['first half', 'second half']);
+  });
+});
+
 describe('shelf terminology (role kept as a deprecated alias)', () => {
   test('listShelves is the same function as the deprecated listRoles', async () => {
     expect(listRoles).toBe(listShelves);

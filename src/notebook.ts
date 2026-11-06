@@ -580,14 +580,17 @@ export function readShelf(dir: string, shelf: string): ShelfContents {
 
 /**
  * Write a notebook, preserving its leading metadata block. `metaLines` lets a
- * caller that is itself changing the metadata (e.g. `setDescription`) pass the
- * new block; every other mutation omits it, so the existing block is re-read
- * from disk under the lock and re-emitted unchanged — which is how the
- * description round-trips through `add`/`vote`/`merge`/`split`/`rm`. The metadata
- * leads the file; the entries follow in recency order — least-recently-touched
- * first, a touch moving its entry to the end ([DP-3]). A file with
- * metadata but no entries is still written (its block survives an emptied
- * notebook), and only a notebook with neither becomes the empty string.
+ * caller pass the block through instead of having it re-read here: a caller that
+ * is itself changing the metadata (e.g. `setDescription`) passes the new block,
+ * and every single-shelf mutation (`add`/`vote`/`merge`/`split`/`rm`) passes the
+ * block it already read via `readShelf`, so the mutation reads the shelf once
+ * rather than twice (issue #251). A caller that omits it (e.g. `move`, which
+ * writes two shelves) falls back to re-reading the existing block from disk under
+ * the lock and re-emitting it unchanged. Either way the description round-trips
+ * byte-for-byte. The metadata leads the file; the entries follow in recency order
+ * — least-recently-touched first, a touch moving its entry to the end ([DP-3]). A
+ * file with metadata but no entries is still written (its block survives an
+ * emptied notebook), and only a notebook with neither becomes the empty string.
  */
 function writeEntries(dir: string, shelf: string, entries: Entry[], metaLines?: string[]): void {
   const file = shelfFile(dir, shelf);
@@ -743,7 +746,9 @@ export interface AddResult {
 export function addEntry(dir: string, shelf: string, lesson: string): Promise<AddResult> {
   return withLock(dir, () => {
     const text = sanitizeLesson(lesson);
-    const entries = readEntries(dir, shelf);
+    // One scan for entries AND the metadata block, passed through to writeEntries
+    // below so the mutation reads the shelf once, not twice (issue #251).
+    const { metaLines, entries } = readShelf(dir, shelf);
     if (text === '') return { added: false, reason: 'empty', evicted: null, size: entries.length };
     const id = entryId(text);
     const cap = maxChars();
@@ -788,7 +793,7 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     // Newcomer is protected: a full notebook admits it, ages its stalest line,
     // and evicts the lowest-scored one (never the newcomer). See enforceCap.
     const { kept, evicted } = enforceCap(entries, 1);
-    writeEntries(dir, shelf, kept);
+    writeEntries(dir, shelf, kept, metaLines);
     return {
       added: true,
       reason: 'added',
@@ -870,7 +875,9 @@ export interface VoteResult {
 export function vote(dir: string, shelf: string, selector: string, delta: number): Promise<VoteResult> {
   return withLock(dir, () => {
     if (delta !== 1 && delta !== -1) throw new NbError('bad_args', 'vote delta must be +1 or -1');
-    const entries = readEntries(dir, shelf);
+    // One scan for entries AND the metadata block, passed through to writeEntries
+    // below so the mutation reads the shelf once, not twice (issue #251).
+    const { metaLines, entries } = readShelf(dir, shelf);
     if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     entries[idx].score += delta;
@@ -880,7 +887,7 @@ export function vote(dir: string, shelf: string, selector: string, delta: number
     // a lesson an eviction target, so moving it to fresh never shields it.
     const [touched] = entries.splice(idx, 1);
     entries.push(touched);
-    writeEntries(dir, shelf, entries);
+    writeEntries(dir, shelf, entries, metaLines);
     return { text: touched.text, score: touched.score };
   });
 }
@@ -917,7 +924,9 @@ export function voteMany(dir: string, shelf: string, selectors: string[], delta:
   return withLock(dir, () => {
     if (delta !== 1 && delta !== -1) throw new NbError('bad_args', 'vote delta must be +1 or -1');
     if (selectors.length === 0) throw new NbError('bad_args', 'vote needs at least one id');
-    const entries = readEntries(dir, shelf);
+    // One scan for entries AND the metadata block, passed through to writeEntries
+    // below so the mutation reads the shelf once, not twice (issue #251).
+    const { metaLines, entries } = readShelf(dir, shelf);
     if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const results: VoteManyItem[] = [];
     // Resolve every selector against the ORIGINAL array first (indices are only
@@ -952,7 +961,7 @@ export function voteMany(dir: string, shelf: string, selectors: string[], delta:
     }
     const rest = entries.filter((_, i) => !seen.has(i));
     const reordered = [...rest, ...touchedOrder.map((i) => entries[i])];
-    writeEntries(dir, shelf, reordered);
+    writeEntries(dir, shelf, reordered, metaLines);
     for (const { idx, selector } of hits) {
       const e = entries[idx];
       results.push({ selector, id: entryId(e.text), text: e.text, score: e.score });
@@ -963,7 +972,9 @@ export function voteMany(dir: string, shelf: string, selectors: string[], delta:
 
 export function merge(dir: string, shelf: string, selA: string, selB: string, mergedLesson: string): Promise<AddResult> {
   return withLock(dir, () => {
-    const entries = readEntries(dir, shelf);
+    // One scan for entries AND the metadata block, passed through to writeEntries
+    // below so the mutation reads the shelf once, not twice (issue #251).
+    const { metaLines, entries } = readShelf(dir, shelf);
     const ia = selectIndex(entries, selA);
     const ib = selectIndex(entries, selB);
     if (ia === ib) throw new NbError('bad_args', 'merge needs two different entries');
@@ -984,7 +995,7 @@ export function merge(dir: string, shelf: string, selA: string, selB: string, me
     // harmless no-op here unless the cap was lowered, in which case the merged
     // lesson is protected like any newcomer.
     const { kept, evicted } = enforceCap(deduped, 1);
-    writeEntries(dir, shelf, kept);
+    writeEntries(dir, shelf, kept, metaLines);
     return { added: true, reason: 'added', evicted: evicted[0] ?? null, size: kept.length, id: entryId(text), sources };
   });
 }
@@ -1014,7 +1025,9 @@ export function split(
   lessonB: string,
 ): Promise<SplitResult> {
   return withLock(dir, () => {
-    const entries = readEntries(dir, shelf);
+    // One scan for entries AND the metadata block, passed through to writeEntries
+    // below so the mutation reads the shelf once, not twice (issue #251).
+    const { metaLines, entries } = readShelf(dir, shelf);
     if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     const original = entries[idx];
@@ -1051,7 +1064,7 @@ export function split(
     // split grows by one (1 → 2); if that overflows a full notebook both halves
     // are protected (admitted) and the stalest OTHER line ages/evicts.
     const { kept } = enforceCap(remaining, 2);
-    writeEntries(dir, shelf, kept);
+    writeEntries(dir, shelf, kept, metaLines);
     return { size: kept.length, source: entryId(original.text), ids: [entryId(textA), entryId(textB)] };
   });
 }
