@@ -26,7 +26,11 @@
 #   directly — see docs/harness-setup.md#windows.
 #
 # ENV
-#   NB_DIR   notebook repo (default ~/.agent-notebook/notebooks)
+#   NB_DIR                   notebook repo (default ~/.agent-notebook/notebooks)
+#   NB_BACKUP_PUSH_TIMEOUT   seconds (or any `timeout` duration, e.g. 5m) to cap
+#                            the push so a hung credential/askpass prompt can't
+#                            hold the lock forever; "0" disables the cap. Needs
+#                            `timeout` (GNU/coreutils); default 300.
 # LOGS
 #   $NB_DIR/.nb-backup.log  (rotated at ~1 MB)
 # LOCK
@@ -97,7 +101,40 @@ if [ -z "$(git remote 2>/dev/null)" ]; then
     exit 0
 fi
 
-if git push --quiet origin "$BRANCH" 2>>"$LOG_FILE"; then
+# Fail fast instead of hanging forever on a credential/askpass prompt. This job
+# runs unattended (cron) while holding the single-instance lock (fd 9) for its
+# whole life, so a push that blocks waiting for an expired credential, an SSH
+# passphrase, or an unknown-host confirmation would never release the lock —
+# wedging EVERY later run with "another nb-backup run is in progress; skipping"
+# and silently disabling the off-the-machine backup this script exists to give.
+# Make git/ssh error out (so the run logs, releases the lock, and retries next
+# time) rather than wait for input that never comes in a non-interactive job:
+#   - GIT_TERMINAL_PROMPT=0 stops git prompting on the terminal for HTTPS creds.
+#   - For SSH remotes, BatchMode=yes turns passphrase/password/host-key prompts
+#     into an immediate error and ConnectTimeout bounds a stalled TCP connect.
+#     Only set GIT_SSH_COMMAND when the user has not, so a custom ssh wrapper wins.
+export GIT_TERMINAL_PROMPT=0
+if [ -z "${GIT_SSH_COMMAND:-}" ]; then
+    export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=30"
+fi
+
+# Backstop ceiling on the push for any other way it could stall (a half-open
+# connection, a hung credential helper). GNU `timeout` runs the push in its own
+# process group and kills the whole group on expiry, so even a lingering
+# transport child can't keep holding the lock. `timeout` is GNU/coreutils —
+# absent on stock macOS, and on some Git Bash PATHs shadowed by Windows'
+# System32 `timeout.exe`, which can't wrap a command — so use it only when it both
+# exists AND actually runs a command (`timeout 1 true`); otherwise push unwrapped
+# rather than wedge where it is missing. NB_BACKUP_PUSH_TIMEOUT overrides the
+# default ("0" disables the wrapper, "5m" for a long haul).
+PUSH_TIMEOUT="${NB_BACKUP_PUSH_TIMEOUT:-300}"
+if [ "$PUSH_TIMEOUT" != "0" ] && command -v timeout >/dev/null 2>&1 && timeout 1 true >/dev/null 2>&1; then
+    push() { timeout "$PUSH_TIMEOUT" git push --quiet origin "$BRANCH"; }
+else
+    push() { git push --quiet origin "$BRANCH"; }
+fi
+
+if push 2>>"$LOG_FILE"; then
     log "pushed ${BRANCH} OK"
 else
     log "PUSH FAILED — local commits retained, will retry next run"

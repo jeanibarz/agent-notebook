@@ -1,5 +1,13 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+  chmodSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +26,7 @@ const script = join(root, 'examples', 'nb-backup.sh');
 const source = readFileSync(script, 'utf-8');
 
 const hasFlock = spawnSync('flock', ['--version'], { stdio: 'ignore' }).status === 0;
+const hasTimeout = spawnSync('timeout', ['--version'], { stdio: 'ignore' }).status === 0;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let dir: string;
@@ -143,4 +152,140 @@ describe('nb-backup.sh lock path is user-scoped (issue #210, CWE-377)', () => {
       await new Promise<void>((res) => holder.on('exit', () => res()));
     }
   });
+});
+
+// Shell source with comment-only lines stripped, so the static checks below match
+// real code — not the explanatory comments that happen to mention the same flags.
+// Without this, a commented-out guard (`# export GIT_TERMINAL_PROMPT=0`) or the
+// header ENV docs would satisfy the assertions even if the real line were deleted.
+const codeOnly = source
+  .split('\n')
+  .filter((line) => !/^\s*#/.test(line))
+  .join('\n');
+
+/** True once a lock file can be re-acquired with a non-blocking flock — i.e. the
+ *  previous holder has released fd 9. This is the real "the lock is free again"
+ *  probe, as opposed to merely checking the lock FILE exists (it is never
+ *  deleted, so its existence proves nothing about whether fd 9 is still held). */
+function lockIsFree(lockPath: string): boolean {
+  return spawnSync('bash', ['-c', `exec 9>"${lockPath}"; flock -n 9`]).status === 0;
+}
+
+describe('nb-backup.sh push fails fast instead of hanging on a credential prompt (issue #272)', () => {
+  test('the push suppresses interactive git/ssh prompts (real code, not comments)', () => {
+    // Without these, an expired credential, an SSH passphrase, or an unknown-host
+    // prompt makes an unattended push block forever; because the push holds the
+    // lock (fd 9) for its whole life, a hung push wedges every later run. Pin the
+    // real guard lines (comments stripped) so a refactor can't silently drop them.
+    expect(codeOnly).toMatch(/^\s*export GIT_TERMINAL_PROMPT=0\s*$/m);
+    // GIT_SSH_COMMAND is defaulted to batch mode + a bounded connect, and only
+    // when the user has not set it, so a custom ssh wrapper still wins.
+    expect(codeOnly).toMatch(/^\s*if\s+\[\s+-z\s+"\$\{GIT_SSH_COMMAND:-\}"\s+\]/m);
+    expect(codeOnly).toMatch(/^\s*export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=\d+"/m);
+  });
+
+  test('the push is wrapped in `timeout` when available, as a hard backstop', () => {
+    // A finite ceiling guarantees the lock is released even if a credential helper
+    // hangs some other way. It must be conditional on `timeout` existing (absent on
+    // stock macOS) so the script never wedges where the command is missing.
+    expect(codeOnly).toMatch(/command\s+-v\s+timeout/);
+    expect(codeOnly).toMatch(/timeout\s+"\$PUSH_TIMEOUT"\s+git\s+push/);
+    // The operator override is the real assignment, not just a mention in the docs.
+    expect(codeOnly).toMatch(/PUSH_TIMEOUT="\$\{NB_BACKUP_PUSH_TIMEOUT:-\d+\}"/);
+  });
+
+  // Behavioral coverage of the DEFAULT (user has not set GIT_SSH_COMMAND): the
+  // script must hand ssh `-o BatchMode=yes` (so passphrase/host-key prompts become
+  // an immediate error) and export GIT_TERMINAL_PROMPT=0, then fail fast and
+  // release the lock. We stub `ssh` first on PATH to capture what git actually ran.
+  test.skipIf(!hasFlock)(
+    'with GIT_SSH_COMMAND unset, the default passes ssh BatchMode and sets GIT_TERMINAL_PROMPT=0, then releases the lock',
+    () => {
+      writeFileSync(join(dir, 'note.txt'), 'x', 'utf-8');
+      execFileSync('git', ['-C', dir, 'add', 'note.txt'], { stdio: 'ignore' });
+      execFileSync('git', ['-C', dir, 'commit', '-q', '-m', 'seed'], { stdio: 'ignore' });
+      execFileSync('git', ['-C', dir, 'remote', 'add', 'origin', 'git@nb-backup.invalid:repo.git'], {
+        stdio: 'ignore',
+      });
+
+      const binDir = mkdtempSync(join(tmpdir(), 'agent-notebook-backup-bin-'));
+      const record = join(dir, 'ssh-invocation.txt');
+      const stubSsh = join(binDir, 'ssh');
+      // Record the argv git passed and the terminal-prompt env it exported, then
+      // fail like a real ssh connection error (255) so the push returns at once.
+      writeFileSync(
+        stubSsh,
+        `#!/bin/sh\n{ echo "ARGS: $*"; echo "GIT_TERMINAL_PROMPT=\${GIT_TERMINAL_PROMPT-<unset>}"; } > "${record}"\nexit 255\n`,
+        'utf-8',
+      );
+      chmodSync(stubSsh, 0o755);
+
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        NB_DIR: dir,
+        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      };
+      delete env.XDG_RUNTIME_DIR; // lock falls back into NB_DIR
+      delete env.GIT_SSH_COMMAND; // force the script's default branch
+
+      const r = spawnSync('bash', [script], { env, stdio: 'ignore', timeout: 30_000 });
+
+      expect(r.status).toBe(1); // a failed push keeps the existing retry-next-run path
+      const rec = readFileSync(record, 'utf-8');
+      expect(rec).toContain('BatchMode=yes'); // the default actually reaches ssh
+      expect(rec).toContain('ConnectTimeout=30');
+      expect(rec).toContain('GIT_TERMINAL_PROMPT=0'); // exported for git's own prompts
+      // The stub exited, so the push released fd 9: the lock is genuinely free again.
+      expect(lockIsFree(join(dir, '.nb-backup.lock'))).toBe(true);
+
+      rmSync(binDir, { recursive: true, force: true });
+    },
+    30_000,
+  );
+
+  // Backstop: even a transport that NEVER responds (not merely one that errors)
+  // must not hang the run. GNU `timeout` runs the push in its own process group
+  // and kills the whole group on expiry, so the script exits, logs, and releases
+  // the lock instead of holding fd 9 forever and wedging every subsequent run.
+  test.skipIf(!hasTimeout || !hasFlock)(
+    'a push that stalls on the SSH transport is killed by the timeout wrapper, releasing the lock',
+    () => {
+      writeFileSync(join(dir, 'note.txt'), 'x', 'utf-8');
+      execFileSync('git', ['-C', dir, 'add', 'note.txt'], { stdio: 'ignore' });
+      execFileSync('git', ['-C', dir, 'commit', '-q', '-m', 'seed'], { stdio: 'ignore' });
+      execFileSync('git', ['-C', dir, 'remote', 'add', 'origin', 'git@nb-backup.invalid:repo.git'], {
+        stdio: 'ignore',
+      });
+      // Fake ssh: ignore git's args and block far longer than the push timeout, so
+      // the push can only end by being killed — proving the timeout wrapper fires.
+      const fakeSsh = join(dir, 'slow-ssh.sh');
+      writeFileSync(fakeSsh, '#!/bin/sh\nexec sleep 30\n', 'utf-8');
+      chmodSync(fakeSsh, 0o755);
+
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        NB_DIR: dir,
+        NB_BACKUP_PUSH_TIMEOUT: '2',
+        GIT_SSH_COMMAND: fakeSsh, // the script must respect a user-set GIT_SSH_COMMAND
+      };
+      delete env.XDG_RUNTIME_DIR; // lock falls back into NB_DIR
+
+      const started = Date.now();
+      // `stdio: 'ignore'` so no inherited pipe can stall this spawn past the exit.
+      const r = spawnSync('bash', [script], { env, stdio: 'ignore', timeout: 30_000 });
+      const elapsedMs = Date.now() - started;
+
+      // The run returned on its own (not force-killed by the spawn timeout) and
+      // near the 2s push cap — nowhere near the 30s fake-ssh sleep.
+      expect(r.signal, 'script should exit on its own, not be force-killed').toBeNull();
+      expect(elapsedMs).toBeLessThan(20_000);
+      // A killed push is a failed push: exit 1 and the existing retry-next-run log.
+      expect(r.status).toBe(1);
+      expect(readFileSync(join(dir, '.nb-backup.log'), 'utf-8')).toContain('PUSH FAILED');
+      // The whole process group was killed, so fd 9 is released — not held by a
+      // lingering transport child. A fresh contender can now acquire the lock.
+      expect(lockIsFree(join(dir, '.nb-backup.lock'))).toBe(true);
+    },
+    30_000,
+  );
 });
