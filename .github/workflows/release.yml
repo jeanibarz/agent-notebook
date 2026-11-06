@@ -24,6 +24,32 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # Guard against publishing the wrong release: the workflow triggers on any
+      # `v*.*.*` tag push and on workflow_dispatch from any ref, but nothing
+      # downstream reconciles the ref with the version npm actually publishes
+      # (package.json). A mismatched tag (e.g. pushing `v0.6.0` while
+      # package.json says 0.7.0) — or a workflow_dispatch from a branch — would
+      # otherwise publish whatever package.json happens to hold. Fail fast,
+      # before the build/test/publish steps, unless the ref is a version tag
+      # whose name equals `v<package.json version>`.
+      - name: Verify tag matches package.json version
+        run: |
+          set -eu
+          case "${GITHUB_REF:-}" in
+            refs/tags/*) ;;
+            *)
+              echo "::error::Release must run from a version tag; got ref '${GITHUB_REF:-}'. A workflow_dispatch from a non-tag ref cannot publish." >&2
+              exit 1
+              ;;
+          esac
+          pkg_version="$(node -p "require('./package.json').version")"
+          expected_tag="v${pkg_version}"
+          if [ "$expected_tag" != "${GITHUB_REF_NAME:-}" ]; then
+            echo "::error::Git tag '${GITHUB_REF_NAME:-}' does not match package.json version '${pkg_version}' (expected tag '${expected_tag}'). Refusing to publish a mismatched release." >&2
+            exit 1
+          fi
+          echo "Verified: tag '${GITHUB_REF_NAME}' matches package.json version '${pkg_version}'."
+
       # Trusted Publishing needs npm >= 11.5.0; pin to a specific recent npm
       # (not npm@latest) so the publish job is reproducible and a moving npm
       # release cannot silently change it, regardless of the Node bundled by
