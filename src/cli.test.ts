@@ -1,12 +1,13 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runNbCli, settleCliExit, closestCommand, closestShelf, KNOWN_COMMANDS } from './cli.js';
+import { runNbCli, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS } from './cli.js';
 import { entryId, parseUsage, usageFile } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
@@ -2004,6 +2005,125 @@ describe('settleCliExit', () => {
     expect(two.exitCode).toBe(2);
     expect(two.err).toBe('');
   });
+});
+
+// A reader that closes a pipe early (`nb show <shelf> | head -1`, `| grep -q`,
+// quitting a pager) makes the next stdout write fail with EPIPE. Without a guard
+// that is an uncaught async error — a `write EPIPE` stack trace on stderr and an
+// abnormal exit — which is noise for interactive use and trips piping scripts.
+// `installPipeGuards` turns a broken pipe into a clean exit while keeping any
+// other stream error loud. The unit tests drive the handler with a fake emitter
+// (no need to tear down the runner's real stdout); the end-to-end test proves
+// the whole thing against a real `| head -1` pipe on the built CLI.
+describe('installPipeGuards — stdout broken-pipe guard (issue #246)', () => {
+  const CLI_JS = join(REPO_ROOT, 'dist', 'cli.js');
+  const BASH_PRESENT = ((): boolean => {
+    try {
+      execFileSync('bash', ['--version'], { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  test('EPIPE on a guarded stream exits cleanly and is not re-thrown', () => {
+    const stream = new EventEmitter();
+    let cleanExits = 0;
+    installPipeGuards([stream], () => {
+      cleanExits += 1;
+    });
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    // A listener is present, so emit() routes to our handler rather than
+    // re-throwing; the benign broken pipe must NOT propagate as an error.
+    expect(() => stream.emit('error', epipe)).not.toThrow();
+    expect(cleanExits).toBe(1); // routed to the clean-exit path exactly once
+  });
+
+  test('a non-EPIPE stream error still surfaces loudly (re-thrown, not swallowed)', () => {
+    const stream = new EventEmitter();
+    let cleanExits = 0;
+    installPipeGuards([stream], () => {
+      cleanExits += 1;
+    });
+    const eacces = Object.assign(new Error('write EACCES'), { code: 'EACCES' });
+    // A real write failure must keep throwing — the guard is scoped to EPIPE so
+    // genuine errors are never silently turned into a success exit.
+    expect(() => stream.emit('error', eacces)).toThrow(/EACCES/);
+    expect(cleanExits).toBe(0); // the clean-exit path was NOT taken
+  });
+
+  test('every passed stream is guarded (stdout and stderr both covered)', () => {
+    const a = new EventEmitter();
+    const b = new EventEmitter();
+    let cleanExits = 0;
+    installPipeGuards([a, b], () => {
+      cleanExits += 1;
+    });
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    expect(() => a.emit('error', epipe)).not.toThrow();
+    expect(() => b.emit('error', epipe)).not.toThrow();
+    expect(cleanExits).toBe(2);
+  });
+
+  test('defaults to guarding BOTH process.stdout and process.stderr', () => {
+    // No-args call exercises the default stream list — the real entrypoint wiring
+    // lives under `/* c8 ignore */`, so without this a regression that dropped
+    // `process.stderr` from the default would go uncaught. Record the pre-existing
+    // listeners, install, assert exactly one new `error` listener landed on each
+    // stream, then remove precisely those so the default `process.exit()` handler
+    // can never fire during the rest of the suite.
+    const stdoutBefore = process.stdout.listeners('error');
+    const stderrBefore = process.stderr.listeners('error');
+    installPipeGuards();
+    const added = (s: NodeJS.EventEmitter, before: unknown[]): unknown[] =>
+      s.listeners('error').filter((l) => !before.includes(l));
+    try {
+      expect(added(process.stdout, stdoutBefore)).toHaveLength(1);
+      expect(added(process.stderr, stderrBefore)).toHaveLength(1);
+    } finally {
+      for (const l of added(process.stdout, stdoutBefore)) {
+        process.stdout.removeListener('error', l as (...a: unknown[]) => void);
+      }
+      for (const l of added(process.stderr, stderrBefore)) {
+        process.stderr.removeListener('error', l as (...a: unknown[]) => void);
+      }
+    }
+  });
+
+  // End-to-end acceptance (issue #246): the real built CLI piped into `head -1`.
+  // Needs bash + the built dist/cli.js (pretest builds it); `skipIf` so a host
+  // missing either shows the skip in the report rather than a silent green pass.
+  test.skipIf(!BASH_PRESENT || !existsSync(CLI_JS))(
+    '`nb show <shelf> | head -1` exits 0 with no EPIPE on stderr',
+    () => {
+      // The shelf must render larger than the OS pipe buffer (~64 KiB) so the
+      // single `show` write can't complete before `head -1` reads its line and
+      // closes the pipe — only then does the deferred flush hit EPIPE and exercise
+      // the guard. A tiny shelf would be fully buffered and never trigger it. Write
+      // the shelf file directly (storage format `<score>\t<text>`) to keep it fast.
+      const bigDir = mkdtempSync(join(tmpdir(), 'agent-notebook-epipe-'));
+      try {
+        const lines: string[] = [];
+        for (let i = 0; i < 3000; i++) lines.push(`+1\t#${i} ${'x'.repeat(180)}`);
+        writeFileSync(join(bigDir, 'big.md'), lines.join('\n') + '\n');
+
+        // `set -o pipefail` so the pipeline's status reflects nb's OWN exit (not
+        // head's 0): an unguarded EPIPE crash would make nb exit non-zero and turn
+        // this status to 1. nb's stderr propagates through the inherited fd.
+        const r = spawnSync(
+          'bash',
+          ['-c', `set -o pipefail; node ${JSON.stringify(CLI_JS)} show big | head -1`],
+          { env: { ...process.env, NB_DIR: bigDir }, encoding: 'utf8' },
+        );
+
+        expect(r.stderr).not.toMatch(/EPIPE/); // no uncaught broken-pipe crash
+        expect(r.status).toBe(0); // clean exit, not 1 from an uncaught EPIPE error
+        expect(r.stdout.split('\n').filter(Boolean).length).toBe(1); // head got its one line
+      } finally {
+        rmSync(bigDir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('nb describe (issue #70)', () => {
