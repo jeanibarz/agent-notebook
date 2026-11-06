@@ -29,12 +29,20 @@ this.
 npm install
 npm run typecheck   # tsc --noEmit — fast type check, no build output
 npm run build       # tsc, then chmod +x dist/cli.js
-npm test            # vitest run
+npm test            # the full gate: build, then vitest run (every suite)
+npm run test:fast   # inner loop: the full suite minus the slow property/fuzz tests
 ```
 
 `npm run typecheck` is the quickest inner-loop check: it reports type errors
 without emitting `dist/` or touching the `chmod` step, so a type-only failure
 surfaces on its own.
+
+`npm run test:fast` is the fast test loop while iterating. It runs the same
+suites but skips the handful of randomized property/fuzz tests — tagged ` [slow]`
+in their titles — whose hundreds of durable `fsync` writes dominate wall time, so
+it finishes in a few seconds instead of ~30. **It is not the gate:** always run the
+full `npm test` (which includes the `[slow]` tests, as CI does) before pushing. To
+mark a new slow test for the fast-skip set, add ` [slow]` to its title.
 
 The tests exec the built `dist/` output, so a stale build gives misleading
 results — `npm test` runs the build first via its `pretest` hook.
