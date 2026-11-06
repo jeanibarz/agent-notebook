@@ -19,6 +19,12 @@ versions are listed plainly.
   scan the report already does (no extra read). Additive: `STATS_SCHEMA_VERSION` is unchanged.
 
 ### Fixed
+- **An emptied, undescribed shelf no longer leaves a 0-byte `<shelf>.md` on disk (#209).**
+  When `rm` removed the last lesson from a shelf with no description, the file was rewritten as
+  an empty string: `nb list` hid it, but nothing ever removed it, so phantom 0-byte files
+  accumulated in the notebooks dir, every backup, and git history without bound. Such a truly
+  empty file is now reaped (unlinked) under the mutation's lock. A described-but-empty shelf
+  (a `# desc:` trigger with no lessons) is non-empty and is preserved.
 - **The usage-log `session` column is now length-capped like `note` (#202).** `NB_SESSION`
   was written to every row with sanitization but no length cap, so a long session id (a full
   task path, a chained id) multiplied the on-disk log size across the whole ring — defeating

@@ -3057,6 +3057,40 @@ describe('locking (mkdir spinlock)', () => {
   });
 });
 
+describe('reaps an emptied, undescribed phantom shelf (issue #209)', () => {
+  test('rm of the last lesson on an undescribed shelf leaves no file on disk', async () => {
+    await addEntry(dir, 's', 'x');
+    expect(existsSync(join(dir, 's.md'))).toBe(true);
+    await remove(dir, 's', 'x');
+    // The phantom 0-byte file is reaped, not left for listNotebooks to hide.
+    expect(existsSync(join(dir, 's.md'))).toBe(false);
+    expect(listNotebooks(dir).rows.map((n) => n.shelf)).not.toContain('s');
+  });
+
+  test('a described-but-empty shelf is preserved — the description is a deliberate trigger', async () => {
+    await setDescription(dir, 's', 'when to do X');
+    // No lessons, but a `# desc:` block makes the file non-empty, so it is kept.
+    expect(existsSync(join(dir, 's.md'))).toBe(true);
+  });
+
+  test('rm of the last lesson on a DESCRIBED shelf keeps the file (the description survives)', async () => {
+    await setDescription(dir, 's', 'trigger');
+    await addEntry(dir, 's', 'x');
+    await remove(dir, 's', 'x');
+    expect(existsSync(join(dir, 's.md'))).toBe(true); // meta block → not a phantom
+    expect(getDescription(dir, 's')).toBe('trigger');
+  });
+
+  test('reaping an emptied shelf leaves every other shelf intact', async () => {
+    await addEntry(dir, 'keep', 'y');
+    await addEntry(dir, 'gone', 'x');
+    await remove(dir, 'gone', 'x');
+    expect(existsSync(join(dir, 'gone.md'))).toBe(false);
+    expect(existsSync(join(dir, 'keep.md'))).toBe(true);
+    expect(readEntries(dir, 'keep').map((e) => e.text)).toEqual(['y']);
+  });
+});
+
 describe('reaps leftover temps on lock acquire (issues #46, #163)', () => {
   // A crash between an atomic write's temp and its rename leaves an orphan in the
   // notebooks dir that nothing else removes. The next locked mutation sweeps this
