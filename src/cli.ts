@@ -619,6 +619,19 @@ export async function runNbCli(
             process.stderr.write(`no notebook for shelf "${shelf}" — run \`nb list\` to see existing shelves\n`);
           } else {
             process.stdout.write(renderEntries(shelf, entries) + '\n');
+            // Copy-paste vote hint (issue #223): the usage audit found ~1 in 5
+            // votes failing on a fuzzy TEXT selector while the id was printed
+            // right there. Echo a ready-to-run command with the shelf already
+            // filled, so the reflect step votes by id (the stable token above)
+            // — and can batch several — instead of by ambiguous substring. It is
+            // a `#` comment line (never a lesson, never written to the file) and
+            // is suppressed under `--json`, which stays a lone ShowResult object.
+            // Only shown when there is something to vote on.
+            if (entries.length > 0) {
+              process.stdout.write(
+                `# vote by id: nb vote ${shelf} <id> +1|-1  ·  several at once: nb vote ${shelf} <id1,id2,…> +1\n`,
+              );
+            }
           }
         }
         break;

@@ -166,6 +166,27 @@ describe('runNbCli', () => {
     });
   });
 
+  test('show prints a copy-paste vote hint with the shelf filled in (issue #223)', async () => {
+    await run(['add', 'patcher', 'a fine lesson']);
+    const show = await run(['show', 'patcher']);
+    expect(show.out).toContain('# vote by id: nb vote patcher <id> +1|-1');
+    expect(show.out).toContain('nb vote patcher <id1,id2,…> +1'); // batch form advertised
+    // The hint is a `#` comment line, so the json-vs-plain id filter ignores it
+    // and it can never be parsed back as a lesson.
+    expect(show.out).toMatch(/^#/m);
+  });
+
+  test('the vote hint is suppressed under --json and on an empty/missing notebook', async () => {
+    // --json stays a lone ShowResult object (no trailing hint line).
+    await run(['add', 'patcher', 'a fine lesson']);
+    const j = await run(['show', 'patcher', '--json']);
+    expect(j.out.trim().split('\n')).toHaveLength(1);
+    expect(j.out).not.toContain('vote by id');
+    // A never-created shelf prints no hint (nothing to vote on).
+    const missing = await run(['show', 'ghostshelf']);
+    expect(missing.out).not.toContain('vote by id');
+  });
+
   test('vote by the id shown in `show` succeeds', async () => {
     await run(['add', 'patcher', 'alpha one']);
     await run(['add', 'patcher', 'beta two']);
