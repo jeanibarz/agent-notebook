@@ -430,3 +430,91 @@ describe('nb-janitor section 7 — undescribed shelves ranked by browse-without-
     expect(runHuman()).toContain('✅ every shelf has an explicit # desc: trigger.');
   });
 });
+
+// Section 4 — volume over time. gitHistory() must distinguish "NB_DIR is not a
+// git repo" (no .git) from "git exists but `git log` failed" (its 5s timeout on
+// a huge repo, git's dubious-ownership refusal, a corrupt repo, or git missing
+// from PATH). Before the fix both collapsed to null and section 4 printed the
+// flatly-false "not a git repo" line on a genuine git failure (issue #269).
+const NOT_A_REPO = '(NB_DIR is not a git repo';
+const GIT_FAILED = '(git history unavailable';
+
+describe('nb-janitor section 4 — git history vs git failure (issue #269)', () => {
+  test('no .git → "not a git repo" (unchanged for existing users)', () => {
+    // Fresh temp NB_DIR has no .git at all; gitHistory never shells out to git.
+    const human = runHuman();
+    expect(human).toContain('── 4. Volume over time');
+    expect(human).toContain(NOT_A_REPO);
+    expect(human).not.toContain(GIT_FAILED);
+  });
+
+  test('.git present but `git log` fails → "git history unavailable", not "not a git repo"', () => {
+    // existsSync('.git') is true, so the old guard would try git and swallow the
+    // throw as null → the false "not a git repo" line. A gitfile pointing nowhere
+    // makes `git log` exit non-zero deterministically (no walk-up to a parent
+    // repo), standing in for timeout / dubious-ownership / corrupt-repo / no-PATH.
+    writeFileSync(join(dir, '.git'), 'gitdir: /nonexistent/nb-janitor-issue-269\n', 'utf-8');
+    const human = runHuman(); // execFileSync throws on nonzero exit → also pins exit 0
+    expect(human).toContain('── 4. Volume over time');
+    expect(human).toContain(GIT_FAILED);
+    expect(human).not.toContain(NOT_A_REPO);
+  });
+
+  test('a real git repo with notebook commits still renders the git volume line', () => {
+    // The happy path must survive the three-way split: a readable repo reports
+    // commits, never a degraded note.
+    const gitEnv = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+      GIT_AUTHOR_NAME: 't',
+      GIT_AUTHOR_EMAIL: 't@example.com',
+      GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@example.com',
+    };
+    const git = (...args: string[]): void => {
+      execFileSync('git', ['-C', dir, ...args], { env: gitEnv, stdio: 'ignore' });
+    };
+    git('init', '-q');
+    writeFileSync(join(dir, 'readme.md'), 'x\n', 'utf-8');
+    git('add', 'readme.md');
+    git('-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'nb add demo');
+    const human = runHuman();
+    expect(human).toContain('── 4. Volume over time');
+    expect(human).toContain('git: 1 notebook commits');
+    expect(human).toContain('add:1'); // "nb add …" subject → byCmd add:1
+    expect(human).not.toContain(GIT_FAILED);
+    expect(human).not.toContain(NOT_A_REPO);
+  });
+
+  test('a readable repo with zero commits in the window still reports git (pins the Array.isArray guard)', () => {
+    // git log succeeds but --since filters everything out → gitHistory returns an
+    // EMPTY array, the one success case the old `if (history)` truthiness and the
+    // new `Array.isArray(history)` guard must treat alike: a readable (just quiet)
+    // repo, never the "not a git repo" / "git failed" degrade. Commit far in the
+    // past so it falls outside the default 30-day window.
+    const old = '2000-01-01T00:00:00 +0000';
+    const gitEnv = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+      GIT_AUTHOR_NAME: 't',
+      GIT_AUTHOR_EMAIL: 't@example.com',
+      GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@example.com',
+      GIT_AUTHOR_DATE: old,
+      GIT_COMMITTER_DATE: old,
+    };
+    const git = (...args: string[]): void => {
+      execFileSync('git', ['-C', dir, ...args], { env: gitEnv, stdio: 'ignore' });
+    };
+    git('init', '-q');
+    writeFileSync(join(dir, 'readme.md'), 'x\n', 'utf-8');
+    git('add', 'readme.md');
+    git('-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'nb add demo');
+    const human = runHuman();
+    expect(human).toContain('git: 0 notebook commits on 0 active days');
+    expect(human).not.toContain(GIT_FAILED);
+    expect(human).not.toContain(NOT_A_REPO);
+  });
+});

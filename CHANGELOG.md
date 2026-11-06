@@ -9,6 +9,15 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Fixed
+- **`nb-janitor` §4 no longer reports a git failure as "not a git repo" (#269).** `gitHistory()`
+  returned `null` both when `NB_DIR` has no `.git` *and* when `git log` failed — its 5s timeout on
+  a huge repo, git's dubious-ownership refusal on a shared host, a corrupt repo, or git missing
+  from `PATH` — so section 4 printed the flatly-false "NB_DIR is not a git repo" guidance on a
+  genuine git error. The two cases are now distinguished: a real failure prints "git history
+  unavailable — git failed, timed out, or refused access …", while the absent-`.git` path keeps
+  its unchanged "not a git repo" line. Read-only and zero-dependency, like the rest of the janitor.
+
 ## [0.7.0] - 2026-11-06
 
 ### Added
