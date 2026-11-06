@@ -463,6 +463,23 @@ undescribed file has nothing to discover and would only be noise. Stays within t
 no-schema non-goal ([NG-004](#ng-004)) — the decision reads existing entries and the
 existing `# desc:` metadata, adding no field to a lesson.
 
+<a id="fr-list-005"></a>
+**FR-LIST-005 (Should).** When a mutation (e.g. `rm` of the last lesson) leaves a
+notebook with **neither entries nor a `# desc:` metadata block**, the write SHALL
+**reap** the `<shelf>.md` file — unlink it rather than leave a 0-byte file on disk —
+so the phantom `listNotebooks` already hides ([FR-LIST-004](#fr-list-004)) does not
+linger in the notebooks dir, every backup, and git history without bound. The reap
+SHALL run under the same lock as the mutation and SHALL apply ONLY to a genuinely
+empty file: a described-but-empty notebook (a `# desc:` block, no entries) is
+non-empty and SHALL be preserved. It SHALL be best-effort — a reap failure SHALL NOT
+fail the mutation.
+**Rationale:** Completes the NB_DIR-hygiene line (the reap of `*.md.tmp` and
+usage-log temps, issues #46/#163) for the one leftover it missed: an emptied,
+undescribed shelf. Gating on "no entries AND no metadata" distinguishes a true
+phantom (reaped) from a deliberate trigger (kept) without adding a field to a lesson
+([NG-004](#ng-004)).
+*Proven by:* `notebook.test.ts` → `describe('reaps an emptied, undescribed phantom shelf (issue #209)')`.
+
 ### 4.10 CLI contract
 
 <a id="fr-cli-001"></a>

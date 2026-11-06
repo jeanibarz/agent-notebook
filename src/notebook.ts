@@ -1053,11 +1053,29 @@ export function split(
 
 export function remove(dir: string, shelf: string, selector: string): Promise<VoteResult> {
   return withLock(dir, () => {
-    const entries = readEntries(dir, shelf);
+    // Read entries AND the metadata block in one scan: the reap below must tell a
+    // described-but-empty notebook (kept) from a true phantom (reaped), issue #209.
+    const { metaLines, entries } = readShelf(dir, shelf);
     if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     const [gone] = entries.splice(idx, 1);
-    writeEntries(dir, shelf, entries);
+    if (entries.length === 0 && metaLines.length === 0) {
+      // Phantom reap (issue #209): removing the last lesson left an UNDESCRIBED
+      // shelf, which `writeEntries` would persist as a 0-byte `<shelf>.md` —
+      // debris `listNotebooks` HIDES ([FR-LIST-004]) but nothing ever removes, so
+      // it lingers in the dir, every backup, and git history without bound. Unlink
+      // it instead. Best-effort (the `rm` has already succeeded) and under this
+      // lock, so no concurrent writer's in-flight `.md.tmp` is at risk and only a
+      // truly empty file qualifies. A described-but-empty shelf (metaLines
+      // non-empty) falls to the else branch and keeps its `# desc:` trigger.
+      try {
+        unlinkSync(shelfFile(dir, shelf));
+      } catch {
+        /* already absent or not removable — reaping is best-effort */
+      }
+    } else {
+      writeEntries(dir, shelf, entries, metaLines);
+    }
     return { text: gone.text, score: gone.score };
   });
 }
