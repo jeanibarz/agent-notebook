@@ -191,8 +191,12 @@ rejected with `reason: 'duplicate'` and nothing stored.
 
 <a id="fr-add-004"></a>
 **FR-ADD-004 (Must).** A lesson longer than `maxChars` SHALL be rejected with
-`reason: 'too-long'` and `length` set; it SHALL NOT be truncated or stored. A lesson
-of exactly `maxChars` SHALL be accepted. *(See [DP-5](#dp-5).)*
+`reason: 'too-long'`, `length` set, and `overflow` set to `length - maxChars` (the
+number of characters to trim, always ≥ 1); it SHALL NOT be truncated or stored. The
+CLI SHALL report that overflow so the retry trims exactly that much rather than
+guessing (issue #239). A lesson of exactly `maxChars` SHALL be accepted. *(See [DP-5](#dp-5).)*
+
+*Proven by:* `notebook.test.ts` → `describe('caps')` → "rejects an over-length lesson instead of truncating it"; `cli.test.ts` → "an over-long add exits 1, is not stored, and tells the agent to retry" and "add --json on a too-long lesson emits reason:\"too-long\" on stdout but still exits 1".
 
 <a id="fr-add-005"></a>
 **FR-ADD-005 (Must).** When adding exceeds `maxLines`, eviction SHALL remove the

@@ -726,6 +726,8 @@ export interface AddResult {
   size: number;
   /** For 'too-long': the length of the submitted lesson, so the caller can report it. */
   length?: number;
+  /** For 'too-long': how many characters the lesson is over `maxChars` (`length - maxChars`, always ≥ 1), so the caller can tell the agent exactly how much to trim instead of guessing (issue #239). */
+  overflow?: number;
   /** Stable id this result concerns: the added/merged entry, or the submitted lesson on a duplicate/rejection. Absent for 'empty'. Lets the usage log record which entry a call touched. */
   id?: string;
   /** For 'duplicate': the id of the existing entry that blocked the add (the colliding entry). */
@@ -744,10 +746,13 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     const entries = readEntries(dir, shelf);
     if (text === '') return { added: false, reason: 'empty', evicted: null, size: entries.length };
     const id = entryId(text);
-    if (text.length > maxChars()) {
+    const cap = maxChars();
+    if (text.length > cap) {
       // Reject rather than truncate: a cut-off lesson is often useless, so the
-      // agent should retry with a shorter *complete* one.
-      return { added: false, reason: 'too-long', evicted: null, size: entries.length, length: text.length, id };
+      // agent should retry with a shorter *complete* one. Report the overflow
+      // (`length - cap`) so the retry trims exactly that much rather than
+      // guessing how far over it was (issue #239).
+      return { added: false, reason: 'too-long', evicted: null, size: entries.length, length: text.length, overflow: text.length - cap, id };
     }
     const key = dedupKey(text);
     const collider = entries.find((e) => dedupKey(e.text) === key);

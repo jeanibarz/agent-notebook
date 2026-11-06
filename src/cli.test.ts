@@ -842,6 +842,10 @@ describe('runNbCli', () => {
     expect(r.code).toBe(1);
     expect(r.err).toMatch(/too long/i);
     expect(r.err).toMatch(/retry/i);
+    // The overflow count (length 60 - cap 25 = 35) is reported so the re-draft
+    // trims exactly that much instead of guessing (issue #239).
+    expect(r.err).toMatch(/35 over the 25 limit/);
+    expect(r.err).toMatch(/trim at least 35/);
     const show = await run(['show', 'patcher']);
     // Nothing was stored, so the shelf was never created: `show` reports it as
     // missing (issue #166), not as a real empty notebook.
@@ -1465,7 +1469,7 @@ describe('runNbCli', () => {
       process.env.NB_MAX_CHARS = '25';
       const r = await run(['add', 'patcher', 'z'.repeat(60), '--json']);
       expect(r.code).toBe(1); // exit code unchanged from the text path
-      expect(parseOnly(r.out)).toMatchObject({ added: false, reason: 'too-long', length: 60 });
+      expect(parseOnly(r.out)).toMatchObject({ added: false, reason: 'too-long', length: 60, overflow: 35 }); // overflow = 60 - 25 (issue #239)
       const show = await run(['show', 'patcher']);
       expect(show.err).toContain('no notebook for shelf "patcher"'); // not stored → shelf never created (issue #166)
     });
