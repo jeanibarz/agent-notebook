@@ -290,10 +290,15 @@ describe('nb-janitor section 6 — curation: unreinforced +1-floor lessons (#223
   });
 
   test('a shelf dominated by never-reinforced +1 lessons is flagged; one above the floor is not', () => {
+    // Lessons are DISTINCT (no shared content tokens) on purpose: near-identical
+    // texts like "lesson 0".."lesson 11" make §3's paraphrase detector emit a
+    // huge O(n²) dup matrix that bloats `--json` past an 8 KB pipe boundary and
+    // trips a platform-specific partial-read in `execFileSync` here. The floor
+    // check keys on SCORE, not text, so distinctness changes nothing it asserts.
     // 12 lessons all at +1 → floor=12 (≥10), fraction=1.0 (≥0.5): flagged.
-    mkShelf('floored', Array.from({ length: 12 }, (_, i) => [1, `lesson ${i}`] as [number, string]));
+    mkShelf('floored', Array.from({ length: 12 }, (_, i) => [1, `floornote${i}aa topic${i}bb`] as [number, string]));
     // 12 lessons all at +3 → floor=0: not flagged.
-    mkShelf('reinforced', Array.from({ length: 12 }, (_, i) => [3, `strong ${i}`] as [number, string]));
+    mkShelf('reinforced', Array.from({ length: 12 }, (_, i) => [3, `strongidea${i}cc matter${i}dd`] as [number, string]));
     seed([voteRow('floored', 's1', 'up')]);
     const floors = json().curation.floorShelves;
     expect(floors.map((f) => f.shelf)).toEqual(['floored']);
