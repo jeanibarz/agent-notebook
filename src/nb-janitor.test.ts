@@ -257,3 +257,114 @@ describe('nb-janitor section 2 — scope-aware shelf-name dedup', () => {
     expect(shelfDups()).toEqual([]);
   });
 });
+
+describe('nb-janitor section 6 — curation: unreinforced +1-floor lessons (#223)', () => {
+  // A shelf file: lessons is a list of [score, text]; an optional desc line.
+  function mkShelf(name: string, lessons: [number, string][], desc?: string): void {
+    const head = desc ? `# desc: ${desc}\n` : '';
+    const body = lessons.map(([s, t]) => `${s >= 0 ? '+' : ''}${s}\t${t}`).join('\n');
+    writeFileSync(join(dir, `${name}.md`), head + body + '\n', 'utf-8');
+  }
+  function voteRow(shelf: string, session: string, outcome: 'up' | 'down'): string {
+    // ts, shelf, command, status, ms, session, entries, outcome
+    return `${TS}\t${shelf}\tvote\tok\t2ms\t${session}\tabc123\t${outcome}`;
+  }
+  function json(): {
+    curation: {
+      windowUpvotes: number;
+      windowDownvotes: number;
+      floorShelves: { shelf: string; floor: number; total: number; fraction: number }[];
+    };
+  } {
+    const out = execFileSync('node', [janitor, '--json'], { env: { ...process.env, NB_DIR: dir }, encoding: 'utf-8' });
+    return JSON.parse(out);
+  }
+
+  test('counts window upvotes vs downvotes and reports the one-sidedness', () => {
+    mkShelf('v', [[1, 'a']]);
+    seed([voteRow('v', 's1', 'up'), voteRow('v', 's1', 'up'), voteRow('v', 's2', 'down')]);
+    const c = json().curation;
+    expect(c.windowUpvotes).toBe(2);
+    expect(c.windowDownvotes).toBe(1);
+    expect(runHuman()).toContain('2 upvote(s), 1 downvote(s)');
+  });
+
+  test('a shelf dominated by never-reinforced +1 lessons is flagged; one above the floor is not', () => {
+    // 12 lessons all at +1 → floor=12 (≥10), fraction=1.0 (≥0.5): flagged.
+    mkShelf('floored', Array.from({ length: 12 }, (_, i) => [1, `lesson ${i}`] as [number, string]));
+    // 12 lessons all at +3 → floor=0: not flagged.
+    mkShelf('reinforced', Array.from({ length: 12 }, (_, i) => [3, `strong ${i}`] as [number, string]));
+    seed([voteRow('floored', 's1', 'up')]);
+    const floors = json().curation.floorShelves;
+    expect(floors.map((f) => f.shelf)).toEqual(['floored']);
+    expect(floors[0]).toMatchObject({ floor: 12, total: 12, fraction: 1 });
+    const human = runHuman();
+    expect(human).toContain('── 6. Curation');
+    expect(human).toContain('floored: 12/12 lessons still at +1');
+    // The JSON floorShelves equality above already pins that 'reinforced' is not
+    // flagged; the human section does not print it as a floor pile.
+    expect(human).not.toContain('reinforced: 12/12');
+  });
+
+  test('a small +1 pile below the minimum count is not flagged (pins FLOOR_MIN_LESSONS)', () => {
+    mkShelf('small', Array.from({ length: 9 }, (_, i) => [1, `l ${i}`] as [number, string]));
+    seed([voteRow('small', 's1', 'up')]);
+    expect(json().curation.floorShelves).toEqual([]);
+    expect(runHuman()).toContain('✅ no shelf is dominated by a large pile');
+  });
+
+  test('no downvotes in the window prints the "downvoting is unused" line', () => {
+    mkShelf('v', [[1, 'a']]);
+    seed([voteRow('v', 's1', 'up')]);
+    expect(runHuman()).toContain('downvoting is unused');
+  });
+});
+
+describe('nb-janitor section 7 — undescribed shelves ranked by browse-without-use (#223)', () => {
+  function mkShelf(name: string, desc?: string): void {
+    const head = desc ? `# desc: ${desc}\n` : '';
+    writeFileSync(join(dir, `${name}.md`), head + '+1\ta lesson\n', 'utf-8');
+  }
+  function voteRow(shelf: string, session: string): string {
+    return `${TS}\t${shelf}\tvote\tok\t2ms\t${session}\tabc123\tup`;
+  }
+  function json(): { undescribed: { computed: boolean; shelves: { shelf: string; browseWithoutUse: number }[] } } {
+    const out = execFileSync('node', [janitor, '--json'], { env: { ...process.env, NB_DIR: dir }, encoding: 'utf-8' });
+    return JSON.parse(out);
+  }
+
+  test('lists undescribed shelves ranked by browse-without-use; a described shelf is excluded', () => {
+    mkShelf('alpha'); // undescribed, browsed-without-use twice
+    mkShelf('bravo'); // undescribed, browsed-without-use once
+    mkShelf('charlie', 'open me when charlie-ing'); // described → never listed
+    seed([
+      row('alpha', 'show', 's1'),
+      row('alpha', 'show', 's2'),
+      row('bravo', 'show', 's1'),
+      row('charlie', 'show', 's1'), // described, so excluded regardless
+    ]);
+    const u = json().undescribed;
+    expect(u.computed).toBe(true);
+    expect(u.shelves).toEqual([
+      { shelf: 'alpha', browseWithoutUse: 2 },
+      { shelf: 'bravo', browseWithoutUse: 1 },
+    ]);
+    const human = runHuman();
+    expect(human).toContain('── 7. Undescribed shelves');
+    expect(human).toContain('alpha — shown-but-not-voted in 2 session(s)');
+    expect(human).not.toContain('charlie');
+  });
+
+  test('a shelf shown AND voted in the same session is not browse-without-use', () => {
+    mkShelf('alpha');
+    seed([row('alpha', 'show', 's1'), voteRow('alpha', 's1')]);
+    expect(json().undescribed.shelves).toEqual([{ shelf: 'alpha', browseWithoutUse: 0 }]);
+  });
+
+  test('every shelf described → section 7 reports the all-clear', () => {
+    mkShelf('alpha', 'trigger a');
+    seed([row('alpha', 'show', 's1')]);
+    expect(json().undescribed.shelves).toEqual([]);
+    expect(runHuman()).toContain('✅ every shelf has an explicit # desc: trigger.');
+  });
+});
