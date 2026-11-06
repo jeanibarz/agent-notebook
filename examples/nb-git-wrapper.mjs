@@ -5,7 +5,7 @@
 //   The `agent-notebook` package is deliberately offline and git-unaware: it
 //   just edits a plain file. This wrapper layers ONE optional behaviour on top —
 //   when your notebooks directory (NB_DIR) is a git repository, each successful
-//   *mutating* command (add/vote/merge/rm/split/describe) is committed. The
+//   *mutating* command (add/vote/merge/rm/split/move/describe) is committed. The
 //   result is a reviewable, revertible history of your agent's memory forming
 //   over time, and a base the daily backup job (nb-backup.sh) can push.
 //
@@ -39,7 +39,7 @@ import { execFileSync } from 'node:child_process';
 // Commands that write a notebook — only these are worth a commit. Must match the
 // package's mutating surface; a read-only command (show/list/search/stats/path)
 // never commits.
-const MUTATING = new Set(['add', 'vote', 'merge', 'rm', 'split', 'describe']);
+const MUTATING = new Set(['add', 'vote', 'merge', 'rm', 'split', 'move', 'describe']);
 
 // Inherited GIT_* vars pin git to another repo/worktree/index and would override
 // our `-C <NB_DIR>`. If `nb` is ever invoked from inside a git hook (e.g. a
