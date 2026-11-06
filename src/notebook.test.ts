@@ -1761,6 +1761,24 @@ describe('usage log + stats', () => {
     expect(() => logUsage(dir, 'p', 'show', true, 1, { session: 'z'.repeat(100_000) })).not.toThrow();
   });
 
+  test('reports usage-ring occupancy (rows/cap), total and window-independent (issue #206)', () => {
+    process.env.NB_USAGE_RING = '5000';
+    for (let i = 0; i < 5; i++) logUsage(dir, 'p', 'show', true, 1);
+    const wide = stats(dir, { now: Date.now() });
+    expect(wide.usageRing).toEqual({ rows: 5, cap: 5000 });
+    // Occupancy is TOTAL (not windowed): a window that excludes every row still
+    // reports the same 5 rows on disk, so it can't be confused with `totalCalls`.
+    const narrow = stats(dir, { now: Date.now() + 10_000_000, windowMs: 1 });
+    expect(narrow.totalCalls).toBe(0);
+    expect(narrow.usageRing).toEqual({ rows: 5, cap: 5000 });
+  });
+
+  test('usage-ring cap tracks NB_USAGE_RING (issue #206)', () => {
+    process.env.NB_USAGE_RING = '100';
+    logUsage(dir, 'p', 'show', true, 1);
+    expect(stats(dir, { now: Date.now() }).usageRing.cap).toBe(100);
+  });
+
   test('usage log is a bounded ring: a compaction keeps exactly the newest usageRing() rows (issue #135)', () => {
     process.env.NB_USAGE_RING = '100';
     const ring = usageRing(); // 100
@@ -1946,6 +1964,7 @@ describe('usage log + stats', () => {
         'signals',
         'surfacing',
         'totalCalls',
+        'usageRing',
         'window',
         'windowStart',
       ].sort(),

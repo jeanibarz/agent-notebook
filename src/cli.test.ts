@@ -396,6 +396,20 @@ describe('runNbCli', () => {
     expect(s.out).toContain('upgrade nb'); // the hint, since vote errors are unclassified
   });
 
+  test('the human stats table shows the usage-ring occupancy line (issue #206)', async () => {
+    // The ring's own fill (how full the monitoring log is) must be visible in the
+    // human table, not only in --json — the analogue of the notebook inventory.
+    process.env.NB_USAGE_RING = '5000';
+    const now = Date.now();
+    const rows = Array.from({ length: 3 }, (_, i) =>
+      `${new Date(now - i * 1000).toISOString()}\tpatcher\tshow\tok\t1ms`,
+    );
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const s = await run(['stats', 'patcher']);
+    expect(s.code).toBe(0);
+    expect(s.out).toContain('usage ring: 3/5000 rows');
+  });
+
   // --exit-code (issue #129): the opt-in health gate. Seed a tight loop of calls
   // so the window holds a `loop` anomaly, exactly as the anomaly-render test does,
   // and assert the exit code across the three cases. Exit 3 is deliberate: it is

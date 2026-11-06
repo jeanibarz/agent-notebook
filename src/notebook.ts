@@ -2097,6 +2097,18 @@ export interface StatsReport {
    * above is unchanged. See `activityByDay` / `sparkline` and RFC 0106.
    */
   activity: number[];
+  /**
+   * Usage-ring occupancy (issue #206): how full the monitoring log itself is —
+   * `rows` is the total row count on disk, `cap` is `usageRing()`. Unlike
+   * `totalCalls` (which is windowed and shelf-scoped), this is TOTAL occupancy
+   * across the whole ring, so an operator can see the log is near its
+   * compaction point (and therefore about to drop the oldest history on the next
+   * trim) — the analogue, for the log, of the `notebooks` inventory's cap
+   * pressure (issue #40). Read from the `parseUsage` the report already does, so
+   * it costs no extra ring read. Additive — every field above is unchanged, and
+   * `STATS_SCHEMA_VERSION` does not bump (#172 additive-field policy).
+   */
+  usageRing: { rows: number; cap: number };
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -2747,5 +2759,10 @@ export function stats(
     signals,
     surfacing,
     activity,
+    // Total ring occupancy (issue #206): the full on-disk row count, NOT the
+    // windowed `recent`/`totalCalls`, so it reads as "how full is the log" rather
+    // than "how busy was the window". Reuses the `parsed` array already read — no
+    // second ring scan (the #206 risk note).
+    usageRing: { rows: parsed.length, cap: usageRing() },
   };
 }

@@ -9,6 +9,15 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Added
+- **`nb stats` reports the usage ring's own occupancy (#206).** The stats report showed
+  per-shelf notebook cap pressure (#40) but never how full the monitoring log itself is. A new
+  `usageRing: { rows, cap }` field (and a human `usage ring: <rows>/<cap> rows` line, flagged
+  `FULL` at the cap) surfaces total on-disk row count vs the `NB_USAGE_RING` bound, so an
+  operator can see the log is near compaction and about to drop the oldest history. It is total
+  occupancy — independent of the `--since` window, unlike `totalCalls` — and read from the ring
+  scan the report already does (no extra read). Additive: `STATS_SCHEMA_VERSION` is unchanged.
+
 ### Fixed
 - **The usage-log `session` column is now length-capped like `note` (#202).** `NB_SESSION`
   was written to every row with sanitization but no length cap, so a long session id (a full

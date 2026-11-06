@@ -1535,6 +1535,13 @@ function renderStats(rep: StatsReport, shelf: string | undefined): string {
       lines.push(`    ${n.shelf.padEnd(20)}  ${String(n.lines).padStart(4)}/${n.cap}${full}`);
     }
   }
+  // Usage-ring occupancy (issue #206): the log's own fill vs its cap, so "why did
+  // my window lose older data" is answerable at a glance — the analogue, for the
+  // monitoring log, of the per-shelf cap pressure just above. Total occupancy
+  // (not the windowed call count), flagged FULL when it has reached the cap.
+  const ring = rep.usageRing;
+  const ringFull = ring.rows >= ring.cap ? '  FULL' : '';
+  lines.push(`  usage ring: ${ring.rows}/${ring.cap} rows${ringFull}`);
   return lines.join('\n');
 }
 
