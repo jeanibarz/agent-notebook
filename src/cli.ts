@@ -1628,6 +1628,42 @@ export function settleCliExit(result: Promise<number>): Promise<void> {
   );
 }
 
+// Guard `stdout`/`stderr` against broken-pipe (`EPIPE`) errors. When a reader
+// closes the pipe early — `nb show <shelf> | head -1`, `… | grep -q foo`, or
+// quitting a pager before it drains — a write to the now-closed pipe emits an
+// async `error` event on the stream. Node installs no default listener for it,
+// so without this it surfaces as an uncaught `Error: write EPIPE` with a stack
+// trace on stderr and an abnormal (non-zero) exit — noisy for interactive use
+// and liable to trip scripts and hooks that pipe `nb` output (issue #246).
+//
+// The handler exits cleanly on `EPIPE`: the reader we were writing to is gone,
+// so there is nothing left to say and nothing to flush. It uses `process.exit()`
+// with no argument — which honors any already-set `process.exitCode` — rather
+// than a hard `exit(0)`: a broken pipe during normal output leaves `exitCode`
+// unset and so exits 0 (the benign case), but `settleCliExit`'s fatal path sets
+// `exitCode = 1` *before* its stderr write, so an EPIPE on *that* write still
+// exits 1 and a crash can never leak out as success (DP-5). Any *other* stream
+// error is re-thrown so a genuine write failure still surfaces loudly and is
+// never silently swallowed. `.then(onFulfilled, onRejected)` in `settleCliExit`
+// catches a `runNbCli` *rejection* but not an async `error` event on the stdout
+// stream, so that guard and this one are complementary.
+//
+// `streams`/`onEpipe` are injectable so the EPIPE-vs-other branch is unit
+// testable without tearing down the test runner's real stdout.
+export function installPipeGuards(
+  streams: ReadonlyArray<NodeJS.EventEmitter> = [process.stdout, process.stderr],
+  onEpipe: () => void = () => process.exit(),
+): void {
+  const onError = (err: NodeJS.ErrnoException): void => {
+    if (err.code === 'EPIPE') {
+      onEpipe();
+      return;
+    }
+    throw err;
+  };
+  for (const stream of streams) stream.on('error', onError);
+}
+
 /* c8 ignore start */
 // `process.argv[1]` is the invoked path (e.g. an npm bin symlink such as
 // node_modules/.bin/nb); `import.meta.url` resolves through that symlink to
@@ -1644,6 +1680,7 @@ function isMainModule(): boolean {
 }
 
 if (isMainModule()) {
+  installPipeGuards();
   void settleCliExit(runNbCli(process.argv.slice(2)));
 }
 /* c8 ignore stop */
