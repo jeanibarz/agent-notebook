@@ -39,8 +39,26 @@ jobs:
       # vitest 5 imports `styleText` from node:util, which only exists on
       # Node 20.12+, so the suite cannot run on Node 18. The build step above
       # still verifies the package compiles on its minimum engine (>=18).
+      #
+      # In CI, vitest.config.ts adds the `github-actions` reporter (annotates
+      # each failing test inline on the PR) and the `junit` reporter (writes
+      # junit.xml), so a red leg names the failing test instead of forcing a
+      # raw-log scroll (issue #248).
       - run: npm test
         if: matrix.node-version != 18
+
+      # Machine-readable result for triage: only uploaded when a test leg
+      # failed, and keyed per matrix leg so the six legs never collide on one
+      # artifact name. `if-no-files-found: ignore` keeps the step green if a
+      # pre-test step failed before junit.xml was written.
+      - name: Upload JUnit test results
+        if: failure() && matrix.node-version != 18
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: junit-${{ matrix.os }}-node${{ matrix.node-version }}
+          path: junit.xml
+          if-no-files-found: ignore
+          retention-days: 7
       # Node 18 cannot load Vitest (see above), so the suite is skipped there and
       # the shipped code would otherwise never RUN on its minimum engine. Instead
       # run a dependency-free runtime smoke of the built CLI — the only leg that
