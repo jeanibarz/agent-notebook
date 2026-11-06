@@ -584,8 +584,13 @@ treated as abandoned by a crashed process and stolen. The acquire budget SHALL b
 *derived* as that threshold plus a grace margin (`NB_LOCK_GRACE_MS`, default ~2s),
 so it is always ≥ the threshold; otherwise a caller meeting a just-crashed holder's
 still-fresh lock would give up before the lock could ever age enough to be stolen,
-and every mutation would fail with 'locked' until the stale lock aged out. (The
-usage log is appended outside this lock — see [FR-USAGE-001](#fr-usage-001).)
+and every mutation would fail with 'locked' until the stale lock aged out. The
+acquire loop SHALL treat only an `EEXIST` from `mkdir(.nb.lock)` as a held lock;
+any other error (e.g. `EACCES`/`EPERM`/`EROFS`/`ENOSPC` from an unwritable
+`NB_DIR`) SHALL fail fast with a clear 'directory is not writable' error that
+names the underlying code, rather than busy-waiting the whole acquire budget and
+then reporting a misleading 'locked' when no other process exists (issue #263).
+(The usage log is appended outside this lock — see [FR-USAGE-001](#fr-usage-001).)
 **Rationale:** Serial CLI calls on one host occasionally overlap; the lock keeps a
 concurrent `add`+`vote` from corrupting the file, and stale-steal recovers from a
 crashed process — recovery that is reachable only when the acquire budget is at
@@ -594,7 +599,10 @@ least the steal threshold (issue #133).
 "a crashed holder's fresh lock is reclaimed WITHIN the acquire window, not thrown (issue #133)"
 and "a genuinely live holder that keeps its lock fresh still times out, reporting the DERIVED budget"
 — the latter asserts the thrown timeout message reports the derived budget (`staleMs + grace`),
-which proves the acquire deadline is >= the steal threshold.
+which proves the acquire deadline is >= the steal threshold. The fail-fast guarantee is proven by
+"fails fast (not 'locked') when mkdir(.nb.lock) throws EACCES — unwritable store (issue #263)"
+(and its `EROFS`/`ENOSPC` siblings), which inject an unwritable store and assert the mutation rejects
+well under the acquire budget with a 'not writable' error naming the errno, not 'notebook is locked'.
 
 <a id="fr-lock-002"></a>
 **FR-LOCK-002 (Must).** The CLI SHALL install `SIGINT`/`SIGTERM` handlers so an

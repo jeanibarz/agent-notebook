@@ -469,7 +469,23 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
       mkdirSync(lock); // atomic: succeeds only if it did not exist
       heldLock = lock; // we now own this lock (the signal handler may reap it)
       break;
-    } catch {
+    } catch (err) {
+      // EEXIST is the ONLY code that means "the lock is genuinely held": the
+      // `.nb.lock` dir already exists, so another nb process owns it and the
+      // stale-steal / wait-and-retry path below is the right response. Any other
+      // code means the lock dir itself cannot be created — EACCES/EPERM on a
+      // permission-denied store, EROFS on a read-only mount, ENOSPC on a full
+      // disk, ENOENT on a vanished NB_DIR. Busy-waiting the whole acquire budget
+      // (staleMs + grace, ~10s+) would only delay an inevitable failure and then
+      // report a misleading 'notebook is locked' when no other process exists.
+      // Fail fast with the real cause instead (issue #263).
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'EEXIST') {
+        throw new Error(
+          `cannot acquire notebook lock at ${lock}: notebook directory is not writable (${code ?? String(err)})`,
+          { cause: err },
+        );
+      }
       // Stale-lock recovery: a crashed nb process can leave .nb.lock behind.
       // Steal it once its holder has been silent longer than the stale threshold.
       try {

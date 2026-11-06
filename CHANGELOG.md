@@ -17,6 +17,13 @@ versions are listed plainly.
   genuine git error. The two cases are now distinguished: a real failure prints "git history
   unavailable — git failed, timed out, or refused access …", while the absent-`.git` path keeps
   its unchanged "not a git repo" line. Read-only and zero-dependency, like the rest of the janitor.
+- **`withLock` fails fast on an unwritable notebook store instead of busy-waiting (#263).** The
+  lock-acquire loop treated *any* `mkdir(.nb.lock)` error as "lock held", so on a read-only or
+  permission-denied `NB_DIR` every mutation spun the full acquire budget (~12s) and then died with
+  a misleading `notebook is locked (…)` — when no other process existed and the real cause was an
+  unwritable store. The loop now treats only `EEXIST` as a held lock and fails fast on any other
+  code (`EACCES`/`EPERM`/`EROFS`/`ENOSPC`/…) with a clear `notebook directory is not writable`
+  message, chaining the original error as the cause.
 
 ## [0.7.0] - 2026-11-06
 
