@@ -360,6 +360,23 @@ describe('runNbCli', () => {
     expect(s.out).toMatch(/^\s*add\s+\d+\s+\d+%/m);
   });
 
+  test('the human stats table renders the error-causes block with the upgrade hint (issue #223)', async () => {
+    const now = Date.now();
+    const mk = (cmd: string, cls = '', outcome = ''): string =>
+      `${new Date(now - Math.random() * 1000).toISOString()}\tpatcher\t${cmd}\terr\t2ms\t\t\t${outcome}\t\t\t\t\t${cls}`;
+    const rows = [
+      mk('add', 'too_long'), mk('add', 'too_long'), mk('add', 'too_long'), // 3 → meets the min
+      mk('vote'), mk('vote'), mk('vote'), // 3 unclassified → triggers the upgrade hint
+    ];
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const s = await run(['stats', 'patcher']);
+    expect(s.code).toBe(0);
+    expect(s.out).toContain('  error causes:');
+    expect(s.out).toMatch(/add\s+too_long 100%\s+\(3 err\)/);
+    expect(s.out).toMatch(/vote\s+unclassified 100%\s+\(3 err\)/);
+    expect(s.out).toContain('upgrade nb'); // the hint, since vote errors are unclassified
+  });
+
   // --exit-code (issue #129): the opt-in health gate. Seed a tight loop of calls
   // so the window holds a `loop` anomaly, exactly as the anomaly-render test does,
   // and assert the exit code across the three cases. Exit 3 is deliberate: it is

@@ -1313,6 +1313,45 @@ describe('error-class usage column (issue #176)', () => {
     expect(anomaly.detail).toContain('bad_args 50%, no_match 50%'); // alphabetical, not insertion order
   });
 
+  test('errorCauses breaks each command down by cause and omits commands below the min (issue #223)', () => {
+    const now = Date.now();
+    const row = (cmd: string, ok: boolean, cls = '', outcome = ''): string =>
+      `${new Date(now - Math.random() * 1000).toISOString()}\tp\t${cmd}\t${ok ? 'ok' : 'err'}\t2ms\t\t\t${outcome}\t\t\t\t\t${cls}`;
+    const rows = [
+      // add: 5 errors (3 too_long, 2 unclassified) + 1 ok
+      row('add', false, 'too_long'), row('add', false, 'too_long'), row('add', false, 'too_long'),
+      row('add', false), row('add', false), row('add', true),
+      // vote: 3 errors, all no_match
+      row('vote', false, 'no_match'), row('vote', false, 'no_match'), row('vote', false, 'no_match'),
+      // rm: only 2 errors → below ERROR_CAUSE_MIN (3), must be omitted
+      row('rm', false, 'bad_args'), row('rm', false, 'bad_args'),
+    ];
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+
+    const causes = stats(dir, { now }).errorCauses;
+    expect(causes.map((c) => c.command)).toEqual(['add', 'vote']); // rm omitted; add first (more errors)
+    const add = causes.find((c) => c.command === 'add')!;
+    expect(add.errors).toBe(5);
+    expect(add.breakdown).toEqual([
+      { cause: 'too_long', pct: 60 },
+      { cause: 'unclassified', pct: 40 },
+    ]);
+    expect(causes.find((c) => c.command === 'vote')!.breakdown).toEqual([{ cause: 'no_match', pct: 100 }]);
+  });
+
+  test('errorCauses falls back to outcome=too-long on a pre-#176 row with no errorClass', () => {
+    const now = Date.now();
+    // errorClass column blank, but outcome records `too-long` (the shape a binary
+    // predating the errorClass column writes) → still classified as too_long.
+    const rows = Array.from(
+      { length: 3 },
+      (_, i) => `${new Date(now - i * 1000).toISOString()}\tp\tadd\terr\t2ms\t\t\ttoo-long`,
+    );
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const add = stats(dir, { now }).errorCauses.find((c) => c.command === 'add')!;
+    expect(add.breakdown).toEqual([{ cause: 'too_long', pct: 100 }]);
+  });
+
   test('pre-#176 error rows (no class) are bucketed as `unclassified`, not a misleading `other`', () => {
     process.env.NB_ERR_MIN = '4';
     process.env.NB_ERR_RATE = '0.5';
@@ -1852,6 +1891,7 @@ describe('usage log + stats', () => {
       [
         'activity',
         'anomalies',
+        'errorCauses',
         'generatedAt',
         'notebookTotals',
         'notebooks',

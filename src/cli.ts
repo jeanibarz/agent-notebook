@@ -1456,6 +1456,23 @@ function renderStats(rep: StatsReport, shelf: string | undefined): string {
       );
     }
   }
+  // Error causes (issue #223): name the lever behind each command's err% so the
+  // two most actionable rates — `add` over-cap rejections and `vote` selector
+  // misses — are in the header, not buried behind the high-error-rate anomaly
+  // threshold. Only printed when something errored this window. A dominant
+  // `unclassified` share means the log predates the errorClass column (#176) —
+  // upgrade `nb` so causes get recorded.
+  if (rep.errorCauses.length > 0) {
+    lines.push('  error causes:');
+    let anyUnclassified = false;
+    for (const e of rep.errorCauses) {
+      for (const b of e.breakdown) if (b.cause === 'unclassified') anyUnclassified = true;
+      const parts = e.breakdown.map((b) => `${b.cause} ${b.pct}%`).join(', ');
+      lines.push(`    ${e.command.padEnd(8)} ${parts}  (${e.errors} err)`);
+    }
+    if (anyUnclassified)
+      lines.push('    (unclassified = log predates error-class recording — upgrade nb to split these by cause)');
+  }
   if (rep.anomalies.length > 0) {
     lines.push('  anomalies:');
     for (const a of rep.anomalies) {

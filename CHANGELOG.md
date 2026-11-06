@@ -20,6 +20,14 @@ versions are listed plainly.
   nothing in them voted) so the noisiest over-promisers get a real trigger first (`nb describe`); the
   browse ranking needs `NB_SESSION`, degrading to an alphabetical list without it. Both appear in
   `--json` as `curation` and `undescribed`. Read-only and zero-dependency, like the rest of the janitor.
+- **`nb stats` surfaces per-command error causes in the header (#223).** The per-command table shows
+  each command's error *rate*; a new `error causes:` block names the *cause* so the two most actionable
+  rates — `add` over-the-cap rejections and `vote` selector-resolution failures — are visible up front
+  instead of buried behind the high-error-rate anomaly threshold. Each cause is an `errorClass` token
+  (#176); a row predating that column falls back to its `outcome` (so `add`'s `too-long` still shows on
+  an older log) and otherwise reads `unclassified` with a one-line cue to upgrade `nb`. Only commands
+  with at least a handful of errors are listed. Exposed in `--json` as the additive `StatsReport.errorCauses`
+  (`{ command, errors, breakdown: [{ cause, pct }] }`); no schema bump (purely additive).
 - **`nb show` prints a copy-paste vote hint with the shelf filled in (#223).**
   The usage audit found ~1 in 5 votes failing on a fuzzy *text* selector even though the stable id
   was printed on the same line. `nb show <shelf>` now ends (when it has lessons) with a `#` comment

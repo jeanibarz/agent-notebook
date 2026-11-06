@@ -1825,6 +1825,24 @@ export interface CommandStat {
   lastUsed: string;
 }
 
+/**
+ * Per-command error-cause readout (issue #223). The per-command table shows each
+ * command's error *rate*; this names the *cause* so the two most actionable rates
+ * — `add` over-the-cap rejections and `vote` selector-resolution failures — are
+ * surfaced in the header instead of being buried behind the high-error-rate
+ * anomaly threshold. Each `cause` is an `errorClass` token (issue #176) when the
+ * row recorded one; a row that predates that column falls back to its `outcome`
+ * (so `add`'s `too-long` still shows on a pre-#176 log) and otherwise reads
+ * `unclassified` — a hint to upgrade `nb` so error classes get recorded.
+ */
+export interface ErrorCause {
+  command: string;
+  /** Total error rows for this command in the window (the breakdown's denominator). */
+  errors: number;
+  /** Dominant-first cause → share of this command's errors, as an integer percent. */
+  breakdown: { cause: string; pct: number }[];
+}
+
 export interface Anomaly {
   kind: 'loop' | 'went-silent' | 'high-error-rate';
   command: string;
@@ -2029,6 +2047,15 @@ export interface StatsReport {
   windowStart: string;
   totalCalls: number;
   perCommand: CommandStat[];
+  /**
+   * Per-command error-cause breakdown (issue #223), dominant-first and only for
+   * commands that had ≥1 error in the window. Additive to the report — every
+   * field above is unchanged. It names the lever behind each command's `err%`
+   * (e.g. `add`: `too_long`, `vote`: `no_match`/`ambiguous_selector`) so the two
+   * headline rates are not buried behind the high-error-rate anomaly threshold.
+   * See `ErrorCause`.
+   */
+  errorCauses: ErrorCause[];
   anomalies: Anomaly[];
   /**
    * Notebook inventory (issue #40): per-shelf line counts and the `maxLines()`
@@ -2291,6 +2318,32 @@ export function stats(
     arr.push(r);
     byCmd.set(r.command, arr);
   }
+  // Per-command error-cause breakdown (issue #223): name the lever behind each
+  // command's err% so `add` over-cap rejections and `vote` selector misses are
+  // surfaced in the header, not only when the high-error-rate anomaly fires. A
+  // row's cause is its `errorClass` (issue #176); a pre-#176 row falls back to
+  // `outcome` for the one outcome that is an error (`too-long` → `too_long`), so
+  // `add`'s dominant cause reads correctly even on an older log; anything else is
+  // `unclassified`.
+  // A couple of stray errors (e.g. a one-off unknown-subcommand guess) is noise,
+  // not a rate; only a handful is a pattern worth naming. This keeps the readout
+  // to the commands that actually have an err% worth diagnosing (add, vote).
+  const ERROR_CAUSE_MIN = 3;
+  const errorCause = (r: UsageRow): string =>
+    r.errorClass || (r.outcome === 'too-long' ? 'too_long' : 'unclassified');
+  const errorCauses: ErrorCause[] = [...byCmd.entries()]
+    .map(([command, rows]): ErrorCause => {
+      const errRows = rows.filter((r) => !r.ok);
+      const counts = new Map<string, number>();
+      for (const r of errRows) counts.set(errorCause(r), (counts.get(errorCause(r)) ?? 0) + 1);
+      const breakdown = [...counts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([cause, n]) => ({ cause, pct: Math.round((n / errRows.length) * 100) }));
+      return { command, errors: errRows.length, breakdown };
+    })
+    .filter((e) => e.errors >= ERROR_CAUSE_MIN)
+    .sort((a, b) => b.errors - a.errors || a.command.localeCompare(b.command));
+
   const perCommand: CommandStat[] = [...byCmd.entries()]
     .map(([command, rows]) => {
       const lat = rows.map((r) => r.ms).sort((a, b) => a - b);
@@ -2679,6 +2732,7 @@ export function stats(
     windowStart: new Date(now - windowMs).toISOString(),
     totalCalls: recent.length,
     perCommand,
+    errorCauses,
     anomalies,
     notebooks,
     notebookTotals,
