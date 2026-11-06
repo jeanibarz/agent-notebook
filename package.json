@@ -43,12 +43,14 @@
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
     "test": "node scripts/check-node-for-tests.mjs && vitest run",
+    "test:coverage": "node scripts/check-node-for-tests.mjs && vitest run --coverage",
     "test:fast": "node scripts/check-node-for-tests.mjs && vitest run --config vitest.fast.config.ts",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@vitest/coverage-v8": "^5.1.0",
     "typescript": "^5.7.2",
     "vitest": "^5.0.5"
   }
