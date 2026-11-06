@@ -779,6 +779,25 @@ behaviour the agent already performs.
 `describe('activityByDay (issue #106)')`, and `cli.test.ts` → the human
 activity-line test and the `stats --json … activity` test (both issue #106).
 
+<a id="fr-stats-006"></a>
+**FR-STATS-006 (Should).** `stats` SHALL additionally report the **usage ring's own
+occupancy** as `StatsReport.usageRing = { rows, cap }`, where `rows` is the total
+row count held on disk and `cap` is `usageRing()` (the `NB_USAGE_RING` bound of
+[NFR-BOUND-001](#nfr-bound-001)), surfaced both as a human `usage ring: <rows>/<cap> rows`
+line in the `nb stats` table (flagged `FULL` at the cap) and in `--json`. This is
+**total** occupancy — independent of the `--since` window and the `[<shelf>]` scope,
+so it is NOT the windowed `totalCalls` — read from the same `parseUsage` the report
+already performs (no second ring read). Additive to the report: `STATS_SCHEMA_VERSION`
+SHALL NOT bump ([#172](#fr-stats-001) additive-field policy), every prior field is
+unchanged, and it adds no field to a lesson ([NG-004](#ng-004)).
+**Rationale:** The notebook inventory (issue #40) made per-shelf cap pressure visible,
+but the usage ring — whose fill decides when the oldest monitoring history is dropped —
+had no such readout; "why did my window lose older data?" otherwise needs reading the
+log by hand.
+*Proven by:* `notebook.test.ts` → `describe('usage log + stats')` →
+`test('reports usage-ring occupancy (rows/cap), total and window-independent (issue #206)')`,
+and `cli.test.ts` → `test('the human stats table shows the usage-ring occupancy line (issue #206)')`.
+
 ### 4.13 Notebook descriptions & metadata
 
 <a id="fr-desc-001"></a>
