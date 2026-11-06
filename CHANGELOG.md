@@ -10,6 +10,13 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb show` prints a copy-paste vote hint with the shelf filled in (#223).**
+  The usage audit found ~1 in 5 votes failing on a fuzzy *text* selector even though the stable id
+  was printed on the same line. `nb show <shelf>` now ends (when it has lessons) with a `#` comment
+  line — `# vote by id: nb vote <shelf> <id> +1|-1  ·  several at once: nb vote <shelf> <id1,id2,…> +1`
+  — so the reflect step votes by the id above (and can batch) instead of by an ambiguous substring.
+  Display-only: it is never written to the file, never parsed back as a lesson, and is suppressed
+  under `--json` (which stays a lone `ShowResult`) and on an empty/never-created notebook.
 - **`nb vote <shelf> <id1,id2,…> +1|-1` votes several entries in one call (#223).**
   The end-of-session retro routinely promotes or demotes a handful of lessons at once; until now
   that was N separate `nb vote` calls — N round-trips, N chances for a stale/ambiguous selector to
