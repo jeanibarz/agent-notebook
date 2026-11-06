@@ -10,6 +10,13 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **A too-long `add` now reports the overflow so re-drafts stop guessing (#239).** The `#223`
+  usage audit found `add` wastes ~1 in 3 calls on the 200-char cap, and each rejected lesson
+  is re-drafted blind because the error named the length and the cap but never how far *over*
+  it was. The rejection now reports the overflow (`length - maxChars`): the human message reads
+  `… N over the <cap> limit — trim at least N …`, and `nb add --json` carries an additive
+  `overflow` field alongside the existing `length`. Behaviour is unchanged — a too-long add
+  still exits 1 and is never stored or truncated ([FR-ADD-004](docs/requirements.md)).
 - **`nb stats` reports the usage ring's own occupancy (#206).** The stats report showed
   per-shelf notebook cap pressure (#40) but never how full the monitoring log itself is. A new
   `usageRing: { rows, cap }` field (and a human `usage ring: <rows>/<cap> rows` line, flagged

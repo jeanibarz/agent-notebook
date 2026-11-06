@@ -353,6 +353,7 @@ describe('caps', () => {
     expect(r.added).toBe(false);
     expect(r.reason).toBe('too-long');
     expect(r.length).toBe(50);
+    expect(r.overflow).toBe(20); // 50 - 30: how much to trim (issue #239)
     expect(readEntries(dir, 'c')).toHaveLength(0); // nothing stored
     const ok = await addEntry(dir, 'c', 'y'.repeat(30)); // exactly at the cap
     expect(ok.added).toBe(true);
