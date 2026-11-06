@@ -2123,7 +2123,7 @@ describe('usage log + stats', () => {
     expect(existsSync(join(asFile, '.nb-usage.log'))).toBe(false);
   });
 
-  test('cross-process: overlapping usage-log writers leave a parseable file and no stray temp (issue #32)', async () => {
+  test('cross-process: overlapping usage-log writers leave a parseable file and no stray temp (issue #32) [timing]', async () => {
     // The acceptance scenario, with real OS processes (distinct pids): logUsage
     // runs unlocked, so concurrent `nb` invocations write the usage log at once.
     // A per-process temp keeps each rename atomic — the final file is always one
@@ -2941,7 +2941,7 @@ describe('locking (mkdir spinlock)', () => {
   // passes even if the lock is deleted and proves nothing. The genuine hazard is
   // several OS processes, so the no-lost-update test spawns real `nb` children.
 
-  test('cross-process: concurrent `nb add` invocations on one shelf all land (no lost update)', async () => {
+  test('cross-process: concurrent `nb add` invocations on one shelf all land (no lost update) [timing]', async () => {
     const N = 8; // small, deterministic; ~N*20ms serialization ≪ each child's acquire budget
     const env = { ...process.env, NB_DIR: dir };
     delete env.NB_MAX_LINES; // keep the default cap (50); N is well under it, so none is evicted
@@ -2959,7 +2959,7 @@ describe('locking (mkdir spinlock)', () => {
     expect(texts).toEqual(expected); // all N present, none lost
   }, 30_000);
 
-  test('an operation blocked by a live lock waits, then acquires once the lock is freed', async () => {
+  test('an operation blocked by a live lock waits, then acquires once the lock is freed [timing]', async () => {
     const lock = join(dir, '.nb.lock');
     mkdirSync(lock); // a live lock held by "another process" (fresh mtime → never stolen)
     let releasedAt = 0;
@@ -2992,7 +2992,7 @@ describe('locking (mkdir spinlock)', () => {
     expect(existsSync(lock)).toBe(false);
   });
 
-  test('a crashed holder’s fresh lock is reclaimed WITHIN the acquire window, not thrown (issue #133)', async () => {
+  test('a crashed holder’s fresh lock is reclaimed WITHIN the acquire window, not thrown (issue #133) [timing]', async () => {
     // The bug: a crash leaves a fresh `.nb.lock`; with a 2s budget but a 10s
     // steal threshold the next caller gave up before the lock ever aged enough
     // to steal, so every mutation failed with 'locked' for ~10s. With the budget
@@ -3014,7 +3014,7 @@ describe('locking (mkdir spinlock)', () => {
     expect(existsSync(lock)).toBe(false); // the stolen lock is released again
   }, 10_000);
 
-  test('a genuinely live holder that keeps its lock fresh still times out, reporting the DERIVED budget', async () => {
+  test('a genuinely live holder that keeps its lock fresh still times out, reporting the DERIVED budget [timing]', async () => {
     // Acceptance #3: the 'locked' error must still fire for a live contender that
     // never releases. A live holder keeps touching the lock, so its mtime never
     // ages past the stale threshold and it is never stolen — unlike a crashed
