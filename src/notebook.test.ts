@@ -464,7 +464,9 @@ describe('caps', () => {
   //      docked EXACTLY ONE point; every other survivor is unchanged;
   //   5. a vote applies ±delta to its target and moves it to the fresh end — the
   //      recency signal the staleness targeting in (4) is built on.
-  test('randomized add/vote sequences never break the cap/eviction/decay invariants', async () => {
+  // [slow]: ~19s of durable fsync writes (300 sequences × 6 ops). Tagged so the
+  // `test:fast` inner loop skips it (issue #232); `npm test` and CI still run it.
+  test('randomized add/vote sequences never break the cap/eviction/decay invariants [slow]', async () => {
     // A tiny self-contained PRNG (mulberry32): deterministic given its seed, so
     // every sequence — and any failure — reproduces exactly. Zero dependency,
     // matching the round-trip generator below.
@@ -593,7 +595,9 @@ describe('serialization round-trip', () => {
   // Integer scores spanning negative, zero, the +1 default, and the +N path.
   const SCORES = [-3, 0, 1, 4];
 
-  test('format→parse recovers every (score, lesson) pair through the on-disk codec', async () => {
+  // [slow]: a randomized round-trip fuzz over the on-disk codec; tagged so the
+  // `test:fast` inner loop skips it (issue #232), the full `npm test` keeps it.
+  test('format→parse recovers every (score, lesson) pair through the on-disk codec [slow]', async () => {
     let n = 0;
     let exercised = 0;
     for (const raw of RAW_LESSONS) {
