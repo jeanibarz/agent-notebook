@@ -9,6 +9,8 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-06
+
 ### Changed
 - **`nb-janitor` §5 co-access now tells a `fragment` from a `panel` (#223).** A high-co-access pair used
   to always advise "merge/namespace", which is wrong for distinct roles that *legitimately* co-fire — an
@@ -456,7 +458,8 @@ versions are listed plainly.
 ### Added
 - Initial release: a bounded, voted, plain-text memory for AI agents. Commands: `nb add`, `show`, `vote`, `merge`, `rm`, `stats`. Each role's notebook holds at most 200 lines, each at most 200 characters, and the lowest-scored line is evicted first when full. The library has zero runtime dependencies.
 
-[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.2.1...v0.3.0
