@@ -104,12 +104,36 @@ import { runNbCli } from './cli.js';
 
 let dir: string;
 const SAVED = { ...process.env };
+// Every NB_* env var this suite reads or sets. Hoisted to one list so the
+// clean-baseline `beforeEach` and the restore-to-parent `afterEach` can never
+// drift apart (issue #230).
+const MANAGED_ENV = [
+  'NB_MAX_LINES',
+  'NB_MAX_CHARS',
+  'NB_USAGE_RING',
+  'NB_NEAR_DUP',
+  'NB_LOOP_N',
+  'NB_LOOP_WINDOW_S',
+  'NB_SILENT_H',
+  'NB_ERR_MIN',
+  'NB_ERR_RATE',
+  'NB_SESSION',
+  'NB_COVERAGE_HI',
+  'NB_RECALL_MISS_HI',
+  'NB_STALE_LOCK_MS',
+  'NB_LOCK_GRACE_MS',
+] as const;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'agent-notebook-'));
+  // Establish a clean baseline: clear every managed NB_* var so an ambient
+  // value the host exported (most often NB_SESSION — agents and CI-adjacent
+  // tooling set it) cannot leak into a test that assumes it is unset. A test
+  // that needs a variable set already sets it explicitly (issue #230).
+  for (const k of MANAGED_ENV) delete process.env[k];
 });
 afterEach(() => {
-  for (const k of ['NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_USAGE_RING', 'NB_NEAR_DUP', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ERR_RATE', 'NB_SESSION', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI', 'NB_STALE_LOCK_MS', 'NB_LOCK_GRACE_MS']) {
+  for (const k of MANAGED_ENV) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
