@@ -9,6 +9,16 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Changed
+- **`nb-janitor` §5 co-access now tells a `fragment` from a `panel` (#223).** A high-co-access pair used
+  to always advise "merge/namespace", which is wrong for distinct roles that *legitimately* co-fire — an
+  RFC review panel, or an orchestrator with its per-project reviewers. Each pair is now classified: a
+  `fragment` (same project scope AND a near-identical role name or shared `.`-stem — one role split in two)
+  keeps the merge/namespace advice; a `panel` (different roles) is labelled "expected; extract a shared
+  umbrella shelf only if they carry duplicated cross-cutting lessons, don't merge the roles". Fragments
+  sort ahead of panels so a genuine split never hides behind an expected panel. `highPairs[].kind` is added
+  to `--json`.
+
 ### Added
 - **`nb-janitor` sections 6 & 7: curation and undescribed-shelf signals (#223).** The usage audit
   surfaced two kinds of debt the offline janitor now reports. **§6 Curation** prints the window's
