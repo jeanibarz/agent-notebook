@@ -705,8 +705,6 @@ export async function runNbCli(
           const results = await voteMany(dir, shelf, ids, delta);
           const landed = results.filter((r) => r.id !== undefined);
           const failed = results.filter((r) => r.error !== undefined);
-          meta.entries = landed.map((r) => r.id as string);
-          meta.outcome = delta > 0 ? 'up' : 'down';
           if (json) {
             process.stdout.write(JSON.stringify(results) + '\n');
           } else {
@@ -720,11 +718,21 @@ export async function runNbCli(
           if (landed.length === 0) {
             // Nothing landed — surface it as an error (non-zero, logged as err)
             // like a single failed vote, so a wholly-wrong batch is not silent.
+            // CRUCIAL: leave meta.outcome/entries BLANK here. `stats()` keys vote
+            // engagement on `outcome` alone (not the ok flag), so stamping
+            // 'up'/'down' on a row where no vote landed would mark the session
+            // "engaged", count a phantom upvote, and suppress the zero-engagement
+            // diagnosis — exactly the single-vote failure path's blank-outcome
+            // behavior must be matched. So outcome/entries are set only below.
             meta.errorClass = 'no_match';
             return 1;
           }
-          // At least one vote landed → best-effort success (exit 0); any per-id
-          // failures were already reported on stderr above.
+          // At least one vote landed → best-effort success (exit 0). Record the
+          // touched ids and outcome ONLY now (a no-match above logs neither), so
+          // the usage row mirrors the single-vote success path.
+          meta.entries = landed.map((r) => r.id as string);
+          meta.outcome = delta > 0 ? 'up' : 'down';
+          // Any per-id failures were already reported on stderr above.
           break;
         }
         const r = await vote(dir, shelf, selector, delta);

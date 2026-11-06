@@ -20,7 +20,10 @@ versions are listed plainly.
   exactly the ambiguity the id selector exists to avoid. Best-effort: each id resolves independently,
   an unresolved one is reported on stderr **without** aborting the rest, and the call exits non-zero
   only when *none* landed. `--json` emits the per-id result array (`{selector,id,text,score}` or
-  `{selector,error}`). Library: `voteMany(dir, shelf, selectors, delta)`.
+  `{selector,error}`). Library: `voteMany(dir, shelf, selectors, delta)`. A batch is **one logged
+  action**: it writes a single usage row whose `entries` column lists every touched id (an all-fail
+  batch logs a blank outcome, exactly like a single failed vote, so `nb stats` never counts a
+  phantom upvote or marks a session engaged when nothing landed).
 - **`nb config` prints the effective (post-clamp) `NB_*` tunables (FR-CONFIG-001 / #188).**
   Every knob is read at call time and *clamped* to its range, so the value `nb` actually runs
   under is not always the one you exported; there was no command that surfaced it, so when behavior

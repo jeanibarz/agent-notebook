@@ -231,6 +231,32 @@ describe('runNbCli', () => {
     expect(v.err).toContain('eeeeee');
   });
 
+  test('an all-fail batch logs a BLANK outcome (not up/down), like a single failed vote', async () => {
+    // Regression guard: stats() keys vote engagement on the outcome column, not
+    // the ok flag, so an all-fail batch that stamped outcome='up' would count a
+    // phantom upvote and mark the session engaged. The failure row must carry a
+    // blank outcome and no entries, exactly as the single-vote no-match path does.
+    await run(['add', 'patcher', 'alpha one']);
+    await run(['vote', 'patcher', 'ffffff,eeeeee', '+1']); // both stale → nothing lands
+    const row = parseUsage(dir).at(-1)!;
+    expect(row.command).toBe('vote');
+    expect(row.ok).toBe(false);
+    expect(row.outcome).toBe('');
+    expect(row.entries).toEqual([]);
+  });
+
+  test('a landed batch logs outcome=up and the touched ids', async () => {
+    await run(['add', 'patcher', 'alpha one']);
+    await run(['add', 'patcher', 'beta two']);
+    const idA = entryId('alpha one');
+    const idB = entryId('beta two');
+    await run(['vote', 'patcher', `${idA},${idB}`, '+1']);
+    const row = parseUsage(dir).at(-1)!;
+    expect(row.ok).toBe(true);
+    expect(row.outcome).toBe('up');
+    expect(row.entries).toEqual([idA, idB]);
+  });
+
   test('--json on a batch emits the per-id result array', async () => {
     await run(['add', 'patcher', 'alpha one']);
     await run(['add', 'patcher', 'beta two']);
