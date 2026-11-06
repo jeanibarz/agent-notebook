@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -19,13 +19,32 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 let dir: string;
 const SAVED = { ...process.env };
+// Every NB_* env var this suite reads or sets. Hoisted to one list so the
+// clean-baseline `beforeEach` and the restore-to-parent `afterEach` can never
+// drift apart (issue #230).
+const MANAGED_ENV = [
+  'NB_DIR',
+  'NB_MAX_LINES',
+  'NB_MAX_CHARS',
+  'NB_ROLE',
+  'NB_LOOP_N',
+  'NB_LOOP_WINDOW_S',
+  'NB_SESSION',
+  'NB_COVERAGE_HI',
+  'NB_RECALL_MISS_HI',
+] as const;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'agent-notebook-cli-'));
+  // Establish a clean baseline: clear every managed NB_* var so an ambient
+  // value the host exported (most often NB_SESSION — agents and CI-adjacent
+  // tooling set it) cannot leak into a test that assumes it is unset. NB_DIR is
+  // then pointed at this test's temp dir below (issue #230).
+  for (const k of MANAGED_ENV) delete process.env[k];
   process.env.NB_DIR = dir;
 });
 afterEach(() => {
-  for (const k of ['NB_DIR', 'NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_ROLE', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SESSION', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI']) {
+  for (const k of MANAGED_ENV) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
@@ -1621,6 +1640,31 @@ describe('runNbCli', () => {
       expect(row.entries).toEqual([]);
       expect(row.outcome).toBe('');
       expect(row.session).toBe('');
+    });
+
+    // Hermeticity regression (issue #230): an ambient NB_SESSION — exported by
+    // the host before the suite started, as agents and CI-adjacent tooling do —
+    // must NOT leak into a test that assumes a blank session. `beforeAll` sets
+    // it to mimic that ambient value; the clean-baseline `beforeEach` clears it,
+    // so a blank-session assertion still holds. Remove the clearing and this
+    // test reproduces the original spurious failure.
+    describe('with an ambient NB_SESSION pre-set before the suite runs', () => {
+      const PRESET = 'ambient-session-from-host';
+      let savedSession: string | undefined;
+      beforeAll(() => {
+        savedSession = process.env.NB_SESSION;
+        process.env.NB_SESSION = PRESET;
+      });
+      afterAll(() => {
+        if (savedSession === undefined) delete process.env.NB_SESSION;
+        else process.env.NB_SESSION = savedSession;
+      });
+
+      test('a read-only command still logs a blank session (no ambient leak)', async () => {
+        await run(['show', 'patcher']);
+        const [row] = parseUsage(dir);
+        expect(row.session).toBe('');
+      });
     });
   });
 
