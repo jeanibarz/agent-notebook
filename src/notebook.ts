@@ -880,6 +880,82 @@ export function vote(dir: string, shelf: string, selector: string, delta: number
   });
 }
 
+/** One selector's outcome in a `voteMany` batch (best-effort: one failure never aborts the rest). */
+export interface VoteManyItem {
+  /** The selector as submitted (so the caller can pair a failure back to its input). */
+  selector: string;
+  /** The entry's stable id when the vote landed; absent on a failed selector. */
+  id?: string;
+  /** The entry's full text when the vote landed; absent on a failed selector. */
+  text?: string;
+  /** The entry's score AFTER the vote; absent on a failed selector. */
+  score?: number;
+  /** The failure message when this selector did not resolve to exactly one entry; absent on success. */
+  error?: string;
+}
+
+/**
+ * Apply ONE delta to SEVERAL entries of a shelf under a single lock and a single
+ * write — the batch form of `vote`, for an end-of-session retro that promotes or
+ * demotes a handful of lessons at once (N calls → 1). Best-effort: each selector
+ * is resolved independently against the pre-vote array, and a selector that
+ * matches zero or several entries is recorded as a failed item WITHOUT aborting
+ * the others — so one stale id never loses the whole sweep. Nothing is written
+ * if no selector resolved. All selectors are resolved BEFORE any score changes,
+ * so the indices never shift mid-batch; the touched entries are then moved to the
+ * fresh end in submission order, preserving the recency ordering `vote` keeps.
+ * A selector repeated in the same call resolves to the same entry and so votes it
+ * more than once (the caller asked for that); callers that want idempotence
+ * de-duplicate before calling.
+ */
+export function voteMany(dir: string, shelf: string, selectors: string[], delta: number): Promise<VoteManyItem[]> {
+  return withLock(dir, () => {
+    if (delta !== 1 && delta !== -1) throw new NbError('bad_args', 'vote delta must be +1 or -1');
+    if (selectors.length === 0) throw new NbError('bad_args', 'vote needs at least one id');
+    const entries = readEntries(dir, shelf);
+    if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
+    const results: VoteManyItem[] = [];
+    // Resolve every selector against the ORIGINAL array first (indices are only
+    // stable before we start moving touched entries to the end). A resolution
+    // failure is captured as an item, not thrown, so the rest of the batch runs.
+    const hits: { idx: number; selector: string }[] = [];
+    for (const selector of selectors) {
+      try {
+        hits.push({ idx: selectIndex(entries, selector), selector });
+      } catch (err) {
+        results.push({ selector, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    if (hits.length === 0) {
+      // Every selector failed — write nothing and let the caller report each
+      // failure (the CLI exits non-zero because no vote landed).
+      return results;
+    }
+    // Apply the deltas by index (no mutation of positions yet), then reorder the
+    // touched entries to the fresh end in first-touch order — the same recency
+    // invariant `vote` maintains, extended to a batch. A selector repeated in the
+    // batch votes its entry again (score moves per occurrence) but the row is
+    // moved to the end ONCE, so the file never gains a duplicate line.
+    for (const { idx } of hits) entries[idx].score += delta;
+    const seen = new Set<number>();
+    const touchedOrder: number[] = [];
+    for (const { idx } of hits) {
+      if (!seen.has(idx)) {
+        seen.add(idx);
+        touchedOrder.push(idx);
+      }
+    }
+    const rest = entries.filter((_, i) => !seen.has(i));
+    const reordered = [...rest, ...touchedOrder.map((i) => entries[i])];
+    writeEntries(dir, shelf, reordered);
+    for (const { idx, selector } of hits) {
+      const e = entries[idx];
+      results.push({ selector, id: entryId(e.text), text: e.text, score: e.score });
+    }
+    return results;
+  });
+}
+
 export function merge(dir: string, shelf: string, selA: string, selB: string, mergedLesson: string): Promise<AddResult> {
   return withLock(dir, () => {
     const entries = readEntries(dir, shelf);

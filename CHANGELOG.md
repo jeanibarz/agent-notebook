@@ -10,6 +10,20 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb vote <shelf> <id1,id2,…> +1|-1` votes several entries in one call (#223).**
+  The end-of-session retro routinely promotes or demotes a handful of lessons at once; until now
+  that was N separate `nb vote` calls — N round-trips, N chances for a stale/ambiguous selector to
+  fail, N usage rows. A comma-separated list of **≥2 bare hex ids** (the ids `nb show` prints) now
+  applies one delta to all of them under a single lock and a single write. It is batch **only** for
+  an id list: a single token, or any comma-part that is not a bare hex id, stays one (possibly text)
+  selector, so `nb vote s "build, then test" +1` is unchanged — batch-by-fuzzy-text would reintroduce
+  exactly the ambiguity the id selector exists to avoid. Best-effort: each id resolves independently,
+  an unresolved one is reported on stderr **without** aborting the rest, and the call exits non-zero
+  only when *none* landed. `--json` emits the per-id result array (`{selector,id,text,score}` or
+  `{selector,error}`). Library: `voteMany(dir, shelf, selectors, delta)`. A batch is **one logged
+  action**: it writes a single usage row whose `entries` column lists every touched id (an all-fail
+  batch logs a blank outcome, exactly like a single failed vote, so `nb stats` never counts a
+  phantom upvote or marks a session engaged when nothing landed).
 - **`nb config` prints the effective (post-clamp) `NB_*` tunables (FR-CONFIG-001 / #188).**
   Every knob is read at call time and *clamped* to its range, so the value `nb` actually runs
   under is not always the one you exported; there was no command that surfaced it, so when behavior
