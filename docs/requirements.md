@@ -949,7 +949,12 @@ operation; a lesson SHALL never exceed `maxChars`; the usage log SHALL never exc
 <a id="nfr-port-001"></a>
 **NFR-PORT-001 (Must).** The tool SHALL run on Node.js ≥ 18 as an ESM package with no
 runtime dependencies. CI exercises Linux and macOS on Node 18/20/22; macOS is a
-supported target (no Linux-specific syscalls) and is covered by CI.
+supported target (no Linux-specific syscalls) and is covered by CI. Because the test
+runner (Vitest) itself needs Node 20.12+ ([the guard](../scripts/check-node-for-tests.mjs)),
+the Node-18 leg runs a dependency-free runtime smoke of the built CLI
+([`scripts/smoke-node18.mjs`](../scripts/smoke-node18.mjs)) instead of the suite, so the
+minimum engine is actually executed and not merely compiled. *(Proven by
+`src/smoke-node18.test.ts`.)*
 
 <a id="nfr-safe-001"></a>
 **NFR-SAFE-001 (Must).** No operation SHALL write, read, or delete outside `NB_DIR`;

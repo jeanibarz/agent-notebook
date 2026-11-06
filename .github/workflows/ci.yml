@@ -41,3 +41,9 @@ jobs:
       # still verifies the package compiles on its minimum engine (>=18).
       - run: npm test
         if: matrix.node-version != 18
+      # Node 18 cannot load Vitest (see above), so the suite is skipped there and
+      # the shipped code would otherwise never RUN on its minimum engine. Instead
+      # run a dependency-free runtime smoke of the built CLI — the only leg that
+      # actually executes the package on Node 18 (issue #231).
+      - run: node scripts/smoke-node18.mjs
+        if: matrix.node-version == 18
