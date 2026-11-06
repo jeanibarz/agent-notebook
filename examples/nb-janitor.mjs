@@ -319,18 +319,21 @@ for (const shelves of Object.values(sessionShelves)) {
 // Classify a high-co-access pair: `fragment` = one underlying ROLE split in two
 // (a genuine merge/namespace candidate), vs `panel` = DISTINCT roles that
 // legitimately co-fire (an RFC review panel, or a per-project role bundle — the
-// orchestrator + its reviewers). Reuses §2's role/scope split and name-similarity:
-// a pair is a `fragment` only when it would ALSO read as a near-duplicate NAME
-// (same scope AND a near-identical role or a shared `.`-stem); otherwise the two
-// are different jobs that happen to run together, and merging them would blur
-// role-specific guidance. This keeps §5 from advising a merge on a review panel
-// (the false positive the usage audit #223 flagged).
+// orchestrator + its reviewers). Mirrors §2's name-dup rule EXACTLY so the two
+// sections never contradict: a pair is a `fragment` only when §2 would also flag
+// it as a near-duplicate NAME — same project scope, NOT intentional `.`-namespace
+// siblings, and a near-identical role (editSim ≥ 0.8). Everything else is a
+// `panel`: different scopes, `.`-stem siblings (e.g. `build.ci`/`build.cd`, which
+// §2 treats as intentional, not a dup), or simply different roles. This keeps §5
+// from advising a merge on a review panel or on intentional siblings — the false
+// positives the usage audit #223 flagged.
 const coPairKind = (a, b) => {
   const sa = splitShelf(a);
   const sb = splitShelf(b);
   if (sa.scope !== sb.scope) return 'panel'; // different project scope → different jobs
   const sharedDotStem = dotStem(sa.role) !== null && dotStem(sa.role) === dotStem(sb.role);
-  return sharedDotStem || editSim(sa.role, sb.role) >= 0.8 ? 'fragment' : 'panel';
+  if (sharedDotStem) return 'panel'; // intentional `.`-namespace siblings (mirrors §2's `continue`)
+  return editSim(sa.role, sb.role) >= 0.8 ? 'fragment' : 'panel';
 };
 const shelvesShown = Object.keys(showsByShelf);
 const coAccessComputed = shelvesShown.length > 0;

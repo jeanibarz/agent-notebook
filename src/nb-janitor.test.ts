@@ -92,6 +92,24 @@ describe('nb-janitor section 5 — shelf co-access (issue #107)', () => {
     expect(human).not.toContain('distinct roles that co-fire');
   });
 
+  test('intentional `.`-namespace siblings that co-fire are a panel, not a fragment (mirrors §2)', () => {
+    // `build.ci@kookr` + `build.cd@kookr` share the `.`-stem `build`: §2 treats
+    // these as intentional siblings (not a name-dup), so §5 must NOT advise a
+    // merge on them — they classify as `panel`, not `fragment`. Regression guard
+    // for an inversion where a shared stem wrongly routed to merge advice.
+    seed([
+      row('build.ci@kookr', 'show', 's1'),
+      row('build.cd@kookr', 'show', 's1'),
+      row('build.ci@kookr', 'show', 's2'),
+      row('build.cd@kookr', 'show', 's2'),
+    ]);
+    const { coAccess } = runJson();
+    expect(coAccess.highPairs).toEqual([
+      { a: 'build.cd@kookr', b: 'build.ci@kookr', co: 2, support: 2, ratio: 1, kind: 'panel' },
+    ]);
+    expect(runHuman()).not.toContain('likely one shelf split in two');
+  });
+
   test('a fragment pair is listed before a panel pair even when the panel has a higher ratio', () => {
     seed([
       // fragment (dup role names), ratio 0.8: co=4 over 5 shows each
