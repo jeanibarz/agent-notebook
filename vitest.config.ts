@@ -17,6 +17,15 @@ import { defineConfig } from 'vitest/config';
  * place — the ` [slow]` tag convention — not duplicated per script; to add a new
  * slow test to the fast-skip set, tag its title ` [slow]`.
  *
+ * ## CI failing-test identity (issue #248)
+ *
+ * `reporters` is environment-driven (see `resolveReporters`): inside GitHub
+ * Actions the `github-actions` and `junit` reporters are added on top of the
+ * default so a red matrix leg annotates the failing test inline on the PR and
+ * writes a machine-readable `junit.xml` (uploaded as an artifact on failure by
+ * `.github/workflows/ci.yml`). Locally only the default reporter runs, so console
+ * output and timing are unchanged and no `junit.xml` is written.
+ *
  * ## On-demand coverage (issue #233)
  *
  * The `coverage` block below only takes effect when a run passes `--coverage`
@@ -26,8 +35,42 @@ import { defineConfig } from 'vitest/config';
  * stays fast and non-flaky, with no threshold gate. The provider is V8 (ships with
  * `@vitest/coverage-v8`, a dev-only dependency — the package itself stays zero-dep).
  */
+
+// Built-in vitest reporters this project selects between. Kept as a narrow
+// union so `resolveReporters` stays type-checked against real reporter names.
+type BuiltinReporter = 'default' | 'github-actions' | 'junit';
+
+/**
+ * Choose test reporters from the environment so local runs stay untouched.
+ *
+ * Issue #248: when one PR CI matrix leg failed, nothing surfaced a
+ * machine-readable failing-test identity — triage meant opening that one red
+ * leg's raw log. Inside GitHub Actions (`GITHUB_ACTIONS=true`, which Actions
+ * always sets on hosted and self-hosted runners) we add, on top of `default`:
+ *   - `github-actions`: emits `::error::` workflow commands so each failing
+ *     test is annotated inline on the PR, naming the test (no log scroll).
+ *   - `junit`: writes a machine-readable result file that the CI workflow
+ *     uploads as an artifact on failure (see `.github/workflows/ci.yml`).
+ *
+ * Outside CI only the `default` reporter runs, so local console output and
+ * speed are exactly as before and no `junit.xml` is written locally.
+ */
+export function resolveReporters(
+  env: NodeJS.ProcessEnv = process.env,
+): BuiltinReporter[] {
+  if (env.GITHUB_ACTIONS === 'true') {
+    return ['default', 'github-actions', 'junit'];
+  }
+  return ['default'];
+}
+
 export default defineConfig({
   test: {
+    reporters: resolveReporters(),
+    // Only consulted when the `junit` reporter is active (i.e. in CI). Written
+    // to the repo root under a stable name so the upload-artifact step can pick
+    // it up by path.
+    outputFile: { junit: './junit.xml' },
     coverage: {
       provider: 'v8',
       reportsDirectory: './coverage',
