@@ -1,9 +1,35 @@
 import { defineConfig } from 'vitest/config';
 
 /**
- * Base Vitest config — the FULL gate (`npm test`, CI). It keeps Vitest's defaults
- * (test discovery, the parallel worker pool, the default excludes) and runs every
- * suite, including the `[slow]` property/fuzz tests described below.
+ * Base Vitest config — the FULL gate (`npm test`, CI). It runs every suite,
+ * including the `[slow]` property/fuzz tests described below, split across two
+ * projects (see "Flaky wall-clock timing tests" for the `[timing]` split).
+ *
+ * ## Flaky wall-clock timing tests (issue #249)
+ *
+ * A handful of tests assert real-clock **upper bounds** — e.g. the lock-steal
+ * test expects a crashed holder's lock to be reclaimed in well under 2s, and the
+ * cross-process usage/lock tests spawn 8–12 real `nb` children. Those bounds only
+ * break when a loaded runner stalls the event loop: under unbounded Vitest
+ * parallelism a constrained CI leg oversubscribes its cores and one such test
+ * overshoots, reddening a green commit on a single matrix leg with no retry (the
+ * macos flake on run 42136281826). The fix is two-pronged and scoped so it cannot
+ * mask a real logic regression:
+ *
+ *   - Those tests carry a ` [timing]` tag and run in a dedicated **`timing`**
+ *     project with `retry: 2` — a transient stall is re-run and passes, while a
+ *     genuine, repeatable failure still fails all three attempts.
+ *   - The `timing` project runs its files serially in a **single worker**
+ *     (`fileParallelism: false`) so the wall-clock suite does not oversubscribe by
+ *     racing its own child-process tests against each other.
+ *   - Every other test runs in the **`unit`** project with Vitest's normal
+ *     parallel pool and **no retry**, so logic regressions surface immediately and
+ *     the full suite stays fast. Retry is deliberately NOT global.
+ *
+ * The ` [timing]` tag is the single source of truth for the split: tag a new
+ * wall-clock test's title ` [timing]` (and, if it lives outside the files the
+ * `timing` project `include`s, add its file there) to move it into the retried,
+ * single-worker suite.
  *
  * ## The `test:fast` inner loop (issue #232)
  *
@@ -64,8 +90,17 @@ export function resolveReporters(
   return ['default'];
 }
 
+// A test whose FULL name (describe prefixes included) carries the ` [timing]`
+// tag is a real-clock bound test (issue #249) and runs in the retried,
+// single-worker `timing` project; everything else runs in the parallel, no-retry
+// `unit` project. Kept as one regex source so both projects stay in lockstep.
+const TIMING_TAG = '\\[timing\\]';
+
 export default defineConfig({
   test: {
+    // Reporters, outputFile and coverage are run-global: they stay at the root
+    // (not inside a project) so the aggregate run annotates/records once and the
+    // #248 and #233 wiring is unchanged by the #249 project split.
     reporters: resolveReporters(),
     // Only consulted when the `junit` reporter is active (i.e. in CI). Written
     // to the repo root under a stable name so the upload-artifact step can pick
@@ -80,5 +115,35 @@ export default defineConfig({
       include: ['src/**/*.ts'],
       exclude: ['src/**/*.test.ts'],
     },
+    // Issue #249: two projects sharing this file's global config. See the module
+    // doc comment for why. Tests are partitioned by the ` [timing]` title tag so
+    // no test runs in both projects.
+    projects: [
+      {
+        test: {
+          name: 'unit',
+          include: ['src/**/*.test.ts'],
+          // Everything EXCEPT the [timing] tests: the full logic/property suite,
+          // run with Vitest's normal parallel pool and no retry.
+          testNamePattern: `^(?!.*${TIMING_TAG}).*$`,
+        },
+      },
+      {
+        test: {
+          name: 'timing',
+          // Only the files that hold [timing] tests, so this project does not
+          // re-transform the whole tree just to run a few tests.
+          include: ['src/notebook.test.ts', 'src/timing-retry.test.ts'],
+          testNamePattern: TIMING_TAG,
+          // Re-run a wall-clock test that lost a scheduling race; a real,
+          // repeatable failure still fails every attempt (issue #249).
+          retry: 2,
+          // Run this project's wall-clock test files serially in a single worker
+          // so they cannot oversubscribe by racing their own child-process tests
+          // against each other.
+          fileParallelism: false,
+        },
+      },
+    ],
   },
 });
