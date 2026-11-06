@@ -87,6 +87,56 @@ describe('runNbCli', () => {
     expect(r.out).toContain('nb — the Agent Notebook');
   });
 
+  test('--help appends a `help` usage row so the not-wired symptom is visible to stats (issue #250)', async () => {
+    // help/version used to return before the shared logUsage, so a harness that
+    // only ever ran `nb --help` left NO trace in the usage ring — exactly the
+    // signal `nb stats` exists to surface. Every alias canonicalises to `help`.
+    for (const flag of ['--help', '-h', 'help']) {
+      await run([flag]);
+    }
+    // No-args prints the same usage, so it logs under `help` too.
+    await run([]);
+    const helpRows = parseUsage(dir).filter((r) => r.command === 'help');
+    expect(helpRows.length).toBe(4);
+    for (const row of helpRows) {
+      expect(row.ok).toBe(true); // help never fails
+      expect(row.role).toBe('-'); // no shelf involved
+    }
+  });
+
+  test('--version appends a `version` usage row under one canonical command (issue #250)', async () => {
+    for (const flag of ['--version', '-v', 'version']) {
+      await run([flag]);
+    }
+    const versionRows = parseUsage(dir).filter((r) => r.command === 'version');
+    expect(versionRows.length).toBe(3);
+    expect(versionRows.every((r) => r.ok && r.role === '-')).toBe(true);
+    // Each `nb` call appends exactly one row — never zero (the old bug) and
+    // never two — so the "every call appends one line" invariant holds.
+    expect(parseUsage(dir).length).toBe(3);
+  });
+
+  test('--help/--version still succeed when NB_DIR is unwritable (logging stays best-effort, issue #250)', async () => {
+    // The usage-row logging must never break `--help`/`--version` on a read-only
+    // system (the issue's stated risk). Point NB_DIR at a path *under a regular
+    // file*, so the log's `mkdirSync(dir, { recursive: true })` fails with
+    // ENOTDIR — a deterministic, cross-platform write failure that needs no
+    // chmod. `logUsage` must swallow it and the command must still exit 0.
+    const blocker = join(dir, 'not-a-dir');
+    writeFileSync(blocker, 'x');
+    process.env.NB_DIR = join(blocker, 'nb'); // mkdir under a file → ENOTDIR
+
+    const help = await run(['--help']);
+    expect(help.code).toBe(0);
+    expect(help.out).toContain('nb — the Agent Notebook');
+    expect(help.err).toBe(''); // the swallowed log error never reaches stderr
+
+    const version = await run(['--version']);
+    expect(version.code).toBe(0);
+    expect(version.out).toBe(`nb (agent-notebook) ${PKG_VERSION}\n`);
+    expect(version.err).toBe('');
+  });
+
   test('add then show round-trips a lesson', async () => {
     expect((await run(['add', 'patcher', 'prefer execFileSync, array args'])).code).toBe(0);
     const show = await run(['show', 'patcher']);
