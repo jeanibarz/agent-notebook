@@ -16,6 +16,9 @@
 //   • Or keep the real `nb` as-is and call this explicitly where you want commits.
 //
 //   Then make NB_DIR a repo once:  (cd "$(nb path)" && git init)
+//   On its first commit the wrapper seeds a default .gitignore (only if one is
+//   absent — an existing file is never touched) so the churning usage log, lock,
+//   and other transient runtime files stay out of history.
 //
 // PORTABILITY
 //   Pure Node, no shell — works on Linux, macOS, and Windows alike. It resolves
@@ -32,7 +35,7 @@
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 
@@ -40,6 +43,12 @@ import { execFileSync } from 'node:child_process';
 // package's mutating surface; a read-only command (show/list/search/stats/path)
 // never commits.
 const MUTATING = new Set(['add', 'vote', 'merge', 'rm', 'split', 'move', 'describe']);
+
+// The transient runtime surface NB_DIR accumulates that must never enter history:
+// the churning usage log and its sidecar/temp files (.nb-usage.log*), the lock,
+// any *.tmp, retrospective sentinels (.retro-*), and backup logs (.nb-backup.*).
+// Kept in sync with the git-versioning recipe in docs/harness-setup.md.
+const DEFAULT_GITIGNORE = ['.nb-usage.log*', '.nb.lock', '*.tmp', '.retro-*', '.nb-backup.*'];
 
 // Inherited GIT_* vars pin git to another repo/worktree/index and would override
 // our `-C <NB_DIR>`. If `nb` is ever invoked from inside a git hook (e.g. a
@@ -82,6 +91,17 @@ function resolveNbCliEntry() {
   return entry;
 }
 
+/**
+ * Seed a default .gitignore in NB_DIR so the churning usage log and other
+ * transient runtime files never enter history. Idempotent and non-destructive:
+ * writes only when no .gitignore exists, so a user's own file is never clobbered.
+ */
+function ensureGitignore(dir) {
+  const path = join(dir, '.gitignore');
+  if (existsSync(path)) return; // respect any existing ignore file — never overwrite
+  writeFileSync(path, DEFAULT_GITIGNORE.join('\n') + '\n');
+}
+
 /** Commit a notebook change when NB_DIR is a git repo. Best-effort, fail-open. */
 function autoCommit(dir, argv) {
   if (process.env.NB_GIT_AUTOCOMMIT === '0') return;
@@ -93,6 +113,7 @@ function autoCommit(dir, argv) {
   const run = (args) =>
     execFileSync('git', ['-C', dir, ...args], { stdio: ['ignore', 'ignore', 'ignore'], timeout: 5000, env });
   try {
+    ensureGitignore(dir); // seed the ignore file BEFORE staging so the log is never added
     run(['add', '-A']);
     try {
       run(['diff', '--cached', '--quiet']); // exit 0 → nothing staged → nothing to commit
