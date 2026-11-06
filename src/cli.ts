@@ -64,6 +64,7 @@ import {
   parseWindowMs,
   recallMissHi,
   readShelf,
+  releaseHeldLock,
   remove,
   renderEntries,
   search,
@@ -1682,6 +1683,47 @@ export function installPipeGuards(
   for (const stream of streams) stream.on('error', onError);
 }
 
+// Install SIGINT/SIGTERM handlers so an interrupt during a mutation does not
+// strand the `.nb.lock`. Without a handler these signals have a default "terminate
+// now" disposition: one delivered while a mutation holds the mkdir lock kills the
+// process before withLock's `finally` can run, stranding `.nb.lock` so the NEXT nb
+// call blocks up to staleLockMs + lockGraceMs (~12s by default) before it can steal
+// it — an avoidable stall on a tool whose whole promise is "a call is a
+// millisecond" (issue #247).
+//
+// The load-bearing fix is the disposition change itself: installing ANY handler
+// turns the signal into a deferred JS callback, so the synchronous critical section
+// of an in-flight mutation (withLock's `fn` + its `finally`) runs to completion and
+// releases the lock normally before we exit. The explicit `releaseHeldLock()` is
+// defensive cover for the case of still owning a lock when the handler runs (e.g.
+// were a mutation ever to hold the lock across an `await`); it removes ONLY a lock
+// THIS process owns — never another live `nb`'s, never a fresh lock we are merely
+// spinning on — and is a harmless no-op otherwise.
+//
+// After releasing, exit with the conventional 128+signo code (130 for SIGINT, 143
+// for SIGTERM) so shells and callers see a normal signal-terminated status. Normal,
+// un-signalled exits are untouched: the handler fires only on an actual signal.
+//
+// `release`/`onExit`/`target`/`signals` are injectable so the wiring is unit
+// testable without delivering real signals to the test runner. `onExit` receives
+// the computed exit *code* (128 + signo), not the raw signal number.
+export function installSignalLockRelease(
+  release: () => void = releaseHeldLock,
+  onExit: (code: number) => void = (code) => process.exit(code),
+  target: NodeJS.EventEmitter = process,
+  signals: ReadonlyArray<readonly [NodeJS.Signals, number]> = [
+    ['SIGINT', 2],
+    ['SIGTERM', 15],
+  ],
+): void {
+  for (const [name, signo] of signals) {
+    target.on(name, () => {
+      release();
+      onExit(128 + signo);
+    });
+  }
+}
+
 /* c8 ignore start */
 // `process.argv[1]` is the invoked path (e.g. an npm bin symlink such as
 // node_modules/.bin/nb); `import.meta.url` resolves through that symlink to
@@ -1699,6 +1741,7 @@ function isMainModule(): boolean {
 
 if (isMainModule()) {
   installPipeGuards();
+  installSignalLockRelease();
   void settleCliExit(runNbCli(process.argv.slice(2)));
 }
 /* c8 ignore stop */
