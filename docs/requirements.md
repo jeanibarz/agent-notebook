@@ -368,6 +368,20 @@ losing it (a "no loss of a voted lesson" guarantee).
 **FR-SHOW-002 (Should).** An empty notebook SHALL render a friendly, non-error
 message naming the shelf.
 
+<a id="fr-show-003"></a>
+**FR-SHOW-003 (Should).** `staleCandidates(dir, shelf, limit?)` SHALL rank a
+shelf's lessons by eviction priority — lowest score first, ties broken by stalest
+(lowest file index) — and return them most-disposable-first, truncated to `limit`
+(default 10 on the CLI), with the full pre-`limit` `total` and the `exists` flag
+([FR-SHOW-… / issue #166](#fr-show-001)). It SHALL be strictly read-only: no
+score change, no reorder, no removal. The `nb stale <shelf>` command surfaces this
+ranking on ANY shelf (not only a full one) so the retrospective can downvote/`rm`
+the weakest lessons by id, reviving the curation loop ([DP-1](#dp-1)); a missing
+shelf is reported like `show` (stderr, exit 0). *(Issue #240; spun off from the
+#223 usage audit's F3/F4.)*
+
+*Proven by:* `notebook.test.ts` → `describe('staleCandidates (nb stale — cull candidates, issue #240)')`; `cli.test.ts` → `describe('nb stale — cull candidates (issue #240)')`.
+
 ### 4.9 Shelves & paths
 
 <a id="fr-safe-001"></a>

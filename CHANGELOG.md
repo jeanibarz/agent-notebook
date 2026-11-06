@@ -10,6 +10,14 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb stale <shelf>` lists cull candidates to revive the curation loop (#240).** The `#223`
+  usage audit found the curation half of the design dormant: 572 upvotes vs 3 downvotes, and
+  eviction only ever culls at the 50-line cap — so on a sub-cap shelf a wrong `+1` lesson
+  persists forever. The new read-only `nb stale` command surfaces a shelf's lessons in the
+  order eviction would drop them (lowest score first, ties → stalest), most disposable first,
+  with a ready-to-run `nb vote … -1` / `nb rm …` footer so the retrospective acts by id. It
+  takes `--limit N` (default 10) and `--json` (a `StaleResult`), and never changes a score,
+  reorders, or removes anything. ([FR-SHOW-003](docs/requirements.md).)
 - **A too-long `add` now reports the overflow so re-drafts stop guessing (#239).** The `#223`
   usage audit found `add` wastes ~1 in 3 calls on the 200-char cap, and each rejected lesson
   is re-drafted blind because the error named the length and the cap but never how far *over*

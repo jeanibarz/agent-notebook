@@ -143,6 +143,74 @@ describe('runNbCli', () => {
     expect(JSON.parse(r.out)).toEqual({ role: 'solo', shelf: 'solo', description: null, entries: [], exists: false });
   });
 
+  // issue #240 (#223-F3) — `nb stale` surfaces cull candidates (the order
+  // eviction would drop them in) so the retro can downvote/rm the weakest.
+  describe('nb stale — cull candidates (issue #240)', () => {
+    // Seed four lessons, then lift two so the +1 floor (c, d) sorts to the top.
+    async function seedShelf(): Promise<void> {
+      for (const t of ['a', 'b', 'c', 'd']) await run(['add', 's', t]);
+      await run(['vote', 's', entryId('a'), '+1']);
+      await run(['vote', 's', entryId('a'), '+1']); // a -> +3
+      await run(['vote', 's', entryId('b'), '+1']); // b -> +2
+    }
+
+    test('lists candidates most-disposable-first with an N-of-M, cull-by-id footer', async () => {
+      await seedShelf();
+      const r = await run(['stale', 's']);
+      expect(r.code).toBe(0);
+      const lessonLines = r.out.split('\n').filter((l) => /^[0-9a-f]{6}\s/.test(l));
+      expect(lessonLines.map((l) => l.replace(/^[0-9a-f]{6}\s+\[[^\]]+\]\s+/, ''))).toEqual(['c', 'd', 'b', 'a']);
+      expect(r.out).toMatch(/most disposable first/);
+      expect(r.out).toContain('showing 4 of 4');
+      expect(r.out).toContain('nb vote s <id> -1');
+      expect(r.out).toContain('nb rm s <id> --reason obsolete');
+    });
+
+    test('--limit caps the printed list and the footer says "N of total"', async () => {
+      await seedShelf();
+      const r = await run(['stale', 's', '--limit', '2']);
+      expect(r.code).toBe(0);
+      expect(r.out.split('\n').filter((l) => /^[0-9a-f]{6}\s/.test(l))).toHaveLength(2);
+      expect(r.out).toContain('showing 2 of 4');
+    });
+
+    test('a bad --limit warns on stderr and falls back to the default (stdout stays clean)', async () => {
+      await seedShelf();
+      const r = await run(['stale', 's', '--limit', 'abc']);
+      expect(r.code).toBe(0);
+      expect(r.err).toMatch(/unrecognized --limit 'abc'/);
+      expect(r.out).not.toContain('--limit'); // the warning never leaks to stdout
+    });
+
+    test('--json emits a lone StaleResult object, same ranking, no comment lines', async () => {
+      await seedShelf();
+      const r = await run(['stale', 's', '--json']);
+      expect(r.code).toBe(0);
+      expect(r.out.trim().split('\n')).toHaveLength(1);
+      const parsed = JSON.parse(r.out);
+      expect(parsed.shelf).toBe('s');
+      expect(parsed.total).toBe(4);
+      expect(parsed.exists).toBe(true);
+      expect(parsed.entries.map((e: { text: string }) => e.text)).toEqual(['c', 'd', 'b', 'a']);
+    });
+
+    test('a never-created shelf prints "no notebook" on stderr, exit 0, nothing on stdout', async () => {
+      const r = await run(['stale', 'ghostshelf']);
+      expect(r.code).toBe(0); // not found is not an error (DP-5, like `show`)
+      expect(r.err).toContain('no notebook for shelf "ghostshelf"');
+      expect(r.out).toBe('');
+    });
+
+    test('it is read-only: a `show` after `stale` is byte-identical to before', async () => {
+      await seedShelf();
+      const before = await run(['show', 's']);
+      await run(['stale', 's']);
+      await run(['stale', 's', '--limit', '1']);
+      const after = await run(['show', 's']);
+      expect(after.out).toBe(before.out); // no reorder, no score change
+    });
+  });
+
   // issue #166 — `nb show` must tell a never-created shelf (e.g. a typo) apart
   // from a real empty notebook, so a mistake is never reported as "empty" (DP-5).
   describe('show distinguishes a missing shelf from an empty one (issue #166)', () => {
