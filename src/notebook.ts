@@ -415,7 +415,46 @@ export function setMetaValue(lines: string[], key: string, value: string): strin
 // locking (tiny mkdir spinlock — single-host, serial CLI calls, rare contention)
 // ---------------------------------------------------------------------------
 
-async function withLock<T>(dir: string, fn: () => T): Promise<T> {
+// The `.nb.lock` directory this process currently owns, or null when it owns
+// none. Set only once THIS process's atomic `mkdirSync(lock)` wins the create
+// (below) — never for a stale lock we steal, and never for a fresh lock we are
+// still spinning on — so it is a true ownership flag a SIGINT/SIGTERM handler can
+// consult (via `releaseHeldLock`) to reap only a lock we actually own.
+//
+// A single slot suffices because withLock is never nested and never runs
+// concurrently with itself: its critical section is synchronous (no `await`
+// between acquire and release) and every caller awaits one mutation at a time, so
+// at most one lock is owned at any instant. withLock's `finally` still releases
+// its OWN `lock` path directly rather than through this flag, so the normal
+// release never depends on the flag's value — even a hypothetical future nested
+// withLock on a different dir could not strand the outer lock. The flag is only a
+// hint for the signal handler, never the sole release path. (issue #247)
+let heldLock: string | null = null;
+
+/**
+ * Release the `.nb.lock` this process owns, if any, and clear the ownership flag.
+ * A no-op when this process owns no lock, so the SIGINT/SIGTERM handler that calls
+ * it (see cli.ts) can never remove another live `nb`'s lock nor a fresh lock we are
+ * only spinning on. The flag is cleared before the `rmdir`, so it is idempotent and
+ * safe to call more than once.
+ *
+ * This is the signal handler's release path. withLock's own `finally` releases its
+ * lock directly; this helper exists only so an interrupt can promptly reap a lock
+ * the process still owns instead of leaving it for the next caller's ~12s
+ * stale-steal (issue #247).
+ */
+export function releaseHeldLock(): void {
+  const lock = heldLock;
+  if (lock === null) return;
+  heldLock = null; // clear first so a second call is a no-op
+  try {
+    rmdirSync(lock);
+  } catch {
+    /* best-effort release — the directory may already be gone */
+  }
+}
+
+export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
   mkdirSync(dir, { recursive: true });
   const lock = join(dir, '.nb.lock');
   const staleMs = staleLockMs();
@@ -428,6 +467,7 @@ async function withLock<T>(dir: string, fn: () => T): Promise<T> {
   for (;;) {
     try {
       mkdirSync(lock); // atomic: succeeds only if it did not exist
+      heldLock = lock; // we now own this lock (the signal handler may reap it)
       break;
     } catch {
       // Stale-lock recovery: a crashed nb process can leave .nb.lock behind.
@@ -450,6 +490,12 @@ async function withLock<T>(dir: string, fn: () => T): Promise<T> {
     reapLeftoverTemps(dir);
     return fn();
   } finally {
+    // Release THIS invocation's own lock directly and unconditionally, and clear
+    // the ownership flag if it still names this lock. Removing `lock` itself
+    // (rather than whatever `heldLock` points at) keeps the normal path correct
+    // regardless of the flag: a signal handler that already reaped and nulled it,
+    // or a hypothetical future nested withLock, cannot strand this lock.
+    if (heldLock === lock) heldLock = null;
     try {
       rmdirSync(lock);
     } catch {

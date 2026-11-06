@@ -514,7 +514,8 @@ positional parsing so they are never mistaken for a lesson/operand/description t
 
 <a id="fr-cli-002"></a>
 **FR-CLI-002 (Must).** Exit codes SHALL be: `0` success; `1` a handled operation
-error (message on stderr); `2` an unknown command.
+error (message on stderr); `2` an unknown command; `130`/`143` termination by
+`SIGINT`/`SIGTERM` (`128 + signo`, see [FR-LOCK-002](#fr-lock-002)).
 
 <a id="fr-cli-003"></a>
 **FR-CLI-003 (Should).** `nb stats --json` SHALL emit the raw `StatsReport` object as
@@ -594,6 +595,29 @@ least the steal threshold (issue #133).
 and "a genuinely live holder that keeps its lock fresh still times out, reporting the DERIVED budget"
 — the latter asserts the thrown timeout message reports the derived budget (`staleMs + grace`),
 which proves the acquire deadline is >= the steal threshold.
+
+<a id="fr-lock-002"></a>
+**FR-LOCK-002 (Must).** The CLI SHALL install `SIGINT`/`SIGTERM` handlers so an
+interrupt (Ctrl-C) or a harness `SIGTERM` during a mutation does not strand
+`.nb.lock`. Installing the handlers changes the signals' default "terminate now"
+disposition to a deferred callback, so an in-flight mutation's synchronous critical
+section — including [FR-LOCK-001](#fr-lock-001)'s release — runs to completion before
+the process exits; the handler additionally releases any lock the process still owns,
+then exits with the conventional `128 + signo` status (130 for `SIGINT`, 143 for
+`SIGTERM`). A handler SHALL release *only* a lock this process owns — ownership is
+established solely by this process's own atomic `mkdir` acquire, never by stealing a
+stale lock nor while spinning — and SHALL never remove another live `nb`'s lock.
+Normal, un-signalled exit paths SHALL be unchanged.
+**Rationale:** Without the handlers a default-disposition signal kills the process
+before the lock is released, stranding `.nb.lock` so the next mutation blocks the
+full `staleLockMs + lockGraceMs` (~12s) stale-steal window before it can self-heal —
+an avoidable stall on a tool whose promise is that a call is a millisecond (issue
+#247).
+*Proven by:* `nb-signal-lock.test.ts` → `describe('releaseHeldLock — ownership (issue #247)')`
+(an owned lock is released, a foreign lock is never removed, and release is idempotent)
+and `describe('signal handler in the real built CLI (issue #247)')`, which delivers a
+real `SIGINT`/`SIGTERM` to a built process with the handlers installed and asserts it
+exits 130/143 and leaves a lock it does not own intact.
 
 <a id="fr-dur-001"></a>
 **FR-DUR-001 (Must).** A *notebook* write SHALL go to a temp file, be `fsync`'d,
