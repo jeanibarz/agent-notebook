@@ -17,7 +17,7 @@ const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 // throws. Everything delegates to the real fs; when `events` is null and
 // `failDirFsync` is false (the default, reset in afterEach) behavior is identical
 // to the unwrapped module, so every other test is unaffected.
-const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null }));
+const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
@@ -45,6 +45,19 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       return actual.renameSync(from, to);
     }) as typeof actual.renameSync,
+    mkdirSync: ((path: Parameters<typeof actual.mkdirSync>[0], opts?: Parameters<typeof actual.mkdirSync>[1]) => {
+      // Opt-in fault injection for withLock's acquire path (issue #263): make the
+      // `mkdirSync(.nb.lock)` that acquires the lock throw a specific errno code
+      // (EACCES/EROFS/ENOSPC/…), simulating an unwritable NB_DIR. Scoped to the
+      // lock dir only so the recursive `mkdirSync(dir, { recursive: true })` that
+      // precedes it still creates the store.
+      if (fsHook.failLockMkdirCode !== null && String(path).endsWith('.nb.lock')) {
+        const err = new Error(`${fsHook.failLockMkdirCode}: injected mkdir failure for ${path}`) as NodeJS.ErrnoException;
+        err.code = fsHook.failLockMkdirCode;
+        throw err;
+      }
+      return actual.mkdirSync(path, opts as never);
+    }) as typeof actual.mkdirSync,
   };
 });
 
@@ -139,6 +152,7 @@ afterEach(() => {
     else process.env[k] = SAVED[k];
   }
   fsHook.reads = null; // leave the shared read hook off for tests that don't opt in
+  fsHook.failLockMkdirCode = null; // clear lock-mkdir fault injection (issue #263) so it can never leak into another test
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -3061,6 +3075,42 @@ describe('locking (mkdir spinlock)', () => {
     const r = await addEntry(dir, 'nobody', 'usable after a thrown op released the lock');
     expect(r.added).toBe(true);
   });
+
+  // Issue #263: an unwritable NB_DIR makes `mkdirSync(.nb.lock)` fail with a code
+  // OTHER than EEXIST (EACCES/EPERM permission-denied, EROFS read-only mount,
+  // ENOSPC full disk). The old catch treated EVERY mkdir error as "lock held" and
+  // busy-waited the whole acquire budget (staleMs + grace, the default 12s) before
+  // dying with a misleading 'notebook is locked' — when no other process exists and
+  // the real cause is a store that simply cannot be written. The acquire loop must
+  // instead fail fast and name the real cause. The default budget is left untouched
+  // (12s), so a regression that busy-waits would blow well past these assertions.
+  for (const code of ['EACCES', 'EROFS', 'ENOSPC'] as const) {
+    test(`fails fast (not 'locked') when mkdir(.nb.lock) throws ${code} — unwritable store (issue #263)`, async () => {
+      fsHook.failLockMkdirCode = code; // simulate an unwritable NB_DIR for the lock-acquire mkdir
+      const started = Date.now();
+      const err = await addEntry(dir, 'unwritable', 'should never be written').then(
+        () => { throw new Error('expected addEntry to reject on an unwritable store, but it resolved'); },
+        (e: unknown) => e as Error,
+      );
+      const waited = Date.now() - started;
+      // Fails fast: well under the ~12s default acquire budget it would have spun
+      // through before the fix (a regression would exceed this and the vitest timeout).
+      expect(waited).toBeLessThan(1000);
+      // Reports the real cause, not the misleading 'notebook is locked'.
+      expect(err.message).not.toMatch(/notebook is locked/);
+      expect(err.message).toMatch(/not writable/);
+      expect(err.message).toContain(code); // surfaces the underlying errno for diagnosis
+      const cause = (err as { cause?: NodeJS.ErrnoException }).cause;
+      expect(cause?.code).toBe(code); // the ORIGINAL fs error is chained, with its real errno
+      expect(existsSync(join(dir, 'unwritable.md'))).toBe(false); // nothing was mutated
+      expect(existsSync(join(dir, '.nb.lock'))).toBe(false); // the fast-fail stranded no lock
+      // And no lock/state was left behind: once the store is writable again the
+      // very next mutation succeeds (a stranded `.nb.lock` would block it instead).
+      fsHook.failLockMkdirCode = null;
+      const recovered = await addEntry(dir, 'recovered', 'written once the store is writable again');
+      expect(recovered.added).toBe(true);
+    });
+  }
 });
 
 describe('reaps an emptied, undescribed phantom shelf (issue #209)', () => {
