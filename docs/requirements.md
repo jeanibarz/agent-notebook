@@ -607,16 +607,23 @@ tolerated for platforms that disallow it.)*
 ### 4.12 Usage log & stats
 
 <a id="fr-usage-001"></a>
-**FR-USAGE-001 (Must).** Each CLI invocation other than `--help`/`--version` (which
-return before any work) SHALL append one tab-delimited row to the usage ring,
-bounded to `usageRing` rows (oldest dropped). The row's first five columns SHALL be
+**FR-USAGE-001 (Must).** Each CLI invocation — including `--help`/`--version`, which
+log a lightweight best-effort row under the canonical command `help`/`version` (with
+an empty shelf and no entry-level columns) so that a harness that only ever runs
+`nb --help` is still visible to `nb stats` rather than leaving no trace — SHALL
+append one tab-delimited row to the usage ring, bounded to `usageRing` rows (oldest
+dropped). The row's first five columns SHALL be
 `"<iso-ts>\t<shelf>\t<command>\t<ok|err>\t<ms>ms"`, followed by the five entry-level
 columns of [FR-USAGE-002](#fr-usage-002) and the two reason columns of
 [FR-USAGE-003](#fr-usage-003). A failure to log SHALL NOT fail the
-operation, and every field SHALL be sanitized (tab/CR/LF collapsed to spaces) so a
-value cannot inject an extra column or row.
-**Rationale:** Monitoring must itself be bounded and must never break a real call.
-*Proven by:* `notebook.test.ts` → `describe('usage log + stats')`.
+operation (so `--help`/`--version` still succeed on a read-only `NB_DIR`), and every
+field SHALL be sanitized (tab/CR/LF collapsed to spaces) so a value cannot inject an
+extra column or row.
+**Rationale:** Monitoring must itself be bounded and must never break a real call;
+the "every call appends one row" invariant is what lets `nb stats` see the classic
+integration-not-wired symptom of a harness that only ever calls `--help`.
+*Proven by:* `notebook.test.ts` → `describe('usage log + stats')`; the `--help`/`--version`
+rows by `cli.test.ts` → `describe('runNbCli')` → the two `issue #250` usage-row tests.
 
 <a id="fr-usage-002"></a>
 **FR-USAGE-002 (Should).** Each usage row SHALL additionally record, after the five

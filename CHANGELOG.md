@@ -46,6 +46,14 @@ versions are listed plainly.
   the row-count bound the ring exists to enforce (the same failure #128's note cap prevents). A
   session longer than `maxChars` is now truncated (same trailing-ellipsis convention as `note`,
   never rejected — logging stays best-effort); a normal short session round-trips unchanged.
+- **`nb --help` and `nb --version` now append a usage row (#250).** Both returned before the
+  shared usage-logging step, so they left no trace in the usage ring — the module's "every call
+  appends one line" invariant was false, and `nb stats` was blind to the classic
+  integration-not-wired symptom of a harness that only ever runs `nb --help` and never a real
+  command. Each now writes a lightweight best-effort row under the canonical command `help` /
+  `version` (every alias — `-h`, `-v`, no-args, bare `help`/`version` — aggregates under one
+  name). Logging stays best-effort, so `--help`/`--version` still succeed on a read-only
+  `NB_DIR` ([FR-USAGE-001](docs/requirements.md)).
 
 ## [0.6.0] - 2026-11-06
 

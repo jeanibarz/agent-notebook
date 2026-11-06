@@ -24,8 +24,9 @@
 //   nb completion <bash|zsh>               print a static shell-completion script to source
 //   nb --help                              this help
 //
-// Every call appends one line to the usage ring so `nb stats` can surface
-// loop / went-silent / high-error-rate anomalies.
+// Every call — including `nb --help` and `nb --version` — appends one line to
+// the usage ring so `nb stats` can surface loop / went-silent / high-error-rate
+// anomalies (and so a harness that only ever runs `--help` is still visible).
 
 import { realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -554,12 +555,29 @@ export async function runNbCli(
   readStdin: () => Promise<string> = readStdinDefault,
 ): Promise<number> {
   const cmd = (argv[0] ?? '').trim();
+  // `help` and `version` return before the main switch and its shared
+  // `finally { logUsage(...) }`, so they would otherwise append NO usage row —
+  // breaking the header invariant that every call appends one line, and hiding
+  // the classic not-wired symptom (a harness that only ever runs `nb --help`,
+  // never a real command, would leave no trace in `nb stats`). Emit a lightweight
+  // row here so both the invariant and that diagnostic hold. The logged command
+  // is canonicalised to `help`/`version` so every alias (`-h`, no-args, `-v`, …)
+  // aggregates under one name in stats. `logUsage` is best-effort (it swallows
+  // its own write failures), so logging never requires a writable NB_DIR and
+  // never breaks `nb --help`/`--version` on a read-only system. `notebooksDir()`
+  // is resolved inline here (not hoisted above these branches) so the `const dir
+  // = notebooksDir()` below still marks the end of the pre-switch region the #131
+  // HELP-drift guard scans.
   if (cmd === '' || cmd === '--help' || cmd === '-h' || cmd === 'help') {
+    const t0 = Date.now();
     process.stdout.write(HELP + '\n');
+    logUsage(notebooksDir(), '-', 'help', true, Date.now() - t0);
     return 0;
   }
   if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
+    const t0 = Date.now();
     process.stdout.write(`nb (agent-notebook) ${pkgVersion()}\n`);
+    logUsage(notebooksDir(), '-', 'version', true, Date.now() - t0);
     return 0;
   }
 
