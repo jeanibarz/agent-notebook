@@ -33,11 +33,20 @@ const fs = require('node:fs');
 const path = require('node:path');
 const sentinel = path.join(sentinelDir, `.retro-${session}`);
 
-// Already did the retrospective for this session → allow the stop. (SubagentStop
-// fires with the parent session id, so the first stop — a subagent's or the main
-// agent's — claims the sentinel and later stops are let through: one nudge/session.)
-if (fs.existsSync(sentinel)) process.exit(0);
-try { fs.writeFileSync(sentinel, new Date().toISOString()); } catch {}
+// Claim this session's sentinel atomically. (SubagentStop fires with the parent
+// session id, so the first stop — a subagent's or the main agent's — claims the
+// sentinel and later stops are let through: one nudge/session.) The `wx` flag
+// makes create-if-absent a single OS-atomic step, so two hook processes racing
+// on one parent session_id (parallel subagents stopping at once) can't both see
+// the sentinel absent and both nudge: exactly one `writeFileSync` wins, the
+// other throws EEXIST and allows its stop. Any OTHER write error fails open —
+// fall through and still nudge rather than silently drop the retrospective.
+try {
+  fs.writeFileSync(sentinel, new Date().toISOString(), { flag: 'wx' });
+} catch (err) {
+  if (err && err.code === 'EEXIST') process.exit(0); // already claimed → allow stop
+  // Non-EEXIST (e.g. permission): fail open — fall through and nudge anyway.
+}
 
 // Bound the sentinel pile (issue #165): having claimed this session's sentinel,
 // sweep `.retro-*` files older than a TTL so they never accumulate without
