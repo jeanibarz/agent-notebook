@@ -5,7 +5,7 @@
 //   `nb stats` tells you how ONE notebook is doing right now. The janitor takes
 //   the long, cross-notebook view that stats cannot: it reads every notebook
 //   file, the usage log, and (if NB_DIR is a git repo) the commit history, and
-//   reports five things, each with a concrete suggested `nb` command:
+//   reports seven things, each with a concrete suggested `nb` command:
 //
 //     1. Lessons lost to eviction   — shelves that evict lessons still scored above +1,
 //                                      or whose evicted lessons get added again.
@@ -21,6 +21,12 @@
 //                                      session: pairs almost always opened together
 //                                      (merge/namespace), and isolated shelves.
 //                                      Needs NB_SESSION; degrades to a note without it.
+//     6. Curation (+1-floor)        — window upvotes vs downvotes (is voting one-sided?)
+//                                      and shelves piled with never-reinforced +1 lessons
+//                                      to scan for ones that misfired (downvote/rm).
+//     7. Undescribed shelves        — shelves with no `# desc:` trigger, ranked by
+//                                      browse-without-use so the noisiest get a trigger
+//                                      first (`nb describe`). Browse rank needs NB_SESSION.
 //
 // WHY A SEPARATE, OFFLINE TOOL
 //   The notebook core stays dumb, deterministic, and offline (requirements.md
@@ -69,8 +75,14 @@ function readNotebooks(dir) {
   return files.map((f) => {
     const shelf = f.slice(0, -3);
     let lessons = [];
+    let described = false; // has an explicit `# desc:` trigger line (vs an auto-fallback)
     try {
-      lessons = readFileSync(join(dir, f), 'utf-8')
+      const raw = readFileSync(join(dir, f), 'utf-8');
+      // A `# desc:` line in the leading metadata block is the shelf's trigger —
+      // "the situation in which you should open me". Its presence (not its text)
+      // is what section 7 ranks on, so a plain boolean is enough.
+      described = raw.split('\n').some((l) => /^#\s*desc:/.test(l));
+      lessons = raw
         .split('\n')
         .filter((l) => l.trim() !== '' && !l.startsWith('#')) // skip the `# key:` metadata block
         .map((l) => {
@@ -83,7 +95,7 @@ function readNotebooks(dir) {
     } catch {
       /* unreadable → report as empty rather than crash the whole scan */
     }
-    return { shelf, lessons };
+    return { shelf, lessons, described };
   });
 }
 
@@ -328,6 +340,68 @@ const coAccess = {
   isolated,
 };
 
+// 6) Curation: unreinforced lessons at the +1 floor (#223). The usage audit
+//    found the vote mechanism is almost all upvotes — wrong lessons are rarely
+//    downvoted or removed, so they only leave when a shelf fills and the stalest
+//    floor line ages out. Surface how one-sided voting is in the window, and
+//    which shelves carry the biggest pile of never-reinforced (+1-floor) lessons
+//    to scan. Shelf-level on purpose: the janitor has no per-lesson id to date a
+//    single line, so it points at the shelf, not the line.
+const FLOOR_SCORE = 1; // a lesson enters at +1; still at +1 ⇒ never net-reinforced
+const FLOOR_MIN_LESSONS = 10; // a few fresh +1 lessons is normal; a big pile is the signal
+const FLOOR_MIN_FRACTION = 0.5; // …and they dominate the shelf
+let upvotes = 0;
+let downvotes = 0;
+for (const r of usage) {
+  if (now - r.t > DAYS * 86400000 || r.command !== 'vote') continue;
+  if (r.outcome === 'up') upvotes++;
+  else if (r.outcome === 'down') downvotes++;
+}
+const floorShelves = notebooks
+  .map((n) => {
+    const floor = n.lessons.filter((e) => e.score <= FLOOR_SCORE).length;
+    const total = n.lessons.length;
+    return { shelf: n.shelf, floor, total, fraction: total ? Number((floor / total).toFixed(2)) : 0 };
+  })
+  .filter((s) => s.floor >= FLOOR_MIN_LESSONS && s.fraction >= FLOOR_MIN_FRACTION)
+  .sort((a, b) => b.floor - a.floor || b.fraction - a.fraction);
+const curation = { windowUpvotes: upvotes, windowDownvotes: downvotes, floorScore: FLOOR_SCORE, floorShelves };
+
+// 7) Undescribed shelves, ranked by browse-without-use (#223). A shelf shown in
+//    a session but with no vote of IT that session is a "browse-without-use": the
+//    trigger surfaced it but nothing earned a vote, so its description may
+//    over-promise — and a shelf with no `# desc:` at all (an auto-fallback to its
+//    top lesson) is the likeliest over-promiser. Rank undescribed shelves by that
+//    count so the noisiest get a real trigger first. Needs NB_SESSION (same gate
+//    as co-access): the unit is the (session, shelf) pair.
+const bwuByShelf = {};
+{
+  const seen = new Map(); // session\tshelf → { shown, voted }
+  for (const r of usage) {
+    if (now - r.t > DAYS * 86400000) continue;
+    if (r.session === '' || r.shelf === '' || r.shelf === '-') continue;
+    const isShow = r.command === 'show';
+    const isVote = r.command === 'vote' && (r.outcome === 'up' || r.outcome === 'down');
+    if (!isShow && !isVote) continue;
+    const k = `${r.session}\t${r.shelf}`;
+    const cur = seen.get(k) ?? { shown: false, voted: false };
+    if (isShow) cur.shown = true;
+    else cur.voted = true;
+    seen.set(k, cur);
+  }
+  for (const [k, v] of seen) {
+    if (!v.shown || v.voted) continue;
+    const shelf = k.split('\t')[1];
+    bwuByShelf[shelf] = (bwuByShelf[shelf] ?? 0) + 1;
+  }
+}
+const undescribedComputed = usage.some((r) => r.session !== '');
+const undescribedShelves = notebooks
+  .filter((n) => !n.described)
+  .map((n) => ({ shelf: n.shelf, browseWithoutUse: bwuByShelf[n.shelf] ?? 0 }))
+  .sort((a, b) => b.browseWithoutUse - a.browseWithoutUse || a.shelf.localeCompare(b.shelf));
+const undescribed = { computed: undescribedComputed, shelves: undescribedShelves };
+
 const report = {
   dir: NB_DIR,
   notebooks: notebooks.length,
@@ -341,6 +415,8 @@ const report = {
   silentShelves,
   silentRoles: silentShelves, // deprecated alias of silentShelves
   coAccess,
+  curation,
+  undescribed,
   usageRows: usage.length,
 };
 
@@ -426,6 +502,45 @@ else {
     if (isolated.length > COACCESS_MAX_ROWS)
       out.push(`  …(${isolated.length - COACCESS_MAX_ROWS} more isolated — run with --json)`);
   }
+}
+
+H('6. Curation: unreinforced lessons at the +1 floor (last ' + DAYS + 'd)');
+out.push(
+  `  ${upvotes} upvote(s), ${downvotes} downvote(s) in the window — ` +
+    (downvotes === 0
+      ? 'downvoting is unused, so a wrong lesson only leaves when its shelf fills and ages out.'
+      : 'downvotes are rare relative to upvotes.'),
+);
+if (floorShelves.length === 0)
+  out.push(`  ✅ no shelf is dominated by a large pile of never-reinforced +${FLOOR_SCORE} lessons.`);
+else {
+  out.push('  biggest piles of never-reinforced lessons — scan each for any that misfired:');
+  for (const s of floorShelves.slice(0, COACCESS_MAX_ROWS)) {
+    out.push(
+      `  ⚠️  ${s.shelf}: ${s.floor}/${s.total} lessons still at +${FLOOR_SCORE} (${Math.round(s.fraction * 100)}%) — never reinforced.`,
+    );
+    out.push(`      → nb show ${s.shelf}: downvote/rm any that misfired; a +1 vote marks the keepers as recently useful.`);
+  }
+  if (floorShelves.length > COACCESS_MAX_ROWS)
+    out.push(`  …(${floorShelves.length - COACCESS_MAX_ROWS} more — run with --json)`);
+}
+
+H('7. Undescribed shelves (add a # desc: trigger)');
+if (undescribedShelves.length === 0) out.push('  ✅ every shelf has an explicit # desc: trigger.');
+else {
+  const noisy = undescribedShelves.filter((s) => s.browseWithoutUse > 0);
+  if (!undescribedComputed)
+    out.push('  (no NB_SESSION in the log — can\'t rank by browse-without-use; listing undescribed shelves alphabetically)');
+  else if (noisy.length === 0)
+    out.push('  no undescribed shelf has been browsed-without-use yet — still, an explicit trigger beats the auto-fallback:');
+  else out.push('  undescribed shelves, noisiest first (shown but nothing voted → the trigger may over-promise):');
+  for (const s of undescribedShelves.slice(0, COACCESS_MAX_ROWS)) {
+    const bwu = undescribedComputed ? ` — shown-but-not-voted in ${s.browseWithoutUse} session(s)` : '';
+    out.push(`  ⚠️  ${s.shelf}${bwu}, no # desc: (trigger is an auto-fallback to its top lesson).`);
+    out.push(`      → nb describe ${s.shelf} "<the situation in which you should open me>"`);
+  }
+  if (undescribedShelves.length > COACCESS_MAX_ROWS)
+    out.push(`  …(${undescribedShelves.length - COACCESS_MAX_ROWS} more — run with --json)`);
 }
 
 out.push('');

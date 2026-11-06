@@ -10,6 +10,16 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb-janitor` sections 6 & 7: curation and undescribed-shelf signals (#223).** The usage audit
+  surfaced two kinds of debt the offline janitor now reports. **§6 Curation** prints the window's
+  upvotes vs downvotes (the audit found voting is almost entirely upvotes, so a wrong lesson only
+  leaves when its shelf fills) and lists shelves dominated by a large pile of never-reinforced
+  `+1`-floor lessons to scan for ones that misfired (`nb show` → downvote/rm). Shelf-level by design:
+  the janitor has no per-lesson id to date a single line. **§7 Undescribed shelves** lists shelves
+  with no explicit `# desc:` trigger, ranked by *browse-without-use* count (shown in a session but
+  nothing in them voted) so the noisiest over-promisers get a real trigger first (`nb describe`); the
+  browse ranking needs `NB_SESSION`, degrading to an alphabetical list without it. Both appear in
+  `--json` as `curation` and `undescribed`. Read-only and zero-dependency, like the rest of the janitor.
 - **`nb show` prints a copy-paste vote hint with the shelf filled in (#223).**
   The usage audit found ~1 in 5 votes failing on a fuzzy *text* selector even though the stable id
   was printed on the same line. `nb show <shelf>` now ends (when it has lessons) with a `#` comment
