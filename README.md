@@ -134,7 +134,7 @@ New to `nb`? Add one lesson and read it back — that is the whole loop. Every c
 
 Replace `reviewer` with any short shelf name (letters, no spaces); keep the quotes around the lesson. There is nothing to set up first: the shelf and its folder (`~/.agent-notebook/notebooks`) are created on the first `nb add`.
 
-**Reading the command reference.** Throughout this README and `nb --help`, `<angle brackets>` mark a value you must replace (`<shelf>`, `<lesson>`), and `[square brackets]` mark an optional argument you can leave out (`[--since 7d]`). Type the value or flag — never the brackets themselves.
+**Reading the command reference.** Throughout this README and `nb --help`, `<angle brackets>` mark a value you must replace (`<shelf>`, `<lesson>`), and `[square brackets]` mark an optional argument you can leave out (`[--since 7d]`). Type the value or flag — never the brackets themselves. A bare `--` ends option parsing: every token after it is a literal operand, so a lesson/description/query that is itself flag-shaped is passed verbatim (`nb add glossary -- --json` stores the line `--json`).
 
 ## Guides
 

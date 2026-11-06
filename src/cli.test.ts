@@ -358,6 +358,104 @@ describe('runNbCli', () => {
     expect(down2.out).toContain('[+0]'); // signed-zero formatting from fmt()
   });
 
+  // issue #277 — `--json` was stripped from the WHOLE argv (operands included),
+  // and there was no `--` end-of-options terminator, so an operand that equals a
+  // known flag failed with a baffling "missing <lesson>". The fix adds a POSIX
+  // `--` terminator: every token after the first `--` is a literal operand.
+  describe('nb `--` end-of-options terminator (issue #277)', () => {
+    // Read back a single shelf's stored entry texts, highest-score first, via the
+    // structured `show --json` so the assertions never regex the human output.
+    async function texts(shelf: string): Promise<string[]> {
+      const r = await run(['show', shelf, '--json']);
+      return (JSON.parse(r.out).entries as Array<{ text: string }>).map((e) => e.text);
+    }
+
+    test('add stores a literal `--json` operand after `--` instead of stripping it', async () => {
+      // The exact failing case from the issue: record a glossary line that is
+      // literally `--json`. Pre-fix this threw `missing <lesson>`; now `--`
+      // passes it through verbatim.
+      const r = await run(['add', 'glossary', '--', '--json']);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('added — 1 line'); // human output => `--json` was NOT taken as the output flag
+      expect(await texts('glossary')).toEqual(['--json']);
+    });
+
+    test('a `--json` operand after `--` is not the output flag, yet a real `--json` before `--` still is', async () => {
+      // `--json` before `--` still selects structured output; the one after `--`
+      // is the literal lesson. Both honored in a single call.
+      const r = await run(['add', 'glossary', '--json', '--', '--json']);
+      expect(r.code).toBe(0);
+      const parsed = JSON.parse(r.out); // output flag honored => one JSON object
+      expect(parsed.reason).toBe('added');
+      expect(await texts('glossary')).toEqual(['--json']); // literal lesson stored
+    });
+
+    test('operands after `--` are shielded from `--reason`/`--note` extraction', async () => {
+      // A lesson that is literally `--reason` would otherwise be swallowed by the
+      // reason/note parser; after `--` it is a plain operand. A real `--note`
+      // before `--` is still consumed as the log note, not stored.
+      expect((await run(['add', 'glossary', '--', '--reason'])).code).toBe(0);
+      const r = await run(['add', 'glossary', '--note', 'escaping a flag', '--', '--json']);
+      expect(r.code).toBe(0);
+      expect((await texts('glossary')).sort()).toEqual(['--json', '--reason']);
+    });
+
+    test('describe accepts a literal `--json` description after `--`', async () => {
+      await run(['add', 'glossary', 'seed lesson']);
+      const d = await run(['describe', 'glossary', '--', '--json']);
+      expect(d.code).toBe(0);
+      expect(JSON.parse((await run(['show', 'glossary', '--json'])).out).description).toBe('--json');
+    });
+
+    test('a bare trailing `--` is a literal operand, not a terminator (vote downvote alias preserved)', async () => {
+      // `vote`'s `--` downvote alias is a bare trailing `--`; the terminator must
+      // only fire when a token follows, so this stays a downvote, and a trailing
+      // `--` to `add` stores the literal `--` lesson exactly as before the fix.
+      await run(['add', 'patcher', 'trailer lesson']);
+      const v = await run(['vote', 'patcher', 'trailer', '--']);
+      expect(v.code).toBe(0);
+      expect(v.out).toContain('[+0]'); // downvoted from +1
+      const a = await run(['add', 'patcher', '--']);
+      expect(a.code).toBe(0);
+      expect(await texts('patcher')).toContain('--');
+    });
+
+    test('search reads a flag-shaped query after `--` literally, not as its own `--any`/`--limit` flag', async () => {
+      // The per-command parsers (`--any`, `--limit`) run on the pre-`--` region,
+      // so a query that is literally `--any` or `--limit` after `--` is searched
+      // for, not consumed — pre-fix these threw "missing query" / "--limit needs
+      // a value". The `--any` OR-mode flag before `--` still works.
+      await run(['add', 'kb', 'mentions --any and --limit flags']);
+      const q1 = await run(['search', '--', '--any']);
+      expect(q1.code).toBe(0);
+      expect(q1.out).toContain('"--any"'); // the query echoed, AND-mode (not OR)
+      expect(q1.out).toContain('mentions --any and --limit flags');
+      const q2 = await run(['search', '--', '--limit']);
+      expect(q2.code).toBe(0);
+      expect(q2.out).toContain('"--limit"');
+      const flag = await run(['search', 'mentions', '--any']); // real OR-mode flag, no `--`
+      expect(flag.code).toBe(0);
+      expect(flag.out).toContain('(OR over 1 term)');
+    });
+
+    test('list takes a flag-shaped prefix after `--` literally instead of erroring on `--limit`', async () => {
+      // Pre-fix `nb list -- --limit` threw "--limit needs a value"; now `--limit`
+      // is a literal prefix (matching nothing), a clean exit-0 empty result.
+      const r = await run(['list', '--', '--limit']);
+      expect(r.code).toBe(0);
+      expect(r.err).not.toContain('needs a value');
+    });
+
+    test('without a `--` terminator, a bare `--json` operand still reads as the flag (behavior preserved)', async () => {
+      // The ambiguous bare form is unchanged: `--json` with nothing to
+      // disambiguate is still the output flag, so `add` reports the missing
+      // lesson. Escaping it is exactly what `--` is for.
+      const r = await run(['add', 'glossary', '--json']);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('missing <lesson> argument');
+    });
+  });
+
   test('a comma-separated id list votes every entry at once', async () => {
     await run(['add', 'patcher', 'alpha one']);
     await run(['add', 'patcher', 'beta two']);
