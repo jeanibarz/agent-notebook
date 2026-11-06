@@ -18,8 +18,10 @@
 //     4. Volume over time & silence — from git history: how the store grew, how
 //                                      busy it's been, and which shelves went quiet.
 //     5. Shelf co-access            — which shelves get `show`n together in the same
-//                                      session: pairs almost always opened together
-//                                      (merge/namespace), and isolated shelves.
+//                                      session: pairs almost always opened together,
+//                                      split into `fragment` (one role in two →
+//                                      merge/namespace) vs `panel` (distinct roles
+//                                      that co-fire → expected), and isolated shelves.
 //                                      Needs NB_SESSION; degrades to a note without it.
 //     6. Curation (+1-floor)        — window upvotes vs downvotes (is voting one-sided?)
 //                                      and shelves piled with never-reinforced +1 lessons
@@ -282,9 +284,13 @@ const silentShelves = notebooks
   .map((r) => ({ shelf: r.shelf, role: r.shelf, daysQuiet: r.lastUse ? Math.round((now - r.lastUse) / 86400000) : null }));
 
 // 5) shelf co-access — which shelves get `show`n together in the same session.
-//    A shelf is *defined* by co-access (lessons needed in the same situations),
-//    so two shelves almost always opened together are really one (merge/namespace
-//    candidate), and a shelf never opened alongside another is isolated. Rows
+//    A shelf is *defined* by co-access (lessons needed in the same situations), so
+//    two shelves almost always opened together MAY be one role split in two (a
+//    `fragment` → merge/namespace) — but they may instead be distinct roles that
+//    legitimately co-fire (a `panel`: an RFC review panel, or an orchestrator with
+//    its per-project reviewers), which must NOT be merged. Each high pair is
+//    classified (see `coPairKind`) so the advice fits. A shelf never opened
+//    alongside another is isolated. Rows
 //    with a blank session carry no co-access signal (requirements.md FR-USAGE-002:
 //    "co-access is then not computed"), so they are dropped here and the section
 //    degrades to a one-line note when nothing is left — mirroring section 4
@@ -310,6 +316,22 @@ for (const shelves of Object.values(sessionShelves)) {
       coCount.set(key, (coCount.get(key) ?? 0) + 1);
     }
 }
+// Classify a high-co-access pair: `fragment` = one underlying ROLE split in two
+// (a genuine merge/namespace candidate), vs `panel` = DISTINCT roles that
+// legitimately co-fire (an RFC review panel, or a per-project role bundle — the
+// orchestrator + its reviewers). Reuses §2's role/scope split and name-similarity:
+// a pair is a `fragment` only when it would ALSO read as a near-duplicate NAME
+// (same scope AND a near-identical role or a shared `.`-stem); otherwise the two
+// are different jobs that happen to run together, and merging them would blur
+// role-specific guidance. This keeps §5 from advising a merge on a review panel
+// (the false positive the usage audit #223 flagged).
+const coPairKind = (a, b) => {
+  const sa = splitShelf(a);
+  const sb = splitShelf(b);
+  if (sa.scope !== sb.scope) return 'panel'; // different project scope → different jobs
+  const sharedDotStem = dotStem(sa.role) !== null && dotStem(sa.role) === dotStem(sb.role);
+  return sharedDotStem || editSim(sa.role, sb.role) >= 0.8 ? 'fragment' : 'panel';
+};
 const shelvesShown = Object.keys(showsByShelf);
 const coAccessComputed = shelvesShown.length > 0;
 const coPaired = new Set(); // shelves that co-occur with ≥1 other (any count)
@@ -321,9 +343,14 @@ for (const [key, co] of coCount) {
   const support = Math.min(showsByShelf[a], showsByShelf[b]); // ≥1: a paired shelf was shown
   const ratio = co / support;
   if (co >= COACCESS_MIN_SUPPORT && ratio >= COACCESS_MIN_RATIO)
-    highPairs.push({ a, b, co, support, ratio: Number(ratio.toFixed(2)) });
+    highPairs.push({ a, b, co, support, ratio: Number(ratio.toFixed(2)), kind: coPairKind(a, b) });
 }
-highPairs.sort((x, y) => y.ratio - x.ratio || y.co - x.co);
+// Fragments first (the actionable merge candidates), then by strength — a review
+// panel is expected, so it should never bury a genuine split.
+highPairs.sort(
+  (x, y) =>
+    (x.kind === 'fragment' ? 0 : 1) - (y.kind === 'fragment' ? 0 : 1) || y.ratio - x.ratio || y.co - x.co,
+);
 // isolated: shown but never alongside another shelf — only meaningful once ≥2
 // distinct shelves were shown overall (with one, "isolated" is trivially true).
 const isolated =
@@ -490,7 +517,12 @@ else {
       out.push(
         `  ⚠️  "${p.a}" + "${p.b}" — shown together in ${p.co}/${p.support} session(s) (co-access ${p.ratio}); almost always opened together.`,
       );
-      out.push(`      → consider one namespaced shelf (e.g. "${p.a}.*"/"${p.b}.*") or nb merge their overlapping lessons.`);
+      if (p.kind === 'fragment')
+        out.push(`      → likely one shelf split in two: nb merge their overlapping lessons, or namespace ("${p.a}.*"/"${p.b}.*").`);
+      else
+        out.push(
+          `      → distinct roles that co-fire (a review panel / per-project bundle) — expected; extract a shared umbrella shelf ONLY if they carry duplicated cross-cutting lessons, don't merge the roles.`,
+        );
     }
     if (highPairs.length > COACCESS_MAX_ROWS)
       out.push(`  …(${highPairs.length - COACCESS_MAX_ROWS} more pairs — run with --json)`);
