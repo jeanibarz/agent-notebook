@@ -24,6 +24,14 @@ versions are listed plainly.
   unwritable store. The loop now treats only `EEXIST` as a held lock and fails fast on any other
   code (`EACCES`/`EPERM`/`EROFS`/`ENOSPC`/…) with a clear `notebook directory is not writable`
   message, chaining the original error as the cause.
+- **`--` now ends option parsing so a flag-shaped operand survives (#277).** `--json` was
+  stripped from the *entire* argv, so recording a glossary line that is literally `--json`
+  (`nb add flags "--json"`) dropped the operand and then threw `missing <lesson>` for the
+  lesson the user plainly typed — and there was no way to escape it. `nb` now honors a
+  POSIX `--` end-of-options terminator: every token after the first `--` is a literal
+  operand, so `nb add flags -- --json` stores the line `--json`. `--json`/`--reason`/`--note`
+  are recognized only before the `--`; a bare trailing `--` is still a literal operand, so
+  `vote`'s `--` downvote alias is unchanged ([FR-CLI-007](docs/requirements.md)).
 
 ## [0.7.0] - 2026-11-06
 

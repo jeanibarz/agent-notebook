@@ -150,6 +150,10 @@ notes:
   - add/vote/rm/merge/move accept --json (after the subcommand): stdout is one JSON
     result object and nothing else; warnings/errors stay on stderr. Exit codes are
     unchanged (a too-long add still exits 1, a duplicate still exits 0).
+  - \`--\` ends option parsing: every token after it is a literal operand, so a
+    lesson/description/query that is itself flag-shaped is passed verbatim —
+    \`nb add glossary -- --json\` stores the line \`--json\` (a bare trailing \`--\`
+    is NOT a terminator, so \`nb vote <shelf> <id> --\` still means downvote).
   - \`nb move <from> <to> <id|query>\` relocates one entry to another shelf WITH ITS
     SCORE INTACT — the score-preserving consolidation \`add\`+\`rm\` cannot do (\`add\`
     resets to +1). It refuses, writing nothing, if source and target are the same
@@ -591,15 +595,34 @@ export async function runNbCli(
   // empty and `logUsage` writes blanks. `session` is filled by `logUsage` from
   // `NB_SESSION`, so it is not set here.
   const meta: UsageMeta = {};
+  // `--` is an end-of-options terminator (issue #277): every token after the
+  // first `--` is a literal operand, never a flag. Without it, the unconditional
+  // `--json` strip below removed a `--json` token *anywhere* in argv — including
+  // an operand the user plainly typed, e.g. `nb add flags "--json"` (recording a
+  // glossary line that is literally `--json`) — and `add` then threw a baffling
+  // `missing <lesson>` for the lesson they typed (a DP-5 'never mislead'
+  // violation). With the terminator a flag-shaped operand is passed explicitly:
+  // `nb add flags -- --json`. The terminator and the operands after it are also
+  // shielded from the `--reason`/`--note` extraction below.
+  //
+  // A *trailing* `--` (nothing after it) is NOT a terminator: it escapes nothing,
+  // and `vote`'s `--` downvote alias (parseDelta) relies on a bare trailing `--`
+  // staying a literal operand. So only a `--` with at least one token after it
+  // ends options; `operands` holds the shielded literals, appended after flag
+  // parsing so positional indices are unchanged.
+  const termIdx = argv.findIndex((a, i) => a === '--' && i < argv.length - 1);
+  const head = termIdx === -1 ? argv : argv.slice(0, termIdx);
+  const operands = termIdx === -1 ? [] : argv.slice(termIdx + 1);
   // `--json` on a mutation (add/vote/rm/merge) emits the library's structured
   // result object on stdout and nothing else, so a supervisor can branch on
   // `reason`/`score` without regex-parsing the English line. `show` also honors
   // it (emitting a ShowResult); `stats` reads it from its own arg slice; `path`
   // emits a `{dir, shelf, path}` object (issue #185). Strip it before positional
   // parsing (like `stats`, it is a flag, not a shelf/lesson); `shelves` ignores
-  // it. Exit codes are unchanged (a too-long add still exits 1).
-  const json = argv.includes('--json');
-  let args = json ? argv.filter((a) => a !== '--json') : argv;
+  // it. Only `head` (pre-`--`) is scanned, so a literal `--json` operand after
+  // the terminator is kept. Exit codes are unchanged (a too-long add still exits 1).
+  const json = head.includes('--json');
+  let args = json ? head.filter((a) => a !== '--json') : head;
   // `--reason <code>` / `--note "<text>"` attach an optional, never-required
   // reason to a mutating op, logged (never stored in the notebook). Every
   // mutating op consumes them — `merge` (duplicate · other), `rm` (wrong ·
@@ -619,6 +642,19 @@ export async function runNbCli(
       ({ value: reasonArg, rest: args } = extractOption(args, '--reason'));
       ({ value: noteArg, rest: args } = extractOption(args, '--note'));
     }
+    // `flagArgs` is the flag-eligible region: the command plus the pre-`--`
+    // positionals, with the global `--json`/`--reason`/`--note` already removed.
+    // The per-command flag parsers below (`--limit`, `--any` on the read
+    // commands) run on THIS slice and re-append `operands` afterwards, so a
+    // flag-shaped token after `--` (e.g. `nb search -- --limit`) is read as a
+    // positional, never consumed as a flag — the same shielding the global parse
+    // above gets by running on `head` (issue #277).
+    const flagArgs = args;
+    // Append the post-`--` literal operands now, after the global flags have been
+    // parsed out of `head`, so a flag-shaped operand reaches its positional slot
+    // untouched. A no-op when no `--` terminator was present (`operands` is
+    // empty), keeping every existing path byte-for-byte unchanged.
+    args = args.concat(operands);
     switch (cmd) {
       case 'show': {
         // Resolve the shelf from the --json-stripped args so `nb show <shelf> --json`
@@ -671,8 +707,11 @@ export async function runNbCli(
         // retrospective can downvote/`rm` the weakest by id. It never writes.
         // Pull out `--limit N` BEFORE positionals (forgiving parse, identical to
         // `search`/`list`): an unparseable value warns on stderr and falls back
-        // to the default rather than rejecting, keeping stdout/JSON clean.
-        const { value: limitRaw, rest: staleArgs } = extractOption(args, '--limit');
+        // to the default rather than rejecting, keeping stdout/JSON clean. Parse
+        // from the pre-`--` region and re-append `operands` so a flag-shaped
+        // operand after `--` is not consumed as the flag (issue #277).
+        const { value: limitRaw, rest: staleRest } = extractOption(flagArgs, '--limit');
+        const staleArgs = staleRest.concat(operands);
         let limit = STALE_DEFAULT_LIMIT;
         if (limitRaw !== undefined) {
           if (/^\d+$/.test(limitRaw.trim())) {
@@ -966,16 +1005,19 @@ export async function runNbCli(
       }
       case 'search': {
         // The demoted keyword fallback (issue #82). Spans notebooks, so the usage-log shelf column
-        // stays `-` (like `list`). `--json` is already stripped from `args`; pull
-        // out the boolean `--any` (OR instead of AND), leaving the query at
-        // args[1] and an optional positional name prefix at args[2].
-        const any = args.includes('--any');
-        const withoutAny = any ? args.filter((a) => a !== '--any') : args;
+        // stays `-` (like `list`). `--json` is already stripped; pull out the
+        // boolean `--any` (OR instead of AND), leaving the query at args[1] and an
+        // optional positional name prefix at args[2]. Parse flags from `flagArgs`
+        // (the pre-`--` region) and re-append `operands`, so a query/prefix that is
+        // literally `--any`/`--limit` after `--` stays a positional (issue #277).
+        const any = flagArgs.includes('--any');
+        const withoutAny = any ? flagArgs.filter((a) => a !== '--any') : flagArgs;
         // Pull out `--limit N` BEFORE reading positionals, so its value token is
         // never mistaken for the name prefix. Forgiving parse, identical to
         // `list`: an unparseable value warns on stderr (stdout/JSON stays clean)
         // and falls back to the default rather than rejecting.
-        const { value: limitRaw, rest: searchArgs } = extractOption(withoutAny, '--limit');
+        const { value: limitRaw, rest } = extractOption(withoutAny, '--limit');
+        const searchArgs = rest.concat(operands);
         let limit = SEARCH_DEFAULT_LIMIT;
         if (limitRaw !== undefined) {
           if (/^\d+$/.test(limitRaw.trim())) {
@@ -1139,9 +1181,12 @@ export async function runNbCli(
         // richer format the kookr `nb` shim already bolted on). Read-only — it
         // still appends one usage row via the shared `finally`; the logged shelf stays `-`
         // because the command spans notebooks rather than acting on one.
-        // `--json` is already stripped from `args`; pull out `--limit`, leaving
-        // an optional positional name prefix as args[1].
-        const { value: limitRaw, rest: listArgs } = extractOption(args, '--limit');
+        // `--json` is already stripped; pull out `--limit` from the pre-`--`
+        // region and re-append `operands`, leaving an optional positional name
+        // prefix as args[1] (a literal `--limit` prefix after `--` is not consumed
+        // as the flag — issue #277).
+        const { value: limitRaw, rest: listRest } = extractOption(flagArgs, '--limit');
+        const listArgs = listRest.concat(operands);
         let limit = LIST_DEFAULT_LIMIT;
         if (limitRaw !== undefined) {
           // Forgiving like `stats --since`: an unparseable --limit warns on

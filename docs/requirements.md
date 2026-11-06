@@ -509,7 +509,9 @@ The `-` lesson operand of `add` reads from stdin per
 [FR-ADD-007](#fr-add-007). The optional `[--reason <code>] [--note "<text>"]` flags are
 consumed by every mutating op — `add`, `merge`, `rm`, `split`, `move`, and `describe` — (the
 operation-reasons mechanism, [FR-REASON-001](#fr-reason-001)); they are stripped before
-positional parsing so they are never mistaken for a lesson/operand/description text.
+positional parsing so they are never mistaken for a lesson/operand/description text. A
+`--` end-of-options terminator ([FR-CLI-007](#fr-cli-007)) lets a flag-shaped token be
+passed as a literal operand.
 `move` and `rm` SHALL emit a JSON result object with `--json` like the other mutating ops.
 
 <a id="fr-cli-002"></a>
@@ -553,6 +555,21 @@ preserving the `show` exists-vs-empty split (issue #166). For `move` only the so
 is guarded; a never-created *target* is created like `add`. The core mutation functions are
 unchanged (the guard lives in the CLI, as it does for `show`).
 *Proven by:* `cli.test.ts` → `describe('mutations distinguish a missing shelf from an empty one (issue #200)')` and `describe('closestShelf (shelf did-you-mean, issue #200)')`.
+
+<a id="fr-cli-007"></a>
+**FR-CLI-007 (Should).** `nb` SHALL honor `--` as an end-of-options terminator: every
+token after the first `--` is a literal operand, never a flag, so a
+lesson/description/query that is itself flag-shaped (e.g. `--json`, `--reason`) can be
+passed as `nb add <shelf> -- --json` (issue #277). The option flags of
+[FR-CLI-001](#fr-cli-001) (`--json`, `--reason`, `--note`) SHALL be recognized only
+*before* the terminator; without a `--`, a bare flag-shaped token keeps its existing flag
+meaning. A *bare trailing* `--` (no token follows) SHALL NOT act as a terminator, so
+`vote`'s `--` downvote alias and a literal `--` operand are preserved. The per-command
+read-flags `--any`/`--limit` (`search`, `list`, `stale`) SHALL likewise be recognized
+only before the `--`, so a flag-shaped query/prefix after it is a literal operand.
+`stats` keeps its own `argv` parse ([FR-CLI-003](#fr-cli-003)) and is unaffected: its
+sole operand is a shelf name, which cannot be flag-shaped.
+*Proven by:* `cli.test.ts` → `describe('nb `--` end-of-options terminator (issue #277)')`.
 
 <a id="fr-config-001"></a>
 **FR-CONFIG-001 (Should).** `nb config` SHALL print every effective (post-clamp) tunable
