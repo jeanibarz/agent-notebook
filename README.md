@@ -150,6 +150,7 @@ New here, or wiring it into a real agent? These pick up where the reference belo
 
 ```
 nb show   <shelf>                        print the notebook (highest-scored first)
+nb stale  <shelf> [--limit N]            list cull candidates to downvote/rm, most disposable first (lowest score, then stalest)
 nb add    <shelf> "<lesson>"             add a lesson (dedup-skipped; rejected if too long, never truncated)
 nb add    <shelf> -                      read the lesson from stdin (one line; multi-line is refused)
 nb vote   <shelf> <id|query> +1|-1       upvote/downvote an entry you used

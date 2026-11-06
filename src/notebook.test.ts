@@ -90,6 +90,7 @@ import {
   setDescription,
   setMetaValue,
   showJson,
+  staleCandidates,
   sparkGlyphs,
   sparkline,
   split,
@@ -3876,6 +3877,64 @@ describe('notebookExists / showJson exists flag (issue #166)', () => {
     const sh = showJson(dir, 'ghost');
     expect(sh.exists).toBe(true);
     expect(sh.entries).toEqual([]); // additive flag, entries stays empty
+  });
+});
+
+describe('staleCandidates (nb stale — cull candidates, issue #240)', () => {
+  test('ranks lowest score first, ties broken by stalest (file order)', async () => {
+    // add a,b,c,d (all +1, file order a,b,c,d), then lift a to +3 and b to +2.
+    // A vote moves the touched entry to the fresh end, so c and d (never voted)
+    // stay the stalest +1 floor, c before d.
+    for (const t of ['a', 'b', 'c', 'd']) await addEntry(dir, 's', t);
+    await vote(dir, 's', entryId('a'), 1); // a -> +2
+    await vote(dir, 's', entryId('a'), 1); // a -> +3
+    await vote(dir, 's', entryId('b'), 1); // b -> +2
+    const r = staleCandidates(dir, 's');
+    // scores a+3, b+2, c+1, d+1 → stale order: c,d (both +1, c staler), b(+2), a(+3).
+    expect(r.entries.map((e) => e.text)).toEqual(['c', 'd', 'b', 'a']);
+    expect(r.entries.map((e) => e.score)).toEqual([1, 1, 2, 3]);
+    expect(r.total).toBe(4);
+    expect(r.exists).toBe(true);
+  });
+
+  test('a negatively-scored (downvoted) lesson sorts to the very top of the cull list', async () => {
+    for (const t of ['keep', 'bad']) await addEntry(dir, 's', t);
+    await vote(dir, 's', entryId('bad'), -1); // bad: +1 -> 0
+    await vote(dir, 's', entryId('bad'), -1); // bad: 0 -> -1
+    const r = staleCandidates(dir, 's');
+    expect(r.entries[0]).toMatchObject({ text: 'bad', score: -1 });
+  });
+
+  test('--limit caps the list but total reflects the whole shelf', async () => {
+    for (const t of ['a', 'b', 'c']) await addEntry(dir, 's', t);
+    const r = staleCandidates(dir, 's', 2);
+    expect(r.entries).toHaveLength(2);
+    expect(r.total).toBe(3);
+    // limit 0 returns an empty list but still reports the full total.
+    expect(staleCandidates(dir, 's', 0).entries).toEqual([]);
+    expect(staleCandidates(dir, 's', 0).total).toBe(3);
+  });
+
+  test('is strictly read-only — scores and file order are untouched', async () => {
+    for (const t of ['a', 'b', 'c']) await addEntry(dir, 's', t);
+    await vote(dir, 's', entryId('b'), 1);
+    const before = readEntries(dir, 's').map((e) => ({ score: e.score, text: e.text }));
+    staleCandidates(dir, 's');
+    staleCandidates(dir, 's', 1);
+    const after = readEntries(dir, 's').map((e) => ({ score: e.score, text: e.text }));
+    expect(after).toEqual(before); // no reorder, no score change, nothing removed
+  });
+
+  test('a missing shelf is exists:false/empty; a describe-only shelf is exists:true/empty (issue #166)', async () => {
+    const miss = staleCandidates(dir, 'ghost');
+    expect(miss.exists).toBe(false);
+    expect(miss.entries).toEqual([]);
+    expect(miss.total).toBe(0);
+    await setDescription(dir, 'ghost', 'a trigger with no lessons');
+    const empty = staleCandidates(dir, 'ghost');
+    expect(empty.exists).toBe(true);
+    expect(empty.total).toBe(0);
+    expect(empty.entries).toEqual([]);
   });
 });
 

@@ -68,6 +68,7 @@ import {
   search,
   setDescription,
   showJson,
+  staleCandidates,
   silentHours,
   sparkGlyphs,
   sparkline,
@@ -103,12 +104,21 @@ const LIST_DEFAULT_LIMIT = 50;
  */
 const SEARCH_DEFAULT_LIMIT = 50;
 
+/**
+ * Default number of cull candidates `nb stale` lists when `--limit` is not
+ * given. The retrospective only needs the weakest handful to review, not the
+ * whole shelf, so this stays small; `--limit N` widens it (and `--json` returns
+ * exactly what `--limit` selects).
+ */
+const STALE_DEFAULT_LIMIT = 10;
+
 const HELP = `nb — the Agent Notebook (bounded, voted memory, grouped in shelves)
 
 For developers who run AI agents and want them to carry a few durable lessons across runs.
 
 usage:
   nb show   <shelf> [--json]               print the notebook (highest-scored first; --json emits {shelf,description,entries})
+  nb stale  <shelf> [--limit N] [--json]   list cull candidates to downvote/rm, most disposable first (lowest score, then stalest; default ${STALE_DEFAULT_LIMIT})
   nb add    <shelf> "<lesson>"             add a lesson (exact dup skipped; a near-dup still adds but warns; rejected if too long, never truncated)
   nb add    <shelf> -                      read the lesson from stdin (one line; multi-line is refused)
   nb vote   <shelf> <id|query> +1|-1       upvote/downvote an entry you used
@@ -289,7 +299,7 @@ function parseDelta(arg: string): number {
  * silently dropping out of the did-you-mean suggestions (issue #171).
  */
 export const KNOWN_COMMANDS = [
-  'show', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
+  'show', 'stale', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
   'search', 'stats', 'path', 'config', 'completion', 'list', 'ls', 'shelves', 'roles',
   'help', 'version',
 ] as const;
@@ -302,7 +312,7 @@ export const KNOWN_COMMANDS = [
  * are deliberately excluded: completing shelf names there would mislead.
  */
 const SHELF_FIRST_COMMANDS = [
-  'show', 'add', 'vote', 'merge', 'split', 'rm', 'describe', 'stats', 'path',
+  'show', 'stale', 'add', 'vote', 'merge', 'split', 'rm', 'describe', 'stats', 'path',
 ] as const;
 
 /**
@@ -633,6 +643,54 @@ export async function runNbCli(
               );
             }
           }
+        }
+        break;
+      }
+      case 'stale': {
+        // Read-only curation aid (issue #240, #223-F3): list the lessons
+        // eviction would drop first — lowest score, ties → stalest — so the
+        // retrospective can downvote/`rm` the weakest by id. It never writes.
+        // Pull out `--limit N` BEFORE positionals (forgiving parse, identical to
+        // `search`/`list`): an unparseable value warns on stderr and falls back
+        // to the default rather than rejecting, keeping stdout/JSON clean.
+        const { value: limitRaw, rest: staleArgs } = extractOption(args, '--limit');
+        let limit = STALE_DEFAULT_LIMIT;
+        if (limitRaw !== undefined) {
+          if (/^\d+$/.test(limitRaw.trim())) {
+            limit = Number.parseInt(limitRaw, 10);
+          } else {
+            process.stderr.write(
+              `nb ${cmd}: unrecognized --limit '${limitRaw}' (use a non-negative integer); showing ${STALE_DEFAULT_LIMIT}\n`,
+            );
+          }
+        }
+        shelf = need(staleArgs[1], 'shelf');
+        const result = staleCandidates(dir, shelf, limit);
+        if (json) {
+          // Lone StaleResult object on stdout (same contract as `show --json`).
+          process.stdout.write(JSON.stringify(result) + '\n');
+        } else if (!result.exists) {
+          // A never-created shelf must not read as a real empty notebook (DP-5,
+          // issue #166) — mirror `show`'s stderr message; not found is exit 0.
+          process.stderr.write(`no notebook for shelf "${shelf}" — run \`nb list\` to see existing shelves\n`);
+        } else if (result.total === 0) {
+          process.stdout.write(`(notebook for shelf "${shelf}" has no lessons to cull)\n`);
+        } else {
+          process.stdout.write(
+            `# stale: cull candidates on "${shelf}" — most disposable first (lowest score, then stalest)\n`,
+          );
+          for (const e of result.entries) {
+            const s = e.score >= 0 ? `+${e.score}` : `${e.score}`;
+            process.stdout.write(`${e.id}  [${s}]  ${e.text}\n`);
+          }
+          // Actionable footer: a ready-to-run downvote/rm with the shelf filled,
+          // so the reflect step acts by id (printed above) instead of a fuzzy
+          // text selector. Says "N of M" so a truncated list is never mistaken
+          // for the whole shelf. A `#` comment line (never a lesson); suppressed
+          // under `--json`, which stays a lone StaleResult object.
+          process.stdout.write(
+            `# showing ${result.entries.length} of ${result.total} · cull by id: nb vote ${shelf} <id> -1  ·  nb rm ${shelf} <id> --reason obsolete\n`,
+          );
         }
         break;
       }

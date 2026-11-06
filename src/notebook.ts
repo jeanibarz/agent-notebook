@@ -1273,6 +1273,59 @@ export function showJson(dir: string, shelf: string): ShowResult {
   };
 }
 
+/** One cull candidate in a {@link StaleResult}: its stable id, current score, and lesson text. */
+export interface StaleEntry {
+  id: string;
+  score: number;
+  text: string;
+}
+
+/**
+ * The structured form of `nb stale`: the shelf, its total lesson count (before
+ * `limit`, so a caller can render "N of M"), the cull candidates most-disposable
+ * first, and the `exists` flag that tells a never-created shelf from an existing
+ * empty one (issue #166), both of which have `entries: []`.
+ */
+export interface StaleResult {
+  shelf: string;
+  /** Total lessons on the shelf BEFORE `limit` — so a caller can say "showing N of total". */
+  total: number;
+  /** Cull candidates, most-disposable first: lowest score, ties → stalest (lowest file index). Truncated to `limit`. */
+  entries: StaleEntry[];
+  /** Whether the shelf file exists on disk (issue #166), so `exists: false` + `entries: []` is a missing shelf, not an empty one. */
+  exists: boolean;
+}
+
+/**
+ * Rank a shelf's lessons by eviction priority — the order {@link enforceCap}
+ * would drop them in when a notebook overflows: **lowest score first, ties
+ * broken by stalest** (lowest file index = least-recently-touched). It mirrors
+ * `enforceCap` step 2's comparator minus the newcomer protection, because every
+ * lesson is a candidate here, and is strictly read-only: it never changes a
+ * score or removes anything.
+ *
+ * Its job is to revive the dormant curation loop (issue #240, spun off from the
+ * #223 audit's F3/F4): eviction only ever acts at the 50-line cap, so on a
+ * sub-cap shelf nothing is ever culled and a wrong `+1` lesson persists forever.
+ * `nb stale` surfaces the same ranking on ANY shelf so the retrospective can
+ * downvote or `rm` the weakest lessons by id. `limit` caps the list (most
+ * disposable first); `undefined` returns all. A missing/empty shelf yields an
+ * empty `entries` array, never an error.
+ */
+export function staleCandidates(dir: string, shelf: string, limit?: number): StaleResult {
+  const entries = readEntries(dir, shelf);
+  const ranked = entries
+    .map((e, idx) => ({ e, idx }))
+    .sort((a, b) => a.e.score - b.e.score || a.idx - b.idx);
+  const capped = limit === undefined ? ranked : ranked.slice(0, Math.max(0, limit));
+  return {
+    shelf,
+    total: entries.length,
+    entries: capped.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text })),
+    exists: notebookExists(dir, shelf),
+  };
+}
+
 /** Render a notebook for injection / `show`: a stable id + score, highest score first (most useful on top). */
 export function render(dir: string, shelf: string): string {
   return renderEntries(shelf, readEntries(dir, shelf));
