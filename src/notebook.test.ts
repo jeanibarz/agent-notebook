@@ -1739,6 +1739,28 @@ describe('usage log + stats', () => {
     expect(Number.isNaN(Date.parse(ts))).toBe(false); // ts untouched, still ISO
   });
 
+  test('caps an over-long NB_SESSION to maxChars, same as the note (issue #202)', () => {
+    // `session` is caller-influenced free text (a harness sets NB_SESSION), so an
+    // over-long value must be truncated like `note` — otherwise it is appended to
+    // EVERY row and the ring's row-count bound stops bounding its bytes (#128).
+    const long = 's'.repeat(maxChars() + 50);
+    logUsage(dir, 'p', 'show', true, 1, { session: long });
+    const cols = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').trimEnd().split('\t');
+    expect(cols[5].length).toBe(maxChars()); // column 5 is `session`
+    expect(cols[5].endsWith('…')).toBe(true); // same ellipsis convention as the note
+  });
+
+  test('a short NB_SESSION round-trips byte-identical (issue #202)', () => {
+    logUsage(dir, 'p', 'show', true, 1, { session: 'task-42' });
+    const cols = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').trimEnd().split('\t');
+    expect(cols[5]).toBe('task-42'); // a sub-cap value is untouched
+  });
+
+  test('a pathological session never makes logUsage throw (issue #202)', () => {
+    // Logging is best-effort; truncating must not change its never-throw contract.
+    expect(() => logUsage(dir, 'p', 'show', true, 1, { session: 'z'.repeat(100_000) })).not.toThrow();
+  });
+
   test('usage log is a bounded ring: a compaction keeps exactly the newest usageRing() rows (issue #135)', () => {
     process.env.NB_USAGE_RING = '100';
     const ring = usageRing(); // 100

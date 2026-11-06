@@ -596,13 +596,20 @@ then not computed), `entry-ids` is the comma-joined stable id(s) the call touche
 near-duplicate), and blank for a
 read-only command, `collided-id` is the id of the existing entry that blocked a
 `dedup-blocked` add or a `move-blocked` move, and `evicted-id:score` is the entry an
-`add` or `move` evicted and its final score. The parser SHALL tolerate an old five-column row written before this
+`add` or `move` evicted and its final score. The `session` value SHALL be truncated
+to `maxChars` (with the same trailing-ellipsis convention as `note`, never rejected —
+logging is best-effort), since it is caller-influenced free text appended to every
+row and must not let the ring's row-count bound stop bounding its bytes (issue #202,
+extending the `note` cap of [FR-USAGE-003](#fr-usage-003) / [NFR-BOUND-001](#nfr-bound-001)).
+The parser SHALL tolerate an old five-column row written before this
 change, reading the missing columns as blank/empty.
 **Rationale:** Diagnostic signals (recall/precision, co-access, findability, coverage
 × surfacing) rest on entry-level data living in the log, not the notebook — this adds
 no field to a lesson ([NG-004](#ng-004)), keeping the one-line / no-schema contract.
 *Proven by:* `notebook.test.ts` → `describe('entry-level + outcome logging (issue #67)')`
-and `cli.test.ts` → `describe('usage log records entry ids + outcome (issue #67)')`.
+and `cli.test.ts` → `describe('usage log records entry ids + outcome (issue #67)')`; the
+`session` cap by `notebook.test.ts` → `describe('usage log + stats')` →
+`test('caps an over-long NB_SESSION to maxChars, same as the note (issue #202)')`.
 
 <a id="fr-usage-003"></a>
 **FR-USAGE-003 (Should).** Each usage row SHALL additionally record, after the

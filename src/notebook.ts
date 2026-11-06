@@ -1676,7 +1676,8 @@ function sanitizeUsageField(raw: string): string {
  * trailing ellipsis that stays within the cap. A sub-cap note is returned
  * byte-identical. Reuses `maxChars()` (the lesson/description cap) so one knob
  * bounds every per-item length; after this the log is bounded by
- * ring-count x per-row cap.
+ * ring-count x per-row cap. Also applied to the equally caller-influenced
+ * `session` column (issue #202), so no single free-text field can bloat a row.
  */
 function capNote(note: string): string {
   const cap = maxChars();
@@ -1703,7 +1704,14 @@ export function logUsage(
     // round-trips as blank (backward-compatible — see parseUsage). `errorClass`
     // is the newest column and goes LAST (issue #176), so a pre-#176 row — which
     // ends at `note` — reads it as blank rather than mis-aligning any prior field.
-    const session = sanitizeUsageField(meta.session ?? process.env.NB_SESSION ?? '');
+    // `session` (from NB_SESSION, which a harness sets) is caller-influenced
+    // free text, exactly like `note` — not a short fixed token — so it is capped
+    // to the same per-field length (issue #202). #128 capped only `note`, calling
+    // it "the one unbounded free-text field", but a long NB_SESSION is appended to
+    // EVERY row, so without this the ring's row-count bound no longer bounds its
+    // bytes. Truncated (never rejected) so `logUsage` keeps its never-throw
+    // contract, with the same trailing-ellipsis convention as the note.
+    const session = capNote(sanitizeUsageField(meta.session ?? process.env.NB_SESSION ?? ''));
     const entries = (meta.entries ?? []).map(sanitizeUsageField).join(',');
     const outcome = sanitizeUsageField(meta.outcome ?? '');
     const collided = sanitizeUsageField(meta.collided ?? '');

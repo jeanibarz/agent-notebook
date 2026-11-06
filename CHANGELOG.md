@@ -9,6 +9,14 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Fixed
+- **The usage-log `session` column is now length-capped like `note` (#202).** `NB_SESSION`
+  was written to every row with sanitization but no length cap, so a long session id (a full
+  task path, a chained id) multiplied the on-disk log size across the whole ring — defeating
+  the row-count bound the ring exists to enforce (the same failure #128's note cap prevents). A
+  session longer than `maxChars` is now truncated (same trailing-ellipsis convention as `note`,
+  never rejected — logging stays best-effort); a normal short session round-trips unchanged.
+
 ## [0.6.0] - 2026-11-06
 
 ### Changed
