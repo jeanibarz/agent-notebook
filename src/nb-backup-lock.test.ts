@@ -578,3 +578,109 @@ describe('nb-backup.sh validates NB_BACKUP_PUSH_TIMEOUT (issue #311)', () => {
     expect(log).toMatch(/pushed .* OK/);
   });
 });
+
+// Guards issue #308: the documented versioning setup is `git init` only and never
+// sets a commit identity. On a host with no global user.email/user.name (common
+// in CI images and containers) every straggler commit fails with git's "Please
+// tell me who you are" — and swallowing that into a bare, cause-less `COMMIT
+// FAILED` makes versioning look configured while it silently records nothing. The
+// backup must map that specific cause to one actionable diagnostic naming the fix.
+describe('nb-backup.sh git-identity diagnostic (issue #308)', () => {
+  // The script's OWN actionable line (examples/nb-backup.sh). It must be asserted
+  // on specifically, NOT a loose `user.email`/`user.name` substring: git's native
+  // "Please tell me who you are" stderr — which also prints those tokens — is teed
+  // into this same log via `git commit ... 2>>"$LOG_FILE"`, so a token match would
+  // pass even if the script's diagnostic were deleted. This phrase appears only in
+  // the script, so it genuinely pins the mapped diagnostic.
+  const DIAGNOSTIC =
+    /COMMIT FAILED: no git identity — set user\.email and user\.name to enable versioning/;
+
+  /** Run the script against `dir` with EVERY ambient source of a git identity
+   *  neutralized — the global/system config FILES (HOME to an empty temp dir,
+   *  GIT_CONFIG_NOSYSTEM, GIT_CONFIG_GLOBAL, XDG_CONFIG_HOME) AND the GIT_AUTHOR,
+   *  GIT_COMMITTER, and EMAIL env OVERRIDES git honours before config — so the
+   *  repo's own local config is the only identity git sees. Without this a
+   *  host/CI that supplies an identity by any of those routes would let the commit
+   *  succeed and silently un-test the diagnostic. Returns the exit code and log. */
+  function runWithoutAmbientIdentity(): { status: number; log: string } {
+    const home = mkdtempSync(join(tmpdir(), 'agent-notebook-backup-home-'));
+    try {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        NB_DIR: dir,
+        HOME: home, // no ~/.gitconfig here, so no global identity
+        GIT_CONFIG_NOSYSTEM: '1', // ignore /etc/gitconfig
+        GIT_CONFIG_GLOBAL: '/dev/null', // ignore global config on git >= 2.32
+      };
+      // git reads these before config/auto-detect; a CI that sets them would
+      // otherwise let the commit succeed and skip the diagnostic. XDG_CONFIG_HOME
+      // too, since git also reads $XDG_CONFIG_HOME/git/config.
+      for (const v of [
+        'GIT_AUTHOR_NAME',
+        'GIT_AUTHOR_EMAIL',
+        'GIT_COMMITTER_NAME',
+        'GIT_COMMITTER_EMAIL',
+        'EMAIL',
+        'XDG_CONFIG_HOME',
+      ]) {
+        delete env[v];
+      }
+      const r = spawnSync('bash', [script], { env, encoding: 'utf-8' });
+      const logPath = join(dir, '.nb-backup.log');
+      const log = existsSync(logPath) ? readFileSync(logPath, 'utf-8') : '';
+      return { status: r.status ?? 1, log };
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  // The runtime guard is a two-arm OR — `[ -z user.email ] || [ -z user.name ]`
+  // (nb-backup.sh) — so EACH arm must be isolated, or a `||`→`&&` mutation (or
+  // dropping one arm) survives: a real misconfiguration like "user.email set,
+  // user.name missing" would then fall through to the cause-less `COMMIT FAILED —
+  // see log`, re-introducing issue #308 with no test catching it. Cover all three
+  // unversioned shapes; each must still produce the actionable diagnostic.
+  test.each([
+    { label: 'neither user.email nor user.name set', unset: ['user.email', 'user.name'] },
+    { label: 'user.email set but user.name missing', unset: ['user.name'] },
+    { label: 'user.name set but user.email missing', unset: ['user.email'] },
+  ])('a repo with $label logs the actionable fix, not a bare COMMIT FAILED', ({ unset }) => {
+    // seedRepo() (beforeEach) set both fields; drop the one(s) this case tests so
+    // the matching arm of the guard is empty.
+    for (const key of unset) {
+      execFileSync('git', ['-C', dir, 'config', '--unset', key], { stdio: 'ignore' });
+    }
+    // Disable git's gecos/hostname identity AUTO-DETECTION in this repo, so a
+    // missing user.email/user.name deterministically FAILS the commit on EVERY
+    // host. Otherwise a host whose hostname yields a valid-looking address (and
+    // whose GECOS yields a name) lets git synthesise the missing field and commit
+    // succeeds — the diagnostic never fires and the test flakes across the
+    // ubuntu+macOS CI matrix. `useConfigOnly` leaves explicit config untouched.
+    execFileSync('git', ['-C', dir, 'config', 'user.useConfigOnly', 'true'], { stdio: 'ignore' });
+    // A tracked change so `git add -A` stages something and the straggler commit
+    // is actually ATTEMPTED (and fails for lack of identity) — not a no-op.
+    writeFileSync(join(dir, 'build-and-test.md'), 'first lesson\n', 'utf-8');
+
+    const { status, log } = runWithoutAmbientIdentity();
+    // The run still exits 0: no remote means nothing to push. The commit failure
+    // is a logged diagnostic, not a crash.
+    expect(status).toBe(0);
+    // The script's own actionable phrase fired (its full text, not a token git's
+    // stderr also prints)...
+    expect(log).toMatch(DIAGNOSTIC);
+    // ...and it REPLACED the old cause-less line the issue calls out.
+    expect(log).not.toContain('COMMIT FAILED — see log');
+  });
+
+  test('control: a repo WITH an identity commits the straggler and shows no identity diagnostic', () => {
+    // seedRepo() (beforeEach) already set user.email/user.name; a tracked change
+    // must commit cleanly, proving the diagnostic is gated on the missing identity
+    // and not emitted on the normal path.
+    writeFileSync(join(dir, 'build-and-test.md'), 'first lesson\n', 'utf-8');
+    expect(run(null)).toBe(0);
+    const log = readFileSync(join(dir, '.nb-backup.log'), 'utf-8');
+    expect(log).toContain('committed straggler changes');
+    expect(log).not.toContain('COMMIT FAILED');
+    expect(log).not.toMatch(/no git identity/i);
+  });
+});

@@ -188,6 +188,16 @@ if acquire_git_lock; then
     if ! git diff --cached --quiet; then
         if git commit --quiet -m "nb-backup ${DATESTAMP}" 2>>"$LOG_FILE"; then
             log "committed straggler changes"
+        elif [ -z "$(git config user.email 2>/dev/null)" ] || [ -z "$(git config user.name 2>/dev/null)" ]; then
+            # The quick-start versioning setup is `git init` only
+            # (docs/harness-setup.md#git-versioning) and never sets a commit
+            # identity. On a host with no global user.email/user.name — common in
+            # CI images and containers — every commit fails with git's "Please
+            # tell me who you are", which swallowed into a bare COMMIT FAILED makes
+            # versioning look configured while it silently records nothing (issue
+            # #308). Map that specific cause to one actionable line so the operator
+            # knows the fix, instead of a cause-less failure.
+            log "COMMIT FAILED: no git identity — set user.email and user.name to enable versioning, e.g. git -C \"${NB_DIR}\" config user.email you@example.com && git -C \"${NB_DIR}\" config user.name \"Your Name\""
         else
             log "COMMIT FAILED — see log"
         fi
