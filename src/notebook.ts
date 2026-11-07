@@ -238,8 +238,8 @@ export function usageFile(dir: string): string {
  *
  * It is a tiny dotfile next to the log — not a `*.md` shelf (`listShelves`/stats
  * skip dotfiles) and, lacking a `.tmp` suffix, not matched by either reap
- * convention (shelf `*.md.tmp` or usage-log `.nb-usage.log.*.tmp`), so it is
- * never surfaced or deleted.
+ * convention (shelf `*.md[.<pid>].tmp` or usage-log `.nb-usage.log.*.tmp`), so it
+ * is never surfaced or deleted.
  */
 function usageCountFile(dir: string): string {
   return join(dir, '.nb-usage.log.count');
@@ -520,14 +520,21 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
   }
 }
 
+// A shelf's atomic-write temp: the legacy shared `<shelf>.md.tmp` (pre-#270) or
+// the per-process `<shelf>.md.<pid>.tmp` (issue #270). `<pid>` is always numeric
+// (process.pid), so the optional `\d+\.` segment matches the per-process name
+// without widening the sweep to arbitrary `.md.<anything>.tmp` debris.
+const SHELF_TMP_RE = /\.md\.(?:\d+\.)?tmp$/;
+
 /**
  * Reap orphaned temp files left behind by a crashed writer. This writer leaves
  * two temp conventions in the notebooks dir, each from an interrupted atomic
  * write-then-rename; if the process dies before the rename, the temp lingers
  * forever (nothing else removes it), cluttering directory listings, backups, and
- * a git-tracked notebooks dir:
- *   - `<shelf>.md.tmp` from a durable notebook write (writeFileDurable), renamed
- *     over `<shelf>.md`;
+ * a git-tracked notebooks dir (SHELF_TMP_RE matches a shelf temp of either form):
+ *   - `<shelf>.md.<pid>.tmp` from a durable notebook write (writeFileDurable,
+ *     per-process since issue #270; the legacy `<shelf>.md.tmp` from a pre-#270
+ *     writer is still swept for upgrade safety), renamed over `<shelf>.md`;
  *   - `.nb-usage.log.<pid>.tmp` from a usage-log compaction (issue #163), renamed
  *     over `.nb-usage.log`.
  * We sweep both here under the just-acquired mkdir lock, which serializes every
@@ -541,8 +548,9 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
  * case we actually care about is the common one: a crashed writer's leftover temp
  * that nothing else removes.
  * Scope is deliberately narrow to this writer's own conventions:
- *   - shelf temps: only `*.md.tmp`, and never a dotfile — a shelf name never
- *     starts with `.` (assertSafeShelf), so a `.x.md.tmp` is not ours to remove;
+ *   - shelf temps: only `<shelf>.md.tmp` or `<shelf>.md.<pid>.tmp` (SHELF_TMP_RE),
+ *     and never a dotfile — a shelf name never starts with `.` (assertSafeShelf),
+ *     so a `.x.md.tmp` is not ours to remove;
  *   - usage-log temps: only names of the exact form `<basename>.*.tmp` where
  *     `<basename>` is the usage log's (`.nb-usage.log`) — so never the live log
  *     itself, never its `.nb-usage.log.count` sidecar (no `.tmp` suffix), never
@@ -562,7 +570,7 @@ export function reapLeftoverTemps(dir: string): void {
   // per-pid segment, so the live log and its `.count` sidecar never match.
   const usageTmpPrefix = `${basename(usageFile(dir))}.`;
   for (const name of names) {
-    const isShelfTemp = !name.startsWith('.') && name.endsWith('.md.tmp');
+    const isShelfTemp = !name.startsWith('.') && SHELF_TMP_RE.test(name);
     const isUsageTemp = name.startsWith(usageTmpPrefix) && name.endsWith('.tmp');
     if (!isShelfTemp && !isUsageTemp) continue;
     try {
@@ -659,7 +667,16 @@ function writeEntries(dir: string, shelf: string, entries: Entry[], metaLines?: 
   const meta = metaLines ?? readMetaLines(dir, shelf);
   const lines = [...meta, ...entries.map(formatLine)];
   const body = lines.join('\n');
-  const tmp = `${file}.tmp`;
+  // Per-process-unique temp path (issue #270). withLock serializes writers on a
+  // healthy host, but its single-host mkdir spinlock can declare a slow holder
+  // STALE and let a second process steal the lock while the first is still alive
+  // (a network-FS fsync stall, heavy load, or a lowered NB_STALE_LOCK_MS). With a
+  // fixed `${file}.tmp` the two overlapping writers would open, truncate, and
+  // write the SAME temp, interleaving bytes before either rename — corrupting the
+  // notebook. The pid keeps each writer's temp distinct, so the atomic rename
+  // degrades a stolen-lock overlap to a lost update (last rename wins), never a
+  // torn file. reapLeftoverTemps sweeps both this and the legacy name.
+  const tmp = `${file}.${process.pid}.tmp`;
   writeFileDurable(file, tmp, lines.length ? body + '\n' : '');
 }
 
@@ -1155,8 +1172,8 @@ export function remove(dir: string, shelf: string, selector: string): Promise<Vo
       // debris `listNotebooks` HIDES ([FR-LIST-004]) but nothing ever removes, so
       // it lingers in the dir, every backup, and git history without bound. Unlink
       // it instead. Best-effort (the `rm` has already succeeded) and under this
-      // lock, so no concurrent writer's in-flight `.md.tmp` is at risk and only a
-      // truly empty file qualifies. A described-but-empty shelf (metaLines
+      // lock, so no concurrent writer's in-flight `.md.<pid>.tmp` is at risk and
+      // only a truly empty file qualifies. A described-but-empty shelf (metaLines
       // non-empty) falls to the else branch and keeps its `# desc:` trigger.
       try {
         unlinkSync(shelfFile(dir, shelf));
