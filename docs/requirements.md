@@ -974,12 +974,17 @@ leading run of `# key: value` comment lines matching `^#\s*([a-z][a-z0-9_-]*):\s
 score-0 lesson), and every mutation (`add`/`vote`/`merge`/`split`/`rm`) SHALL
 round-trip the block unchanged. Only the *leading* run is metadata — a `# key:`
 line that follows an entry stays a tolerated bare lesson ([FR-MODEL-003](#fr-model-003)).
+The leading-block parse SHALL tolerate CRLF (`\r\n`) line endings — a notebook
+normalized by git on Windows (`core.autocrlf=true`), or any CRLF hand-edit — so a
+`# desc: …\r` line is still recognized as metadata and never decays into a score-0
+lesson; the trailing `\r` is stripped so the preserved block carries no `\r`.
 **Rationale:** An entry always starts with `±score\t` (or is a bare tab-less lesson),
 so a `#`-leading `key:` line is unambiguous and backward-compatible — existing
 notebooks have no `#` lines. Unknown keys SHALL be preserved verbatim and ignored
 (forward-compatible). This stays within [NG-004](#ng-004): metadata is optional
 comment lines in the *file*, not a field on a lesson.
-*Proven by:* `notebook.test.ts` → "notebook metadata / descriptions (issue #70)".
+*Proven by:* `notebook.test.ts` → "notebook metadata / descriptions (issue #70)"
+(including "a CRLF-normalized notebook keeps its `# desc:` metadata (issue #273)").
 
 <a id="fr-desc-002"></a>
 **FR-DESC-002 (Should).** `nb describe <shelf> "<text>"` SHALL set the notebook's

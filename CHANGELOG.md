@@ -23,6 +23,14 @@ versions are listed plainly.
   ranking on this path — those stay caller policy. See [FR-SHOW-004](docs/requirements.md#fr-show-004).
 
 ### Fixed
+- **A CRLF-normalized notebook no longer loses its `# desc:` trigger (#273).** The project
+  supports git-versioning and backing up the notebooks dir; on Windows with `core.autocrlf=true`
+  (or any CRLF hand-edit) each `<shelf>.md` line arrives terminated by `\r\n`. The leading-metadata
+  scan split on `\n` only, leaving a trailing `\r` that made `# desc: …\r` fail the `$`-anchored
+  metadata pattern — so the description silently decayed into a score-0 lesson and the shelf lost
+  its trigger. The scan now splits on `\r?\n`, so a CRLF notebook parses identically to an LF one:
+  the description is preserved, a mutation rewrites the file with clean LF endings, and LF users are
+  unaffected. See [FR-DESC-001](docs/requirements.md#fr-desc-001).
 - **`nb` now refuses an unknown or misplaced `--flag` instead of silently ignoring it (#267).**
   A mistyped flag was dropped without a word — so `nb stats --exitcode >/dev/null || alert`
   (a typo of `--exit-code`) ran WITHOUT the health gate and still exited `0`, silently
