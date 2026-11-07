@@ -1523,11 +1523,52 @@ async function readStdinDefault(): Promise<string> {
         "e.g. `printf '%s\\n' 'run lint first' | nb add reviewer -`",
     );
   }
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString('utf-8');
+  return readBoundedStream(process.stdin);
 }
 /* c8 ignore stop */
+
+/**
+ * Byte budget for the piped `-` read (issue #304): a lesson is one line of at
+ * most `maxChars()` chars, i.e. at most 4 bytes/char in UTF-8; the 8x multiple
+ * leaves generous room for a trailing newline and CRLF without letting a
+ * runaway pipe buffer more than a few KB. Floor of 4096 keeps a tiny
+ * `NB_MAX_CHARS` from rejecting a legitimate line.
+ */
+function stdinByteBudget(): number {
+  return Math.max(4096, maxChars() * 8);
+}
+
+/**
+ * Drain a stream incrementally, never holding more than the byte budget. Stops
+ * reading as soon as the input is already a multi-line rejection (a line break
+ * with more content after it, judged exactly as `readOneLine` will), and throws
+ * `too_long` the moment the budget is exceeded — so a huge pipe or a single
+ * enormous newline-less line fails fast instead of being buffered into memory.
+ * Exported for tests; the caller still passes the result through `readOneLine`.
+ */
+export async function readBoundedStream(
+  stream: AsyncIterable<Buffer | string>,
+  maxBytes: number = stdinByteBudget(),
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of stream) {
+    const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf-8') : chunk;
+    bytes += buf.length;
+    if (bytes > maxBytes) {
+      throw new NbError(
+        'too_long',
+        `stdin input exceeds the ${maxBytes}-byte limit for a one-line lesson — it was NOT read in full or stored. ` +
+          'Pipe exactly one short line.',
+      );
+    }
+    chunks.push(buf);
+    // Multi-line already (a break that is not just the trailing terminator):
+    // readOneLine will refuse it, so stop consuming the stream now.
+    if (/[\r\n]/.test(Buffer.concat(chunks).toString('utf-8').replace(/\r\n$|\r$|\n$/, ''))) break;
+  }
+  return Buffer.concat(chunks).toString('utf-8');
+}
 
 /**
  * Whether an aging dock is worth printing (issue #293). `decayed.score` is the

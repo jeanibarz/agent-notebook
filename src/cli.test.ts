@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runNbCli, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS } from './cli.js';
+import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS } from './cli.js';
 import { entryId, parseUsage, usageFile } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
@@ -3759,5 +3759,43 @@ describe('nb completion (shell completion, issue #187)', () => {
       dependencies?: Record<string, string>;
     };
     expect(pkg.dependencies ?? {}).toEqual({});
+  });
+});
+
+describe('readBoundedStream (issue #304)', () => {
+  async function* gen(chunks: string[], seen: { n: number }) {
+    for (const c of chunks) {
+      seen.n++;
+      yield Buffer.from(c);
+    }
+  }
+
+  test('a normal single line (with trailing newline) is returned unchanged', async () => {
+    const seen = { n: 0 };
+    expect(await readBoundedStream(gen(['run lint ', 'first\n'], seen), 100)).toBe('run lint first\n');
+  });
+
+  test('an endless newline-less stream throws too_long without draining it', async () => {
+    const seen = { n: 0 };
+    async function* endless() {
+      for (;;) {
+        seen.n++;
+        yield Buffer.alloc(1024, 'a');
+      }
+    }
+    await expect(readBoundedStream(endless(), 4096)).rejects.toMatchObject({ errorClass: 'too_long' });
+    expect(seen.n).toBe(5);
+  });
+
+  test('stops reading once a second line appears (no further chunks pulled)', async () => {
+    const seen = { n: 0 };
+    const out = await readBoundedStream(gen(['one\n', 'two', 'three', 'four'], seen), 100);
+    expect(out).toBe('one\ntwo');
+    expect(seen.n).toBe(2);
+  });
+
+  test('a CR split from its LF across chunks is still a single line', async () => {
+    const seen = { n: 0 };
+    expect(await readBoundedStream(gen(['one\r', '\n'], seen), 100)).toBe('one\r\n');
   });
 });
