@@ -134,6 +134,7 @@ BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 # nb-git-wrapper.mjs: wait ~12 s; a lock older than 30 s is a crashed holder's.
 GIT_LOCK="${NB_DIR}/.nb-git.lock"
 GIT_LOCK_WAIT_S="${NB_BACKUP_GIT_LOCK_WAIT:-12}"
+case "$GIT_LOCK_WAIT_S" in ''|*[!0-9]*) GIT_LOCK_WAIT_S=12 ;; esac
 GIT_LOCK_STALE_S=30
 GIT_LOCK_HELD=0
 
@@ -165,7 +166,8 @@ acquire_git_lock() {
             if mv "$GIT_LOCK" "$aside" 2>/dev/null; then
                 rm -rf "$aside"
             fi
-            continue
+            # Retry the mkdir, but still count this pass toward the wait budget
+            # below, so an undeletable stale lock can't spin us forever.
         fi
         [ "$waited" -ge $((GIT_LOCK_WAIT_S * 5)) ] && return 1
         sleep 0.2 2>/dev/null || sleep 1

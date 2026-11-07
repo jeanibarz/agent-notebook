@@ -450,6 +450,31 @@ describe('nb-backup.sh serializes its commit on the wrapper\'s .nb-git.lock (iss
     expect(existsSync(gitLock())).toBe(false);
   });
 
+  test.skipIf(process.getuid?.() === 0)('an undeletable stale lock cannot spin the backup forever (bounded by the wait)', () => {
+    writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
+    mkdirSync(gitLock());
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(gitLock(), old, old);
+    chmodSync(dir, 0o555); // mv/rm of the lock fails
+    try {
+      const r = spawnSync('bash', [script], {
+        env: envWith({ NB_BACKUP_GIT_LOCK_WAIT: '1', XDG_RUNTIME_DIR: xdg }),
+        encoding: 'utf-8',
+        timeout: 20_000,
+      });
+      expect(r.signal).toBeNull(); // exited on its own, not killed
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+  });
+
+  test('a non-integer NB_BACKUP_GIT_LOCK_WAIT falls back to the default instead of breaking', () => {
+    writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
+    const r = spawnSync('bash', [script], { env: envWith({ NB_BACKUP_GIT_LOCK_WAIT: 'abc' }), encoding: 'utf-8' });
+    expect(r.status).toBe(0);
+    expect(commitCount()).toBe(1);
+  });
+
   test('an uncontended run takes and releases the lock (nothing left behind)', () => {
     writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
     expect(run(null)).toBe(0);
