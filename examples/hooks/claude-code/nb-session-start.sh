@@ -24,5 +24,15 @@ echo "lessons. At the end, run the retrospective: vote +1 on what helped and -1 
 echo "what misled, prune / merge / split to keep each notebook sharp (as many as"
 echo "apply), and add at most one new durable lesson."
 echo
-"$NB" list 2>/dev/null | sed 's/^/  /' || echo "  (no notebooks yet — you'll start one at task end)"
+# Capture first so a FAILING `nb list` (corrupt store, EACCES, …) is told apart
+# from a genuinely EMPTY one — a pipeline `|| echo` would conflate them.
+out="$("$NB" list 2>/dev/null)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "  (WARNING: \`nb list\` failed with exit $rc — the notebook store may be broken; run \`nb list\` yourself to investigate)"
+elif [ -z "$out" ]; then
+  echo "  (no notebooks yet — you'll start one at task end)"
+else
+  printf '%s\n' "$out" | sed 's/^/  /'
+fi
 exit 0
