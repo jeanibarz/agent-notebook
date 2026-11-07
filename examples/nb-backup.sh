@@ -32,7 +32,10 @@
 #   NB_BACKUP_PUSH_TIMEOUT   seconds (or any `timeout` duration, e.g. 5m) to cap
 #                            the push so a hung credential/askpass prompt can't
 #                            hold the lock forever; "0" disables the cap. Needs
-#                            `timeout` (GNU/coreutils); default 300.
+#                            `timeout` (GNU/coreutils); default 300. An
+#                            unrecognised value (e.g. "5min") is rejected with a
+#                            logged config error and falls back to the default,
+#                            so a typo can't turn every run into a push failure.
 # LOGS
 #   $NB_DIR/.nb-backup.log  (rotated at ~1 MB)
 # GIT LOCK
@@ -228,6 +231,23 @@ fi
 # rather than wedge where it is missing. NB_BACKUP_PUSH_TIMEOUT overrides the
 # default ("0" disables the wrapper, "5m" for a long haul).
 PUSH_TIMEOUT="${NB_BACKUP_PUSH_TIMEOUT:-300}"
+# Validate the duration BEFORE handing it to `timeout`. A malformed interval
+# (e.g. "5min", "abc") makes `timeout "$PUSH_TIMEOUT" git push` exit 125
+# ("invalid time interval") — a failure the push step below logs as the generic
+# "PUSH FAILED — will retry next run" on EVERY run, indistinguishable from a real
+# transient push error, so one typo silently disables the off-machine backup
+# forever (issue #311). Accept the `timeout` DURATION grammar the header
+# documents: a number (integer or decimal) with an optional s/m/h/d unit — e.g.
+# 300, 5m, 1.5, 0.5s ("0" is valid and disables the wrapper via the guard below).
+# On anything else, log a DISTINCT config error — so the operator can tell a typo
+# from a genuine push failure — and fall back to the 300 s default so the backup
+# keeps running instead of wedging. The pattern lives in a variable because an
+# unquoted `[[ =~ ]]` regex with `(...)` is the portable form across bash 3.2+.
+PUSH_TIMEOUT_RE='^[0-9]+(\.[0-9]+)?[smhd]?$'
+if [[ ! "$PUSH_TIMEOUT" =~ $PUSH_TIMEOUT_RE ]]; then
+    log "CONFIG ERROR: NB_BACKUP_PUSH_TIMEOUT='${PUSH_TIMEOUT}' is not a valid timeout duration (expected e.g. 300 or 5m); falling back to 300"
+    PUSH_TIMEOUT=300
+fi
 if [ "$PUSH_TIMEOUT" != "0" ] && command -v timeout >/dev/null 2>&1 && timeout 1 true >/dev/null 2>&1; then
     push() { timeout "$PUSH_TIMEOUT" git push --quiet origin "$BRANCH"; }
 else
