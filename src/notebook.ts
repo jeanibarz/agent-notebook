@@ -643,7 +643,17 @@ export function readShelf(dir: string, shelf: string): ShelfContents {
   // line `\uFEFF# desc: x`, which fails the `^#` META_RE and would demote the
   // description to a junk score-0 lesson (issue #299).
   let inMeta = true;
-  const raw = readFileSync(file, 'utf-8');
+  // Reads are lock-free, so a concurrent `nb rm` can unlink a phantom (empty,
+  // undescribed) shelf between the existsSync above and this read. Treat that
+  // ENOENT as the same "missing shelf → empty" contract; other errors propagate
+  // (issue #300).
+  let raw: string;
+  try {
+    raw = readFileSync(file, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { metaLines: [], entries: [] };
+    throw err;
+  }
   for (const line of (raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw).split(/\r?\n/)) {
     if (inMeta && META_RE.test(line)) {
       metaLines.push(line);

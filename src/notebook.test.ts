@@ -17,13 +17,19 @@ const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 // throws. Everything delegates to the real fs; when `events` is null and
 // `failDirFsync` is false (the default, reset in afterEach) behavior is identical
 // to the unwrapped module, so every other test is unaffected.
-const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null }));
+const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null, failReadOnceCode: null as string | null }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
     readFileSync: ((path: Parameters<typeof actual.readFileSync>[0], opts?: Parameters<typeof actual.readFileSync>[1]) => {
       fsHook.reads?.push(String(path)); // capture read paths (opt-in; null by default)
+      if (fsHook.failReadOnceCode !== null && String(path).endsWith('.md')) {
+        // One-shot fault injection (issue #300): simulate the file vanishing / failing after existsSync.
+        const code = fsHook.failReadOnceCode;
+        fsHook.failReadOnceCode = null;
+        throw Object.assign(new Error(`${code}: injected read failure for ${path}`), { code });
+      }
       return actual.readFileSync(path, opts as never);
     }) as typeof actual.readFileSync,
     fsyncSync: (fd: number) => {
@@ -154,6 +160,7 @@ afterEach(() => {
   }
   fsHook.reads = null; // leave the shared read hook off for tests that don't opt in
   fsHook.failLockMkdirCode = null; // clear lock-mkdir fault injection (issue #263) so it can never leak into another test
+  fsHook.failReadOnceCode = null; // clear one-shot read fault injection (issue #300)
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -4419,6 +4426,19 @@ describe('single-pass shelf read — list/search/show read each file once (issue
 
   test('readShelf returns empty metadata and entries for a never-created shelf', () => {
     expect(readShelf(dir, 'never-created')).toEqual({ metaLines: [], entries: [] });
+  });
+
+  test('readShelf treats an ENOENT between existsSync and readFileSync as an empty shelf (issue #300)', () => {
+    writeFileSync(join(dir, 'raced.md'), '# desc: x\n1\tlesson\n');
+    fsHook.failReadOnceCode = 'ENOENT';
+    expect(readShelf(dir, 'raced')).toEqual({ metaLines: [], entries: [] });
+    expect(fsHook.failReadOnceCode).toBeNull(); // the injected failure was actually consumed
+  });
+
+  test('readShelf still propagates non-ENOENT read errors (issue #300)', () => {
+    writeFileSync(join(dir, 'denied.md'), '# desc: x\n1\tlesson\n');
+    fsHook.failReadOnceCode = 'EACCES';
+    expect(() => readShelf(dir, 'denied')).toThrow(/EACCES/);
   });
 
   test('renderEntries renders ids+scores highest-first, with the empty line verbatim', async () => {
