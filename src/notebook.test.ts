@@ -1041,6 +1041,101 @@ describe('operation reasons (seed-and-grow enum)', () => {
     expect(row.note.length).toBeLessThanOrEqual(maxChars());
     expect(row.note.endsWith('…')).toBe(true);
   });
+
+  test('a broad search row\'s entries id-list is truncated so one row stays byte-bounded (issue #264)', () => {
+    process.env.NB_MAX_CHARS = '50'; // small, explicit cap for the assertion
+    // A `search match` row records the FULL pre-limit surfacedIds — every hit
+    // across every matching notebook — so a one-term search over many shelves
+    // can write hundreds of ids. Without a cap the usageRing bounds the ROW
+    // COUNT but not the BYTES, re-opening the gap #128/#202 closed for the
+    // free-text columns.
+    const manyIds = Array.from({ length: 500 }, (_, i) => `id${i}`);
+    expect(() => logUsage(dir, '-', 'search', true, 1, { entries: manyIds, outcome: 'match' })).not.toThrow();
+
+    const row = parseUsage(dir)[0];
+    const stored = row.entries.join(',');
+    // The stored id-list is bounded by maxChars(): one broad row cannot bloat
+    // the ring past ring-count × per-row cap.
+    expect(stored.length).toBeLessThanOrEqual(maxChars());
+    expect(stored.length).toBeGreaterThan(0); // some ids survive at cap 50
+    // Truncation keeps WHOLE ids from the front (no mangled half-id) and is
+    // SILENT — no sentinel token, because the column is iterated per id by the
+    // diagnostic consumers and a marker would leak in as a phantom entry id.
+    // Every stored token is one of the originals, in order, a prefix of the full
+    // list — and NONE is the ellipsis a `note`-style cap would have appended.
+    expect(row.entries).toEqual(manyIds.slice(0, row.entries.length));
+    expect(row.entries).not.toContain('…');
+    // parseUsage round-trips the now-bounded entries (the whole ROW is bounded
+    // too — the id-list no longer dominates the line).
+    const onDisk = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
+    expect(onDisk.trimEnd().length).toBeLessThanOrEqual(maxChars() + 200);
+  });
+
+  test('a real one-term search over many near-full shelves writes a bounded search row (issue #264 acceptance)', async () => {
+    process.env.NB_MAX_CHARS = '40';
+    process.env.NB_MAX_LINES = '3'; // tiny shelves so the fixture stays fast
+    // Build many shelves each near maxLines, every lesson sharing a term so one
+    // search hits most of them and surfaces an id per hit — the pathological
+    // broad-match shape the issue describes.
+    const shelfCount = 12;
+    for (let s = 0; s < shelfCount; s++) {
+      for (let l = 0; l < maxLines(); l++) {
+        await addEntry(dir, `shelf${s}`, `widget lesson ${s}-${l} about handling`);
+      }
+    }
+    const result = search(dir, 'widget');
+    // The search really is broad: its full id-list is far longer than one cap,
+    // so truncation genuinely fires on this path (not a no-op assertion).
+    expect(result.surfacedIds.join(',').length).toBeGreaterThan(maxChars());
+    // Log it exactly as the CLI's `search match` path does (meta.entries =
+    // result.surfacedIds) and assert the written row is byte-bounded.
+    logUsage(dir, '-', 'search', true, 1, { entries: result.surfacedIds, outcome: 'match' });
+    const searchRow = parseUsage(dir).find((r) => r.command === 'search');
+    expect(searchRow).toBeDefined();
+    expect(searchRow!.entries.join(',').length).toBeLessThanOrEqual(maxChars());
+    // Every stored token round-trips as a real surfaced id, whole and in order —
+    // and the truncation left no phantom sentinel token behind.
+    expect(searchRow!.entries).toEqual(result.surfacedIds.slice(0, searchRow!.entries.length));
+    expect(searchRow!.entries).not.toContain('…');
+  });
+
+  test('a capped entries list never injects a sentinel token into the per-id diagnostic consumers (issue #264)', () => {
+    process.env.NB_MAX_CHARS = '50';
+    // A batch `vote` — NOT just `search` — can also overflow the cap, and the
+    // vote-reversal / loop detectors iterate `r.entries` per id. Assert the
+    // truncated row carries only genuine ids, so no phantom `…` can forge a
+    // cross-session vote-reversal for a non-existent entry.
+    const manyIds = Array.from({ length: 60 }, (_, i) => `v${i}`);
+    logUsage(dir, 's', 'vote', true, 1, { entries: manyIds, outcome: 'up' });
+    const row = parseUsage(dir)[0];
+    expect(row.entries.join(',').length).toBeLessThanOrEqual(maxChars());
+    for (const id of row.entries) expect(manyIds).toContain(id); // every token is a real id
+  });
+
+  test('an entries id-list at exactly the cap is kept byte-identical; one over is truncated to whole ids (issue #264 boundary)', () => {
+    process.env.NB_MAX_CHARS = '20';
+    // Just within the cap: the joined column is 19 ≤ 20, so it is stored whole —
+    // this pins the `<= cap` boundary (a `< cap` / `cap - 1` bound would wrongly
+    // start dropping ids before the real limit).
+    const exact = ['aaaaa', 'bbbbb', 'ccccccc']; // joined = "aaaaa,bbbbb,ccccccc" = 19 ≤ 20
+    logUsage(dir, 's', 'split', true, 1, { entries: exact, outcome: 'split' });
+    expect(parseUsage(dir)[0].entries).toEqual(exact); // byte-identical, nothing dropped
+    // One id too many pushes the join over the cap → the overflowing id is
+    // dropped WHOLE (no mangled half-id, no sentinel).
+    const over = [...exact, 'eeee']; // joined = 24 > 20
+    logUsage(dir, 's', 'split', true, 1, { entries: over, outcome: 'split' });
+    const second = parseUsage(dir)[1].entries;
+    expect(second.join(',').length).toBeLessThanOrEqual(maxChars());
+    expect(second).toEqual(exact); // the first four fit (19 ≤ 20); 'eeee' dropped whole
+  });
+
+  test('an entries id-list within the cap is stored byte-identical (issue #264)', () => {
+    process.env.NB_MAX_CHARS = '50';
+    logUsage(dir, 's', 'split', true, 1, { entries: ['aaa', 'bbb', 'ccc'], outcome: 'split' });
+    const row = parseUsage(dir)[0];
+    // Sub-cap: unchanged — the common case and old on-disk rows are untouched.
+    expect(row.entries).toEqual(['aaa', 'bbb', 'ccc']);
+  });
 });
 
 describe('usage-log TSV wire format (golden, issue #126)', () => {

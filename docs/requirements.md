@@ -692,6 +692,18 @@ to `maxChars` (with the same trailing-ellipsis convention as `note`, never rejec
 logging is best-effort), since it is caller-influenced free text appended to every
 row and must not let the ring's row-count bound stop bounding its bytes (issue #202,
 extending the `note` cap of [FR-USAGE-003](#fr-usage-003) / [NFR-BOUND-001](#nfr-bound-001)).
+The `entry-ids` column SHALL likewise be bounded to `maxChars` for the whole
+comma-joined list: a `search match` row records the full pre-`limit` surfaced ids
+(every hit across every matching notebook), so without a cap a single broad `search`
+would let one row's bytes grow without bound even though the ring's row count is
+fixed. The cap applies to every command's id-list (a large batch `vote` can overflow
+it too), keeping as many WHOLE ids from the front as fit (never a mangled partial id
+a reader could mistake for a real entry); it is best-effort and never rejected. Unlike
+the `note`/`session` caps this truncation SHALL be SILENT — no trailing sentinel —
+because the parser splits this column back into individual ids that the diagnostic
+reads iterate, so any marker token would be read as a phantom entry id (issue #264,
+completing the per-column byte bound of issues #128/#202 for the last
+unbounded-length column).
 The parser SHALL tolerate an old five-column row written before this
 change, reading the missing columns as blank/empty.
 **Rationale:** Diagnostic signals (recall/precision, co-access, findability, coverage
@@ -700,7 +712,9 @@ no field to a lesson ([NG-004](#ng-004)), keeping the one-line / no-schema contr
 *Proven by:* `notebook.test.ts` → `describe('entry-level + outcome logging (issue #67)')`
 and `cli.test.ts` → `describe('usage log records entry ids + outcome (issue #67)')`; the
 `session` cap by `notebook.test.ts` → `describe('usage log + stats')` →
-`test('caps an over-long NB_SESSION to maxChars, same as the note (issue #202)')`.
+`test('caps an over-long NB_SESSION to maxChars, same as the note (issue #202)')`; the
+`entry-ids` cap by `notebook.test.ts` → `describe('operation reasons (seed-and-grow enum)')` →
+`test('a broad search row\'s entries id-list is truncated so one row stays byte-bounded (issue #264)')`.
 
 <a id="fr-usage-003"></a>
 **FR-USAGE-003 (Should).** Each usage row SHALL additionally record, after the
