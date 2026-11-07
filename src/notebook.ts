@@ -1836,6 +1836,47 @@ function capNote(note: string): string {
   return note.slice(0, cap - 1) + '…';
 }
 
+/**
+ * Cap the usage-log `entries` id-list column so one broad row cannot blow the
+ * ring's byte budget. Every other usage column is a single id, a short enum
+ * token, or the already-capped `--note` (#128/#202), but a `search match` row
+ * records the FULL pre-`limit` `surfacedIds` — every hit across every matching
+ * notebook — so a one-term `search` over many near-full shelves writes an
+ * unbounded list, and the ring's row-COUNT bound (`usageRing`) no longer bounds
+ * its BYTES (issue #264, completing the per-field caps of #128/#202). Applied to
+ * every command's `entries` (a large batch `vote` can overflow it too), so one
+ * knob (`maxChars()`) bounds every per-row field and the whole log stays bounded
+ * by ring-count × per-row cap. Like `capNote` this TRUNCATES rather than rejects,
+ * keeping `logUsage`'s never-throw contract; a within-cap list is returned
+ * byte-identical (joined exactly as before), so the common case and old on-disk
+ * rows are unchanged.
+ *
+ * We keep as many WHOLE ids from the front as fit — never a mangled half-id a
+ * reader could mistake for a real entry. Unlike `capNote`, truncation is
+ * deliberately SILENT: `note` is read back as one free-text string, but
+ * `entries` is split on `,` and ITERATED per id by the diagnostic consumers
+ * (vote-reversal, loop detection, serendipity in `stats`/`diagnoseSignals`), so
+ * any trailing sentinel token would leak in as a phantom entry id and, on a
+ * capped batch vote, forge a cross-session `vote-reversal` for that phantom. The
+ * byte bound is what the ring budget needs; the dropped tail ids only weaken the
+ * best-effort pull/co-access signals (already lossy proxies — ring churn drops
+ * the same evidence), never correctness.
+ */
+function capEntries(ids: string[]): string {
+  const cap = maxChars();
+  const joined = ids.join(',');
+  if (joined.length <= cap) return joined;
+  const kept: string[] = [];
+  let len = 0;
+  for (const id of ids) {
+    const extra = (kept.length === 0 ? 0 : 1) + id.length; // comma separator + id
+    if (len + extra > cap) break;
+    kept.push(id);
+    len += extra;
+  }
+  return kept.join(',');
+}
+
 export function logUsage(
   dir: string,
   shelf: string,
@@ -1863,7 +1904,7 @@ export function logUsage(
     // bytes. Truncated (never rejected) so `logUsage` keeps its never-throw
     // contract, with the same trailing-ellipsis convention as the note.
     const session = capNote(sanitizeUsageField(meta.session ?? process.env.NB_SESSION ?? ''));
-    const entries = (meta.entries ?? []).map(sanitizeUsageField).join(',');
+    const entries = capEntries((meta.entries ?? []).map(sanitizeUsageField));
     const outcome = sanitizeUsageField(meta.outcome ?? '');
     const collided = sanitizeUsageField(meta.collided ?? '');
     const evicted = sanitizeUsageField(meta.evicted ?? '');
