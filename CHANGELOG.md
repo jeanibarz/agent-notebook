@@ -32,6 +32,17 @@ versions are listed plainly.
   operand, so `nb add flags -- --json` stores the line `--json`. `--json`/`--reason`/`--note`
   are recognized only before the `--`; a bare trailing `--` is still a literal operand, so
   `vote`'s `--` downvote alias is unchanged ([FR-CLI-007](docs/requirements.md)).
+- **`nb-git-wrapper` no longer lets concurrent mutations race in its git section (#271).** The
+  wrapper ran `git add -A` → commit with no lock of its own, *after* the package had released its
+  `.nb.lock`. Under parallel-subagent workloads two wrappers interleaved: one `git add -A` staged
+  a sibling's already-written `.md`, bundling two changes under one mislabelled commit while the
+  other found nothing staged and dropped its commit (or the two git calls collided on
+  `index.lock`). Two independent guards now fix this while keeping the lesson written *first*, as
+  before: autoCommit stages **per change** (everything except `*.md`, then only the shelves this
+  command wrote), so a sibling's concurrently-written shelf is never bundled in; and a per-`NB_DIR`
+  `.nb-git.lock` mkdir lock (distinct from `.nb.lock`) serializes only the git calls, so they can't
+  collide on `index.lock`. The lock is fail-open and guards no lesson write — a git or lock problem
+  never fails or loses a lesson. One commit per change, with an accurate message.
 
 ## [0.7.0] - 2026-11-06
 
