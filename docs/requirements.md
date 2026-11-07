@@ -594,6 +594,26 @@ forgiving, [DP-5](#dp-5)). Without `--json`, every throw and defaulted-flag path
 byte-for-byte unchanged.
 *Proven by:* `cli.test.ts` → `describe('--json completes the machine contract on throw + defaulted-flag paths (issue #266)')`.
 
+<a id="fr-cli-009"></a>
+**FR-CLI-009 (Must).** An unrecognized long option SHALL be refused rather than silently
+ignored or absorbed as a positional (issue #267). Each command accepts a bounded set of
+long options — the global `--json` (every command), the mutation `--reason`/`--note`
+([FR-CLI-001](#fr-cli-001)), and the per-command flags (`--any`/`--limit` on the read
+commands, `--exit-code`/`--since` on `stats`, `--usage` on `path`) — and any OTHER
+`--`-prefixed token *before* the `--` terminator SHALL fail with a `bad_args` error
+(exit `1`, message on stderr; the structured `{ ok:false, … }` object on stdout under
+`--json` per [FR-CLI-008](#fr-cli-008)), naming the offending option and, when one is close
+by the same `editDistance` rule as the command did-you-mean ([FR-CLI-006](#fr-cli-006),
+issue #171), appending a `Did you mean \`<nearest>\`?` hint. **Rationale:** before this, a
+typo'd `nb stats --exitcode` ran WITHOUT the `--exit-code` health gate and still exited `0`,
+so `nb stats --exitcode || alert` (the #129 cron health-gate) silently stopped firing — a
+[DP-5](#dp-5) "never silently mislead" violation defeated by one missing hyphen. Exempt, so
+[FR-CLI-007](#fr-cli-007) is preserved: every operand *after* a `--` terminator and a bare
+trailing `--` are literal operands, never checked as flags; a value-taking flag's value
+token (`--note --json`) is consumed, never re-examined. An unknown *command* is unaffected —
+it keeps the exit-`2` [FR-CLI-002](#fr-cli-002) path, never downgraded to this exit-`1` one.
+*Proven by:* `cli.test.ts` → `describe('nb unknown-flag rejection (issue #267)')`.
+
 <a id="fr-config-001"></a>
 **FR-CONFIG-001 (Should).** `nb config` SHALL print every effective (post-clamp) tunable
 as `name=value`, one per line — `maxLines`, `maxChars`, `nearThreshold`, `usageRing`,

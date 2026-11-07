@@ -10,6 +10,16 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Fixed
+- **`nb` now refuses an unknown or misplaced `--flag` instead of silently ignoring it (#267).**
+  A mistyped flag was dropped without a word — so `nb stats --exitcode >/dev/null || alert`
+  (a typo of `--exit-code`) ran WITHOUT the health gate and still exited `0`, silently
+  defeating the #129 cron monitor by one missing hyphen. Each command now validates its
+  `--`-prefixed options against a bounded per-command set and fails fast on an unrecognized
+  one with `unknown option "<flag>" for \`nb <cmd>\`` (exit `1`, message on stderr; the
+  structured `{ok:false,…}` object on stdout under `--json`), appending a `Did you mean
+  \`<nearest>\`?` hint when one is close. The `--` end-of-options terminator (#277) still
+  shields a flag-shaped operand, a bare trailing `--` (vote's downvote alias) is untouched,
+  and an unknown *command* keeps its exit-`2` path. See [FR-CLI-009](docs/requirements.md#fr-cli-009).
 - **`nb-janitor` §4 no longer reports a git failure as "not a git repo" (#269).** `gitHistory()`
   returned `null` both when `NB_DIR` has no `.git` *and* when `git log` failed — its 5s timeout on
   a huge repo, git's dubious-ownership refusal on a shared host, a corrupt repo, or git missing

@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runNbCli, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS } from './cli.js';
+import { runNbCli, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS } from './cli.js';
 import { entryId, parseUsage, usageFile } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
@@ -453,6 +453,189 @@ describe('runNbCli', () => {
       const r = await run(['add', 'glossary', '--json']);
       expect(r.code).toBe(1);
       expect(r.err).toContain('missing <lesson> argument');
+    });
+  });
+
+  // issue #267 — a mistyped or misplaced `--flag` used to be silently ignored
+  // (or absorbed as a positional), so `nb stats --exitcode >/dev/null || alert`
+  // (a typo of `--exit-code`) ran WITHOUT the health gate and still exited 0 —
+  // the #129 cron monitor silently stopped firing. Unknown long options are now
+  // refused up front (exit 1, message on stderr, nearest-option hint).
+  describe('nb unknown-flag rejection (issue #267)', () => {
+    test('the motivating case: `nb stats --exitcode` is refused, not silently run exit 0', async () => {
+      const r = await run(['stats', '--exitcode']);
+      expect(r.code).toBe(1); // a non-zero exit so `|| alert` fires on the typo
+      expect(r.code).not.toBe(0); // the pre-fix silent-degrade bug
+      expect(r.err).toMatch(/unknown option "--exitcode" for `nb stats`/);
+      expect(r.err).toMatch(/Did you mean `--exit-code`\?/); // nearest-option hint
+      expect(r.out).toBe(''); // nothing printed; the command never ran
+    });
+
+    test('the correctly-spelled `--exit-code` is still accepted (regression guard)', async () => {
+      // A fresh notebook dir has no anomalies, so the gate passes with exit 0;
+      // the point is the real flag is NOT caught by the unknown-flag guard.
+      const r = await run(['stats', '--exit-code']);
+      expect(r.err).not.toContain('unknown option');
+      expect([0, 3]).toContain(r.code); // 0 (no anomalies) or 3 (anomalies), never 1
+    });
+
+    test('a valid flag with a value is accepted and its value is not mistaken for an option', async () => {
+      const r = await run(['stats', '--since', '7d']);
+      expect(r.code).toBe(0);
+      expect(r.err).not.toContain('unknown option'); // `7d` is a value, not a flag
+    });
+
+    test('an unknown flag on a read command (`show`) is refused before it needs a shelf', async () => {
+      const r = await run(['show', 'reviewer', '--verbose']);
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/unknown option "--verbose" for `nb show`/);
+    });
+
+    test('a flag valid elsewhere but not for this command is refused (no cross-command bleed)', async () => {
+      // `--since` is a `stats` flag; on `show` it is unknown and was silently
+      // dropped (and `reviewer` taken as the shelf) before the fix.
+      const r = await run(['show', 'reviewer', '--since', '7d']);
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/unknown option "--since" for `nb show`/);
+    });
+
+    test('a mutation flag typo (`--resaon`) is refused and points at `--reason`', async () => {
+      await run(['add', 'glossary', 'a seed lesson']);
+      const r = await run(['add', 'glossary', 'another lesson', '--resaon', 'dup']);
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/unknown option "--resaon" for `nb add`/);
+      expect(r.err).toMatch(/Did you mean `--reason`\?/);
+    });
+
+    test('a far-off unknown flag is still refused, with NO misleading suggestion', async () => {
+      const r = await run(['show', 'reviewer', '--zzzzzz']);
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/unknown option "--zzzzzz" for `nb show`/);
+      expect(r.err).not.toContain('Did you mean'); // nothing close enough to suggest
+    });
+
+    test('a flag-shaped VALUE of a value-taking flag is not mistaken for an unknown option', async () => {
+      // `--note`/`--reason`/`--limit`/`--since` consume their following token, so
+      // a note that is literally `--exitcode` must be stored, never rejected.
+      const r = await run(['add', 'glossary', 'noted lesson', '--note', '--exitcode']);
+      expect(r.code).toBe(0);
+      expect(r.err).not.toContain('unknown option');
+    });
+
+    test('the `--` terminator still shields a flag-shaped token from the guard (issue #277 interop)', async () => {
+      // After `--`, every token is a literal operand, so `nb stats -- --exitcode`
+      // is NOT an unknown-flag error — it is the documented escape hatch.
+      const r = await run(['stats', '--', '--exitcode']);
+      expect(r.code).toBe(0);
+      expect(r.err).not.toContain('unknown option');
+    });
+
+    test('a bare trailing `--` (vote downvote alias) is never treated as an unknown flag', async () => {
+      await run(['add', 'patcher', 'downvote me']);
+      const r = await run(['vote', 'patcher', 'downvote', '--']); // `--` == -1
+      expect(r.code).toBe(0);
+      expect(r.err).not.toContain('unknown option');
+      expect(r.out).toContain('[+0]'); // downvoted from +1
+    });
+
+    test('an unknown COMMAND with a flag still takes the exit-2 unknown-command path, not exit 1', async () => {
+      // The flag guard must not mask (or downgrade) the unknown-command error.
+      const r = await run(['frobnicate', '--json']);
+      expect(r.code).toBe(2);
+      expect(r.err).toMatch(/^nb: unknown command "frobnicate"\./);
+    });
+
+    test('an unknown flag under --json emits the structured error contract (issue #266 interop)', async () => {
+      const r = await run(['stats', '--exitcode', '--json']);
+      expect(r.code).toBe(1);
+      expect(JSON.parse(r.out)).toMatchObject({
+        ok: false,
+        command: 'stats',
+        error: { class: 'bad_args' },
+      });
+      expect(r.err).toMatch(/unknown option "--exitcode"/); // prose still on stderr
+    });
+
+    test('KNOWN_FLAGS has a row for every dispatched command (drift guard)', () => {
+      // Every KNOWN_COMMANDS entry except help/version (which return before the
+      // switch) MUST have a KNOWN_FLAGS row, or that command silently opts out of
+      // unknown-flag validation. Mirrors the KNOWN_COMMANDS dispatch drift guard.
+      const needRow = KNOWN_COMMANDS.filter((c) => c !== 'help' && c !== 'version');
+      const missing = needRow.filter((c) => !(c in KNOWN_FLAGS));
+      expect(missing).toEqual([]);
+      // And no phantom rows for commands that do not exist.
+      const phantom = Object.keys(KNOWN_FLAGS).filter((c) => !KNOWN_COMMANDS.includes(c));
+      expect(phantom).toEqual([]);
+      // Anti-vacuous: the guard is meaningless if either list resolved empty.
+      expect(needRow.length).toBeGreaterThan(0);
+    });
+
+    test('behavioral drift guard: every command rejects a nonsense `--flag`', async () => {
+      // Independently of the KNOWN_FLAGS table, prove each real command actually
+      // runs the guard: a nonsense flag must exit 1 with "unknown option".
+      for (const cmd of KNOWN_COMMANDS) {
+        if (cmd === 'help' || cmd === 'version') continue; // return before the switch
+        const r = await run([cmd, '--definitely-not-a-real-flag']);
+        expect(r.code, `\`nb ${cmd} --definitely-not-a-real-flag\` should be refused`).toBe(1);
+        expect(r.err).toContain('unknown option "--definitely-not-a-real-flag"');
+      }
+    });
+
+    test('acceptance guard: each list-like command still ACCEPTS its real `--limit`', async () => {
+      // The rejection guards prove a nonsense flag dies; this proves the real
+      // `--limit` row is not over-zealously rejected. Without it, emptying the
+      // `ls`/`shelves`/`roles`/`stale` row to [] would silently break `--limit`
+      // there and no test would notice (the rejection loop can't catch it).
+      await run(['add', 'reviewer', 'a seed lesson']); // a shelf to list/cull
+      for (const cmd of ['list', 'ls', 'shelves', 'roles', 'stale']) {
+        const argv = cmd === 'stale' ? [cmd, 'reviewer', '--limit', '2'] : [cmd, '--limit', '2'];
+        const r = await run(argv);
+        expect(r.code, `\`nb ${argv.join(' ')}\` should accept --limit`).toBe(0);
+        expect(r.err).not.toContain('unknown option');
+      }
+    });
+
+    test('no cross-command bleed into empty-row commands (`vote`/`config`)', async () => {
+      // `vote`, `config`, `completion` accept only `--json`; a flag valid on
+      // another command must still be unknown here. Pins the empty rows so a
+      // regression that leaks `--reason`/`--limit` into them is caught.
+      await run(['add', 'patcher', 'bleed check']);
+      const v = await run(['vote', 'patcher', 'bleed', '+1', '--reason', 'dup']);
+      expect(v.code).toBe(1);
+      expect(v.err).toMatch(/unknown option "--reason" for `nb vote`/);
+      const c = await run(['config', '--limit', '3']);
+      expect(c.code).toBe(1);
+      expect(c.err).toMatch(/unknown option "--limit" for `nb config`/);
+    });
+
+    test('value flags other than --note also consume a flag-shaped value (no false "unknown option")', async () => {
+      // Pins every VALUE_FLAGS entry, not only `--note`: the token after a
+      // value-taking flag is its value and must never be re-examined as an
+      // option. (Whether the command then succeeds, warns-and-defaults, or
+      // throws "needs a value" is its own concern — the invariant under test is
+      // that NONE of them is ever mis-reported as an unknown option.)
+      const r1 = await run(['add', 'glossary', 'reasoned lesson', '--reason', '--exitcode']);
+      expect(r1.code).toBe(0); // `--reason` stores arbitrary text, incl. flag-shaped
+      expect(r1.err).not.toContain('unknown option');
+      // `--since`'s flag-shaped value is forgivingly defaulted (warned), never an
+      // unknown option; the real `--exit-code` after it is still honored.
+      const r2 = await run(['stats', '--since', '--exit-code']);
+      expect(r2.err).not.toContain('unknown option');
+      // `--limit`'s value token is consumed by the guard; the command then throws
+      // its own "needs a value" — still never an "unknown option" rejection.
+      const r3 = await run(['search', 'needle', '--limit', '--any']);
+      expect(r3.err).not.toContain('unknown option');
+    });
+
+    test('a rejected flag aborts BEFORE the mutation runs (no partial write)', async () => {
+      // The guard must fire before dispatch: a typo'd flag on `add` must NOT
+      // store the lesson. Guards against the guard being moved after the write.
+      await run(['add', 'glossary', 'the only real lesson']);
+      const r = await run(['add', 'glossary', 'should never be stored', '--resaon', 'dup']);
+      expect(r.code).toBe(1);
+      const shown = await run(['show', 'glossary', '--json']);
+      const texts = (JSON.parse(shown.out).entries as Array<{ text: string }>).map((e) => e.text);
+      expect(texts).toEqual(['the only real lesson']); // the rejected lesson never landed
     });
   });
 
@@ -1195,15 +1378,16 @@ describe('runNbCli', () => {
     expect(r.err).toBe('');
   });
 
-  test('path with an unrecognized --flag is rejected, never silently treated as the dir (issue #169)', async () => {
-    // `--usage` is the ONLY recognized flag; any other `--`-prefixed token falls
-    // through to the shelf branch, where assertSafeShelf rejects it. This is why
-    // `--usage` cannot collide with a shelf literally named `--usage` — such a
-    // name is unreachable — and it guards against a typo'd flag quietly printing
-    // the notebooks dir.
+  test('path with an unrecognized --flag is rejected, never silently treated as the dir (issue #169, #267)', async () => {
+    // `--usage`/`--json` are the ONLY recognized flags; any other `--`-prefixed
+    // token is refused up front by the central unknown-flag guard (issue #267)
+    // rather than quietly printing the notebooks dir. The message names the
+    // offending option (not a confusing "invalid shelf name"), and `--usage`
+    // still cannot collide with a shelf literally named `--usage` — such a name
+    // is unreachable.
     const r = await run(['path', '--bogus']);
     expect(r.code).toBe(1);
-    expect(r.err).toMatch(/invalid shelf name/);
+    expect(r.err).toMatch(/unknown option "--bogus" for `nb path`/);
   });
 
   describe('path --json (issue #185)', () => {

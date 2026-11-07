@@ -555,6 +555,84 @@ function requireExistingShelf(dir: string, shelf: string): void {
   throw new NbError('no_match', `no notebook for shelf "${shelf}"${hint}`);
 }
 
+/**
+ * The long options each command accepts, so a typo'd or misplaced flag is
+ * REFUSED loudly instead of silently ignored or absorbed as a positional (issue
+ * #267). Before this, `nb stats --exitcode` (a typo of `--exit-code`) ran
+ * WITHOUT the health gate and still exited 0 — so `nb stats --exitcode || alert`
+ * silently stopped firing, the #129 use case defeated by one missing hyphen.
+ *
+ * `--json` is accepted everywhere (it is parsed globally for every command), so
+ * it is folded in by `assertKnownFlags` rather than repeated in each row. A row
+ * is required for every dispatched command except `help`/`version` (which return
+ * before the switch); a drift guard in cli.test.ts fails loudly if a
+ * `KNOWN_COMMANDS` entry is missing one, so a new command cannot quietly opt out
+ * of flag validation. An unknown COMMAND has no row and is left to the dispatch
+ * default (exit 2) — never masked by a flag error here.
+ */
+export const KNOWN_FLAGS: Record<string, readonly string[]> = {
+  show: [],
+  stale: ['--limit'],
+  add: ['--reason', '--note'],
+  vote: [],
+  merge: ['--reason', '--note'],
+  split: ['--reason', '--note'],
+  rm: ['--reason', '--note'],
+  move: ['--reason', '--note'],
+  describe: ['--reason', '--note'],
+  search: ['--any', '--limit'],
+  stats: ['--exit-code', '--since'],
+  path: ['--usage'],
+  config: [],
+  list: ['--limit'],
+  ls: ['--limit'],
+  shelves: ['--limit'],
+  roles: ['--limit'],
+  completion: [],
+};
+
+/**
+ * The flags that take a following value token. Listed so `assertKnownFlags`
+ * consumes that token and never re-examines it — a value may itself be
+ * flag-shaped (e.g. `--note --exitcode`, recording a note that is literally
+ * `--exitcode`), and treating it as an option would be a false rejection. (A
+ * literal `--json` value is the exception: the global `--json` strip runs first,
+ * so passing it as a value needs the `--` terminator instead — issue #277.)
+ */
+const VALUE_FLAGS = new Set(['--reason', '--note', '--limit', '--since']);
+
+/**
+ * Refuse an unknown or misplaced long option rather than silently swallowing it
+ * (issue #267). Scans only `head` — the region BEFORE a `--` terminator —
+ * because every token after `--` is a deliberate literal operand (issue #277)
+ * and must never be read as a flag. A bare `--` within `head` is likewise a
+ * literal operand (e.g. `vote`'s trailing-`--` downvote alias), not a flag.
+ * Value-taking flags consume their following token (see `VALUE_FLAGS`). On an
+ * unknown flag, throws `bad_args` — the FR-CLI-002 "handled operation error"
+ * path (exit 1, message on stderr; a structured `{ok:false,…}` on stdout under
+ * `--json`) — with a nearest-option hint (reusing `closestCommand`) when one is
+ * close, so `--exitcode` points at `--exit-code` in one line.
+ */
+function assertKnownFlags(cmd: string, head: string[]): void {
+  const known = KNOWN_FLAGS[cmd];
+  if (!known) return; // unknown command → handled by the dispatch default (exit 2)
+  const accepted = new Set<string>(known);
+  accepted.add('--json'); // parsed globally for every command (see `json` below)
+  for (let i = 1; i < head.length; i++) {
+    const tok = head[i];
+    // A literal operand or positional (incl. a bare `--`, and short tokens like
+    // the `-` stdin sentinel or a `-1` vote delta): never a long option.
+    if (tok === '--' || !tok.startsWith('--')) continue;
+    if (accepted.has(tok)) {
+      if (VALUE_FLAGS.has(tok)) i++; // skip its value token (may be flag-shaped)
+      continue;
+    }
+    const near = closestCommand(tok, [...accepted]);
+    const hint = near ? ` Did you mean \`${near}\`?` : '';
+    throw new NbError('bad_args', `unknown option "${tok}" for \`nb ${cmd}\`.${hint}`);
+  }
+}
+
 export async function runNbCli(
   argv: string[],
   readStdin: () => Promise<string> = readStdinDefault,
@@ -636,6 +714,10 @@ export async function runNbCli(
   let reasonArg: string | undefined;
   let noteArg: string | undefined;
   try {
+    // Refuse a typo'd/misplaced flag (e.g. `nb stats --exitcode`) before any
+    // parsing consumes it, so it can never degrade silently (issue #267). Scans
+    // `head` only — operands after a `--` terminator stay literals (issue #277).
+    assertKnownFlags(cmd, head);
     if (cmd === 'add' || cmd === 'merge' || cmd === 'rm' || cmd === 'split' || cmd === 'describe' || cmd === 'move') {
       // Inside the try so a malformed flag (e.g. `--reason` with no value)
       // becomes a handled exit-1 error, not an uncaught rejection.
