@@ -639,8 +639,12 @@ export function readShelf(dir: string, shelf: string): ShelfContents {
   // CRLF hand-edit of a git-versioned notebook) parses identically to an LF one:
   // without stripping the trailing `\r`, `# desc: x\r` fails the `$`-anchored
   // META_RE and the description silently becomes a score-0 lesson (issue #273).
+  // Strip one leading UTF-8 BOM (U+FEFF) first: a BOM-adding editor makes the first
+  // line `\uFEFF# desc: x`, which fails the `^#` META_RE and would demote the
+  // description to a junk score-0 lesson (issue #299).
   let inMeta = true;
-  for (const line of readFileSync(file, 'utf-8').split(/\r?\n/)) {
+  const raw = readFileSync(file, 'utf-8');
+  for (const line of (raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw).split(/\r?\n/)) {
     if (inMeta && META_RE.test(line)) {
       metaLines.push(line);
       continue;
