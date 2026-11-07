@@ -9,6 +9,22 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Fixed
+- **Batch-vote partial selector-misses are no longer laundered out of `nb stats`' vote error causes (#310).**
+  A batch vote (`nb vote <shelf> id1,id2,id3 +1`) that resolved at least one id but skipped others
+  exited `0` and wrote a clean success row — no `errorClass` — so its stale ids were invisible to the
+  `errorClass`-built vote selector-miss readout (#223), even though a *single* failed vote throws and
+  gets a class stamped. The exact workflow batch vote was added for (#223/#224) thus under-reported the
+  "agents voting on ids that no longer exist" signal that drives curation health. Each ≥1-landed batch
+  row now records the count of skipped ids in a new trailing **`misses`** usage-log column (a dedicated
+  counter, **not** `errorClass`, so the partial success keeps exit `0`), and `nb stats` folds those
+  misses into the `vote` error causes as `no_match` — the same class a wholly-failed vote stamps —
+  subject to the existing dominant-error noise floor. The per-command error **rate** is unchanged (it
+  counts whole failed calls, so a batch that exited `0` stays a success there); the all-fail
+  (`no_match`, exit 1) and single-vote paths are untouched. The column is appended last, so pre-#310
+  rows read it as `0` and a corrupt negative cell is clamped to `0`; `STATS_SCHEMA_VERSION` stays `1`
+  (additive). See [FR-STATS-008](docs/requirements.md#fr-stats-008).
+
 ### Added
 - **`nb stats` now surfaces crash/interrupt recovery, so silent mid-write crashes become observable (#309).**
   Two recovery paths each mean a previous `nb` died mid-mutation — the stale-lock steal (`withLock`)
