@@ -170,10 +170,11 @@ describe('runNbCli', () => {
     const parsed = JSON.parse(r.out);
     expect(parsed.role).toBe('patcher');
     expect(parsed.description).toBe('bug-fix lessons');
-    // Highest score first (beta +2 before alpha +1); each entry carries id/score/text.
+    // Highest score first (beta +2 before alpha +1); each entry carries
+    // id/score/text and the dedupKey normal form `key` (issue #286).
     expect(parsed.entries).toEqual([
-      { id: betaId, score: 2, text: 'beta lesson' },
-      { id: entryId('alpha lesson'), score: 1, text: 'alpha lesson' },
+      { id: betaId, score: 2, text: 'beta lesson', key: 'beta lesson' },
+      { id: entryId('alpha lesson'), score: 1, text: 'alpha lesson', key: 'alpha lesson' },
     ]);
     // The ids match what the human `show` prints, and the order matches render()
     // (skipping the leading `# desc:` header line that the human output carries).
@@ -192,6 +193,162 @@ describe('runNbCli', () => {
     // `solo` was never created, so `exists` is false; `entries` stays `[]` for
     // backward compatibility (issue #166 adds `exists`, it does not change `entries`).
     expect(JSON.parse(r.out)).toEqual({ role: 'solo', shelf: 'solo', description: null, entries: [], exists: false });
+  });
+
+  // issue #286 — `nb show a b c --json` is a batch read: one ShowResult per shelf
+  // in one process, and each entry carries the dedupKey normal form `key` so the
+  // caller composes its own context (shelf selection, scope precedence, budget)
+  // and drops *exact* cross-shelf duplicates itself. No similarity dropping here.
+  describe('show --json batch + per-entry key (issue #286)', () => {
+    test('each entry carries its dedupKey normal form as `key` (case/punctuation-folded, distinct from the raw text)', async () => {
+      // A lesson whose normal form differs from its text — uppercase + punctuation.
+      await run(['add', 'patcher', 'Use execFileSync, NOT execSync!']);
+      const r = await run(['show', 'patcher', '--json']);
+      expect(r.code).toBe(0);
+      const [entry] = JSON.parse(r.out).entries as Array<{ text: string; key: string }>;
+      expect(entry.text).toBe('Use execFileSync, NOT execSync!');
+      // dedupKey: lowercase, punctuation → space, whitespace collapsed.
+      expect(entry.key).toBe('use execfilesync not execsync');
+    });
+
+    test('two entries with an equal `key` are exact dupes the caller can drop — even across shelves', async () => {
+      // Same lesson modulo case/punctuation lives on two different shelves.
+      await run(['add', 'alpha', 'Fail open is UNSAFE.']);
+      await run(['add', 'beta', 'fail open is unsafe']);
+      const r = await run(['show', 'alpha', 'beta', '--json']);
+      expect(r.code).toBe(0);
+      const [a, b] = JSON.parse(r.out) as Array<{ entries: Array<{ key: string }> }>;
+      // Identical normal form → identical `key`: the caller drops the cross-shelf dupe.
+      expect(a.entries[0].key).toBe(b.entries[0].key);
+      expect(a.entries[0].key).toBe('fail open is unsafe');
+    });
+
+    test('≥2 shelves → a per-shelf ShowResult[] in order, one consistent read', async () => {
+      await run(['add', 'alpha', 'alpha one']);
+      await run(['describe', 'alpha', 'A shelf']);
+      await run(['add', 'beta', 'beta one']);
+      const r = await run(['show', 'alpha', 'beta', '--json']);
+      expect(r.code).toBe(0);
+      // Exactly one JSON value (the array) on stdout, nothing else.
+      expect(r.out.trim().split('\n')).toHaveLength(1);
+      const arr = JSON.parse(r.out);
+      expect(Array.isArray(arr)).toBe(true);
+      expect(arr).toHaveLength(2);
+      expect(arr.map((s: { shelf: string }) => s.shelf)).toEqual(['alpha', 'beta']); // given order
+      expect(arr[0].description).toBe('A shelf');
+      expect(arr[0].entries[0]).toMatchObject({ text: 'alpha one', key: 'alpha one' });
+      expect(arr[1].entries[0]).toMatchObject({ text: 'beta one', key: 'beta one' });
+    });
+
+    test('a single shelf stays a lone object (not a one-element array) — backward compatible', async () => {
+      await run(['add', 'alpha', 'only lesson']);
+      const r = await run(['show', 'alpha', '--json']);
+      const parsed = JSON.parse(r.out);
+      expect(Array.isArray(parsed)).toBe(false);
+      expect(parsed.shelf).toBe('alpha');
+    });
+
+    test('a named shelf with no file reports exists:false in the batch (never a silent empty)', async () => {
+      await run(['add', 'alpha', 'alpha one']);
+      const r = await run(['show', 'alpha', 'ghost', '--json']);
+      expect(r.code).toBe(0);
+      const [a, ghost] = JSON.parse(r.out) as Array<{ shelf: string; exists: boolean; entries: unknown[] }>;
+      expect(a).toMatchObject({ shelf: 'alpha', exists: true });
+      expect(ghost).toMatchObject({ shelf: 'ghost', exists: false, entries: [] });
+    });
+
+    test('human-mode batch renders each shelf block in given order, blank-line separated', async () => {
+      await run(['add', 'alpha', 'alpha lesson']);
+      await run(['add', 'beta', 'beta lesson']);
+      const r = await run(['show', 'alpha', 'beta']);
+      expect(r.code).toBe(0);
+      // Both shelves' lessons appear (the pre-#286 path showed only the first)…
+      expect(r.out).toContain('alpha lesson');
+      expect(r.out).toContain('beta lesson');
+      expect(r.out).toContain('nb vote alpha');
+      expect(r.out).toContain('nb vote beta');
+      // …in the given order (not reversed)…
+      expect(r.out.indexOf('alpha lesson')).toBeLessThan(r.out.indexOf('beta lesson'));
+      // …with a blank line between the two blocks (the alpha vote hint, then an
+      // empty line, then beta's id line).
+      expect(r.out).toMatch(/nb vote alpha[^\n]*\n\n[0-9a-f]{6}\s+\[\+1\]\s+beta lesson/);
+    });
+
+    test('human-mode batch reports a missing shelf on stderr while still rendering the present ones', async () => {
+      await run(['add', 'alpha', 'alpha lesson']);
+      const r = await run(['show', 'alpha', 'ghost']);
+      expect(r.code).toBe(0); // not found is not an error (DP-5)
+      expect(r.out).toContain('alpha lesson');
+      expect(r.err).toContain('no notebook for shelf "ghost"');
+      // The missing shelf must NOT be rendered as a notebook on stdout — not even
+      // the "(… is empty)" line, which is reserved for an existing empty shelf.
+      expect(r.out).not.toContain('ghost');
+    });
+
+    test('human-mode batch with a missing FIRST shelf still renders the later present ones', async () => {
+      await run(['add', 'beta', 'beta lesson']);
+      const r = await run(['show', 'ghost', 'beta']);
+      expect(r.code).toBe(0);
+      expect(r.err).toContain('no notebook for shelf "ghost"');
+      expect(r.out).toContain('beta lesson');
+    });
+
+    test('near-but-not-equal lessons are KEPT with different keys — no similarity dropping (criterion 3)', async () => {
+      // These share a first word and most trigrams but have DISTINCT normal forms,
+      // so a similarity-based dedup would wrongly collapse them. The contract is
+      // exact-key equality only: both survive, in both shelves, with different keys.
+      await run(['add', 'alpha', 'alpha one']);
+      await run(['add', 'beta', 'alpha one two']);
+      const r = await run(['show', 'alpha', 'beta', '--json']);
+      const [a, b] = JSON.parse(r.out) as Array<{ entries: Array<{ key: string }> }>;
+      expect(a.entries).toHaveLength(1);
+      expect(b.entries).toHaveLength(1);
+      expect(a.entries[0].key).toBe('alpha one');
+      expect(b.entries[0].key).toBe('alpha one two');
+      expect(a.entries[0].key).not.toBe(b.entries[0].key);
+    });
+
+    test('an EXACT cross-shelf dupe is retained in BOTH shelves (nb never drops across shelves)', async () => {
+      await run(['add', 'alpha', 'same lesson']);
+      await run(['add', 'beta', 'same lesson']);
+      const r = await run(['show', 'alpha', 'beta', '--json']);
+      const [a, b] = JSON.parse(r.out) as Array<{ entries: Array<{ key: string }> }>;
+      // Dropping the dupe is the CALLER's job; nb returns both so the caller decides.
+      expect(a.entries).toHaveLength(1);
+      expect(b.entries).toHaveLength(1);
+      expect(a.entries[0].key).toBe(b.entries[0].key);
+    });
+
+    test('--json may precede or sit between the shelf operands', async () => {
+      await run(['add', 'alpha', 'alpha one']);
+      await run(['add', 'beta', 'beta one']);
+      for (const argv of [
+        ['show', '--json', 'alpha', 'beta'],
+        ['show', 'alpha', '--json', 'beta'],
+      ]) {
+        const r = await run(argv);
+        expect(r.code).toBe(0);
+        const arr = JSON.parse(r.out);
+        expect(Array.isArray(arr)).toBe(true);
+        expect(arr.map((s: { shelf: string }) => s.shelf)).toEqual(['alpha', 'beta']);
+      }
+    });
+
+    test('an invalid shelf name anywhere in a batch fails the whole call atomically (exit 1, no partial JSON)', async () => {
+      await run(['add', 'alpha', 'alpha one']);
+      // `showJsonMany` validates each shelf as it reads it and throws before any
+      // output is written, so a bad shelf aborts the batch with nothing on stdout.
+      const r = await run(['show', 'alpha', '../escape', '--json']);
+      expect(r.code).toBe(1);
+      // Structured error on stdout (the --json throw contract), never a partial array.
+      expect(r.out).not.toContain('"shelf":"alpha"');
+    });
+
+    test('a bare `nb show` with no shelf still errors', async () => {
+      const r = await run(['show']);
+      expect(r.code).not.toBe(0);
+      expect(r.err).toMatch(/missing <shelf>/);
+    });
   });
 
   // issue #240 (#223-F3) — `nb stale` surfaces cull candidates (the order

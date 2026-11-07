@@ -382,6 +382,25 @@ shelf is reported like `show` (stderr, exit 0). *(Issue #240; spun off from the
 
 *Proven by:* `notebook.test.ts` → `describe('staleCandidates (nb stale — cull candidates, issue #240)')`; `cli.test.ts` → `describe('nb stale — cull candidates (issue #240)')`.
 
+<a id="fr-show-004"></a>
+**FR-SHOW-004 (Should).** `nb show` SHALL accept one or more shelf operands and
+present each one, in the given order, instead of silently dropping all but the
+first. Under `--json` it SHALL emit the structured form via `showJson` /
+`showJsonMany`: for a single shelf a lone `ShowResult` object
+(`{role, shelf, description, entries, exists}`), and for two or more a per-shelf
+`ShowResult[]` produced in one process (one consistent snapshot, no re-spawn).
+A named shelf with no file SHALL report `exists: false` with `entries: []`, never
+a silent empty ([DP-5](#dp-5), [issue #166](#fr-show-001)). Each `--json` entry
+SHALL carry a `key`: the `dedupKey` normal form of its `text` (the same
+case/punctuation-folded, whitespace-collapsed form that derives its `id`), so two
+entries with an equal `key` are exact duplicates a caller can drop — including
+across shelves. This path SHALL do NO cross-shelf dedup, reordering, scope
+precedence, or similarity ranking: those stay caller policy, and `key` is an
+equality signal only, never a near-duplicate or ranking score ([DP-8](#dp-8)).
+*(Issue #286.)*
+
+*Proven by:* `cli.test.ts` → `describe('show --json batch + per-entry key (issue #286)')`; `notebook.test.ts` → `describe('showJson key + showJsonMany batch (issue #286)')`.
+
 ### 4.9 Shelves & paths
 
 <a id="fr-safe-001"></a>

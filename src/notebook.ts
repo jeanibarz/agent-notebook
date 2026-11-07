@@ -1333,6 +1333,17 @@ export interface ShowEntry {
   id: string;
   score: number;
   text: string;
+  /**
+   * The `dedupKey` normal form of `text` (issue #286) — the one value a consumer
+   * cannot reproduce without reimplementing nb's normalization. Two entries with
+   * an EQUAL `key` are exact duplicates the caller can drop itself, so a harness
+   * composing context from several shelves can strip exact cross-shelf dupes
+   * without a round-trip into nb. Equality-only on purpose: it is never a
+   * similarity, ranking, or near-dup signal ([NG-001]). Distinct from `id`, which
+   * is a hash of the same normal form — `key` is the readable form the caller
+   * compares on; two entries share a `key` iff they share an `id`.
+   */
+  key: string;
 }
 
 /**
@@ -1374,9 +1385,29 @@ export function showJson(dir: string, shelf: string): ShowResult {
     role: shelf,
     shelf,
     description: getMetaValue(metaLines, DESC_KEY),
-    entries: ord.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text })),
+    entries: ord.map((x) => ({
+      id: entryId(x.e.text),
+      score: x.e.score,
+      text: x.e.text,
+      key: dedupKey(x.e.text),
+    })),
     exists: notebookExists(dir, shelf),
   };
+}
+
+/**
+ * Batch form of {@link showJson} for `nb show <a> <b> <c> --json` (issue #286):
+ * one {@link ShowResult} per shelf, in the given order, produced in a single
+ * process so a caller composes its own context from several shelves in one
+ * consistent snapshot instead of spawning nb N times. A named shelf with no file
+ * yields `exists: false` (never a silent empty), and each entry carries its
+ * `key` so the caller drops *exact* cross-shelf duplicates itself. nb does NO
+ * cross-shelf dedup, ordering, scope precedence, or budgeting here — those are
+ * caller policy ([NG-007]); a repeated shelf in `shelves` is read (and returned)
+ * once per occurrence, verbatim.
+ */
+export function showJsonMany(dir: string, shelves: string[]): ShowResult[] {
+  return shelves.map((shelf) => showJson(dir, shelf));
 }
 
 /** One cull candidate in a {@link StaleResult}: its stable id, current score, and lesson text. */

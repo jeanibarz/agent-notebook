@@ -4,7 +4,7 @@
 // offline file edit.
 //
 // Commands:
-//   nb show   <shelf> [--json]              print the notebook (--json → structured {shelf,description,entries})
+//   nb show   <shelf>... [--json]           print the notebook(s) (--json → structured {shelf,description,entries}; one shelf → object, many → array, each entry has a `key`)
 //   nb add    <shelf> "<lesson>"            dedup-skip, score +1, write, trim (lowest-score out)
 //   nb add    <shelf> -                     read the one-line lesson from stdin (multi-line refused)
 //   nb vote   <shelf> <id|query> +1|-1      adjust an entry's score (id-list <id1,id2,…> votes several at once)
@@ -70,6 +70,7 @@ import {
   search,
   setDescription,
   showJson,
+  showJsonMany,
   staleCandidates,
   silentHours,
   sparkGlyphs,
@@ -119,7 +120,7 @@ const HELP = `nb — the Agent Notebook (bounded, voted memory, grouped in shelv
 For developers who run AI agents and want them to carry a few durable lessons across runs.
 
 usage:
-  nb show   <shelf> [--json]               print the notebook (highest-scored first; --json emits {shelf,description,entries})
+  nb show   <shelf>... [--json]            print one or more notebooks (highest-scored first; --json emits {shelf,description,entries} — a lone object for one shelf, an array for several; each entry carries a dedup key)
   nb stale  <shelf> [--limit N] [--json]   list cull candidates to downvote/rm, most disposable first (lowest score, then stalest; default ${STALE_DEFAULT_LIMIT})
   nb add    <shelf> "<lesson>"             add a lesson (exact dup skipped; a near-dup still adds but warns; rejected if too long, never truncated)
   nb add    <shelf> -                      read the lesson from stdin (one line; multi-line is refused)
@@ -739,47 +740,63 @@ export async function runNbCli(
     args = args.concat(operands);
     switch (cmd) {
       case 'show': {
-        // Resolve the shelf from the --json-stripped args so `nb show <shelf> --json`
-        // and `nb show --json <shelf>` both work and the flag is never taken as the shelf.
-        shelf = need(args[1], 'shelf');
+        // Resolve EVERY shelf positional from the --json-stripped args so
+        // `nb show <a> <b> <c>` reads them all in one process (batch read, issue
+        // #286) instead of silently dropping all but the first, and so
+        // `nb show --json <shelf>` still works (the flag is never a shelf). `need`
+        // still rejects a bare `nb show` with no shelf.
+        const shelves = args.slice(1);
+        need(shelves[0], 'shelf');
+        shelf = shelves[0]; // usage-log field: the first shelf (single-shelf behavior unchanged)
         if (json) {
-          // `--json` emits the structured ShowResult ({ shelf, description, entries })
-          // and nothing else, so an agent reads each entry's id/score/text without
-          // regex-parsing the human output. Same ordering as `render()`.
-          process.stdout.write(JSON.stringify(showJson(dir, shelf)) + '\n');
+          // One shelf → a lone ShowResult object ({ shelf, description, entries })
+          // so an agent reads each entry's id/score/text/key without regex-parsing
+          // the human output (backward-compatible with issue #87). Two or more →
+          // a per-shelf ShowResult[] in one consistent snapshot (issue #286), each
+          // entry carrying its `key` so the caller drops exact cross-shelf dupes
+          // itself; nb does no cross-shelf dedup or ordering here. Same per-shelf
+          // ordering as `render()`.
+          const out = shelves.length === 1 ? showJson(dir, shelves[0]) : showJsonMany(dir, shelves);
+          process.stdout.write(JSON.stringify(out) + '\n');
         } else {
-          // One read for both the description header and the rendered lessons
-          // (issue #201): this branch used to read the shelf twice
-          // (getDescription then render→readEntries).
-          const { metaLines, entries } = readShelf(dir, shelf);
-          // Print the one-line description (if any) as a header above the lessons,
-          // so a reader sees what the notebook is *for* before its contents.
-          const desc = getMetaValue(metaLines, DESC_KEY);
-          if (desc) process.stdout.write(`# desc: ${desc}\n`);
-          // A shelf that was never created (e.g. a typo) must not read as a real
-          // empty notebook — that would mislead (DP-5, issue #166). Say "no
-          // notebook" on stderr, matching the empty-state convention `list` and
-          // `describe` use, and reserve render()'s "(... is empty)" on stdout for
-          // a shelf whose file exists but holds no lessons. Not found is not an
-          // error, so exit stays 0 (like `describe`'s read path).
-          if (!notebookExists(dir, shelf)) {
-            process.stderr.write(`no notebook for shelf "${shelf}" — run \`nb list\` to see existing shelves\n`);
-          } else {
-            process.stdout.write(renderEntries(shelf, entries) + '\n');
-            // Copy-paste vote hint (issue #223): the usage audit found ~1 in 5
-            // votes failing on a fuzzy TEXT selector while the id was printed
-            // right there. Echo a ready-to-run command with the shelf already
-            // filled, so the reflect step votes by id (the stable token above)
-            // — and can batch several — instead of by ambiguous substring. It is
-            // a `#` comment line (never a lesson, never written to the file) and
-            // is suppressed under `--json`, which stays a lone ShowResult object.
-            // Only shown when there is something to vote on.
-            if (entries.length > 0) {
-              process.stdout.write(
-                `# vote by id: nb vote ${shelf} <id> +1|-1  ·  several at once: nb vote ${shelf} <id1,id2,…> +1\n`,
-              );
+          // Human mode renders each shelf block in order, blank-line separated for
+          // a batch, so `nb show a b` never silently drops `b`. A single shelf is
+          // byte-for-byte identical to before.
+          shelves.forEach((s, i) => {
+            if (i > 0) process.stdout.write('\n');
+            // One read for both the description header and the rendered lessons
+            // (issue #201): this branch used to read the shelf twice
+            // (getDescription then render→readEntries).
+            const { metaLines, entries } = readShelf(dir, s);
+            // Print the one-line description (if any) as a header above the lessons,
+            // so a reader sees what the notebook is *for* before its contents.
+            const desc = getMetaValue(metaLines, DESC_KEY);
+            if (desc) process.stdout.write(`# desc: ${desc}\n`);
+            // A shelf that was never created (e.g. a typo) must not read as a real
+            // empty notebook — that would mislead (DP-5, issue #166). Say "no
+            // notebook" on stderr, matching the empty-state convention `list` and
+            // `describe` use, and reserve render()'s "(... is empty)" on stdout for
+            // a shelf whose file exists but holds no lessons. Not found is not an
+            // error, so exit stays 0 (like `describe`'s read path).
+            if (!notebookExists(dir, s)) {
+              process.stderr.write(`no notebook for shelf "${s}" — run \`nb list\` to see existing shelves\n`);
+            } else {
+              process.stdout.write(renderEntries(s, entries) + '\n');
+              // Copy-paste vote hint (issue #223): the usage audit found ~1 in 5
+              // votes failing on a fuzzy TEXT selector while the id was printed
+              // right there. Echo a ready-to-run command with the shelf already
+              // filled, so the reflect step votes by id (the stable token above)
+              // — and can batch several — instead of by ambiguous substring. It is
+              // a `#` comment line (never a lesson, never written to the file) and
+              // is suppressed under `--json`, which stays a lone ShowResult object.
+              // Only shown when there is something to vote on.
+              if (entries.length > 0) {
+                process.stdout.write(
+                  `# vote by id: nb vote ${s} <id> +1|-1  ·  several at once: nb vote ${s} <id1,id2,…> +1\n`,
+                );
+              }
             }
-          }
+          });
         }
         break;
       }

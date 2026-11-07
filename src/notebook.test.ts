@@ -103,6 +103,7 @@ import {
   setDescription,
   setMetaValue,
   showJson,
+  showJsonMany,
   staleCandidates,
   sparkGlyphs,
   sparkline,
@@ -4161,6 +4162,44 @@ describe('notebookExists / showJson exists flag (issue #166)', () => {
   });
 });
 
+describe('showJson key + showJsonMany batch (issue #286)', () => {
+  test('each entry carries the dedupKey normal form as `key`', async () => {
+    await addEntry(dir, 'alpha', 'Use execFileSync, NOT execSync!');
+    const sh = showJson(dir, 'alpha');
+    expect(sh.entries[0].key).toBe(dedupKey('Use execFileSync, NOT execSync!'));
+    expect(sh.entries[0].key).toBe('use execfilesync not execsync');
+    // Equality-only: entries share a `key` iff they share an `id` (both hash the
+    // same normal form), so key-equality is exactly the exact-dupe relation.
+    await addEntry(dir, 'beta', 'use execfilesync not execsync');
+    const b = showJson(dir, 'beta');
+    expect(b.entries[0].key).toBe(sh.entries[0].key);
+    expect(b.entries[0].id).toBe(sh.entries[0].id);
+  });
+
+  test('showJsonMany returns one ShowResult per shelf, in order, missing → exists:false', async () => {
+    await addEntry(dir, 'alpha', 'alpha lesson');
+    await setDescription(dir, 'alpha', 'A');
+    await addEntry(dir, 'beta', 'beta lesson');
+    const batch = showJsonMany(dir, ['alpha', 'ghost', 'beta']);
+    expect(batch.map((s) => s.shelf)).toEqual(['alpha', 'ghost', 'beta']);
+    expect(batch[0]).toMatchObject({ description: 'A', exists: true });
+    expect(batch[0].entries[0]).toMatchObject({ text: 'alpha lesson', key: 'alpha lesson' });
+    expect(batch[1]).toMatchObject({ shelf: 'ghost', exists: false, entries: [] });
+    expect(batch[2].entries[0]).toMatchObject({ text: 'beta lesson' });
+  });
+
+  test('showJsonMany on an empty list yields an empty array (no shelves asked, none returned)', () => {
+    expect(showJsonMany(dir, [])).toEqual([]);
+  });
+
+  test('showJsonMany reads a repeated shelf once per occurrence, verbatim (no implicit dedup)', async () => {
+    await addEntry(dir, 'alpha', 'alpha lesson');
+    const batch = showJsonMany(dir, ['alpha', 'alpha']);
+    expect(batch).toHaveLength(2);
+    expect(batch[0]).toEqual(batch[1]);
+  });
+});
+
 describe('staleCandidates (nb stale — cull candidates, issue #240)', () => {
   test('ranks lowest score first, ties broken by stalest (file order)', async () => {
     // add a,b,c,d (all +1, file order a,b,c,d), then lift a to +3 and b to +2.
@@ -4275,8 +4314,13 @@ describe('single-pass shelf read — list/search/show read each file once (issue
     // Exact entries (id/score/text/order), so a wrong read wouldn't slip past a
     // mere length check.
     expect(result.entries).toEqual([
-      { id: entryId('first alpha lesson'), score: 1, text: 'first alpha lesson' },
-      { id: entryId('second alpha lesson about lint'), score: 1, text: 'second alpha lesson about lint' },
+      { id: entryId('first alpha lesson'), score: 1, text: 'first alpha lesson', key: 'first alpha lesson' },
+      {
+        id: entryId('second alpha lesson about lint'),
+        score: 1,
+        text: 'second alpha lesson about lint',
+        key: 'second alpha lesson about lint',
+      },
     ]);
     expect(countShelfReads(reads)).toEqual({ alpha: 1 });
   });
