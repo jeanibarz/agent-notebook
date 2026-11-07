@@ -550,10 +550,13 @@ describe('nb-backup.sh validates NB_BACKUP_PUSH_TIMEOUT (issue #311)', () => {
   );
 
   // Valid durations must behave exactly as before: push cleanly, no config error.
-  // `5m` is the documented example; `1.5` / `0.5s` are decimals GNU `timeout`
+  // `5m` is the documented example; `30.5` / `1.5m` are decimals GNU `timeout`
   // accepts, so the validator must NOT reject them (they are "any timeout
-  // duration" per the header) — a regression guard on the grammar's breadth.
-  test.skipIf(!hasTimeout).each(['300', '5m', '1.5', '0.5s'])(
+  // duration" per the header) — a regression guard on the grammar's breadth,
+  // covering a bare decimal and a decimal-with-unit. The decimals are kept large
+  // on purpose: they still wrap the real push in `timeout`, but with a generous
+  // ceiling so the local-remote push can't flake under a tight sub-second bound.
+  test.skipIf(!hasTimeout).each(['300', '5m', '30.5', '1.5m'])(
     'a valid duration (%s) pushes with no config error',
     (good) => {
       const { status, log } = runWithRemote(good);
