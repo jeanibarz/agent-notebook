@@ -76,6 +76,7 @@ import {
   dedupKey,
   diagnoseEngagement,
   entryId,
+  formatEvictedUsage,
   similarity,
   getDescription,
   getMetaValue,
@@ -510,6 +511,122 @@ describe('caps', () => {
     process.env.NB_MAX_LINES = '3';
     const mg = await merge(dir, 'mg', 'm1', 'm2', 'm1 and m2 merged');
     expect(mg.decayed).not.toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Mass eviction on a lowered cap (issue #306)
+  // ---------------------------------------------------------------------------
+  //
+  // Lowering NB_MAX_LINES below a full shelf's size makes the next mutation trim
+  // the shelf all the way down in ONE call — many evictions at once. Before #306
+  // the result and the usage `evicted` column surfaced only the FIRST, so a
+  // data-loss event was under-reported to one entry and the
+  // eviction-while-still-voted signal that reads that column missed the scale.
+  describe('mass eviction on a lowered cap (issue #306)', () => {
+    test('add on a shelf filled to 50 then capped at 10 evicts all 41 and reports every one', async () => {
+      process.env.NB_MAX_LINES = '50';
+      for (let i = 0; i < 50; i++) await addEntry(dir, 'patcher', `lesson ${i}`);
+      expect(readEntries(dir, 'patcher')).toHaveLength(50); // full, nothing evicted yet
+
+      process.env.NB_MAX_LINES = '10';
+      const r = await addEntry(dir, 'patcher', 'the newcomer');
+
+      expect(r.size).toBe(10); // trimmed to the new cap
+      expect(r.evictedAll).toHaveLength(41); // 50 + 1 newcomer − 10
+      expect(r.evicted).toBe(r.evictedAll[0]); // primary is still the first evicted
+      // The protected newcomer is never among the evicted — only the pre-existing lessons left.
+      expect(r.evictedAll.some((e) => e.text === 'the newcomer')).toBe(false);
+      expect(r.evictedAll.every((e) => /^lesson \d+$/.test(e.text))).toBe(true);
+    });
+
+    test('a single over-cap add still reports exactly one eviction (common case unchanged)', async () => {
+      process.env.NB_MAX_LINES = '3';
+      for (const t of ['a', 'b', 'c']) await addEntry(dir, 's', t);
+      const r = await addEntry(dir, 's', 'd'); // 3 → 4, cap 3 ⇒ one eviction
+      expect(r.evictedAll).toHaveLength(1);
+      expect(r.evicted).toBe(r.evictedAll[0]);
+    });
+
+    test('move into a target filled to 10 then capped at 3 evicts all the overflow', async () => {
+      process.env.NB_MAX_LINES = '10';
+      for (let i = 0; i < 10; i++) await addEntry(dir, 'dst', `d${i}`);
+      await addEntry(dir, 'src', 'relocated');
+      process.env.NB_MAX_LINES = '3';
+      const r = await move(dir, 'src', 'dst', 'relocated');
+      expect(r.toSize).toBe(3);
+      expect(r.evictedAll).toHaveLength(8); // 10 + 1 moved − 3
+      expect(r.evicted).toBe(r.evictedAll[0]);
+      expect(r.evictedAll.some((e) => e.text === 'relocated')).toBe(false); // the moved lesson is protected
+    });
+
+    test('formatEvictedUsage: empty → "", single pair is byte-identical to the pre-#306 format', () => {
+      expect(formatEvictedUsage([])).toBe('');
+      expect(formatEvictedUsage([{ score: 3, text: 'solo' }])).toBe(`${entryId('solo')}:3`);
+    });
+
+    test('formatEvictedUsage: a short list records every pair in order', () => {
+      const evicted = [
+        { score: 2, text: 'one' },
+        { score: 5, text: 'two' },
+        { score: 1, text: 'three' },
+      ];
+      expect(formatEvictedUsage(evicted)).toBe(
+        `${entryId('one')}:2,${entryId('two')}:5,${entryId('three')}:1`,
+      );
+    });
+
+    test('formatEvictedUsage: a huge list is byte-bounded by maxChars with a count-preserving +N marker', () => {
+      const evicted = Array.from({ length: 41 }, (_, i) => ({ score: 1, text: `evicted lesson number ${i}` }));
+      const field = formatEvictedUsage(evicted);
+      expect(field.length).toBeLessThanOrEqual(maxChars()); // never blows the usage ring's per-row budget
+
+      const tokens = field.split(',');
+      const markers = tokens.filter((t) => t.startsWith('+'));
+      expect(markers).toHaveLength(1); // exactly one trailing overflow marker
+      const pairs = tokens.filter((t) => !t.startsWith('+'));
+      // Every listed token is a well-formed `<id>:<score>` pair (no mangled half-id).
+      for (const p of pairs) expect(p).toMatch(/^[0-9a-f]{6}:-?\d+$/);
+      // The TOTAL evicted count is recoverable: listed pairs + the dropped count.
+      const dropped = Number(markers[0].slice(1));
+      expect(pairs.length + dropped).toBe(41);
+      expect(pairs.length).toBeGreaterThan(1); // many are listed, not just one
+    });
+
+    test('eviction-while-still-voted counts EVERY still-voted entry in one mass eviction, not just the first', () => {
+      // One add row whose evicted column lists three evictions: two still above
+      // the +1 start (3 and 2) and one at the floor (1). Both still-voted ones
+      // must surface a signal; the floor one must not.
+      const evicted = [
+        { score: 3, text: 'still useful A' },
+        { score: 2, text: 'still useful B' },
+        { score: 1, text: 'never voted C' },
+      ];
+      logUsage(dir, 'patcher', 'add', true, 2, {
+        session: 's1',
+        entries: ['new999'],
+        outcome: 'accepted',
+        evicted: formatEvictedUsage(evicted),
+      });
+      const rep = stats(dir, { now: Date.now() });
+      const sigs = rep.signals.filter((s) => s.kind === 'eviction-while-still-voted');
+      expect(sigs.map((s) => s.entry).sort()).toEqual(
+        [entryId('still useful A'), entryId('still useful B')].sort(),
+      );
+    });
+
+    test('eviction-while-still-voted ignores the +N overflow marker (no phantom signal)', () => {
+      logUsage(dir, 'patcher', 'add', true, 2, {
+        session: 's1',
+        entries: ['new999'],
+        outcome: 'accepted',
+        evicted: `${entryId('still voted')}:4,+40`, // one real pair + a 40-dropped marker
+      });
+      const rep = stats(dir, { now: Date.now() });
+      const sigs = rep.signals.filter((s) => s.kind === 'eviction-while-still-voted');
+      expect(sigs).toHaveLength(1);
+      expect(sigs[0].entry).toBe(entryId('still voted'));
+      expect(sigs.some((s) => (s.entry ?? '').startsWith('+'))).toBe(false);
+    });
   });
 
   // ---------------------------------------------------------------------------

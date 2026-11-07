@@ -822,7 +822,19 @@ function enforceCap(entries: Entry[], protectedCount: number): CapResult {
 export interface AddResult {
   added: boolean;
   reason: 'added' | 'duplicate' | 'empty' | 'too-long';
+  /**
+   * The first (stalest) entry the cap removed, or `null` when nothing was
+   * evicted. Kept for the common single-eviction display path; for the FULL set
+   * (a cap decrease can evict many at once — issue #306) read `evictedAll`.
+   */
   evicted: Entry | null;
+  /**
+   * EVERY entry this operation evicted, in storage order (stalest first). Holds
+   * one entry in the ordinary over-cap add, but many when `NB_MAX_LINES` was
+   * lowered below a full shelf's size so the next add trims it all the way down.
+   * Empty when nothing was evicted. `evicted` is `evictedAll[0] ?? null`.
+   */
+  evictedAll: Entry[];
   /** The stalest survivor the aging step docked −1 (already mutated, so `score` is the POST-dock value), or `null` when no cap overflow occurred. */
   decayed: Entry | null;
   size: number;
@@ -848,7 +860,7 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     // One scan for entries AND the metadata block, passed through to writeEntries
     // below so the mutation reads the shelf once, not twice (issue #251).
     const { metaLines, entries } = readShelf(dir, shelf);
-    if (text === '') return { added: false, reason: 'empty', evicted: null, decayed: null, size: entries.length };
+    if (text === '') return { added: false, reason: 'empty', evicted: null, evictedAll: [], decayed: null, size: entries.length };
     const id = entryId(text);
     const cap = maxChars();
     if (text.length > cap) {
@@ -856,12 +868,12 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
       // agent should retry with a shorter *complete* one. Report the overflow
       // (`length - cap`) so the retry trims exactly that much rather than
       // guessing how far over it was (issue #239).
-      return { added: false, reason: 'too-long', evicted: null, decayed: null, size: entries.length, length: text.length, overflow: text.length - cap, id };
+      return { added: false, reason: 'too-long', evicted: null, evictedAll: [], decayed: null, size: entries.length, length: text.length, overflow: text.length - cap, id };
     }
     const key = dedupKey(text);
     const collider = entries.find((e) => dedupKey(e.text) === key);
     if (collider) {
-      return { added: false, reason: 'duplicate', evicted: null, decayed: null, size: entries.length, id, collidedId: entryId(collider.text) };
+      return { added: false, reason: 'duplicate', evicted: null, evictedAll: [], decayed: null, size: entries.length, id, collidedId: entryId(collider.text) };
     }
     // Not an exact-normal-form duplicate (which would have hard-blocked above),
     // but it may still closely *resemble* an existing entry — a paraphrase the
@@ -897,6 +909,7 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
       added: true,
       reason: 'added',
       evicted: evicted[0] ?? null,
+      evictedAll: evicted,
       decayed,
       size: kept.length,
       id,
@@ -1099,7 +1112,7 @@ export function merge(dir: string, shelf: string, selA: string, selB: string, me
     // lesson is protected like any newcomer.
     const { kept, evicted, decayed } = enforceCap(deduped, 1);
     writeEntries(dir, shelf, kept, metaLines);
-    return { added: true, reason: 'added', evicted: evicted[0] ?? null, decayed, size: kept.length, id: entryId(text), sources };
+    return { added: true, reason: 'added', evicted: evicted[0] ?? null, evictedAll: evicted, decayed, size: kept.length, id: entryId(text), sources };
   });
 }
 
@@ -1110,8 +1123,10 @@ export interface SplitResult {
   source: string;
   /** Stable ids of the two entries the split produced, in A,B order. */
   ids: [string, string];
-  /** A lower-scored entry the split's growth (1 → 2) pushed out to stay under cap, or `null`. */
+  /** The first (stalest) entry the split's growth (1 → 2) pushed out to stay under cap, or `null`. For the FULL set after a cap decrease, read `evictedAll` (issue #306). */
   evicted: Entry | null;
+  /** EVERY entry the split evicted, in storage order (stalest first); one in the ordinary case, many when `NB_MAX_LINES` was lowered below the shelf's size. Empty when none. `evicted` is `evictedAll[0] ?? null`. */
+  evictedAll: Entry[];
   /** The stalest survivor the aging step docked −1 (post-dock score), or `null`. */
   decayed: Entry | null;
 }
@@ -1172,7 +1187,7 @@ export function split(
     // are protected (admitted) and the stalest OTHER line ages/evicts.
     const { kept, evicted, decayed } = enforceCap(remaining, 2);
     writeEntries(dir, shelf, kept, metaLines);
-    return { size: kept.length, source: entryId(original.text), ids: [entryId(textA), entryId(textB)], evicted: evicted[0] ?? null, decayed };
+    return { size: kept.length, source: entryId(original.text), ids: [entryId(textA), entryId(textB)], evicted: evicted[0] ?? null, evictedAll: evicted, decayed };
   });
 }
 
@@ -1218,8 +1233,10 @@ export interface MoveResult {
   fromSize: number;
   /** Target shelf's entry count after the move (unchanged on `duplicate`). */
   toSize: number;
-  /** A lower-scored target entry the insert pushed out to stay under cap, or `null`. */
+  /** The first (stalest) target entry the insert pushed out to stay under cap, or `null`. For the FULL set after a cap decrease, read `evictedAll` (issue #306). */
   evicted: Entry | null;
+  /** EVERY entry the move evicted from the target, in storage order (stalest first); one in the ordinary case, many when `NB_MAX_LINES` was lowered below the target's size. Empty when none. `evicted` is `evictedAll[0] ?? null`. */
+  evictedAll: Entry[];
   /** The stalest target entry the aging step docked −1 (post-dock score), or `null`. */
   decayed: Entry | null;
   /** For `duplicate`: the id of the existing target entry that blocked the move. */
@@ -1274,6 +1291,7 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
         fromSize: source.length,
         toSize: target.length,
         evicted: null,
+        evictedAll: [],
         decayed: null,
         collidedId: entryId(collider.text),
       };
@@ -1296,6 +1314,7 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
       fromSize: remaining.length,
       toSize: kept.length,
       evicted: evicted[0] ?? null,
+      evictedAll: evicted,
       decayed,
     };
   });
@@ -1959,6 +1978,49 @@ function capEntries(ids: string[]): string {
     len += extra;
   }
   return kept.join(',');
+}
+
+/**
+ * Encode the entries an operation evicted into the usage log's `evicted`
+ * column: a comma-separated list of `<id>:<finalScore>` pairs, one per evicted
+ * entry, in storage order (stalest first). A single eviction — the ordinary
+ * over-cap add — yields exactly `<id>:<finalScore>`, byte-identical to the
+ * pre-#306 format, so old rows, the `eviction-while-still-voted` diagnostic's
+ * per-pair parse, and the common case are unchanged. A cap DECREASE can evict
+ * many at once (e.g. `NB_MAX_LINES` 50→10 on a full shelf ⇒ 41 evictions);
+ * recording only the first under-reported that loss and blinded the still-voted
+ * signal to its scale (issue #306).
+ *
+ * Bounded by `maxChars()` — the same per-row byte budget `capNote`/`capEntries`
+ * enforce — so a mass eviction cannot blow the usage ring's budget. When the
+ * full list overflows, it keeps as many WHOLE pairs from the front as fit and
+ * appends a trailing `+<dropped>` marker, so the TOTAL evicted count stays
+ * recoverable (listed pairs + dropped) even under truncation. Unlike the shared
+ * `entries` column (iterated by several diagnostics, so `capEntries` must
+ * truncate SILENTLY lest a sentinel read back as a phantom id), this column has
+ * a single consumer — the eviction-while-still-voted signal — which skips the
+ * `+<dropped>` token, so the count-preserving marker is safe here.
+ */
+export function formatEvictedUsage(evicted: Entry[]): string {
+  if (evicted.length === 0) return '';
+  const budget = maxChars();
+  const pairs = evicted.map((e) => `${entryId(e.text)}:${e.score}`);
+  const full = pairs.join(',');
+  if (full.length <= budget) return full;
+  // Overflow: list whole pairs from the front while a `+<dropped>` marker for
+  // the remainder still fits, then emit that marker so the count is never lost.
+  const listed: string[] = [];
+  for (let i = 0; i < pairs.length; i++) {
+    const dropped = pairs.length - (i + 1);
+    const candidate = [...listed, pairs[i]].join(',');
+    const withMarker = dropped > 0 ? `${candidate},+${dropped}` : candidate;
+    if (withMarker.length > budget) break;
+    listed.push(pairs[i]);
+  }
+  const dropped = pairs.length - listed.length;
+  if (dropped === 0) return listed.join(','); // defensive: full didn't fit, so unreachable
+  const prefix = listed.length ? `${listed.join(',')},` : '';
+  return `${prefix}+${dropped}`;
 }
 
 export function logUsage(
@@ -2773,27 +2835,35 @@ export function stats(
     }
   }
 
-  // (B) eviction-while-still-voted: an `add` evicted an entry (its `evicted`
-  //     column is `<id>:<score>`) whose final score was still above the +1
-  //     a new lesson starts at → a lesson agents voted up, and that had not aged
-  //     or been voted back down, was lost. Evicting an entry at +1 or below is the
-  //     cap doing its job.
+  // (B) eviction-while-still-voted: an `add` evicted one or more entries (its
+  //     `evicted` column is a comma-separated list of `<id>:<score>` pairs —
+  //     usually one, but a cap decrease can evict many at once, issue #306)
+  //     whose final score was still above the +1 a new lesson starts at → a
+  //     lesson agents voted up, and that had not aged or been voted back down,
+  //     was lost. Every such pair is counted, so a mass eviction surfaces each
+  //     still-voted loss, not just the first. Evicting an entry at +1 or below is
+  //     the cap doing its job. A trailing `+<dropped>` token (the overflow marker
+  //     `formatEvictedUsage` appends when the list is too long to record in full)
+  //     carries no per-entry score, so it is skipped here.
   {
     const seen = new Set<string>(); // dedup repeat evictions of the same shelf+id
     for (const r of recent) {
       if (r.command !== 'add' || r.evicted === '') continue;
-      const [evictedId, scoreRaw] = r.evicted.split(':');
-      if (!evictedId || !(Number(scoreRaw) > 1)) continue;
-      const k = `${r.role}\u0000${evictedId}`;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      signals.push({
-        kind: 'eviction-while-still-voted',
-        role: r.role,
-        shelf: r.role,
-        entry: evictedId,
-        detail: `entry ${evictedId} was evicted by the cap with score ${r.evicted.split(':')[1]} — if this repeats, the cap may be too tight for shelf "${r.role}"`,
-      });
+      for (const pair of r.evicted.split(',')) {
+        if (pair.startsWith('+')) continue; // `+<dropped>` overflow marker — count only, no per-entry score
+        const [evictedId, scoreRaw] = pair.split(':');
+        if (!evictedId || !(Number(scoreRaw) > 1)) continue;
+        const k = `${r.role}\u0000${evictedId}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        signals.push({
+          kind: 'eviction-while-still-voted',
+          role: r.role,
+          shelf: r.role,
+          entry: evictedId,
+          detail: `entry ${evictedId} was evicted by the cap with score ${scoreRaw} — if this repeats, the cap may be too tight for shelf "${r.role}"`,
+        });
+      }
     }
   }
 

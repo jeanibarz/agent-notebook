@@ -1473,6 +1473,34 @@ describe('runNbCli', () => {
     expect(show.out).toContain('gamma lesson three');
   });
 
+  test('add on a cap LOWERED below a full shelf reports all evictions in the message and the usage row (issue #306)', async () => {
+    // Fill a shelf to 50 under the default cap, then lower NB_MAX_LINES to 10 and
+    // add once: that one add trims the shelf all the way down (50 + 1 − 10 = 41
+    // evictions). Before #306 both the `added` line and the usage `evicted`
+    // column surfaced only ONE of those 41, hiding the scale of the loss.
+    process.env.NB_MAX_LINES = '50';
+    for (let i = 0; i < 50; i++) {
+      expect((await run(['add', 'patcher', `lesson number ${i}`])).code).toBe(0);
+    }
+    process.env.NB_MAX_LINES = '10';
+    const r = await run(['add', 'patcher', 'the newcomer lesson']);
+    expect(r.code).toBe(0);
+    // The message names the primary evicted entry AND the count of the rest
+    // (41 evicted − 1 named = 40 more), instead of silently dropping 40 lessons.
+    expect(r.out).toMatch(/added — 10 lines \(evicted lowest-scored: .* \+40 more lines\)/);
+
+    // The usage row's `evicted` column records the full loss, byte-bounded with a
+    // count-preserving marker, not a single entry.
+    const row = parseUsage(dir).filter((x) => x.command === 'add').at(-1)!;
+    const tokens = row.evicted.split(',');
+    const markers = tokens.filter((t) => t.startsWith('+'));
+    expect(markers).toHaveLength(1);
+    const dropped = Number(markers[0].slice(1));
+    const pairs = tokens.filter((t) => !t.startsWith('+'));
+    expect(pairs.length + dropped).toBe(41); // every eviction accounted for
+    expect(pairs.length).toBeGreaterThan(1); // not under-reported to one
+  });
+
   test('merge consolidates two entries into one, reflected by show', async () => {
     await run(['add', 'patcher', 'alpha lesson one']);
     await run(['add', 'patcher', 'beta lesson two']);
@@ -2180,7 +2208,7 @@ describe('runNbCli', () => {
       const r = await run(['add', 'reviewer', '-', '--json'], 'piped with json\n');
       expect(r.code).toBe(0);
       expect(r.err).toBe('');
-      expect(JSON.parse(r.out)).toEqual({ added: true, reason: 'added', evicted: null, decayed: null, size: 1, id: entryId('piped with json') });
+      expect(JSON.parse(r.out)).toEqual({ added: true, reason: 'added', evicted: null, evictedAll: [], decayed: null, size: 1, id: entryId('piped with json') });
     });
   });
 
@@ -2198,7 +2226,7 @@ describe('runNbCli', () => {
       const r = await run(['add', 'patcher', 'prefer execFileSync', '--json']);
       expect(r.code).toBe(0);
       expect(r.err).toBe(''); // warnings/errors would be on stderr; there are none
-      expect(parseOnly(r.out)).toEqual({ added: true, reason: 'added', evicted: null, decayed: null, size: 1, id: entryId('prefer execFileSync') });
+      expect(parseOnly(r.out)).toEqual({ added: true, reason: 'added', evicted: null, evictedAll: [], decayed: null, size: 1, id: entryId('prefer execFileSync') });
     });
 
     test('add --json on a duplicate emits reason:"duplicate" and stays exit 0', async () => {

@@ -201,8 +201,11 @@ guessing (issue #239). A lesson of exactly `maxChars` SHALL be accepted. *(See [
 <a id="fr-add-005"></a>
 **FR-ADD-005 (Must).** When adding exceeds `maxLines`, eviction SHALL remove the
 lowest-scored entries, breaking ties by stalest (lowest file index), until `maxLines`
-remain, and SHALL NOT remove the just-added newcomer; a removed existing entry SHALL
-be reported in `evicted`. (See [eviction-and-aging.md](./eviction-and-aging.md).)
+remain, and SHALL NOT remove the just-added newcomer; the first removed existing entry
+SHALL be reported in `evicted`. A cap *decrease* can evict many entries in one call, so
+the result SHALL also carry an `evictedAll` array with **every** removed entry in storage
+order (`evicted` is `evictedAll[0] ?? null`, so the single-eviction case is unchanged),
+and the CLI SHALL report the extra count (issue #306). (See [eviction-and-aging.md](./eviction-and-aging.md).)
 
 <a id="fr-add-006"></a>
 **FR-ADD-006 (Must).** A newcomer SHALL always be admitted — there is no
@@ -765,8 +768,15 @@ then not computed), `entry-ids` is the comma-joined stable id(s) the call touche
 `moved`/`move-blocked` for `move` (the latter when the target already held a
 near-duplicate), and blank for a
 read-only command, `collided-id` is the id of the existing entry that blocked a
-`dedup-blocked` add or a `move-blocked` move, and `evicted-id:score` is the entry an
-`add` or `move` evicted and its final score. The `session` value SHALL be truncated
+`dedup-blocked` add or a `move-blocked` move, and `evicted-id:score` records the
+entry/entries an `add`/`merge`/`split`/`move` evicted, each as `<id>:<finalScore>`.
+A single eviction is one such pair (byte-identical to the original format); a cap
+*decrease* can evict many at once (issue #306), so the column SHALL list all of them
+comma-joined, bounded to `maxChars` by keeping whole pairs from the front and
+appending a `+<dropped>` marker so the total evicted count stays recoverable — this
+column has a single consumer (**eviction-while-still-voted**, [FR-STATS-003](#fr-stats-003)),
+which skips the marker, so the count-preserving sentinel is safe here (unlike the
+silently-truncated `entry-ids` column above). The `session` value SHALL be truncated
 to `maxChars` (with the same trailing-ellipsis convention as `note`, never rejected —
 logging is best-effort), since it is caller-influenced free text appended to every
 row and must not let the ring's row-count bound stop bounding its bytes (issue #202,
@@ -852,8 +862,10 @@ the usage ring alone — the entry-level columns of [FR-USAGE-002](#fr-usage-002
 new agent action and no field added to a lesson ([NG-004](#ng-004)). The three kinds:
 **browse-without-use** (a `show` of a notebook in a session with no `vote` on any of its
 entries that same session → the description may over-promise), **eviction-while-still-voted**
-(an `add` whose evicted entry's final score was above the +1 a new entry starts at → a useful
-lesson was lost; evicting an entry at +1 or below is the cap working as intended),
+(an `add` where **any** evicted entry's final score was above the +1 a new entry starts at → a useful
+lesson was lost; evicting an entry at +1 or below is the cap working as intended — and because a cap
+*decrease* can evict many entries in one `add` ([FR-USAGE-002](#fr-usage-002), issue #306), this
+signal SHALL count **each** still-voted entry in that row's `evicted` list, not just the first),
 and **vote-reversal** (one entry id with an `up` vote in one session and a `down` vote in a
 **different** session → correct but mis-aimed). browse-without-use and vote-reversal are
 session-scoped and SHALL skip rows with a blank session ([FR-USAGE-002](#fr-usage-002):

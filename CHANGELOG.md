@@ -32,6 +32,17 @@ versions are listed plainly.
   ranking on this path — those stay caller policy. See [FR-SHOW-004](docs/requirements.md#fr-show-004).
 
 ### Fixed
+- **Lowering `NB_MAX_LINES` below a full shelf now reports every eviction, not just one (#306).**
+  When the cap is lowered under a full shelf's size, the next `add`/`merge`/`split`/`move` trims
+  the shelf all the way down in one call — many evictions at once (e.g. `NB_MAX_LINES` 50→10 on a
+  full shelf evicts 41). The result and the usage log's `evicted` column surfaced only the FIRST,
+  so a data-loss event was under-reported to one entry and the `eviction-while-still-voted` signal
+  that reads that column missed the scale. The result now carries an `evictedAll` array with every
+  removed entry (`evicted` stays the first, so the single-eviction common case is byte-identical),
+  the usage `evicted` column records a comma-separated `<id>:<score>` list bounded by `maxChars`
+  with a count-preserving `+<dropped>` marker, the `added`/`moved` message appends `+N more lines`,
+  and the still-voted signal counts each evicted entry. See
+  [FR-USAGE-002](docs/requirements.md#fr-usage-002) and [FR-STATS-003](docs/requirements.md#fr-stats-003).
 - **A CRLF-normalized notebook no longer loses its `# desc:` trigger (#273).** The project
   supports git-versioning and backing up the notebooks dir; on Windows with `core.autocrlf=true`
   (or any CRLF hand-edit) each `<shelf>.md` line arrives terminated by `\r\n`. The leading-metadata
