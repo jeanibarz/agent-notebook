@@ -289,3 +289,109 @@ describe('nb-backup.sh push fails fast instead of hanging on a credential prompt
     30_000,
   );
 });
+
+// Guards issue #274: the straggler step used a bare `git add -A`, and LOG_FILE
+// (`$NB_DIR/.nb-backup.log`) lives inside the worktree. A store set up WITHOUT the
+// git-versioning recipe has no .gitignore, so every run staged the log line the
+// PREVIOUS run had just written — an unbroken chain of "nb-backup <date>" commits
+// that each carry only the last run's log, never the idempotent no-op the header
+// promises. The fix seeds/tops up NB_DIR/.gitignore with the shipped recipe's
+// patterns before `git add -A`. These tests drive the REAL script and pin that
+// behavior end to end; none of them need `flock` (the script runs lockless when
+// it is absent and the result is the same).
+describe('nb-backup.sh seeds .gitignore so the straggler commit is idempotent (issue #274)', () => {
+  /** Commit count on HEAD; 0 before the first commit (git errors on an unborn HEAD). */
+  function commitCount(): number {
+    const r = spawnSync('git', ['-C', dir, 'rev-list', '--count', 'HEAD'], { encoding: 'utf-8' });
+    return r.status === 0 ? parseInt(r.stdout.trim() || '0', 10) : 0;
+  }
+
+  /** The patterns the shipped recipe's `printf ... > .gitignore` writes. */
+  function recipePatterns(): string[] {
+    return [...recipeGitignoreLine().matchAll(/'([^']*)'/g)].map((m) => m[1]).filter((t) => t !== '%s\\n');
+  }
+
+  test('a store set up without the recipe stops churning a commit of its own log every run', () => {
+    // No .gitignore (the recipe was never run) and a real shelf to back up.
+    writeFileSync(join(dir, 'build-and-test.md'), 'first lesson\n', 'utf-8');
+
+    // Run 1: seeds .gitignore, commits the straggler shelf + the ignore file.
+    expect(run(null)).toBe(0);
+    const afterFirst = commitCount();
+    expect(afterFirst).toBeGreaterThan(0);
+
+    // The script wrote its own log into NB_DIR...
+    const logPath = join(dir, '.nb-backup.log');
+    expect(existsSync(logPath)).toBe(true);
+    // ...but the seeded ignore keeps it out of git, so there is nothing new to
+    // stage next time. Without the fix the log line this run wrote would be an
+    // uncommitted change the next run commits, and so on without end.
+    expect(execFileSync('git', ['-C', dir, 'ls-files'], { encoding: 'utf-8' })).not.toContain('.nb-backup.log');
+
+    // Runs 2 and 3 are genuine no-ops: the commit count must not grow.
+    expect(run(null)).toBe(0);
+    expect(run(null)).toBe(0);
+    expect(commitCount()).toBe(afterFirst);
+
+    // The no-op is real, not vacuous: the log IS on disk and git reports it
+    // ignored (`!!`), not untracked — so it is the seeded ignore doing the work,
+    // and without it this file would be the churning uncommitted change.
+    const ignored = execFileSync('git', ['-C', dir, 'status', '--porcelain', '--ignored'], {
+      encoding: 'utf-8',
+    });
+    expect(ignored).toMatch(/^!! \.nb-backup\.log$/m);
+  });
+
+  test('a .gitignore missing only some patterns gets exactly the missing ones appended (migration case)', () => {
+    // A recipe-era store created before `.nb-backup.*` was added to the recipe: it
+    // already ignores most transient files but not this script's own log, so it
+    // kept churning until this run tops it up.
+    const partial = ['.nb-usage.log*', '.nb.lock', '*.tmp', '.retro-*'];
+    writeFileSync(join(dir, '.gitignore'), partial.join('\n') + '\n', 'utf-8');
+    expect(run(null)).toBe(0);
+
+    const lines = readFileSync(join(dir, '.gitignore'), 'utf-8').split('\n').filter(Boolean);
+    // The previously-missing pattern was added...
+    expect(lines).toContain('.nb-backup.*');
+    // ...and every recipe pattern now appears EXACTLY once: only the missing one
+    // is appended, the already-present ones are not re-added as duplicates.
+    for (const pat of recipePatterns()) {
+      expect(lines.filter((l) => l === pat)).toHaveLength(1);
+    }
+  });
+
+  test('the auto-seeded .gitignore uses the shipped recipe patterns (kept in one place)', () => {
+    writeFileSync(join(dir, 'build-and-test.md'), 'x\n', 'utf-8');
+    expect(existsSync(join(dir, '.gitignore'))).toBe(false); // recipe never run
+    expect(run(null)).toBe(0);
+
+    const seeded = readFileSync(join(dir, '.gitignore'), 'utf-8').split('\n');
+    // Every pattern the recipe would write is present, so the script and the doc
+    // never drift into covering different transient files.
+    const patterns = recipePatterns();
+    for (const pat of patterns) expect(seeded).toContain(pat);
+    // The pattern that actually covers this script's own log must be among them.
+    expect(patterns).toContain('.nb-backup.*');
+  });
+
+  test('a pre-existing custom .gitignore is preserved and topped up without gluing lines', () => {
+    // User's own ignore, with NO trailing newline and none of our patterns.
+    writeFileSync(join(dir, '.gitignore'), 'node_modules', 'utf-8');
+    expect(run(null)).toBe(0);
+
+    const lines = readFileSync(join(dir, '.gitignore'), 'utf-8').split('\n');
+    expect(lines).toContain('node_modules'); // user content kept verbatim
+    expect(lines).toContain('.nb-backup.*'); // our pattern appended
+    // The absent trailing newline must not glue our first pattern onto the user's
+    // last line (that would both corrupt their ignore and never match).
+    expect(lines).not.toContain('node_modules.nb-usage.log*');
+  });
+
+  test('an already-complete .gitignore is left byte-for-byte unchanged (no duplicate patterns)', () => {
+    const initial = recipePatterns().join('\n') + '\n';
+    writeFileSync(join(dir, '.gitignore'), initial, 'utf-8');
+    expect(run(null)).toBe(0);
+    // ensure_gitignore appended nothing because every pattern was already present.
+    expect(readFileSync(join(dir, '.gitignore'), 'utf-8')).toBe(initial);
+  });
+});
