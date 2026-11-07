@@ -8,7 +8,7 @@ import {
   readFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
@@ -70,6 +70,7 @@ function npm(args: string[], cwd: string, cacheDir: string): string {
 
 let work: string;
 let installed: string; // node_modules/agent-notebook inside the consumer project
+let packedFiles: string[]; // tarball manifest paths from `npm pack --json`
 
 beforeAll(() => {
   work = mkdtempSync(join(tmpdir(), 'agent-notebook-pack-install-'));
@@ -94,8 +95,9 @@ beforeAll(() => {
     ['pack', '--json', '--pack-destination', packDir],
     root,
     cacheDir,
-  )) as Array<{ filename: string }>;
+  )) as Array<{ filename: string; files: Array<{ path: string }> }>;
   expect(packed).toHaveLength(1);
+  packedFiles = packed[0].files.map((f) => f.path);
   const tarball = join(packDir, packed[0].filename);
   expect(existsSync(tarball)).toBe(true);
 
@@ -184,5 +186,34 @@ describe('install from the packed tarball [slow]', () => {
       encoding: 'utf-8',
     });
     expect(out).toContain('EXPORTS_OK');
+  });
+
+  // Issue #307: the `files` allow-list ships all of `dist/`, but not `src/`. A
+  // sourcemap points back at `../src/*.ts`, so shipping maps without sources
+  // gives consumers dangling maps and wastes bytes. We ship no maps at all
+  // (`sourceMap` is off in tsconfig.json); if they ever return, their `sources`
+  // must resolve inside the tarball.
+  test('the tarball manifest contains no unintended file classes', () => {
+    const leaked = packedFiles.filter(
+      (p) => p.startsWith('src/') || /\.test\.[cm]?[jt]s$/.test(p) || /\.tsbuildinfo$/.test(p),
+    );
+    expect(leaked, `unintended files in the published tarball: ${leaked.join(', ')}`).toEqual([]);
+    // Sanity: the manifest is real, not an empty list that trivially passes.
+    expect(packedFiles).toContain('dist/cli.js');
+  });
+
+  test('every shipped sourcemap has its sources inside the tarball', () => {
+    const shipped = new Set(packedFiles);
+    const dangling: string[] = [];
+    for (const p of packedFiles.filter((f) => f.endsWith('.map'))) {
+      const map = JSON.parse(readFileSync(join(installed, p), 'utf-8')) as {
+        sources?: string[];
+      };
+      for (const src of map.sources ?? []) {
+        const resolved = posix.normalize(posix.join(posix.dirname(p), src));
+        if (!shipped.has(resolved)) dangling.push(`${p} -> ${resolved}`);
+      }
+    }
+    expect(dangling, `sourcemaps pointing at files not shipped: ${dangling.join(', ')}`).toEqual([]);
   });
 });
