@@ -717,8 +717,10 @@ export async function runNbCli(
           if (/^\d+$/.test(limitRaw.trim())) {
             limit = Number.parseInt(limitRaw, 10);
           } else {
-            process.stderr.write(
+            warnDefaultedFlag(
+              json,
               `nb ${cmd}: unrecognized --limit '${limitRaw}' (use a non-negative integer); showing ${STALE_DEFAULT_LIMIT}\n`,
+              { command: cmd, flag: '--limit', value: limitRaw, usedDefault: STALE_DEFAULT_LIMIT },
             );
           }
         }
@@ -1023,8 +1025,10 @@ export async function runNbCli(
           if (/^\d+$/.test(limitRaw.trim())) {
             limit = Number.parseInt(limitRaw, 10);
           } else {
-            process.stderr.write(
+            warnDefaultedFlag(
+              json,
               `nb ${cmd}: unrecognized --limit '${limitRaw}' (use a non-negative integer); showing ${SEARCH_DEFAULT_LIMIT}\n`,
+              { command: cmd, flag: '--limit', value: limitRaw, usedDefault: SEARCH_DEFAULT_LIMIT },
             );
           }
         }
@@ -1079,8 +1083,10 @@ export async function runNbCli(
         // Warn (naming the accepted format and window used), then proceed with
         // the default rather than reject — the least-surprising, forgiving path.
         if (sinceIdx >= 0 && !isValidWindow(sinceVal)) {
-          process.stderr.write(
+          warnDefaultedFlag(
+            json,
             `nb stats: unrecognized --since '${sinceVal ?? ''}' (use Nd/Nh/Nm); showing 7d\n`,
+            { command: 'stats', flag: '--since', value: sinceVal ?? '', usedDefault: '7d' },
           );
         }
         const windowMs = sinceIdx >= 0 ? parseWindowMs(sinceVal) : undefined;
@@ -1195,8 +1201,10 @@ export async function runNbCli(
           if (/^\d+$/.test(limitRaw.trim())) {
             limit = Number.parseInt(limitRaw, 10);
           } else {
-            process.stderr.write(
+            warnDefaultedFlag(
+              json,
               `nb ${cmd}: unrecognized --limit '${limitRaw}' (use a non-negative integer); showing ${LIST_DEFAULT_LIMIT}\n`,
+              { command: cmd, flag: '--limit', value: limitRaw, usedDefault: LIST_DEFAULT_LIMIT },
             );
           }
         }
@@ -1231,7 +1239,19 @@ export async function runNbCli(
         // (e.g. `nb upvote`, `nb +1`). Record it so `nb stats` can tell these
         // apart from genuine misuse of a real command (issue #176).
         meta.errorClass = 'unknown_subcommand';
-        process.stderr.write(`nb: unknown command "${cmd}". ${hint}Try \`nb --help\`.\n`);
+        // Same structured-error contract as the throw path (issue #266): under
+        // --json a supervisor gets a parseable `{ok:false, error:{class,…}}` on
+        // stdout keyed on `unknown_subcommand`, instead of the previously-empty
+        // stdout. The stderr line is byte-for-byte unchanged — note its bare `nb:`
+        // prefix (there is no real command to name) — and exit stays 2 (distinct
+        // from the 1 the handled-error catch returns).
+        const message = `unknown command "${cmd}". ${hint}Try \`nb --help\`.`;
+        if (json) {
+          process.stdout.write(
+            JSON.stringify({ ok: false, command: cmd, error: { class: 'unknown_subcommand', message } }) + '\n',
+          );
+        }
+        process.stderr.write(`nb: ${message}\n`);
         return 2;
       }
     }
@@ -1241,9 +1261,30 @@ export async function runNbCli(
     // Record the error class for the usage log unless a non-throwing failure
     // path above already set one (e.g. a too-long add). `classifyError` reads the
     // class off an `NbError` and falls back to `other` for anything else — never
-    // parsing the message (issue #176).
-    meta.errorClass ??= classifyError(e);
-    process.stderr.write(`nb ${cmd}: ${e instanceof Error ? e.message : String(e)}\n`);
+    // parsing the message (issue #176). Resolve it into a local so the --json
+    // error object below reports the SAME bounded class the usage log records
+    // (`??=` is preserved as `?? …` then assigned back — behaviour is identical).
+    const errorClass = meta.errorClass ?? classifyError(e);
+    meta.errorClass = errorClass;
+    const message = e instanceof Error ? e.message : String(e);
+    // Complete the --json machine contract (issue #266). A throwing command
+    // (bad_args / no_match / ambiguous_selector / EACCES / …) used to put the
+    // English sentence on stderr and write NOTHING to stdout — so the one
+    // consumer --json was built for (issue #41: branch on a structured field,
+    // never regex-parse the prose line) was thrown back to parsing prose exactly
+    // on the failure paths where structured data matters most. Emit a structured
+    // error object on stdout — the same machine channel the success and too-long
+    // results already use — discriminated by `ok:false` + an `error` object, and
+    // keyed on the bounded `errorClass` (never the drift-prone message text) so a
+    // supervisor branches on `error.class`. The English line still goes to stderr
+    // UNCHANGED, so human output and every existing stderr test stay byte-for-byte
+    // identical; only the previously-empty stdout gains content. Exit stays 1.
+    if (json) {
+      process.stdout.write(
+        JSON.stringify({ ok: false, command: cmd, error: { class: errorClass, message } }) + '\n',
+      );
+    }
+    process.stderr.write(`nb ${cmd}: ${message}\n`);
     return 1;
   } finally {
     // The `stats` read of the usage log happens above; logging it afterwards is fine.
@@ -1287,6 +1328,45 @@ function extractOption(args: string[], flag: string): { value?: string; rest: st
   if (i === -1) return { rest: args };
   if (i + 1 >= args.length) throw new NbError('bad_args', `${flag} needs a value`);
   return { value: args[i + 1], rest: args.slice(0, i).concat(args.slice(i + 2)) };
+}
+
+/**
+ * Report that a flag value was unrecognized, so the command silently fell back to
+ * a default (issue #266 — the defaulted-flag half of the --json machine
+ * contract). The human prose line is ALWAYS written to stderr, byte-for-byte as
+ * before. Under `--json` a one-line JSON object is written to stderr *as well*,
+ * so a supervisor branching on structured output learns — without regex-parsing
+ * the prose — that the value it passed was ignored and which default took its
+ * place (`class: 'defaulted_flag'`, the flag, the offending value, the default).
+ *
+ * It stays on stderr (never stdout) on purpose: these commands' `--json` stdout
+ * is a single bare result object (StatsReport, search result, StaleResult, the
+ * notebook index) whose shape is the documented contract, and a defaulted flag is
+ * a warning, not a result — folding it into stdout would corrupt that stream and
+ * break every consumer that parses the bare object. stderr is already where the
+ * prose warning goes; this makes that same channel machine-readable. Exit codes
+ * are unchanged (a defaulted flag is forgiving, not an error). DP-5: a mistyped
+ * flag must never silently mislead — now the machine consumer is told too.
+ */
+function warnDefaultedFlag(
+  json: boolean,
+  prose: string,
+  w: { command: string; flag: string; value: string; usedDefault: string | number },
+): void {
+  process.stderr.write(prose);
+  if (json) {
+    process.stderr.write(
+      JSON.stringify({
+        warning: {
+          class: 'defaulted_flag',
+          command: w.command,
+          flag: w.flag,
+          value: w.value,
+          usedDefault: w.usedDefault,
+        },
+      }) + '\n',
+    );
+  }
 }
 
 // Reduce piped stdin to the single lesson line it must be. One trailing line
