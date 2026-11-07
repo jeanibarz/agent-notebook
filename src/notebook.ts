@@ -635,8 +635,12 @@ export function readShelf(dir: string, shelf: string): ShelfContents {
   // One scan splits the file: the leading run of `# key:` lines is metadata, and
   // the first non-metadata line flips `inMeta` so every remaining line parses as
   // an entry — matching readMetaLines (leading block) and readEntries (the rest).
+  // Split on `\r?\n` so a CRLF-normalized file (Windows core.autocrlf=true, or any
+  // CRLF hand-edit of a git-versioned notebook) parses identically to an LF one:
+  // without stripping the trailing `\r`, `# desc: x\r` fails the `$`-anchored
+  // META_RE and the description silently becomes a score-0 lesson (issue #273).
   let inMeta = true;
-  for (const line of readFileSync(file, 'utf-8').split('\n')) {
+  for (const line of readFileSync(file, 'utf-8').split(/\r?\n/)) {
     if (inMeta && META_RE.test(line)) {
       metaLines.push(line);
       continue;

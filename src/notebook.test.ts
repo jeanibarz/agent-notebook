@@ -3740,6 +3740,37 @@ describe('notebook metadata / descriptions (issue #70)', () => {
     expect(readMetaLines(dir, 'm')).toEqual(['# desc: build / test gotchas for this repo']);
   });
 
+  test('a CRLF-normalized notebook keeps its `# desc:` metadata (issue #273)', async () => {
+    // On Windows with core.autocrlf=true (or any CRLF hand-edit of a git-versioned
+    // notebook), every line of `<shelf>.md` arrives terminated by `\r\n`. The split
+    // must tolerate the trailing `\r`: otherwise `# desc: ...\r` fails the
+    // `$`-anchored META_RE and the description silently decays into a score-0 lesson.
+    writeFileSync(
+      join(dir, 'm.md'),
+      '# desc: build / test gotchas for this repo\r\n+3\trun build before test\r\n',
+      'utf-8',
+    );
+    // The metadata block is preserved verbatim (no stray `\r`), the entry parses,
+    // and the description reads back — identical to the LF case above.
+    expect(readShelf(dir, 'm')).toEqual({
+      metaLines: ['# desc: build / test gotchas for this repo'],
+      entries: [{ score: 3, text: 'run build before test' }],
+    });
+    expect(getDescription(dir, 'm')).toBe('build / test gotchas for this repo');
+
+    // A subsequent mutation round-trips the description rather than demoting it to a
+    // lesson, and rewrites the file with clean LF endings (not a mixed-ending file).
+    await addEntry(dir, 'm', 'a new lesson');
+    expect(getDescription(dir, 'm')).toBe('build / test gotchas for this repo');
+    expect(readEntries(dir, 'm')).toEqual([
+      { score: 3, text: 'run build before test' },
+      { score: 1, text: 'a new lesson' },
+    ]);
+    expect(readFileSync(join(dir, 'm.md'), 'utf-8')).toBe(
+      '# desc: build / test gotchas for this repo\n+3\trun build before test\n+1\ta new lesson\n',
+    );
+  });
+
   test('only the LEADING block is metadata; a `# key:` line among entries stays a bare lesson', () => {
     // The metadata block ends at the first entry. A `# foo: bar` line AFTER an
     // entry is an ordinary tab-less lesson (FR-MODEL-003 tolerance), not metadata
