@@ -994,6 +994,38 @@ log by hand.
 `test('reports usage-ring occupancy (rows/cap), total and window-independent (issue #206)')`,
 and `cli.test.ts` → `test('the human stats table shows the usage-ring occupancy line (issue #206)')`.
 
+<a id="fr-stats-007"></a>
+**FR-STATS-007 (Should).** The two interrupt-recovery actions that each mean a previous
+`nb` died mid-mutation — the stale-lock **steal** of [FR-LOCK-001](#fr-lock-001) and the
+leftover-temp **reap** of [FR-DUR-001](#fr-dur-001)/the NB_DIR-hygiene sweep — SHALL be
+**counted and made observable**, without changing either recovery action. Each usage row
+([FR-USAGE-002](#fr-usage-002)) SHALL carry a trailing **`recovered`** column recording the
+recovery performed *during that call* as `<lockSteals>:<tempReaps>` (blank in the common
+no-recovery case), where `lockSteals` is the number of stale `.nb.lock`s the acquire loop
+stole and `tempReaps` is the number of leftover `*.md.<pid>.tmp` / `.nb-usage.log.<pid>.tmp`
+files `reapLeftoverTemps` removed. The column SHALL be appended after `decayed` so the
+parser reads a pre-#309 row's missing column as blank, exactly as every prior trailing
+column was added. `stats` SHALL sum the column across the window into
+`StatsReport.crashRecovery = { lockSteals, tempReaps }`, surfaced both as a human
+`crash recovery: <n> stale locks stolen, <m> leftover temps reaped (window)` line (with a
+trailing `⚠ crashes recovered` marker when either count is nonzero) and in `--json`. Like `usageRing` ([FR-STATS-006](#fr-stats-006)) this readout is **deployment-wide**
+— the `.nb.lock` and the temp debris are shared across every shelf — so a `[<shelf>]` scope
+narrows the rest of the report but NOT this (only the window applies). A clean deployment
+reports `{ 0, 0 }`, SHOWN rather than omitted so "measured, healthy" is never confused with
+"not measured" ([DP-5](#dp-5)). The counting SHALL be **best-effort** — a failure to record
+SHALL NOT fail the mutation nor alter the recovery — and is additive: `STATS_SCHEMA_VERSION`
+SHALL NOT bump ([#172](#fr-stats-001) additive-field policy), and it adds no field to a lesson
+([NG-004](#ng-004)).
+**Rationale:** Both recovery paths were entirely silent — no log, no counter, no signal — so
+an operator running `nb` from agent hooks could not answer "are my agents crashing mid-write
+and losing updates?", a first-class reliability question for a multi-agent store. The stolen
+lock and the reaped temp are exactly that evidence; counting them turns a silent self-heal
+into an observable one, read for free from behaviour `nb` already performs (issue #309).
+*Proven by:* `notebook.test.ts` → `describe('crash-recovery observability (issue #309)')`
+(the stale-lock steal and planted-temp reap are tallied, round-trip the `recovered` column,
+and sum into `crashRecovery` deployment-wide and window-scoped), and `cli.test.ts` → the
+`issue #309` crash-recovery stats tests.
+
 ### 4.13 Notebook descriptions & metadata
 
 <a id="fr-desc-001"></a>
