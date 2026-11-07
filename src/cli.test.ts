@@ -1070,6 +1070,32 @@ describe('runNbCli', () => {
     expect(show.out).toBe('');
   });
 
+  test('add past the cap always LOGS the aging dock but PRINTS it only when the pre-dock score was > 1 (issue #293)', async () => {
+    process.env.NB_MAX_LINES = '2';
+    // Routine +1 -> 0 dock: logged, but the human line stays quiet.
+    await run(['add', 'q', 'alpha lesson one']);
+    await run(['add', 'q', 'beta lesson two']);
+    await run(['vote', 'q', 'beta', '-1']); // beta -> 0, evicted next
+    const quiet = await run(['add', 'q', 'gamma lesson three']);
+    expect(quiet.out).toMatch(/\(evicted lowest-scored: \[\+0\] beta lesson two\)/);
+    expect(quiet.out).not.toMatch(/aged stalest/);
+    const quietRow = parseUsage(dir).filter((r) => r.command === 'add').pop()!;
+    expect(quietRow.decayed).toBe(`${entryId('alpha lesson one')}:0`);
+
+    // Voted-up line (+3) docked to +2: printed AND logged.
+    process.env.NB_MAX_LINES = '2';
+    await run(['add', 'w', 'stale high lesson']);
+    await run(['vote', 'w', 'stale high', '1']);
+    await run(['vote', 'w', 'stale high', '1']); // +3
+    await run(['add', 'w', 'filler lesson']);
+    const loud = await run(['add', 'w', 'newcomer lesson']);
+    expect(loud.out).toMatch(/\(evicted lowest-scored: \[\+1\] filler lesson\)/);
+    expect(loud.out).toMatch(/\(aged stalest −1 → \[\+2\] stale high lesson\)/);
+    const loudRow = parseUsage(dir).filter((r) => r.role === 'w' && r.command === 'add').pop()!;
+    expect(loudRow.decayed).toBe(`${entryId('stale high lesson')}:2`);
+    expect(loudRow.evicted).toBe(`${entryId('filler lesson')}:1`);
+  });
+
   test('add past NB_MAX_LINES evicts the lowest-scored entry and names it in the output', async () => {
     // Drive the CLI's eviction branch end to end: with a tiny cap, a third `add`
     // must evict the lowest-scored existing entry AND report it in the `added`
@@ -1663,7 +1689,7 @@ describe('runNbCli', () => {
       const r = await run(['add', 'reviewer', '-', '--json'], 'piped with json\n');
       expect(r.code).toBe(0);
       expect(r.err).toBe('');
-      expect(JSON.parse(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1, id: entryId('piped with json') });
+      expect(JSON.parse(r.out)).toEqual({ added: true, reason: 'added', evicted: null, decayed: null, size: 1, id: entryId('piped with json') });
     });
   });
 
@@ -1681,7 +1707,7 @@ describe('runNbCli', () => {
       const r = await run(['add', 'patcher', 'prefer execFileSync', '--json']);
       expect(r.code).toBe(0);
       expect(r.err).toBe(''); // warnings/errors would be on stderr; there are none
-      expect(parseOnly(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1, id: entryId('prefer execFileSync') });
+      expect(parseOnly(r.out)).toEqual({ added: true, reason: 'added', evicted: null, decayed: null, size: 1, id: entryId('prefer execFileSync') });
     });
 
     test('add --json on a duplicate emits reason:"duplicate" and stays exit 0', async () => {

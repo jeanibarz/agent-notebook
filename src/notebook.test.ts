@@ -454,6 +454,56 @@ describe('caps', () => {
     expect(byText.ddd).toBe(1);
   });
 
+  test('an add under the cap neither evicts nor decays (issue #293)', async () => {
+    process.env.NB_MAX_LINES = '3';
+    const r = await addEntry(dir, 'u', 'only');
+    expect(r.decayed).toBeNull();
+    expect(r.evicted).toBeNull();
+  });
+
+  test('add returns the stalest survivor as `decayed` with its POST-dock score; eviction target is unchanged', async () => {
+    process.env.NB_MAX_LINES = '3';
+    await addEntry(dir, 'g', 'aaa');
+    await addEntry(dir, 'g', 'bbb');
+    await addEntry(dir, 'g', 'ccc');
+    await vote(dir, 'g', 'aaa', 1);
+    const r = await addEntry(dir, 'g', 'ddd');
+    expect(r.evicted?.text).toBe('bbb'); // unchanged eviction behaviour
+    expect(r.decayed?.text).toBe('ccc');
+    expect(r.decayed?.score).toBe(0); // +1 -> 0 (post-dock)
+  });
+
+  test('a dock on a voted-up line reports the post-dock score (pre-decay > 1)', async () => {
+    process.env.NB_MAX_LINES = '2';
+    await addEntry(dir, 'v', 'stale high lesson');
+    for (let i = 0; i < 2; i++) await vote(dir, 'v', 'stale high', 1); // -> +3
+    await addEntry(dir, 'v', 'filler lesson');
+    const r = await addEntry(dir, 'v', 'newcomer');
+    expect(r.evicted?.text).toBe('filler lesson');
+    expect(r.decayed?.text).toBe('stale high lesson');
+    expect(r.decayed?.score).toBe(2); // 3 -> 2
+  });
+
+  test('move, merge and split also return decayed (split also returns evicted)', async () => {
+    process.env.NB_MAX_LINES = '3';
+    for (const t of ['aaa', 'bbb', 'ccc']) await addEntry(dir, 'dst', t);
+    await addEntry(dir, 'src', 'mover');
+    const m = await move(dir, 'src', 'dst', 'mover');
+    expect(m.evicted?.text).toBe('aaa');
+    expect(m.decayed?.text).toBe('bbb');
+
+    for (const t of ['one', 'two', 'three']) await addEntry(dir, 'sp', t);
+    const sp = await split(dir, 'sp', 'one', 'half alpha', 'half beta');
+    expect(sp.evicted).not.toBeNull();
+    expect(sp.decayed).not.toBeNull();
+
+    process.env.NB_MAX_LINES = '5';
+    for (const t of ['m1', 'm2', 'm3', 'm4', 'm5']) await addEntry(dir, 'mg', t);
+    process.env.NB_MAX_LINES = '3';
+    const mg = await merge(dir, 'mg', 'm1', 'm2', 'm1 and m2 merged');
+    expect(mg.decayed).not.toBeNull();
+  });
+
   // ---------------------------------------------------------------------------
   // Randomized invariant sweep (issue #189)
   // ---------------------------------------------------------------------------
@@ -1139,7 +1189,7 @@ describe('operation reasons (seed-and-grow enum)', () => {
 });
 
 describe('usage-log TSV wire format (golden, issue #126)', () => {
-  // The usage log is a positional 13-column TSV read back by parseUsage and, for
+  // The usage log is a positional 14-column TSV read back by parseUsage and, for
   // pre-upgrade rings, by any older reader that looks only at the first five
   // columns. The behavioral round-trip tests above all go THROUGH parseUsage, so
   // a reorder or insertion of a column would round-trip cleanly while silently
@@ -1148,15 +1198,15 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
   // reorder/insert/remove fails here and becomes a deliberate, visible change.
 
   // The documented column order (notebook.ts logUsage): ts, shelf, command, ok,
-  // ms, session, entries, outcome, collided, evicted, reason, note, errorClass.
+  // ms, session, entries, outcome, collided, evicted, reason, note, errorClass, decayed.
   // `errorClass` (issue #176) is the trailing column — appended after `note` so a
   // pre-#176 row (which ends at `note`) still reads every prior field in place.
   const COLUMN_ORDER = [
     'ts', 'shelf', 'command', 'ok', 'ms', 'session',
-    'entries', 'outcome', 'collided', 'evicted', 'reason', 'note', 'errorClass',
+    'entries', 'outcome', 'collided', 'evicted', 'reason', 'note', 'errorClass', 'decayed',
   ] as const;
 
-  test('a fully-populated row serializes as exactly 13 tab-separated columns in the documented order', () => {
+  test('a fully-populated row serializes as exactly 14 tab-separated columns in the documented order', () => {
     // Distinct, recognizable value per column so a swap of any two columns is
     // detectable (not just a count change) — generic values would let a reorder
     // pass. ms=1234 and ok=true pin the `1234ms` / `ok` renderings too.
@@ -1169,6 +1219,7 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       reason: 'duplicate',
       note: 'some note',
       errorClass: 'too_long',
+      decayed: 'eee:0',
     });
 
     const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
@@ -1179,8 +1230,8 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
     expect(linesWritten).toHaveLength(1);
     const cols = linesWritten[0].split('\t');
 
-    // Exactly 13 columns — a removed or injected column fails here first (an
-    // insertion pushes the width past the 13 names in COLUMN_ORDER, a removal
+    // Exactly 14 columns — a removed or injected column fails here first (an
+    // insertion pushes the width past the 14 names in COLUMN_ORDER, a removal
     // below them).
     expect(cols).toHaveLength(COLUMN_ORDER.length);
 
@@ -1208,12 +1259,13 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       reason: 'duplicate',
       note: 'some note',
       errorClass: 'too_long',
+      decayed: 'eee:0', // <id>:<postDockScore> (issue #293)
     });
   });
 
-  test('err status and an empty-meta row still render the fixed 13-column frame', () => {
+  test('err status and an empty-meta row still render the fixed 14-column frame', () => {
     // A `show`-shaped call fills no richer meta; the trailing columns must still
-    // be present (empty), keeping the frame 13 columns wide — an old reader that
+    // be present (empty), keeping the frame 14 columns wide — an old reader that
     // slices the first five columns depends on this stable prefix. session is
     // pinned to '' so an ambient NB_SESSION cannot populate column 5.
     logUsage(dir, 's', 'show', false, 2, { session: '' });
@@ -1221,11 +1273,11 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
     // columns (which are tabs) are preserved and counted.
     const line = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').split('\n').filter((l) => l !== '')[0];
     const cols = line.split('\t');
-    expect(cols).toHaveLength(13);
+    expect(cols).toHaveLength(14);
     // The stable 5-column prefix an old reader slices: shelf, command, ok, ms.
     expect(cols.slice(1, 5)).toEqual(['s', 'show', 'err', '2ms']); // ok=false → 'err'
-    // session..errorClass (indices 5..12) are all empty for a bare call.
-    expect(cols.slice(5)).toEqual(['', '', '', '', '', '', '', '']);
+    // session..errorClass (indices 5..13) are all empty for a bare call.
+    expect(cols.slice(5)).toEqual(['', '', '', '', '', '', '', '', '']);
   });
 
   test('a legacy 5-column row parses with the newer columns defaulting to blank/empty', () => {
@@ -1253,10 +1305,11 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       reason: '',
       note: '',
       errorClass: '',
+      decayed: '',
     });
   });
 
-  test('parseUsage pins the READER column order: a hand-typed 13-column row maps each field to its documented position', () => {
+  test('parseUsage pins the READER column order: a hand-typed 14-column row maps each field to its documented position', () => {
     // The writer golden above pins logUsage's serialization; this pins the
     // reader independently. parseUsage destructures positionally, so a reorder
     // of ITS destructuring (e.g. swapping collided/evicted) would not be caught
@@ -1264,7 +1317,7 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
     // per column makes any reader reorder fail this full `toEqual`.
     writeFileSync(
       join(dir, '.nb-usage.log'),
-      '2026-01-02T03:04:05.000Z\tmyshelf\tmerge\tok\t1234ms\tsess-7\taaa,bbb\tmerged\tccc\tddd:0.5\tduplicate\tsome note\ttoo_long\n',
+      '2026-01-02T03:04:05.000Z\tmyshelf\tmerge\tok\t1234ms\tsess-7\taaa,bbb\tmerged\tccc\tddd:0.5\tduplicate\tsome note\ttoo_long\teee:0\n',
       'utf-8',
     );
     expect(parseUsage(dir)[0]).toEqual({
@@ -1281,17 +1334,18 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       reason: 'duplicate',
       note: 'some note',
       errorClass: 'too_long',
+      decayed: 'eee:0',
     });
   });
 
-  test('parseUsage reads a MIXED post-upgrade ring: a legacy 5-column row followed by a full 13-column row', () => {
+  test('parseUsage reads a MIXED post-upgrade ring: a legacy 5-column row followed by a full 14-column row', () => {
     // The real on-disk state right after an upgrade: old rows written by the
-    // pre-richer-columns code, then new rows with all 13. Both must parse in one
+    // pre-richer-columns code, then new rows with all 14. Both must parse in one
     // file — the legacy row with blank richer columns, the new row fully.
     writeFileSync(
       join(dir, '.nb-usage.log'),
       '2026-01-01T00:00:00.000Z\tp\tadd\tok\t5ms\n' +
-        '2026-01-02T03:04:05.000Z\ts\tmerge\terr\t9ms\tsess\taaa\tmerged\tccc\tddd:0.5\tduplicate\tnote\tbad_args\n',
+        '2026-01-02T03:04:05.000Z\ts\tmerge\terr\t9ms\tsess\taaa\tmerged\tccc\tddd:0.5\tduplicate\tnote\tbad_args\tfff:2\n',
       'utf-8',
     );
     const rows = parseUsage(dir);
@@ -1311,6 +1365,7 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       reason: '',
       note: '',
       errorClass: '',
+      decayed: '',
     });
     // Full row: every richer column is parsed into its field.
     expect(rows[1]).toEqual({
@@ -1327,6 +1382,7 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       reason: 'duplicate',
       note: 'note',
       errorClass: 'bad_args',
+      decayed: 'fff:2',
     });
   });
 });
@@ -1836,7 +1892,7 @@ describe('usage log + stats', () => {
     const rows = raw.split('\n').filter((l) => l !== '');
     expect(rows.length).toBe(1); // the CR/LF did not spawn extra rows
     const cols = rows[0].split('\t');
-    expect(cols.length).toBe(13); // five base + five richer + two reason columns + errorClass, all tabs collapsed
+    expect(cols.length).toBe(14); // five base + five richer + two reason columns + errorClass + decayed, all tabs collapsed
     expect(cols[1]).toBe('evil role drop table'); // shelf: tab+CR+LF all collapsed to single spaces
     // stats still parses it as one call attributed to the sanitized command.
     const rep = stats(dir, { now: Date.now() });
@@ -2258,7 +2314,7 @@ describe('usage log + stats', () => {
     for (const l of lines) {
       // Five base columns, the five richer ones, the two reason columns, then the
       // trailing errorClass column (all empty for a successful `show`).
-      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){8}$/);
+      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){9}$/);
     }
     // No stray temp file lingered: every writer's rename consumed its own temp.
     expect(readdirSync(dir).filter((f) => f.startsWith('.nb-usage.log.') && f.endsWith('.tmp'))).toEqual([]);

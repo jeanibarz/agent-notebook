@@ -788,6 +788,8 @@ export interface AddResult {
   added: boolean;
   reason: 'added' | 'duplicate' | 'empty' | 'too-long';
   evicted: Entry | null;
+  /** The stalest survivor the aging step docked −1 (already mutated, so `score` is the POST-dock value), or `null` when no cap overflow occurred. */
+  decayed: Entry | null;
   size: number;
   /** For 'too-long': the length of the submitted lesson, so the caller can report it. */
   length?: number;
@@ -811,7 +813,7 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     // One scan for entries AND the metadata block, passed through to writeEntries
     // below so the mutation reads the shelf once, not twice (issue #251).
     const { metaLines, entries } = readShelf(dir, shelf);
-    if (text === '') return { added: false, reason: 'empty', evicted: null, size: entries.length };
+    if (text === '') return { added: false, reason: 'empty', evicted: null, decayed: null, size: entries.length };
     const id = entryId(text);
     const cap = maxChars();
     if (text.length > cap) {
@@ -819,12 +821,12 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
       // agent should retry with a shorter *complete* one. Report the overflow
       // (`length - cap`) so the retry trims exactly that much rather than
       // guessing how far over it was (issue #239).
-      return { added: false, reason: 'too-long', evicted: null, size: entries.length, length: text.length, overflow: text.length - cap, id };
+      return { added: false, reason: 'too-long', evicted: null, decayed: null, size: entries.length, length: text.length, overflow: text.length - cap, id };
     }
     const key = dedupKey(text);
     const collider = entries.find((e) => dedupKey(e.text) === key);
     if (collider) {
-      return { added: false, reason: 'duplicate', evicted: null, size: entries.length, id, collidedId: entryId(collider.text) };
+      return { added: false, reason: 'duplicate', evicted: null, decayed: null, size: entries.length, id, collidedId: entryId(collider.text) };
     }
     // Not an exact-normal-form duplicate (which would have hard-blocked above),
     // but it may still closely *resemble* an existing entry — a paraphrase the
@@ -854,12 +856,13 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     entries.push(newEntry); // newcomer lands at the fresh end — storage is recency order
     // Newcomer is protected: a full notebook admits it, ages its stalest line,
     // and evicts the lowest-scored one (never the newcomer). See enforceCap.
-    const { kept, evicted } = enforceCap(entries, 1);
+    const { kept, evicted, decayed } = enforceCap(entries, 1);
     writeEntries(dir, shelf, kept, metaLines);
     return {
       added: true,
       reason: 'added',
       evicted: evicted[0] ?? null,
+      decayed,
       size: kept.length,
       id,
       ...(near ? { nearId: entryId(near.text), nearText: near.text } : {}),
@@ -945,8 +948,11 @@ export function vote(dir: string, shelf: string, selector: string, delta: number
     entries[idx].score += delta;
     // A vote is a touch: move the entry to the fresh END so storage stays in
     // recency order (least-recently-touched first). Both signs count — a
-    // downvote is engagement too; the low score, not the position, is what makes
-    // a lesson an eviction target, so moving it to fresh never shields it.
+    // downvote is engagement too. Score is the PRIMARY eviction key, so a low
+    // score is what makes a lesson a target; position is only the TIEBREAK, and
+    // ties (rows at the +1/0 floor) are common — on a score tie the fresher line
+    // survives, so a downvoted-then-touched line IS shielded relative to an
+    // equally-scored staler one.
     const [touched] = entries.splice(idx, 1);
     entries.push(touched);
     writeEntries(dir, shelf, entries, metaLines);
@@ -1056,9 +1062,9 @@ export function merge(dir: string, shelf: string, selA: string, selB: string, me
     // merge consolidates (2 → 1) so it never grows past the cap; enforceCap is a
     // harmless no-op here unless the cap was lowered, in which case the merged
     // lesson is protected like any newcomer.
-    const { kept, evicted } = enforceCap(deduped, 1);
+    const { kept, evicted, decayed } = enforceCap(deduped, 1);
     writeEntries(dir, shelf, kept, metaLines);
-    return { added: true, reason: 'added', evicted: evicted[0] ?? null, size: kept.length, id: entryId(text), sources };
+    return { added: true, reason: 'added', evicted: evicted[0] ?? null, decayed, size: kept.length, id: entryId(text), sources };
   });
 }
 
@@ -1069,6 +1075,10 @@ export interface SplitResult {
   source: string;
   /** Stable ids of the two entries the split produced, in A,B order. */
   ids: [string, string];
+  /** A lower-scored entry the split's growth (1 → 2) pushed out to stay under cap, or `null`. */
+  evicted: Entry | null;
+  /** The stalest survivor the aging step docked −1 (post-dock score), or `null`. */
+  decayed: Entry | null;
 }
 
 /**
@@ -1125,9 +1135,9 @@ export function split(
     remaining.push({ score, text: textA }, { score, text: textB }); // both halves fresh → fresh end
     // split grows by one (1 → 2); if that overflows a full notebook both halves
     // are protected (admitted) and the stalest OTHER line ages/evicts.
-    const { kept } = enforceCap(remaining, 2);
+    const { kept, evicted, decayed } = enforceCap(remaining, 2);
     writeEntries(dir, shelf, kept, metaLines);
-    return { size: kept.length, source: entryId(original.text), ids: [entryId(textA), entryId(textB)] };
+    return { size: kept.length, source: entryId(original.text), ids: [entryId(textA), entryId(textB)], evicted: evicted[0] ?? null, decayed };
   });
 }
 
@@ -1175,6 +1185,8 @@ export interface MoveResult {
   toSize: number;
   /** A lower-scored target entry the insert pushed out to stay under cap, or `null`. */
   evicted: Entry | null;
+  /** The stalest target entry the aging step docked −1 (post-dock score), or `null`. */
+  decayed: Entry | null;
   /** For `duplicate`: the id of the existing target entry that blocked the move. */
   collidedId?: string;
 }
@@ -1227,6 +1239,7 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
         fromSize: source.length,
         toSize: target.length,
         evicted: null,
+        decayed: null,
         collidedId: entryId(collider.text),
       };
     }
@@ -1234,7 +1247,7 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
     // target then ages/evicts its stalest OTHER line, never this one (see enforceCap).
     const moved: Entry = { score: moving.score, text: moving.text };
     target.push(moved);
-    const { kept, evicted } = enforceCap(target, 1);
+    const { kept, evicted, decayed } = enforceCap(target, 1);
     // Write the TARGET first (lesson now persisted there), then drop it from the
     // source. An interruption between the two leaves a duplicate, never a loss.
     writeEntries(dir, toShelf, kept);
@@ -1248,6 +1261,7 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
       fromSize: remaining.length,
       toSize: kept.length,
       evicted: evicted[0] ?? null,
+      decayed,
     };
   });
 }
@@ -1728,6 +1742,8 @@ export interface UsageRow {
   note: string;
   /** Terse error-class token (`ERROR_CLASSES`) when the call exited non-zero; `''` on success and on pre-#176 rows. */
   errorClass: string;
+  /** For a write that aged a line (issue #293): `<id>:<postDockScore>` of the stalest survivor docked −1 by the cap's anti-immortality step; `''` otherwise and on pre-#293 rows. Trailing column. */
+  decayed: string;
 }
 
 /**
@@ -1758,6 +1774,8 @@ export interface UsageMeta {
    * blank. A fixed enum value (`ErrorClass`), never free text.
    */
   errorClass?: ErrorClass;
+  /** `<id>:<postDockScore>` of the line the cap's aging step docked −1. */
+  decayed?: string;
 }
 
 /**
@@ -1913,9 +1931,10 @@ export function logUsage(
     // A fixed enum token (never user text), but sanitize anyway for uniformity so
     // no column can ever be split — it is a no-op on a well-formed enum value.
     const errorClass = sanitizeUsageField(meta.errorClass ?? '');
+    const decayed = sanitizeUsageField(meta.decayed ?? '');
     const line =
       `${new Date().toISOString()}\t${sanitizeUsageField(shelf)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
-      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}`;
+      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}\t${decayed}`;
     const ring = usageRing();
     const compactAt = ring + usageRingSlack();
 
@@ -1993,7 +2012,7 @@ export function parseUsage(dir: string): UsageRow[] {
     // blank/empty, so a ring written before this change still reads cleanly.
     // `errorClass` (issue #176) is the trailing column: a pre-#176 row ends at
     // `note`, so it is undefined here and defaults to `''`.
-    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note, errorClass] =
+    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note, errorClass, decayed] =
       line.split('\t');
     if (!ts || !command) continue;
     rows.push({
@@ -2010,6 +2029,7 @@ export function parseUsage(dir: string): UsageRow[] {
       reason: reason ?? '',
       note: note ?? '',
       errorClass: errorClass ?? '',
+      decayed: decayed ?? '',
     });
   }
   return rows;
