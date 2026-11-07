@@ -854,6 +854,67 @@ describe('runNbCli', () => {
     expect(row.entries).toEqual([]);
   });
 
+  test('a partially-landed batch records the stale-id miss count and keeps exit 0 (issue #310)', async () => {
+    // Acceptance (#310): one good + two stale ids. The row must exit 0 (success),
+    // record only the landed id, AND stamp misses=2 so `nb stats` can count the
+    // two laundered selector misses in its vote error causes. Before #310 this
+    // row logged a clean success with no trace of the two stale ids.
+    await run(['add', 'patcher', 'alpha one']);
+    const idA = entryId('alpha one');
+    const v = await run(['vote', 'patcher', `${idA},ffffff,eeeeee`, '+1']);
+    expect(v.code).toBe(0); // one landed → exit unchanged
+    const row = parseUsage(dir).at(-1)!;
+    expect(row.command).toBe('vote');
+    expect(row.ok).toBe(true);
+    expect(row.outcome).toBe('up');
+    expect(row.entries).toEqual([idA]); // only the landed id
+    expect(row.misses).toBe(2); // the two stale ids are counted, not laundered
+    expect(row.errorClass).toBe(''); // a dedicated counter, NOT errorClass (keeps exit 0)
+  });
+
+  test('an all-fail batch records NO miss count (issue #310 leaves the no_match path untouched)', async () => {
+    // The all-fail path keeps its errorClass=no_match / exit-1 behavior; it does
+    // NOT also stamp the partial-miss counter (that is only for a ≥1-landed batch).
+    await run(['add', 'patcher', 'alpha one']);
+    const v = await run(['vote', 'patcher', 'ffffff,eeeeee', '+1']);
+    expect(v.code).toBe(1);
+    const row = parseUsage(dir).at(-1)!;
+    expect(row.ok).toBe(false);
+    expect(row.errorClass).toBe('no_match');
+    expect(row.misses).toBe(0); // the miss counter is reserved for partial successes
+  });
+
+  test('a fully-landed batch records no misses (issue #310)', async () => {
+    // No stale ids → the miss counter stays 0, so the vote error causes see nothing.
+    await run(['add', 'patcher', 'alpha one']);
+    await run(['add', 'patcher', 'beta two']);
+    const idA = entryId('alpha one');
+    const idB = entryId('beta two');
+    const v = await run(['vote', 'patcher', `${idA},${idB}`, '+1']);
+    expect(v.code).toBe(0);
+    expect(parseUsage(dir).at(-1)!.misses).toBe(0);
+  });
+
+  test('partial-batch misses surface end-to-end in `nb stats` vote error causes (issue #310)', async () => {
+    // Full wiring through the real CLI: two ≥1-landed batch votes each skip two
+    // stale ids (4 misses total, over the ERROR_CAUSE_MIN noise floor). Both
+    // exit 0, yet `nb stats` must now name the laundered selector misses as
+    // no_match under the vote command — proving logUsage writes and parseUsage
+    // reads the new column, and stats folds it into the cause readout.
+    await run(['add', 'patcher', 'alpha one']);
+    const idA = entryId('alpha one');
+    const v1 = await run(['vote', 'patcher', `${idA},ffffff,eeeeee`, '+1']);
+    const v2 = await run(['vote', 'patcher', `${idA},dddddd,cccccc`, '+1']);
+    expect(v1.code).toBe(0);
+    expect(v2.code).toBe(0);
+    const s = await run(['stats', 'patcher', '--json']);
+    expect(s.code).toBe(0);
+    const vote = JSON.parse(s.out).errorCauses.find((c: { command: string }) => c.command === 'vote');
+    expect(vote).toBeDefined();
+    expect(vote.errors).toBe(4); // 0 error rows + 4 folded partial misses
+    expect(vote.breakdown).toEqual([{ cause: 'no_match', pct: 100 }]);
+  });
+
   test('a landed batch logs outcome=up and the touched ids', async () => {
     await run(['add', 'patcher', 'alpha one']);
     await run(['add', 'patcher', 'beta two']);

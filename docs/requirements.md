@@ -1026,6 +1026,37 @@ into an observable one, read for free from behaviour `nb` already performs (issu
 and sum into `crashRecovery` deployment-wide and window-scoped), and `cli.test.ts` → the
 `issue #309` crash-recovery stats tests.
 
+<a id="fr-stats-008"></a>
+**FR-STATS-008 (Should).** A **batch** `vote` (`nb vote <shelf> id1,id2,id3 +1`) that
+resolves at least one id but skips others exits `0` (a best-effort success), so its skipped
+ids — stale selectors a reader should see — were invisible to the `errorClass`-keyed vote
+error-cause readout (issue #223), which only reads rows that exited non-zero. Each such row SHALL instead record the count of skipped ids in a trailing
+**`misses`** column (a non-negative integer, blank in the common no-miss case), appended
+after `recovered` ([FR-STATS-007](#fr-stats-007)) so the parser reads a pre-#310 row's
+missing column as `0`, exactly as every prior trailing column was added; the parser SHALL
+clamp a non-numeric or negative cell to `0`. The column SHALL be a dedicated miss counter,
+NOT `errorClass`, so recording it does not change the `0` exit of a partly-successful batch.
+`stats` SHALL fold each row's `misses` into the `vote` command's error-cause breakdown as the
+`no_match` cause — the same class a wholly-failed vote stamps — counting each skipped id as
+one miss event toward both the breakdown and its denominator, subject to the same
+dominant-error noise floor applied to every cause. The per-command error **rate**
+([FR-STATS-001](#fr-stats-001)) SHALL be unchanged — it counts whole failed calls, so a batch
+that exited `0` stays a success there; only the cause readout surfaces the folded misses. The
+all-fail batch (which exits `1` with `errorClass` `no_match`) and the single-vote path SHALL
+be untouched. The counting is additive: `STATS_SCHEMA_VERSION` SHALL NOT bump and it adds no
+field to a lesson ([NG-004](#ng-004)).
+**Rationale:** Batch vote (#223/#224) was added for the end-of-session retro that promotes
+several lessons at once; the moment ≥1 id landed, any stale ids in the same call were laundered
+out of the "agents voting on ids that no longer exist" signal that drives curation health —
+exactly the signal `nb stats` exists to watch. Recording the skipped count turns a silent
+partial failure into an observable one, read for free from behaviour `nb` already performs
+(issue #310).
+*Proven by:* `cli.test.ts` → the `issue #310` batch-vote tests (a partial batch logs
+`misses`, keeps exit `0`, and surfaces end-to-end in `nb stats`; the all-fail and fully-landed
+paths record no misses), and `notebook.test.ts` → `describe('usage log + stats')` (`misses`
+round-trips the column, clamps a negative cell, folds into the vote error causes without
+inflating the error rate, and respects the noise floor on miss events).
+
 ### 4.13 Notebook descriptions & metadata
 
 <a id="fr-desc-001"></a>

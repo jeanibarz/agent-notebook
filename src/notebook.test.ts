@@ -1321,7 +1321,7 @@ describe('operation reasons (seed-and-grow enum)', () => {
 });
 
 describe('usage-log TSV wire format (golden, issue #126)', () => {
-  // The usage log is a positional 15-column TSV read back by parseUsage and, for
+  // The usage log is a positional 16-column TSV read back by parseUsage and, for
   // pre-upgrade rings, by any older reader that looks only at the first five
   // columns. The behavioral round-trip tests above all go THROUGH parseUsage, so
   // a reorder or insertion of a column would round-trip cleanly while silently
@@ -1331,22 +1331,23 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
 
   // The documented column order (notebook.ts logUsage): ts, shelf, command, ok,
   // ms, session, entries, outcome, collided, evicted, reason, note, errorClass,
-  // decayed, recovered. `recovered` (issue #309) is the current trailing column —
-  // appended after `decayed` (#293), which was itself appended after `errorClass`
-  // (#176) — so a row from before any of them ends earlier and still reads every
-  // prior field in place.
+  // decayed, recovered, misses. `misses` (issue #310) is the current trailing
+  // column — appended after `recovered` (#309), itself after `decayed` (#293),
+  // itself after `errorClass` (#176) — so a row from before any of them ends
+  // earlier and still reads every prior field in place.
   const COLUMN_ORDER = [
     'ts', 'shelf', 'command', 'ok', 'ms', 'session',
-    'entries', 'outcome', 'collided', 'evicted', 'reason', 'note', 'errorClass', 'decayed', 'recovered',
+    'entries', 'outcome', 'collided', 'evicted', 'reason', 'note', 'errorClass', 'decayed', 'recovered', 'misses',
   ] as const;
 
-  test('a fully-populated row serializes as exactly 15 tab-separated columns in the documented order', () => {
+  test('a fully-populated row serializes as exactly 16 tab-separated columns in the documented order', () => {
     // Distinct, recognizable value per column so a swap of any two columns is
     // detectable (not just a count change) — generic values would let a reorder
     // pass. ms=1234 and ok=true pin the `1234ms` / `ok` renderings too. The
     // `recovered` column (issue #309) is system-recorded, not a meta field, so we
     // prime the process tally the way withLock does and let logUsage drain it,
-    // giving a distinct `2:1` to pin its position and serialization.
+    // giving a distinct `2:1` to pin its position and serialization. `misses`
+    // (issue #310) is a distinct `3` to pin the trailing column.
     noteRecovery('lock-steal', 2);
     noteRecovery('temp-reap', 1);
     logUsage(dir, 'myshelf', 'merge', true, 1234, {
@@ -1359,6 +1360,7 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       note: 'some note',
       errorClass: 'too_long',
       decayed: 'eee:0',
+      misses: 3,
     });
 
     const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
@@ -1369,8 +1371,8 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
     expect(linesWritten).toHaveLength(1);
     const cols = linesWritten[0].split('\t');
 
-    // Exactly 15 columns — a removed or injected column fails here first (an
-    // insertion pushes the width past the 15 names in COLUMN_ORDER, a removal
+    // Exactly 16 columns — a removed or injected column fails here first (an
+    // insertion pushes the width past the 16 names in COLUMN_ORDER, a removal
     // below them).
     expect(cols).toHaveLength(COLUMN_ORDER.length);
 
@@ -1400,12 +1402,13 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       errorClass: 'too_long',
       decayed: 'eee:0', // <id>:<postDockScore> (issue #293)
       recovered: '2:1', // <lockSteals>:<tempReaps> (issue #309)
+      misses: '3', // batch-vote partial misses (issue #310)
     });
   });
 
-  test('err status and an empty-meta row still render the fixed 15-column frame', () => {
+  test('err status and an empty-meta row still render the fixed 16-column frame', () => {
     // A `show`-shaped call fills no richer meta; the trailing columns must still
-    // be present (empty), keeping the frame 15 columns wide — an old reader that
+    // be present (empty), keeping the frame 16 columns wide — an old reader that
     // slices the first five columns depends on this stable prefix. session is
     // pinned to '' so an ambient NB_SESSION cannot populate column 5. A read-only
     // `show` runs no withLock, so the crash-recovery column (#309) is empty too.
@@ -1414,11 +1417,11 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
     // columns (which are tabs) are preserved and counted.
     const line = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').split('\n').filter((l) => l !== '')[0];
     const cols = line.split('\t');
-    expect(cols).toHaveLength(15);
+    expect(cols).toHaveLength(16);
     // The stable 5-column prefix an old reader slices: shelf, command, ok, ms.
     expect(cols.slice(1, 5)).toEqual(['s', 'show', 'err', '2ms']); // ok=false → 'err'
-    // session..recovered (indices 5..14) are all empty for a bare call.
-    expect(cols.slice(5)).toEqual(['', '', '', '', '', '', '', '', '', '']);
+    // session..misses (indices 5..15) are all empty for a bare call.
+    expect(cols.slice(5)).toEqual(['', '', '', '', '', '', '', '', '', '', '']);
   });
 
   test('a legacy 5-column row parses with the newer columns defaulting to blank/empty', () => {
@@ -1448,13 +1451,15 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       errorClass: '',
       decayed: '',
       recovered: '',
+      misses: 0,
     });
   });
 
-  test('a pre-#309 14-column row (through decayed, no recovered) parses with recovered blank', () => {
-    // The real on-disk state right after THIS upgrade: rows written by the #293
-    // code end at `decayed` (14 columns). The new trailing `recovered` column must
-    // read back blank, exactly as every prior trailing-column addition did.
+  test('a pre-#309 14-column row (through decayed, no recovered/misses) parses with both trailing columns blank', () => {
+    // The real on-disk state right after an upgrade: rows written by the #293
+    // code end at `decayed` (14 columns). Both newer trailing columns — `recovered`
+    // (#309) and `misses` (#310) — must read back blank/0, exactly as every prior
+    // trailing-column addition did.
     writeFileSync(
       join(dir, '.nb-usage.log'),
       '2026-01-02T03:04:05.000Z\tp\tadd\tok\t5ms\tsess\taaa\taccepted\t\t\t\t\tother\tbbb:0\n',
@@ -1462,18 +1467,34 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
     );
     const [row] = parseUsage(dir);
     expect(row.decayed).toBe('bbb:0'); // the last column it DID carry is in place
-    expect(row.recovered).toBe(''); // the new trailing column defaults blank
+    expect(row.recovered).toBe(''); // defaults blank
+    expect(row.misses).toBe(0); // the newest trailing column defaults to 0
   });
 
-  test('parseUsage pins the READER column order: a hand-typed 15-column row maps each field to its documented position', () => {
+  test('a post-#309 15-column row (through recovered, no misses) parses with misses 0', () => {
+    // The most likely on-disk shape right after THIS upgrade: rows written by the
+    // #309 code end at `recovered` (15 columns). The new trailing `misses` column
+    // must read back 0 without disturbing any prior field.
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      '2026-01-02T03:04:05.000Z\tp\tvote\tok\t5ms\tsess\taaa\tup\t\t\t\t\t\t\t1:0\n',
+      'utf-8',
+    );
+    const [row] = parseUsage(dir);
+    expect(row.recovered).toBe('1:0'); // the last column it DID carry is in place
+    expect(row.misses).toBe(0); // the new trailing column defaults to 0
+  });
+
+  test('parseUsage pins the READER column order: a hand-typed 16-column row maps each field to its documented position', () => {
     // The writer golden above pins logUsage's serialization; this pins the
     // reader independently. parseUsage destructures positionally, so a reorder
     // of ITS destructuring (e.g. swapping collided/evicted) would not be caught
     // by the legacy test (whose richer columns are all blank). A distinct value
-    // per column makes any reader reorder fail this full `toEqual`.
+    // per column makes any reader reorder fail this full `toEqual`. The trailing
+    // `misses` column (issue #310) parses to an integer (`5` here).
     writeFileSync(
       join(dir, '.nb-usage.log'),
-      '2026-01-02T03:04:05.000Z\tmyshelf\tmerge\tok\t1234ms\tsess-7\taaa,bbb\tmerged\tccc\tddd:0.5\tduplicate\tsome note\ttoo_long\teee:0\t2:1\n',
+      '2026-01-02T03:04:05.000Z\tmyshelf\tmerge\tok\t1234ms\tsess-7\taaa,bbb\tmerged\tccc\tddd:0.5\tduplicate\tsome note\ttoo_long\teee:0\t2:1\t5\n',
       'utf-8',
     );
     expect(parseUsage(dir)[0]).toEqual({
@@ -1492,22 +1513,23 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       errorClass: 'too_long',
       decayed: 'eee:0',
       recovered: '2:1',
+      misses: 5,
     });
   });
 
-  test('parseUsage reads a MIXED post-upgrade ring: a legacy 5-column row followed by a full 15-column row', () => {
+  test('parseUsage reads a MIXED post-upgrade ring: a legacy 5-column row followed by a full 16-column row', () => {
     // The real on-disk state right after an upgrade: old rows written by the
-    // pre-richer-columns code, then new rows with all 15. Both must parse in one
+    // pre-richer-columns code, then new rows with all 16. Both must parse in one
     // file — the legacy row with blank richer columns, the new row fully.
     writeFileSync(
       join(dir, '.nb-usage.log'),
       '2026-01-01T00:00:00.000Z\tp\tadd\tok\t5ms\n' +
-        '2026-01-02T03:04:05.000Z\ts\tmerge\terr\t9ms\tsess\taaa\tmerged\tccc\tddd:0.5\tduplicate\tnote\tbad_args\tfff:2\t1:0\n',
+        '2026-01-02T03:04:05.000Z\ts\tmerge\terr\t9ms\tsess\taaa\tmerged\tccc\tddd:0.5\tduplicate\tnote\tbad_args\tfff:2\t1:0\t2\n',
       'utf-8',
     );
     const rows = parseUsage(dir);
     expect(rows).toHaveLength(2);
-    // Legacy row: richer columns default to blank/empty.
+    // Legacy row: richer columns default to blank/empty (misses → 0).
     expect(rows[0]).toEqual({
       ts: '2026-01-01T00:00:00.000Z',
       role: 'p',
@@ -1524,6 +1546,7 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       errorClass: '',
       decayed: '',
       recovered: '',
+      misses: 0,
     });
     // Full row: every richer column is parsed into its field.
     expect(rows[1]).toEqual({
@@ -1542,6 +1565,7 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       errorClass: 'bad_args',
       decayed: 'fff:2',
       recovered: '1:0',
+      misses: 2,
     });
   });
 });
@@ -1831,6 +1855,91 @@ describe('error-class usage column (issue #176)', () => {
     writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
     const add = stats(dir, { now }).errorCauses.find((c) => c.command === 'add')!;
     expect(add.breakdown).toEqual([{ cause: 'too_long', pct: 100 }]);
+  });
+
+  test('batch-vote partial misses surface as no_match in the vote error causes (issue #310)', () => {
+    const now = Date.now();
+    // Two ≥1-landed batch votes, each skipping two stale ids: ok=true SUCCESS rows
+    // (not error rows) that each record misses=2. Before #310 these were logged as
+    // clean successes, so the vote selector-miss readout was blind to the four
+    // stale selectors. Now the four misses must surface as `no_match`, crossing
+    // the noise floor (ERROR_CAUSE_MIN=3) the readout applies to every cause.
+    logUsage(dir, 'v', 'vote', true, 1, { outcome: 'up', entries: ['aaa'], misses: 2 });
+    logUsage(dir, 'v', 'vote', true, 1, { outcome: 'up', entries: ['bbb'], misses: 2 });
+    const rep = stats(dir, { now });
+    const vote = rep.errorCauses.find((c) => c.command === 'vote')!;
+    expect(vote.errors).toBe(4); // 0 error rows + 4 folded partial misses
+    expect(vote.breakdown).toEqual([{ cause: 'no_match', pct: 100 }]);
+    // The per-command error RATE stays honest: both rows exited 0, so vote's err%
+    // is 0 — the misses show only in the cause readout, never inflating the rate.
+    expect(rep.perCommand.find((c) => c.command === 'vote')!.errorRate).toBe(0);
+  });
+
+  test('partial misses ADD to (not overwrite) existing vote error causes, and stay out of the error rate (issue #310)', () => {
+    const now = Date.now();
+    // A window mixing real error rows AND a partial-miss success row. The misses
+    // must be ADDED to the no_match bucket (not overwrite the other causes), and
+    // the error rate must count only the two genuinely-failed calls — never the
+    // partial-success row. A fold that overwrote no_match, or that leaked misses
+    // into the rate, would fail here. Built via logUsage so the real serializer
+    // places every column (rather than hand-counting tabs).
+    logUsage(dir, 'v', 'vote', false, 2, { errorClass: 'no_match' }); // a wholly-failed vote
+    logUsage(dir, 'v', 'vote', false, 2, { errorClass: 'bad_args' }); // a different failure class
+    logUsage(dir, 'v', 'vote', true, 2, { outcome: 'up', entries: ['aaa'], misses: 2 }); // ≥1-landed batch, two stale ids
+    const rep = stats(dir, { now });
+    const vote = rep.errorCauses.find((c) => c.command === 'vote')!;
+    // 2 error rows + 2 folded misses = 4 events; no_match = 1 row + 2 misses = 3.
+    expect(vote.errors).toBe(4);
+    expect(vote.breakdown).toEqual([
+      { cause: 'no_match', pct: 75 }, // 3/4
+      { cause: 'bad_args', pct: 25 }, // 1/4
+    ]);
+    // Error RATE counts only the two failed CALLS out of three (the batch exited 0).
+    const perCmd = rep.perCommand.find((c) => c.command === 'vote')!;
+    expect(perCmd.errors).toBe(2);
+    expect(perCmd.calls).toBe(3);
+  });
+
+  test('the error-cause noise floor counts MISS EVENTS, not rows: 2 hidden, 3 surface (issue #310)', () => {
+    // The fold must respect ERROR_CAUSE_MIN=3 AND count miss events, not rows.
+    // 1 miss → hidden (a prior test). Two separate 1-miss rows (2 events) → still
+    // hidden. A single row carrying 3 misses → surfaces with errors=3. This pins
+    // the boundary from both sides and proves the floor is on events, not rows.
+    const now = Date.now();
+    logUsage(dir, 'v', 'vote', true, 1, { outcome: 'up', entries: ['a'], misses: 1 });
+    logUsage(dir, 'v', 'vote', true, 1, { outcome: 'up', entries: ['b'], misses: 1 });
+    expect(stats(dir, { now }).errorCauses.find((c) => c.command === 'vote')).toBeUndefined(); // 2 events < 3
+
+    logUsage(dir, 'w', 'vote', true, 1, { outcome: 'up', entries: ['c'], misses: 3 });
+    const w = stats(dir, { shelf: 'w', now }).errorCauses.find((c) => c.command === 'vote')!;
+    expect(w.errors).toBe(3); // one row, three miss events → meets the floor
+    expect(w.breakdown).toEqual([{ cause: 'no_match', pct: 100 }]);
+  });
+
+  test('a batch vote with ONE partial miss stays below the error-cause noise floor (issue #310)', () => {
+    const now = Date.now();
+    // A single stale id in an otherwise-landing batch is one miss — below
+    // ERROR_CAUSE_MIN (3), so like any stray error it is not yet a named cause.
+    // This pins that the fold respects the existing noise gate rather than
+    // surfacing every one-off miss.
+    logUsage(dir, 'v', 'vote', true, 1, { outcome: 'up', entries: ['aaa'], misses: 1 });
+    const rep = stats(dir, { now });
+    expect(rep.errorCauses.find((c) => c.command === 'vote')).toBeUndefined();
+  });
+
+  test('a corrupt negative `misses` cell cannot subtract from the vote miss aggregation (issue #310)', () => {
+    // parseUsage clamps misses to ≥0, so a hand-edited/torn negative cell can
+    // never reduce the folded count below the real misses. Here three genuine
+    // misses plus a bogus `-5` row must still read as three, not −2.
+    const now = Date.now();
+    // Columns after outcome(8): collided, evicted, reason, note, errorClass,
+    // decayed, recovered, then misses(16) — eight tabs after `up`.
+    const row = (misses: string): string =>
+      `${new Date(now - Math.random() * 1000).toISOString()}\tv\tvote\tok\t2ms\t\t\tup\t\t\t\t\t\t\t\t${misses}`;
+    writeFileSync(join(dir, '.nb-usage.log'), [row('3'), row('-5')].join('\n') + '\n', 'utf-8');
+    expect(parseUsage(dir).map((r) => r.misses)).toEqual([3, 0]); // the bogus cell clamps to 0
+    const vote = stats(dir, { now }).errorCauses.find((c) => c.command === 'vote')!;
+    expect(vote.errors).toBe(3);
   });
 
   test('pre-#176 error rows (no class) are bucketed as `unclassified`, not a misleading `other`', () => {
@@ -2181,7 +2290,7 @@ describe('usage log + stats', () => {
     const rows = raw.split('\n').filter((l) => l !== '');
     expect(rows.length).toBe(1); // the CR/LF did not spawn extra rows
     const cols = rows[0].split('\t');
-    expect(cols.length).toBe(15); // five base + five richer + two reason columns + errorClass + decayed + recovered, all tabs collapsed
+    expect(cols.length).toBe(16); // five base + five richer + two reason columns + errorClass + decayed + recovered + misses, all tabs collapsed
     expect(cols[1]).toBe('evil role drop table'); // shelf: tab+CR+LF all collapsed to single spaces
     // stats still parses it as one call attributed to the sanitized command.
     const rep = stats(dir, { now: Date.now() });
@@ -2602,10 +2711,10 @@ describe('usage log + stats', () => {
     // Every surviving line is a complete, well-formed usage row — no torn/partial
     // line (the corruption a shared temp path could leave).
     for (const l of lines) {
-      // Five base columns, then ten richer ones (session, entries, outcome,
-      // collided, evicted, reason, note, errorClass, decayed, recovered) — all
-      // empty for a successful `show`, so the row is 15 tab-separated columns.
-      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){10}$/);
+      // Five base columns, then eleven richer ones (session, entries, outcome,
+      // collided, evicted, reason, note, errorClass, decayed, recovered, misses)
+      // — all empty for a successful `show`, so the row is 16 tab-separated columns.
+      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){11}$/);
     }
     // No stray temp file lingered: every writer's rename consumed its own temp.
     expect(readdirSync(dir).filter((f) => f.startsWith('.nb-usage.log.') && f.endsWith('.tmp'))).toEqual([]);
