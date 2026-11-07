@@ -3771,6 +3771,18 @@ describe('notebook metadata / descriptions (issue #70)', () => {
     );
   });
 
+  test('a leading UTF-8 BOM does not break the `# desc:` metadata (issue #299)', () => {
+    writeFileSync(join(dir, 'm.md'), '\uFEFF# desc: x\n+3\tlesson\n', 'utf-8');
+    expect(getDescription(dir, 'm')).toBe('x');
+    expect(readMetaLines(dir, 'm')).toEqual(['# desc: x']);
+    expect(readEntries(dir, 'm')).toEqual([{ score: 3, text: 'lesson' }]);
+    // BOM + CRLF together, and a BOM before a plain entry (no metadata).
+    writeFileSync(join(dir, 'c.md'), '\uFEFF# desc: y\r\n+1\tz\r\n', 'utf-8');
+    expect(readShelf(dir, 'c')).toEqual({ metaLines: ['# desc: y'], entries: [{ score: 1, text: 'z' }] });
+    writeFileSync(join(dir, 'e.md'), '\uFEFF+2\tfirst\n', 'utf-8');
+    expect(readEntries(dir, 'e')).toEqual([{ score: 2, text: 'first' }]);
+  });
+
   test('only the LEADING block is metadata; a `# key:` line among entries stays a bare lesson', () => {
     // The metadata block ends at the first entry. A `# foo: bar` line AFTER an
     // entry is an ordinary tab-less lesson (FR-MODEL-003 tolerance), not metadata
