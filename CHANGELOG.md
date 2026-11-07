@@ -9,6 +9,19 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Added
+- **`nb show` reads several shelves in one call, and `--json` entries now carry a dedup `key` (#286).**
+  `nb show <a> <b> <c>` now prints every named shelf instead of silently dropping all but the
+  first, and under `--json` returns a per-shelf array of `{shelf, description, entries, exists}`
+  in one process — one consistent snapshot, no N spawns. A single shelf stays a lone object
+  (backward compatible); a named shelf with no file reports `exists: false`, never a silent empty.
+  Each `--json` entry gains a `key` field: the `dedupKey` normal form of its text (case- and
+  punctuation-folded, whitespace-collapsed). Two entries with an equal `key` are *exact*
+  duplicates — the one thing a caller cannot reproduce without reimplementing nb's internals — so
+  a harness composing a context pack from several shelves can drop exact cross-shelf dupes itself.
+  `key` is equality-only; nb does no cross-shelf dedup, ordering, scope precedence, or similarity
+  ranking on this path — those stay caller policy. See [FR-SHOW-004](docs/requirements.md#fr-show-004).
+
 ### Fixed
 - **`nb` now refuses an unknown or misplaced `--flag` instead of silently ignoring it (#267).**
   A mistyped flag was dropped without a word — so `nb stats --exitcode >/dev/null || alert`
