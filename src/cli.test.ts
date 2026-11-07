@@ -1226,11 +1226,20 @@ describe('runNbCli', () => {
       expect((await run(['path', '--usage'])).out).toBe(`${usageFile(dir)}\n`);
     });
 
-    test('--json does not disable the safe-shelf guard (still exit 1, no JSON)', async () => {
+    test('--json does not disable the safe-shelf guard (still exit 1) and now emits a structured error on stdout (issue #266)', async () => {
       const r = await run(['path', '../escape', '--json']);
-      expect(r.code).toBe(1);
-      expect(r.err).toMatch(/invalid shelf name/);
-      expect(r.out).toBe(''); // nothing emitted on stdout when rejected
+      expect(r.code).toBe(1); // the guard still fires — exit is unchanged
+      expect(r.err).toMatch(/invalid shelf name/); // the English line still goes to stderr
+      // Previously stdout was empty on this throw path, so a --json consumer got
+      // nothing to branch on. It now carries the structured error (issue #266).
+      expect(JSON.parse(r.out)).toEqual({
+        ok: false,
+        command: 'path',
+        error: {
+          class: 'bad_args',
+          message: 'invalid shelf name: "../escape" (allowed: letters, digits, . _ @ -)',
+        },
+      });
     });
   });
 
@@ -1726,6 +1735,137 @@ describe('runNbCli', () => {
     test('without --json the English lines are unchanged', async () => {
       const r = await run(['add', 'patcher', 'plain text path']);
       expect(r.out).toBe('added — 1 line\n');
+    });
+  });
+
+  describe('--json completes the machine contract on throw + defaulted-flag paths (issue #266)', () => {
+    /** stdout must be exactly one parseable JSON object and nothing else. */
+    function parseOnly(out: string): unknown {
+      expect(out.endsWith('\n')).toBe(true);
+      expect(out.trimEnd().includes('\n')).toBe(false); // single line, no stray prose
+      return JSON.parse(out);
+    }
+
+    test('a bad_args throw emits {ok:false, command, error:{class,message}} on stdout, keeps the English line on stderr, exit 1', async () => {
+      const r = await run(['add', '--json']); // missing <shelf> (and <lesson>)
+      expect(r.code).toBe(1); // exit unchanged from the prose path
+      expect(parseOnly(r.out)).toEqual({
+        ok: false,
+        command: 'add',
+        error: { class: 'bad_args', message: 'missing <shelf> argument' },
+      });
+      // The human line is byte-for-byte what it always was (stderr is untouched).
+      expect(r.err).toBe('nb add: missing <shelf> argument\n');
+    });
+
+    test('a no_match throw carries error.class="no_match" so a supervisor branches on the class, not the prose', async () => {
+      // vote on a shelf that was never created → requireExistingShelf throws no_match.
+      const r = await run(['vote', 'ghostshelf', 'anything', '+1', '--json']);
+      expect(r.code).toBe(1);
+      const obj = parseOnly(r.out) as { ok: boolean; command: string; error: { class: string; message: string } };
+      expect(obj.ok).toBe(false);
+      expect(obj.command).toBe('vote');
+      expect(obj.error.class).toBe('no_match'); // the branch key — never regex-parsed prose
+      expect(obj.error.message).toContain('no notebook for shelf "ghostshelf"');
+      expect(r.err).toContain('no notebook for shelf "ghostshelf"'); // stderr still carries the prose
+    });
+
+    test('an ambiguous_selector throw is reported with its own class', async () => {
+      await run(['add', 'patcher', 'alpha one']);
+      await run(['add', 'patcher', 'alpha two']);
+      const r = await run(['vote', 'patcher', 'alpha', '+1', '--json']); // matches both
+      expect(r.code).toBe(1);
+      const obj = parseOnly(r.out) as { error: { class: string } };
+      expect(obj.error.class).toBe('ambiguous_selector');
+    });
+
+    test('an unknown subcommand emits a structured unknown_subcommand error on stdout and keeps exit 2', async () => {
+      const r = await run(['upvote', '--json']); // not a real command
+      expect(r.code).toBe(2); // distinct from the 1 a handled error returns
+      const obj = parseOnly(r.out) as { ok: boolean; command: string; error: { class: string; message: string } };
+      expect(obj.ok).toBe(false);
+      expect(obj.command).toBe('upvote');
+      expect(obj.error.class).toBe('unknown_subcommand');
+      expect(r.err).toMatch(/^nb: unknown command "upvote"\./); // bare `nb:` prefix unchanged
+    });
+
+    test('without --json the throw paths are byte-for-byte unchanged (no JSON leaks to stdout)', async () => {
+      const bad = await run(['add']); // missing <shelf>, no --json
+      expect(bad.code).toBe(1);
+      expect(bad.out).toBe(''); // stdout stays empty on the human path
+      expect(bad.err).toBe('nb add: missing <shelf> argument\n');
+
+      const unknown = await run(['upvote']); // unknown command, no --json
+      expect(unknown.code).toBe(2);
+      expect(unknown.out).toBe('');
+      expect(unknown.err).toMatch(/^nb: unknown command "upvote"\./);
+    });
+
+    test('a silently-defaulted --since adds a machine-readable warning on stderr under --json while stdout stays a pure StatsReport', async () => {
+      await run(['add', 'patcher', 'x']);
+      const r = await run(['stats', 'patcher', '--since', '7days', '--json']);
+      expect(r.code).toBe(0); // a defaulted flag is forgiving, not an error
+      const rep = JSON.parse(r.out) as { window: string }; // stdout is still ONE bare StatsReport
+      expect(rep.window).toBe('7d');
+      // The prose line is preserved (existing behavior/tests rely on it) AND a
+      // structured warning is now emitted so a --json consumer can branch on it.
+      expect(r.err).toContain("unrecognized --since '7days'");
+      const warnLine = r.err.trimEnd().split('\n').find((l) => l.startsWith('{'));
+      expect(warnLine).toBeDefined();
+      expect(JSON.parse(warnLine as string)).toEqual({
+        warning: { class: 'defaulted_flag', command: 'stats', flag: '--since', value: '7days', usedDefault: '7d' },
+      });
+    });
+
+    // One case per --limit call site of warnDefaultedFlag (search / list / stale),
+    // so a regression at any single site is caught (the helper has four callers;
+    // --since is covered above). Each asserts true channel separation: the bare
+    // result object stays alone on stdout and the structured warning is ONLY on
+    // stderr — `JSON.parse not.toThrow` alone would not prove the warning stayed
+    // off stdout.
+    test.each([
+      { command: 'search', argv: ['search', 'lint', '--limit', 'abc', '--json'], usedDefault: 50 }, // SEARCH_DEFAULT_LIMIT
+      { command: 'list', argv: ['list', '--limit', 'abc', '--json'], usedDefault: 50 }, // LIST_DEFAULT_LIMIT
+      { command: 'stale', argv: ['stale', 'patcher', '--limit', 'abc', '--json'], usedDefault: 10 }, // STALE_DEFAULT_LIMIT
+    ])('a silently-defaulted --limit is flagged under --json for $command (stdout stays a pure result)', async ({ command, argv, usedDefault }) => {
+      await run(['add', 'patcher', 'run lint before done']);
+      const r = await run(argv);
+      expect(r.code).toBe(0);
+      expect(() => JSON.parse(r.out)).not.toThrow(); // stdout is the bare result object
+      expect(r.out.trimEnd().includes('\n')).toBe(false); // exactly one object on stdout
+      expect(r.out).not.toContain('defaulted_flag'); // channel separation: the warning never leaks to stdout
+      expect(r.err).toContain("unrecognized --limit 'abc'"); // prose preserved on stderr
+      const warnLine = r.err.trimEnd().split('\n').find((l) => l.startsWith('{'));
+      expect(JSON.parse(warnLine as string)).toEqual({
+        warning: { class: 'defaulted_flag', command, flag: '--limit', value: 'abc', usedDefault },
+      });
+    });
+
+    test('a generic (non-NbError) throw — e.g. an EACCES-style write failure — is reported as class "other"', async () => {
+      // The EACCES path the issue names is any throw the catch classifies as
+      // `other`. Force a deterministic, cross-platform write failure: point NB_DIR
+      // under a regular file so the notebook mkdir fails with ENOTDIR (a plain
+      // Error, not an NbError). Under --json it must still yield a structured
+      // error object on stdout keyed `other`, exit 1.
+      const blocker = join(dir, 'not-a-dir');
+      writeFileSync(blocker, 'x');
+      process.env.NB_DIR = join(blocker, 'nb'); // mkdir under a file → ENOTDIR
+      const r = await run(['add', 'patcher', 'a lesson', '--json']);
+      expect(r.code).toBe(1);
+      const obj = parseOnly(r.out) as { ok: boolean; command: string; error: { class: string } };
+      expect(obj.ok).toBe(false);
+      expect(obj.command).toBe('add');
+      expect(obj.error.class).toBe('other'); // a non-NbError classifies as other, never guessed from prose
+      expect(r.err).toMatch(/^nb add: /); // the English line still goes to stderr
+    });
+
+    test('WITHOUT --json a defaulted flag stays a single prose line — no JSON warning leaks to stderr', async () => {
+      await run(['add', 'patcher', 'x']);
+      const r = await run(['stats', 'patcher', '--since', 'nope']); // no --json
+      expect(r.code).toBe(0);
+      expect(r.err).toContain("unrecognized --since 'nope'");
+      expect(r.err.trimEnd().split('\n')).toHaveLength(1); // exactly one line, no structured warning
+      expect(r.err).not.toContain('defaulted_flag');
     });
   });
 

@@ -571,6 +571,29 @@ only before the `--`, so a flag-shaped query/prefix after it is a literal operan
 sole operand is a shelf name, which cannot be flag-shaped.
 *Proven by:* `cli.test.ts` → `describe('nb `--` end-of-options terminator (issue #277)')`.
 
+<a id="fr-cli-008"></a>
+**FR-CLI-008 (Should).** `--json` SHALL be a complete machine contract on the failure
+paths too (issue #266), so a supervisor never falls back to regex-parsing the English
+prose on exactly the paths where structured data matters most. (1) When a command
+*throws* under `--json` (a handled `NbError` — `bad_args`, `no_match`,
+`ambiguous_selector`, `multiline_refused`, `too_long` — or any other error such as an
+`EACCES`/`ENOTDIR` write failure, which classifies as `other`), it SHALL write a single
+structured error object to **stdout** — `{ ok: false, command, error: { class, message } }`,
+where `class` is the same bounded `ErrorClass` token the usage log records (issue #176,
+never parsed from the message text) — *in addition to* the unchanged English line on
+stderr. An unknown command SHALL emit the same object keyed `class: "unknown_subcommand"`.
+Exit codes are unchanged ([FR-CLI-002](#fr-cli-002)): `1` for a handled error, `2` for an
+unknown command. (2) When a flag value is unrecognized and the command silently falls back
+to a default (`stats --since`, and `--limit` on `search`/`list`/`stale`), under `--json` it
+SHALL also write a machine-readable warning object to **stderr** —
+`{ warning: { class: "defaulted_flag", command, flag, value, usedDefault } }` — alongside
+the unchanged prose line, so the defaulted value is discoverable without regex-parsing
+prose. The warning stays on stderr so the bare-result-object stdout contract
+([FR-CLI-003](#fr-cli-003)) is never corrupted; exit stays `0` (a defaulted flag is
+forgiving, [DP-5](#dp-5)). Without `--json`, every throw and defaulted-flag path is
+byte-for-byte unchanged.
+*Proven by:* `cli.test.ts` → `describe('--json completes the machine contract on throw + defaulted-flag paths (issue #266)')`.
+
 <a id="fr-config-001"></a>
 **FR-CONFIG-001 (Should).** `nb config` SHALL print every effective (post-clamp) tunable
 as `name=value`, one per line — `maxLines`, `maxChars`, `nearThreshold`, `usageRing`,
