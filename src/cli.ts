@@ -784,6 +784,7 @@ export async function runNbCli(
         // paraphrase-miss signal, distinct from a hard `dedup-blocked`.
         else if (r.nearId) meta.collided = r.nearId;
         if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
+        if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
         // `add` has no seeded enum yet (free text only): a `--note` records
         // free text, and a stray `--reason` buckets to `other` so its vocabulary
         // can emerge from mined notes. Set BEFORE the output branch below, which
@@ -804,6 +805,7 @@ export async function runNbCli(
         else {
           process.stdout.write(`added — ${plural(r.size, 'line')}`);
           if (r.evicted) process.stdout.write(` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text})`);
+          if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
           process.stdout.write('\n');
           // Non-blocking near-duplicate advisory: the lesson WAS stored (stdout
           // above), and this hint goes to stderr so stdout stays pipe-clean. It
@@ -881,6 +883,8 @@ export async function runNbCli(
         const r = await merge(dir, shelf, a, b, merged);
         meta.entries = [...(r.sources ?? []), ...(r.id ? [r.id] : [])];
         meta.outcome = 'merged';
+        if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
+        if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
         // Reason lives in the usage log only (merge enum: duplicate · other).
         {
           const { reason, note } = normalizeReason('merge', reasonArg, noteArg);
@@ -888,7 +892,12 @@ export async function runNbCli(
           if (note) meta.note = note;
         }
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
-        else process.stdout.write(`merged two entries into one — ${r.size} lines\n`);
+        else {
+          process.stdout.write(`merged two entries into one — ${r.size} lines`);
+          if (r.evicted) process.stdout.write(` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text})`);
+          if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
+          process.stdout.write('\n');
+        }
         break;
       }
       case 'split': {
@@ -903,10 +912,17 @@ export async function runNbCli(
         // the reason lives in the usage log only, never in the notebook.
         meta.entries = [r.source, ...r.ids];
         meta.outcome = 'split';
+        if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
+        if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
         if (reason) meta.reason = reason;
         if (note) meta.note = note;
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
-        else process.stdout.write(`split one entry into two — ${r.size} lines\n`);
+        else {
+          process.stdout.write(`split one entry into two — ${r.size} lines`);
+          if (r.evicted) process.stdout.write(` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text})`);
+          if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
+          process.stdout.write('\n');
+        }
         break;
       }
       case 'rm': {
@@ -943,6 +959,7 @@ export async function runNbCli(
         meta.outcome = r.reason === 'moved' ? 'moved' : 'move-blocked';
         if (r.collidedId) meta.collided = r.collidedId;
         if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
+        if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
         // Reason lives in the usage log only (move enum: consolidate · other).
         {
           const { reason, note } = normalizeReason('move', reasonArg, noteArg);
@@ -961,6 +978,7 @@ export async function runNbCli(
           if (r.evicted) {
             process.stdout.write(` (evicted lowest-scored from "${to}": [${fmt(r.evicted.score)}] ${r.evicted.text})`);
           }
+          if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest in "${to}" −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
           process.stdout.write('\n');
         }
         break;
@@ -1406,6 +1424,16 @@ async function readStdinDefault(): Promise<string> {
   return Buffer.concat(chunks).toString('utf-8');
 }
 /* c8 ignore stop */
+
+/**
+ * Whether an aging dock is worth printing (issue #293). `decayed.score` is the
+ * POST-dock score, so the pre-dock score was `score + 1`; we print only when that
+ * was above the +1 floor (a line that still carried vote capital). A routine
+ * +1 → 0 dock on an already-unproven line stays silent (it is still logged).
+ */
+function agedVisibly(decayed: { score: number } | null): decayed is { score: number; text: string } {
+  return decayed !== null && decayed.score > 0;
+}
 
 function fmt(score: number): string {
   return score >= 0 ? `+${score}` : `${score}`;
