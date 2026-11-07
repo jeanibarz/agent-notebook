@@ -7,6 +7,9 @@ import {
   writeFileSync,
   unlinkSync,
   chmodSync,
+  mkdirSync,
+  rmdirSync,
+  utimesSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -393,5 +396,89 @@ describe('nb-backup.sh seeds .gitignore so the straggler commit is idempotent (i
     expect(run(null)).toBe(0);
     // ensure_gitignore appended nothing because every pattern was already present.
     expect(readFileSync(join(dir, '.gitignore'), 'utf-8')).toBe(initial);
+  });
+});
+
+// Guards issue #305: the straggler `git add`/`git commit` must run under the
+// SAME `.nb-git.lock` mkdir-dir lock the git-wrapper takes (withGitLock), else a
+// scheduled backup can collide with a live wrapper commit on `.git/index.lock`.
+describe('nb-backup.sh serializes its commit on the wrapper\'s .nb-git.lock (issue #305)', () => {
+  const gitLock = () => join(dir, '.nb-git.lock');
+  const commitCount = () => {
+    const r = spawnSync('git', ['-C', dir, 'rev-list', '--count', 'HEAD'], { encoding: 'utf-8' });
+    return r.status === 0 ? parseInt(r.stdout.trim() || '0', 10) : 0;
+  };
+  const logText = () => (existsSync(join(dir, '.nb-backup.log')) ? readFileSync(join(dir, '.nb-backup.log'), 'utf-8') : '');
+  const envWith = (extra: Record<string, string>): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = { ...process.env, NB_DIR: dir, ...extra };
+    delete env.XDG_RUNTIME_DIR;
+    return env;
+  };
+
+  test('a held lock blocks add/commit (no concurrent commit) and is left untouched', () => {
+    writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
+    mkdirSync(gitLock()); // a live wrapper commit is in flight
+    const r = spawnSync('bash', [script], { env: envWith({ NB_BACKUP_GIT_LOCK_WAIT: '1' }), encoding: 'utf-8' });
+    expect(r.status).toBe(0);
+    expect(commitCount()).toBe(0); // did not commit under the holder's feet
+    expect(execFileSync('git', ['-C', dir, 'diff', '--cached', '--name-only'], { encoding: 'utf-8' })).toBe(''); // nor stage
+    expect(existsSync(gitLock())).toBe(true); // not ours: never released by the backup
+    expect(logText()).toContain('git lock');
+  });
+
+  test('waits for the holder, then commits and releases the lock cleanly', async () => {
+    writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
+    mkdirSync(gitLock());
+    const child = spawn('bash', [script], { env: envWith({ NB_BACKUP_GIT_LOCK_WAIT: '15' }), stdio: 'ignore' });
+    const exited = new Promise<number>((res) => child.on('exit', (c) => res(c ?? 1)));
+    await sleep(700);
+    expect(commitCount()).toBe(0); // still waiting while the lock is held
+    rmdirSync(gitLock()); // wrapper finishes
+    expect(await exited).toBe(0);
+    expect(commitCount()).toBe(1);
+    expect(existsSync(gitLock())).toBe(false); // released after our section
+  });
+
+  test('a stale lock (crashed holder) is reclaimed so the backup is never wedged', () => {
+    writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
+    mkdirSync(gitLock());
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(gitLock(), old, old);
+    const r = spawnSync('bash', [script], { env: envWith({ NB_BACKUP_GIT_LOCK_WAIT: '2' }), encoding: 'utf-8' });
+    expect(r.status).toBe(0);
+    expect(commitCount()).toBe(1);
+    expect(existsSync(gitLock())).toBe(false);
+  });
+
+  test.skipIf(process.getuid?.() === 0)('an undeletable stale lock cannot spin the backup forever (bounded by the wait)', () => {
+    writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
+    mkdirSync(gitLock());
+    const old = new Date(Date.now() - 120_000);
+    utimesSync(gitLock(), old, old);
+    chmodSync(dir, 0o555); // mv/rm of the lock fails
+    try {
+      const r = spawnSync('bash', [script], {
+        env: envWith({ NB_BACKUP_GIT_LOCK_WAIT: '1', XDG_RUNTIME_DIR: xdg }),
+        encoding: 'utf-8',
+        timeout: 20_000,
+      });
+      expect(r.signal).toBeNull(); // exited on its own, not killed
+    } finally {
+      chmodSync(dir, 0o755);
+    }
+  });
+
+  test('a non-integer NB_BACKUP_GIT_LOCK_WAIT falls back to the default instead of breaking', () => {
+    writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
+    const r = spawnSync('bash', [script], { env: envWith({ NB_BACKUP_GIT_LOCK_WAIT: 'abc' }), encoding: 'utf-8' });
+    expect(r.status).toBe(0);
+    expect(commitCount()).toBe(1);
+  });
+
+  test('an uncontended run takes and releases the lock (nothing left behind)', () => {
+    writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
+    expect(run(null)).toBe(0);
+    expect(commitCount()).toBe(1);
+    expect(existsSync(gitLock())).toBe(false);
   });
 });

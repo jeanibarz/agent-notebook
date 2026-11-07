@@ -35,6 +35,13 @@
 #                            `timeout` (GNU/coreutils); default 300.
 # LOGS
 #   $NB_DIR/.nb-backup.log  (rotated at ~1 MB)
+# GIT LOCK
+#   The straggler `git add`/`git commit` runs under $NB_DIR/.nb-git.lock — the
+#   same mkdir-dir lock nb-git-wrapper.mjs (withGitLock) takes around its commit
+#   — so a backup commit can't collide with a live wrapper commit on
+#   .git/index.lock. Waits up to 12 s; reclaims a lock older than 30 s (crashed
+#   holder), mirroring the wrapper. If the lock stays held, the commit is skipped
+#   this run (stragglers are picked up next run); the push still happens.
 # LOCK
 #   ${XDG_RUNTIME_DIR:-$NB_DIR}/.nb-backup.lock  (prevents overlapping runs where
 #   flock exists). User-scoped on purpose: a fixed world-writable /tmp path lets
@@ -120,18 +127,71 @@ cd "$NB_DIR" || { log "cd failed: $NB_DIR"; exit 1; }
 
 BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
 
+# Take the git-wrapper's `.nb-git.lock` (an atomic mkdir-dir lock) so our
+# add/commit never runs concurrently with a wrapper commit — the two otherwise
+# share one repo but only each other's private locks, and could collide on
+# .git/index.lock (issue #305). Constants and stale-reclaim mirror withGitLock in
+# nb-git-wrapper.mjs: wait ~12 s; a lock older than 30 s is a crashed holder's.
+GIT_LOCK="${NB_DIR}/.nb-git.lock"
+GIT_LOCK_WAIT_S="${NB_BACKUP_GIT_LOCK_WAIT:-12}"
+case "$GIT_LOCK_WAIT_S" in ''|*[!0-9]*) GIT_LOCK_WAIT_S=12 ;; esac
+GIT_LOCK_STALE_S=30
+GIT_LOCK_HELD=0
+
+lock_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+
+release_git_lock() {
+    if [ "$GIT_LOCK_HELD" -eq 1 ]; then
+        rmdir "$GIT_LOCK" 2>/dev/null || true
+        GIT_LOCK_HELD=0
+    fi
+}
+trap release_git_lock EXIT
+
+acquire_git_lock() {
+    local waited=0 mt now aside
+    while :; do
+        if mkdir "$GIT_LOCK" 2>/dev/null; then
+            GIT_LOCK_HELD=1
+            return 0
+        fi
+        # Not EEXIST (unwritable store)? Waiting won't help — give up at once.
+        [ -d "$GIT_LOCK" ] || return 1
+        mt="$(lock_mtime "$GIT_LOCK")"
+        now="$(date +%s)"
+        if [ -n "$mt" ] && [ $((now - mt)) -gt "$GIT_LOCK_STALE_S" ]; then
+            # Claim the stale lock atomically by renaming it aside: only one
+            # racer's mv wins, so two waiters can't both delete a fresh successor.
+            aside="${GIT_LOCK}.stale.$$"
+            if mv "$GIT_LOCK" "$aside" 2>/dev/null; then
+                rm -rf "$aside"
+            fi
+            # Retry the mkdir, but still count this pass toward the wait budget
+            # below, so an undeletable stale lock can't spin us forever.
+        fi
+        [ "$waited" -ge $((GIT_LOCK_WAIT_S * 5)) ] && return 1
+        sleep 0.2 2>/dev/null || sleep 1
+        waited=$((waited + 1))
+    done
+}
+
 # 1) Commit any straggler changes (per-change auto-commit may be off). First make
 #    sure this script's own transient files are ignored, so `git add -A` can't
 #    sweep the backup log it just wrote back into history and churn a commit every
 #    run (issue #274).
 ensure_gitignore
-git add -A 2>>"$LOG_FILE"
-if ! git diff --cached --quiet; then
-    if git commit --quiet -m "nb-backup ${DATESTAMP}" 2>>"$LOG_FILE"; then
-        log "committed straggler changes"
-    else
-        log "COMMIT FAILED — see log"
+if acquire_git_lock; then
+    git add -A 2>>"$LOG_FILE"
+    if ! git diff --cached --quiet; then
+        if git commit --quiet -m "nb-backup ${DATESTAMP}" 2>>"$LOG_FILE"; then
+            log "committed straggler changes"
+        else
+            log "COMMIT FAILED — see log"
+        fi
     fi
+    release_git_lock
+else
+    log "git lock ${GIT_LOCK} busy after ${GIT_LOCK_WAIT_S}s; skipping straggler commit (will retry next run)"
 fi
 
 # 2) Push. No --force; a rejected push means someone pushed out of band — log
