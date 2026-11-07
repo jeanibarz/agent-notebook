@@ -10,7 +10,37 @@ permissions:
   contents: read
 
 jobs:
+  # Re-run CI's full matrix against the release commit. ci.yml does not trigger
+  # on tag pushes, and the publish job below tests only on Node 22 (where the
+  # Node-18 runtime smoke is skipped by design), so without this a change that
+  # breaks only the declared minimum engine (>=18) would ship green (issue #301).
+  # Keep the per-leg steps in sync with ci.yml's build-and-test job.
+  verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      # Vitest cannot load on Node 18 (needs node:util styleText, Node 20.12+).
+      - run: npm test
+        if: matrix.node-version != 18
+      # The only leg that actually executes the package on its minimum engine.
+      - run: node scripts/smoke-node18.mjs
+        if: matrix.node-version == 18
+
   publish:
+    needs: verify
     runs-on: ubuntu-latest
     environment: release
     permissions:

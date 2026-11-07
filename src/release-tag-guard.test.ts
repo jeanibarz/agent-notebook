@@ -17,6 +17,10 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const release = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8');
 
+// The publish job's own text. The `verify` job (issue #301) precedes it and has
+// its own `npm ci`/`npm test`, so ordering checks must be scoped to this job.
+const publishJob = release.slice(release.indexOf('\n  publish:'));
+
 const STEP_NAME = 'Verify tag matches package.json version';
 // Distinct stderr markers emitted by each of the two rejections in the guard.
 const REF_MARKER = 'Release must run from a version tag';
@@ -110,16 +114,16 @@ function runGuard(opts: {
 
 describe('release.yml tag/version guard — static wiring', () => {
   test('a named guard step exists before the publish step', () => {
-    const guardAt = release.indexOf(`- name: ${STEP_NAME}`);
-    const publishAt = release.indexOf('npm publish');
+    const guardAt = publishJob.indexOf(`- name: ${STEP_NAME}`);
+    const publishAt = publishJob.indexOf('npm publish');
     expect(guardAt).toBeGreaterThanOrEqual(0);
     expect(publishAt).toBeGreaterThan(guardAt);
   });
 
   test('the guard runs before the build/test/publish steps (fails fast)', () => {
-    const guardAt = release.indexOf(`- name: ${STEP_NAME}`);
+    const guardAt = publishJob.indexOf(`- name: ${STEP_NAME}`);
     for (const later of ['npm ci', 'npm run build', 'npm test', 'npm publish']) {
-      expect(release.indexOf(later)).toBeGreaterThan(guardAt);
+      expect(publishJob.indexOf(later)).toBeGreaterThan(guardAt);
     }
   });
 
