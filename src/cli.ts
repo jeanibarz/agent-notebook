@@ -18,7 +18,7 @@
 //   nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
 //   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport; --exit-code = exit 3 when anomalies present)
 //   nb path   [<shelf> | --usage] [--json]   print the notebooks dir, a shelf's file path, or the usage-log path (--json = {dir, shelf, path} object)
-//   nb config [--json]                      print the effective (post-clamp) NB_* tunables as name=value (--json = object keyed by name)
+//   nb config [--json]                      print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json = object keyed by name, string vars under `environment`)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
 //   nb ls / nb shelves / nb roles          aliases of `nb list` (`roles` is deprecated)
 //   nb completion <bash|zsh>               print a static shell-completion script to source
@@ -136,7 +136,7 @@ usage:
   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
   nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's resolved file path (--json emits a {dir, shelf, path} object)
   nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
-  nb config [--json]                       print the effective (post-clamp) NB_* tunables as name=value (--json emits an object keyed by tunable name)
+  nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under \`environment\`)
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
   nb shelves [prefix] [--limit N]         alias of \`nb list\`
@@ -268,8 +268,11 @@ notes:
     getter the hot path uses, so you never re-derive it by hand from the env var, its default and its
     clamp. Each line is tagged with its source: \`(default)\` (the var is unset), \`(env NB_*)\` (the var is
     set — the printed value is still the post-clamp effective value, so an out-of-range or non-numeric
-    value is clamped/ignored and may differ from what you exported), or \`(derived …)\`. \`--json\` emits one
-    object keyed by tunable name, each \`{ value, source, env }\`. Read-only — it mutates nothing, and is
+    value is clamped/ignored and may differ from what you exported), or \`(derived …)\`. A trailing section
+    then prints the three behavior-critical STRING env vars — \`NB_DIR\` (storage), \`NB_SESSION\` (the id the
+    usage/engagement diagnostics group by), and \`NB_ASCII\` (rendering mode) — each tagged \`(env)\`/\`(default)\`.
+    \`--json\` emits one object keyed by tunable name, each \`{ value, source, env }\`, plus an \`environment\`
+    key holding the string vars (\`{ value, source }\` each). Read-only — it mutates nothing, and is
     scoped to CONFIGURATION (the knobs), distinct from \`nb stats\` (usage, anomalies, engagement).
   - \`nb completion <bash|zsh>\` prints a static, dependency-free completion script to stdout.
     Source it with \`eval "$(nb completion bash)"\` (or the zsh form) to tab-complete the command set
@@ -1279,11 +1282,16 @@ export async function runNbCli(
         // Read-only introspection (issue #188): print every effective, post-clamp
         // tunable as `name=value`, each read from the SAME live getter the hot
         // path uses, so an operator never has to re-derive a value by hand from
-        // the env var + its default + its clamp. Scoped to CONFIGURATION (the
-        // knobs), deliberately distinct from `nb stats` (usage/anomalies/
-        // engagement). The shared `finally` appends its one usage row; the shelf
-        // column stays `-` because the command reads global config, not a shelf.
+        // the env var + its default + its clamp. Then a string env section (issue
+        // #312) surfaces the three behavior-critical NB_* vars — NB_DIR,
+        // NB_SESSION, NB_ASCII — that the numeric table structurally can't hold
+        // but that most often explain a misbehaving deployment. Scoped to
+        // CONFIGURATION (the knobs), deliberately distinct from `nb stats`
+        // (usage/anomalies/engagement). The shared `finally` appends its one usage
+        // row; the shelf column stays `-` because the command reads global config,
+        // not a shelf.
         const rows = effectiveConfig();
+        const envRows = environmentRows();
         if (json) {
           // One object keyed by tunable name; each carries the effective value,
           // its source (env/default/derived), and the env var that overrides it,
@@ -1291,9 +1299,16 @@ export async function runNbCli(
           // the human lines. The value is always the post-clamp effective value.
           const obj: Record<string, { value: number; source: ConfigSource; env: string | null }> = {};
           for (const r of rows) obj[r.name] = { value: r.value, source: configSource(r.env), env: r.env };
-          process.stdout.write(JSON.stringify(obj) + '\n');
+          // The string env vars live under a dedicated `environment` key, keyed by
+          // the var name, so the 14 numeric rows keep their exact shape and keys —
+          // the --json contract stays backward-compatible (a NEW section, not a
+          // changed type on an existing row; issue #312). No tunable is named
+          // `environment`, so the key can't collide.
+          const environment: Record<string, { value: string; source: ConfigSource }> = {};
+          for (const r of envRows) environment[r.name] = { value: r.value, source: configSource(r.name) };
+          process.stdout.write(JSON.stringify({ ...obj, environment }) + '\n');
         } else {
-          const { out } = renderConfig(rows);
+          const { out } = renderConfig(rows, envRows);
           process.stdout.write(out);
         }
         break;
@@ -1672,6 +1687,40 @@ function effectiveConfig(): ConfigRow[] {
 }
 
 /**
+ * One behavior-critical STRING env var `nb config` surfaces alongside the
+ * numeric clamps (issue #312). `name` is the env var itself — it doubles as the
+ * display label and the `--json` key, so there is no separate `env` field to
+ * drift from it.
+ */
+interface EnvRow {
+  name: string;
+  value: string;
+}
+
+/**
+ * The three string env vars that most often explain a misbehaving deployment
+ * (issue #312): `NB_DIR` (where notebooks live), `NB_SESSION` (the id the
+ * usage/engagement diagnostics group by — its unset state is the usual cause of
+ * `nb stats` reporting "no engaged sessions"), and `NB_ASCII` (the rendering
+ * mode). `effectiveConfig` reports only the numeric clamps, so these were
+ * structurally invisible to the very command `nb`'s own help points an operator
+ * at. Each value is read from the SAME resolver the hot path uses — `notebooksDir`
+ * for storage, the effective `NB_SESSION` for the session id, `asciiMode` for the
+ * post-locale rendering mode — so a printed value can never drift from what `nb`
+ * actually runs under, exactly as the numeric rows don't. Source is classified by
+ * `configSource`'s `!== undefined` rule: a var set to blank still reads `(env)`
+ * (e.g. `NB_DIR=` reads `(env)` while its value falls back to the default dir),
+ * mirroring the numeric DP-5 contract.
+ */
+function environmentRows(): EnvRow[] {
+  return [
+    { name: 'NB_DIR', value: notebooksDir() },
+    { name: 'NB_SESSION', value: process.env.NB_SESSION ?? '' },
+    { name: 'NB_ASCII', value: asciiMode() ? 'on' : 'off' },
+  ];
+}
+
+/**
  * Classify where a tunable's effective value comes from. A tunable with no env
  * var of its own (`env === null`) is `derived`; otherwise it is `env` when the
  * variable is DEFINED and `default` when it is unset (absent from the
@@ -1692,19 +1741,27 @@ function configSource(env: string | null): ConfigSource {
 }
 
 /**
- * Render `nb config` for the human path. One `name=value` line per tunable, the
- * `name=value` column left-padded so the source tags line up. The tag names the
- * source: `(default)`, `(env NB_*)`, or `(derived from usageRing)`. Returns
- * `{ out }` (stdout only) — there is no error/empty state, the table is fixed.
+ * Render `nb config` for the human path. One `name=value` line per numeric
+ * tunable, the `name=value` column left-padded so the source tags line up. The
+ * tag names the source: `(default)`, `(env NB_*)`, or `(derived from usageRing)`.
+ * A blank line then separates a `NB_*=value` block for the string env vars
+ * (issue #312), tagged `(env)`/`(default)` — the var name is already the row
+ * label, so the tag need not repeat it. Returns `{ out }` (stdout only) — there
+ * is no error/empty state, the table is fixed.
  */
-function renderConfig(rows: ConfigRow[]): { out: string } {
+function renderConfig(rows: ConfigRow[], envRows: EnvRow[]): { out: string } {
   const pairW = rows.reduce((w, r) => Math.max(w, `${r.name}=${r.value}`.length), 0);
   const lines = rows.map((r) => {
     const src = configSource(r.env);
     const tag = src === 'env' ? `(env ${r.env})` : src === 'derived' ? '(derived from usageRing)' : '(default)';
     return `${`${r.name}=${r.value}`.padEnd(pairW)}  ${tag}`;
   });
-  return { out: lines.join('\n') + '\n' };
+  const envPairW = envRows.reduce((w, r) => Math.max(w, `${r.name}=${r.value}`.length), 0);
+  const envLines = envRows.map((r) => {
+    const tag = configSource(r.name) === 'env' ? '(env)' : '(default)';
+    return `${`${r.name}=${r.value}`.padEnd(envPairW)}  ${tag}`;
+  });
+  return { out: lines.join('\n') + '\n\n' + envLines.join('\n') + '\n' };
 }
 
 /**

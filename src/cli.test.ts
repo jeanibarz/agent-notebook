@@ -1660,8 +1660,15 @@ describe('runNbCli', () => {
       for (const [name, value] of DEFAULTS) {
         expect(r.out).toContain(`${name}=${value}`);
       }
-      // Exactly one line per tunable, nothing extra.
-      expect(r.out.trimEnd().split('\n')).toHaveLength(DEFAULTS.length);
+      // The numeric block is exactly one line per tunable, then a blank-line
+      // separator and the three string env rows (issue #312) — nothing extra.
+      const [numericBlock, envBlock] = r.out.trimEnd().split('\n\n');
+      expect(numericBlock.split('\n')).toHaveLength(DEFAULTS.length);
+      expect(envBlock.split('\n').map((l) => l.split('=')[0])).toEqual([
+        'NB_DIR',
+        'NB_SESSION',
+        'NB_ASCII',
+      ]);
     });
 
     test('each default line is tagged (default); the derived one is tagged derived', async () => {
@@ -1675,7 +1682,9 @@ describe('runNbCli', () => {
       expect(r.code).toBe(0);
       expect(r.out.trim().split('\n')).toHaveLength(1); // exactly one JSON object on stdout
       const obj = JSON.parse(r.out);
-      expect(Object.keys(obj).sort()).toEqual(DEFAULTS.map(([n]) => n).sort());
+      // The 14 numeric rows keep their exact keys; issue #312 adds ONE new
+      // top-level `environment` key (a new section, not a changed row shape).
+      expect(Object.keys(obj).sort()).toEqual([...DEFAULTS.map(([n]) => n), 'environment'].sort());
       expect(obj.maxLines).toEqual({ value: 50, source: 'default', env: 'NB_MAX_LINES' });
       // The derived value has no env var of its own.
       expect(obj.usageRingSlack).toEqual({ value: 312, source: 'derived', env: null });
@@ -1744,6 +1753,138 @@ describe('runNbCli', () => {
       // (.nb-usage.log is the only side effect, shared by every read command.)
       expect(readFileSync(file, 'utf8')).toBe(before);
       expect(readdirSync(dir).filter((f) => f.endsWith('.md')).sort()).toEqual(filesBefore);
+    });
+
+    // The three behavior-critical STRING env vars (issue #312). These are not in
+    // TUNABLES, so manage NB_SESSION / NB_ASCII explicitly here; NB_DIR is already
+    // set to the per-test temp dir by the outer beforeEach.
+    describe('string env section — NB_DIR / NB_SESSION / NB_ASCII (issue #312)', () => {
+      // Also pin the locale: with NB_ASCII unset, asciiMode() falls back to
+      // LC_ALL/LC_CTYPE/LANG, so a `C`/`POSIX` CI locale would otherwise flip the
+      // default NB_ASCII value and make the "unset" assertion flaky. Force a
+      // UTF-8 locale for a deterministic `off` baseline.
+      const STRING_VARS = ['NB_SESSION', 'NB_ASCII', 'LC_ALL', 'LC_CTYPE', 'LANG'];
+      const savedStrings: Record<string, string | undefined> = {};
+      beforeEach(() => {
+        for (const k of STRING_VARS) {
+          savedStrings[k] = process.env[k];
+          delete process.env[k];
+        }
+        process.env.LANG = 'C.UTF-8';
+      });
+      afterEach(() => {
+        for (const k of STRING_VARS) {
+          if (savedStrings[k] === undefined) delete process.env[k];
+          else process.env[k] = savedStrings[k];
+        }
+      });
+
+      test('unset NB_SESSION/NB_ASCII read (default) with empty/off values; set NB_DIR reads (env)', async () => {
+        const r = await run(['config']);
+        expect(r.code).toBe(0);
+        // NB_DIR is set to the temp dir by the harness → (env) with that path.
+        expect(r.out).toMatch(new RegExp(`^NB_DIR=${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+\\(env\\)$`, 'm'));
+        // Unset NB_SESSION → empty value, (default). Unset NB_ASCII → off, (default).
+        expect(r.out).toMatch(/^NB_SESSION=\s+\(default\)$/m);
+        expect(r.out).toMatch(/^NB_ASCII=off\s+\(default\)$/m);
+        // The same unset state in --json: source 'default' under `environment`.
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.environment.NB_SESSION).toEqual({ value: '', source: 'default' });
+        expect(j.environment.NB_ASCII).toEqual({ value: 'off', source: 'default' });
+      });
+
+      test('an unset NB_DIR reads (default) with the home-relative default path', async () => {
+        // NB_DIR unset → notebooksDir() falls back to <home>/.agent-notebook/
+        // notebooks. The harness always sets NB_DIR, so override HOME to a temp
+        // dir (os.homedir() honors $HOME on POSIX) and clear NB_DIR, so the
+        // fallback resolves INTO the temp home — the usage-log side effect lands
+        // there, not in the real home — then restore both.
+        const savedDir = process.env.NB_DIR;
+        const savedHome = process.env.HOME;
+        const tmpHome = mkdtempSync(join(tmpdir(), 'agent-notebook-home-'));
+        try {
+          delete process.env.NB_DIR;
+          process.env.HOME = tmpHome;
+          const expected = join(tmpHome, '.agent-notebook', 'notebooks');
+          const r = await run(['config']);
+          expect(r.out).toMatch(
+            new RegExp(`^NB_DIR=${expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+\\(default\\)$`, 'm'),
+          );
+          const j = JSON.parse((await run(['config', '--json'])).out);
+          expect(j.environment.NB_DIR).toEqual({ value: expected, source: 'default' });
+        } finally {
+          if (savedDir === undefined) delete process.env.NB_DIR;
+          else process.env.NB_DIR = savedDir;
+          if (savedHome === undefined) delete process.env.HOME;
+          else process.env.HOME = savedHome;
+          rmSync(tmpHome, { recursive: true, force: true });
+        }
+      });
+
+      test('NB_ASCII unset under a non-UTF-8 locale defaults to on, still tagged (default)', async () => {
+        // The locale-driven branch of asciiMode(): with NB_ASCII unset and a set,
+        // non-UTF-8 locale (C), rendering is ASCII — value `on`, but the SOURCE is
+        // still (default) because NB_ASCII itself is unset (the mode came from the
+        // locale, not the var). This is the useful "ascii is on, and here's why"
+        // diagnostic the numeric rows can't express.
+        process.env.LANG = 'C';
+        expect((await run(['config'])).out).toMatch(/^NB_ASCII=on\s+\(default\)$/m);
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.environment.NB_ASCII).toEqual({ value: 'on', source: 'default' });
+      });
+
+      test('a set NB_SESSION is surfaced with its value and tagged (env)', async () => {
+        process.env.NB_SESSION = 'task-42';
+        expect((await run(['config'])).out).toMatch(/^NB_SESSION=task-42\s+\(env\)$/m);
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.environment.NB_SESSION).toEqual({ value: 'task-42', source: 'env' });
+      });
+
+      test('NB_ASCII truthy forces on and reads (env); a falsey value forces off yet still reads (env)', async () => {
+        process.env.NB_ASCII = '1';
+        expect((await run(['config'])).out).toMatch(/^NB_ASCII=on\s+\(env\)$/m);
+        process.env.NB_ASCII = '0';
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        // Falsey → effective off, but the var IS set, so source stays env (DP-5).
+        expect(j.environment.NB_ASCII).toEqual({ value: 'off', source: 'env' });
+        expect((await run(['config'])).out).toMatch(/^NB_ASCII=off\s+\(env\)$/m);
+      });
+
+      test('--json nests the string vars under `environment`, keyed by var name, { value, source }', async () => {
+        process.env.NB_SESSION = 'sess-1';
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(Object.keys(j.environment).sort()).toEqual(['NB_ASCII', 'NB_DIR', 'NB_SESSION']);
+        expect(j.environment.NB_DIR).toEqual({ value: dir, source: 'env' });
+        expect(j.environment.NB_SESSION).toEqual({ value: 'sess-1', source: 'env' });
+        // Values are strings, so a supervisor reads NB_DIR without regex-parsing
+        // the human lines.
+        expect(typeof j.environment.NB_DIR.value).toBe('string');
+      });
+
+      test('a blank NB_SESSION reads (env), not (default) — a set-but-empty var IS set (DP-5)', async () => {
+        process.env.NB_SESSION = '';
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.environment.NB_SESSION).toEqual({ value: '', source: 'env' });
+        expect((await run(['config'])).out).toMatch(/^NB_SESSION=\s+\(env\)$/m);
+      });
+
+      test('the new env section does not disturb the numeric rows, even with a numeric override set', async () => {
+        // Guard the acceptance criterion "existing numeric rows are unchanged":
+        // the numeric block (everything before the blank-line separator) must be
+        // identical whether or not the string env vars are set, and an env
+        // override (NB_MAX_LINES) must still flow through untouched.
+        process.env.NB_MAX_LINES = '7';
+        const withEnvUnset = (await run(['config'])).out.split('\n\n')[0];
+        process.env.NB_SESSION = 'sess-x';
+        process.env.NB_ASCII = '1';
+        const withEnvSet = (await run(['config'])).out.split('\n\n')[0];
+        // Setting the STRING vars leaves the numeric block byte-identical...
+        expect(withEnvSet).toBe(withEnvUnset);
+        // ...and the numeric override still appears with its (env) tag.
+        expect(withEnvSet).toMatch(/^maxLines=7\s+\(env NB_MAX_LINES\)$/m);
+        expect(withEnvSet.split('\n')).toHaveLength(DEFAULTS.length);
+        delete process.env.NB_MAX_LINES;
+      });
     });
   });
 
