@@ -454,6 +454,52 @@ export function releaseHeldLock(): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Crash-recovery accounting (issue #309)
+// ---------------------------------------------------------------------------
+// Two recovery paths each mean a previous `nb` died mid-mutation: withLock's
+// stale-lock steal (a crash WHILE holding the lock) and reapLeftoverTemps'
+// leftover-temp reap (a crash mid atomic-write). Both were entirely silent — no
+// log, no counter, no `stats` signal — so an operator running `nb` from agent
+// hooks could not answer "are my agents crashing mid-write and losing updates?".
+//
+// We make recovery observable WITHOUT changing the recovery actions: a tiny
+// module-level tally counts the two events, and the next `logUsage` in THIS
+// process drains the tally onto the usage row it is about to write. A mutation
+// always logs exactly one usage row (from the CLI's `finally`, AFTER its
+// withLock has resolved — same single-threaded process, so the tally is counted
+// before it is drained), so the count rides an existing monitoring row: no extra
+// row, no new pseudo-command, and `perCommand`/`totalCalls`/`activity` stay about
+// real commands. `stats` then sums the column across the window into a
+// deployment-wide crash-recovery readout. The accounting is best-effort end to
+// end: the tally never throws, and a dropped count loses at most one monitoring
+// observation — never a lesson and never the recovery itself.
+let pendingRecovery: { lockSteals: number; tempReaps: number } = { lockSteals: 0, tempReaps: 0 };
+
+/**
+ * Tally a crash-recovery event for this process's next usage row (issue #309):
+ * a stale lock stolen (`lock-steal`) or `n` leftover temps reaped (`temp-reap`).
+ * Best-effort — never throws, and a non-positive count is ignored. Exported so a
+ * test can prime the tally the same way the recovery paths do.
+ */
+export function noteRecovery(kind: 'lock-steal' | 'temp-reap', n = 1): void {
+  if (!(n > 0)) return;
+  if (kind === 'lock-steal') pendingRecovery.lockSteals += n;
+  else pendingRecovery.tempReaps += n;
+}
+
+/**
+ * Read-and-reset the pending crash-recovery tally. `logUsage` calls this exactly
+ * once per row, so each recovery event is attributed to exactly one row and never
+ * double-counted. Exported for tests, which also call it to reset the module
+ * tally between cases.
+ */
+export function drainPendingRecovery(): { lockSteals: number; tempReaps: number } {
+  const drained = pendingRecovery;
+  pendingRecovery = { lockSteals: 0, tempReaps: 0 };
+  return drained;
+}
+
 export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
   mkdirSync(dir, { recursive: true });
   const lock = join(dir, '.nb.lock');
@@ -491,6 +537,11 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
       try {
         if (Date.now() - statSync(lock).mtimeMs > staleMs) {
           rmdirSync(lock);
+          // A stale lock we just stole is evidence its holder crashed while
+          // holding it — tally the steal (issue #309). Counted only after a
+          // successful rmdir: if the lock vanished first, rmdirSync throws into
+          // the catch below and we retry without counting a phantom steal.
+          noteRecovery('lock-steal');
           continue;
         }
       } catch {
@@ -503,7 +554,10 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
     }
   }
   try {
-    reapLeftoverTemps(dir);
+    // Reaping a crash-left temp is the second sign a prior nb died mid-write —
+    // tally the count so recovery is observable (issue #309). reapLeftoverTemps
+    // reports how many it removed; noteRecovery ignores a zero.
+    noteRecovery('temp-reap', reapLeftoverTemps(dir));
     return fn();
   } finally {
     // Release THIS invocation's own lock directly and unconditionally, and clear
@@ -558,27 +612,37 @@ const SHELF_TMP_RE = /\.md\.(?:\d+\.)?tmp$/;
  *   - only the top level of `dir` (readdirSync is not recursive).
  * Best-effort: any failure (a racing unlink, a permission error) is swallowed so
  * a stale temp can never block a real mutation.
+ *
+ * Returns the number of temps actually removed, so the caller can surface it as a
+ * crash-recovery signal (issue #309) — a nonzero reap is evidence a prior writer
+ * died mid atomic-write. The count is best-effort: the rare benign case this
+ * function's own contract notes (reaping a live writer's usage-log temp a moment
+ * before its rename) is counted too, which can at most over-report by that one
+ * bounded event — acceptable for a monitoring hint, and never affecting a lesson.
  */
-export function reapLeftoverTemps(dir: string): void {
+export function reapLeftoverTemps(dir: string): number {
   let names: string[];
   try {
     names = readdirSync(dir);
   } catch {
-    return; // dir unreadable — nothing to reap
+    return 0; // dir unreadable — nothing to reap
   }
   // `.nb-usage.log.` — the live log's basename plus the dot that precedes the
   // per-pid segment, so the live log and its `.count` sidecar never match.
   const usageTmpPrefix = `${basename(usageFile(dir))}.`;
+  let reaped = 0;
   for (const name of names) {
     const isShelfTemp = !name.startsWith('.') && SHELF_TMP_RE.test(name);
     const isUsageTemp = name.startsWith(usageTmpPrefix) && name.endsWith('.tmp');
     if (!isShelfTemp && !isUsageTemp) continue;
     try {
       unlinkSync(join(dir, name));
+      reaped++; // count only a temp we actually removed (issue #309)
     } catch {
       /* already gone or not removable — reaping is best-effort */
     }
   }
+  return reaped;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1827,8 +1891,10 @@ export interface UsageRow {
   note: string;
   /** Terse error-class token (`ERROR_CLASSES`) when the call exited non-zero; `''` on success and on pre-#176 rows. */
   errorClass: string;
-  /** For a write that aged a line (issue #293): `<id>:<postDockScore>` of the stalest survivor docked −1 by the cap's anti-immortality step; `''` otherwise and on pre-#293 rows. Trailing column. */
+  /** For a write that aged a line (issue #293): `<id>:<postDockScore>` of the stalest survivor docked −1 by the cap's anti-immortality step; `''` otherwise and on pre-#293 rows. */
   decayed: string;
+  /** Crash recovery performed during this call (issue #309): `<lockSteals>:<tempReaps>` — stale locks stolen and leftover temps reaped while acquiring the lock, each count a sign a prior nb died mid-write; `''` when none (the common case) and on pre-#309 rows. Trailing column. */
+  recovered: string;
 }
 
 /**
@@ -2060,9 +2126,18 @@ export function logUsage(
     // no column can ever be split — it is a no-op on a well-formed enum value.
     const errorClass = sanitizeUsageField(meta.errorClass ?? '');
     const decayed = sanitizeUsageField(meta.decayed ?? '');
+    // Crash-recovery column (issue #309): drain the tally that withLock's
+    // stale-lock steal and reapLeftoverTemps' temp reap filled during this same
+    // process's mutation, and record it as `<lockSteals>:<tempReaps>` — blank in
+    // the common no-recovery case, so an old reader and old rows are unchanged.
+    // Drained exactly once here (read-and-reset), so each event is counted on one
+    // row; the two counts are machine-generated integers, so no sanitize is
+    // needed (no caller text can reach this column).
+    const rec = drainPendingRecovery();
+    const recovered = rec.lockSteals > 0 || rec.tempReaps > 0 ? `${rec.lockSteals}:${rec.tempReaps}` : '';
     const line =
       `${new Date().toISOString()}\t${sanitizeUsageField(shelf)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
-      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}\t${decayed}`;
+      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}\t${decayed}\t${recovered}`;
     const ring = usageRing();
     const compactAt = ring + usageRingSlack();
 
@@ -2136,11 +2211,12 @@ export function parseUsage(dir: string): UsageRow[] {
   for (const line of readFileSync(file, 'utf-8').split('\n')) {
     if (line.trim() === '') continue;
     // Positional parse, tolerant of old five-column rows: the richer columns
-    // (session…errorClass) are undefined on a pre-upgrade row and default to
+    // (session…recovered) are undefined on a pre-upgrade row and default to
     // blank/empty, so a ring written before this change still reads cleanly.
-    // `errorClass` (issue #176) is the trailing column: a pre-#176 row ends at
-    // `note`, so it is undefined here and defaults to `''`.
-    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note, errorClass, decayed] =
+    // `recovered` (issue #309) is the current trailing column, appended after
+    // `decayed` (#293); a row from before either ends earlier, so the missing
+    // trailing columns are undefined here and default to `''`.
+    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note, errorClass, decayed, recovered] =
       line.split('\t');
     if (!ts || !command) continue;
     rows.push({
@@ -2158,6 +2234,7 @@ export function parseUsage(dir: string): UsageRow[] {
       note: note ?? '',
       errorClass: errorClass ?? '',
       decayed: decayed ?? '',
+      recovered: recovered ?? '',
     });
   }
   return rows;
@@ -2449,6 +2526,23 @@ export interface StatsReport {
    * `STATS_SCHEMA_VERSION` does not bump (#172 additive-field policy).
    */
   usageRing: { rows: number; cap: number };
+  /**
+   * Crash-recovery readout (issue #309): how many times, in the window, a `nb`
+   * mutation found and cleaned up evidence that a PREVIOUS `nb` died mid-write —
+   * `lockSteals` is stale `.nb.lock`s stolen (a crash while holding the lock) and
+   * `tempReaps` is leftover `*.md.<pid>.tmp` / `.nb-usage.log.<pid>.tmp` files
+   * reaped (a crash mid atomic-write). Both were silent before this issue, so an
+   * operator could not tell whether agents were crashing mid-mutation and losing
+   * updates; a nonzero count is exactly that evidence. Summed from the usage ring's
+   * `recovered` column, so it costs no extra read and adds no field to a lesson
+   * ([NG-004]). Like `usageRing` this is **deployment-wide** — the lock and the
+   * temp debris are shared across every shelf — so it is NOT narrowed by a
+   * `[<shelf>]` scope, only by the window. A clean deployment reports `{ 0, 0 }`,
+   * shown (not omitted) so "measured, healthy" is never confused with "not
+   * measured" ([DP-5]). Additive — every field above is unchanged, and
+   * `STATS_SCHEMA_VERSION` does not bump (#172 additive-field policy).
+   */
+  crashRecovery: { lockSteals: number; tempReaps: number };
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -3093,6 +3187,23 @@ export function stats(
     windowMs,
   );
 
+  // Crash-recovery readout (issue #309): sum the per-row `recovered` column —
+  // `<lockSteals>:<tempReaps>`, blank when none — across the DEPLOYMENT-WIDE
+  // windowed rows (`recentAll`, not the shelf-scoped `recent`). A stolen stale
+  // lock and a reaped leftover temp are dir-global recovery events: the `.nb.lock`
+  // and the `*.tmp` debris are shared by every shelf, and the operator's "are my
+  // agents crashing mid-write?" question is a deployment question, not a per-shelf
+  // one — so this mirrors `usageRing` in staying unscoped (only the window
+  // applies). A blank/old/malformed column parses as 0 and is skipped.
+  let crashLockSteals = 0;
+  let crashTempReaps = 0;
+  for (const r of recentAll) {
+    if (!r.recovered) continue;
+    const [s, t] = r.recovered.split(':');
+    crashLockSteals += Number.parseInt(s ?? '', 10) || 0;
+    crashTempReaps += Number.parseInt(t ?? '', 10) || 0;
+  }
+
   return {
     schemaVersion: STATS_SCHEMA_VERSION,
     window,
@@ -3112,5 +3223,9 @@ export function stats(
     // than "how busy was the window". Reuses the `parsed` array already read — no
     // second ring scan (the #206 risk note).
     usageRing: { rows: parsed.length, cap: usageRing() },
+    // Crash-recovery readout (issue #309): deployment-wide, window-scoped counts
+    // of the two silent recovery events, so "are agents crashing mid-write?" is
+    // answerable from `nb stats`. Shown even at {0,0} (healthy) — see the field doc.
+    crashRecovery: { lockSteals: crashLockSteals, tempReaps: crashTempReaps },
   };
 }

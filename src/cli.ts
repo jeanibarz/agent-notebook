@@ -2007,6 +2007,18 @@ function renderStats(rep: StatsReport, shelf: string | undefined): string {
   const ring = rep.usageRing;
   const ringFull = ring.rows >= ring.cap ? '  FULL' : '';
   lines.push(`  usage ring: ${ring.rows}/${ring.cap} rows${ringFull}`);
+  // Crash-recovery readout (issue #309): the two previously-silent signs a prior
+  // nb died mid-write — stale locks stolen and leftover temps reaped — summed over
+  // the window. Deployment-wide (like the usage ring), so it is not shelf-scoped.
+  // Shown even at zero (the healthy normal) so its absence can't be mistaken for
+  // "not measured"; a nonzero count tells an operator agents are crashing
+  // mid-mutation. A trailing marker calls out any nonzero count at a glance.
+  const cr = rep.crashRecovery;
+  const crMark = cr.lockSteals > 0 || cr.tempReaps > 0 ? '  ⚠ crashes recovered' : '';
+  lines.push(
+    `  crash recovery: ${cr.lockSteals} stale lock${cr.lockSteals === 1 ? '' : 's'} stolen, ` +
+      `${cr.tempReaps} leftover temp${cr.tempReaps === 1 ? '' : 's'} reaped (window)${crMark}`,
+  );
   return lines.join('\n');
 }
 

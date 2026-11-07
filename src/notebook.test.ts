@@ -97,6 +97,8 @@ import {
   notebookExists,
   parseUsage,
   parseWindowMs,
+  noteRecovery,
+  drainPendingRecovery,
   readEntries,
   reapLeftoverTemps,
   readMetaLines,
@@ -121,6 +123,7 @@ import {
   usageRingSlack,
   vote,
   voteMany,
+  withLock,
 } from './notebook.js';
 import { runNbCli } from './cli.js';
 
@@ -153,6 +156,10 @@ beforeEach(() => {
   // tooling set it) cannot leak into a test that assumes it is unset. A test
   // that needs a variable set already sets it explicitly (issue #230).
   for (const k of MANAGED_ENV) delete process.env[k];
+  // The crash-recovery tally (issue #309) is process-global module state, not
+  // env: reset it so a steal/reap in one test (counted via withLock but not yet
+  // drained by a logUsage) can never leak its count into a later test's row.
+  drainPendingRecovery();
 });
 afterEach(() => {
   for (const k of MANAGED_ENV) {
@@ -1314,7 +1321,7 @@ describe('operation reasons (seed-and-grow enum)', () => {
 });
 
 describe('usage-log TSV wire format (golden, issue #126)', () => {
-  // The usage log is a positional 14-column TSV read back by parseUsage and, for
+  // The usage log is a positional 15-column TSV read back by parseUsage and, for
   // pre-upgrade rings, by any older reader that looks only at the first five
   // columns. The behavioral round-trip tests above all go THROUGH parseUsage, so
   // a reorder or insertion of a column would round-trip cleanly while silently
@@ -1323,18 +1330,25 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
   // reorder/insert/remove fails here and becomes a deliberate, visible change.
 
   // The documented column order (notebook.ts logUsage): ts, shelf, command, ok,
-  // ms, session, entries, outcome, collided, evicted, reason, note, errorClass, decayed.
-  // `errorClass` (issue #176) is the trailing column — appended after `note` so a
-  // pre-#176 row (which ends at `note`) still reads every prior field in place.
+  // ms, session, entries, outcome, collided, evicted, reason, note, errorClass,
+  // decayed, recovered. `recovered` (issue #309) is the current trailing column —
+  // appended after `decayed` (#293), which was itself appended after `errorClass`
+  // (#176) — so a row from before any of them ends earlier and still reads every
+  // prior field in place.
   const COLUMN_ORDER = [
     'ts', 'shelf', 'command', 'ok', 'ms', 'session',
-    'entries', 'outcome', 'collided', 'evicted', 'reason', 'note', 'errorClass', 'decayed',
+    'entries', 'outcome', 'collided', 'evicted', 'reason', 'note', 'errorClass', 'decayed', 'recovered',
   ] as const;
 
-  test('a fully-populated row serializes as exactly 14 tab-separated columns in the documented order', () => {
+  test('a fully-populated row serializes as exactly 15 tab-separated columns in the documented order', () => {
     // Distinct, recognizable value per column so a swap of any two columns is
     // detectable (not just a count change) — generic values would let a reorder
-    // pass. ms=1234 and ok=true pin the `1234ms` / `ok` renderings too.
+    // pass. ms=1234 and ok=true pin the `1234ms` / `ok` renderings too. The
+    // `recovered` column (issue #309) is system-recorded, not a meta field, so we
+    // prime the process tally the way withLock does and let logUsage drain it,
+    // giving a distinct `2:1` to pin its position and serialization.
+    noteRecovery('lock-steal', 2);
+    noteRecovery('temp-reap', 1);
     logUsage(dir, 'myshelf', 'merge', true, 1234, {
       session: 'sess-7',
       entries: ['aaa', 'bbb'],
@@ -1355,8 +1369,8 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
     expect(linesWritten).toHaveLength(1);
     const cols = linesWritten[0].split('\t');
 
-    // Exactly 14 columns — a removed or injected column fails here first (an
-    // insertion pushes the width past the 14 names in COLUMN_ORDER, a removal
+    // Exactly 15 columns — a removed or injected column fails here first (an
+    // insertion pushes the width past the 15 names in COLUMN_ORDER, a removal
     // below them).
     expect(cols).toHaveLength(COLUMN_ORDER.length);
 
@@ -1385,30 +1399,32 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       note: 'some note',
       errorClass: 'too_long',
       decayed: 'eee:0', // <id>:<postDockScore> (issue #293)
+      recovered: '2:1', // <lockSteals>:<tempReaps> (issue #309)
     });
   });
 
-  test('err status and an empty-meta row still render the fixed 14-column frame', () => {
+  test('err status and an empty-meta row still render the fixed 15-column frame', () => {
     // A `show`-shaped call fills no richer meta; the trailing columns must still
-    // be present (empty), keeping the frame 14 columns wide — an old reader that
+    // be present (empty), keeping the frame 15 columns wide — an old reader that
     // slices the first five columns depends on this stable prefix. session is
-    // pinned to '' so an ambient NB_SESSION cannot populate column 5.
+    // pinned to '' so an ambient NB_SESSION cannot populate column 5. A read-only
+    // `show` runs no withLock, so the crash-recovery column (#309) is empty too.
     logUsage(dir, 's', 'show', false, 2, { session: '' });
     // Split on the row's own newline, not trimEnd(), so the trailing empty
     // columns (which are tabs) are preserved and counted.
     const line = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').split('\n').filter((l) => l !== '')[0];
     const cols = line.split('\t');
-    expect(cols).toHaveLength(14);
+    expect(cols).toHaveLength(15);
     // The stable 5-column prefix an old reader slices: shelf, command, ok, ms.
     expect(cols.slice(1, 5)).toEqual(['s', 'show', 'err', '2ms']); // ok=false → 'err'
-    // session..errorClass (indices 5..13) are all empty for a bare call.
-    expect(cols.slice(5)).toEqual(['', '', '', '', '', '', '', '', '']);
+    // session..recovered (indices 5..14) are all empty for a bare call.
+    expect(cols.slice(5)).toEqual(['', '', '', '', '', '', '', '', '', '']);
   });
 
   test('a legacy 5-column row parses with the newer columns defaulting to blank/empty', () => {
     // The backward-compat contract: a ring written before the richer columns
     // existed holds only ts, shelf, command, ok, ms. It must still parse, with
-    // every appended column (session…errorClass) defaulting to blank/empty.
+    // every appended column (session…recovered) defaulting to blank/empty.
     writeFileSync(
       join(dir, '.nb-usage.log'),
       '2026-01-02T03:04:05.000Z\tp\tadd\tok\t5ms\n',
@@ -1431,10 +1447,25 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       note: '',
       errorClass: '',
       decayed: '',
+      recovered: '',
     });
   });
 
-  test('parseUsage pins the READER column order: a hand-typed 14-column row maps each field to its documented position', () => {
+  test('a pre-#309 14-column row (through decayed, no recovered) parses with recovered blank', () => {
+    // The real on-disk state right after THIS upgrade: rows written by the #293
+    // code end at `decayed` (14 columns). The new trailing `recovered` column must
+    // read back blank, exactly as every prior trailing-column addition did.
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      '2026-01-02T03:04:05.000Z\tp\tadd\tok\t5ms\tsess\taaa\taccepted\t\t\t\t\tother\tbbb:0\n',
+      'utf-8',
+    );
+    const [row] = parseUsage(dir);
+    expect(row.decayed).toBe('bbb:0'); // the last column it DID carry is in place
+    expect(row.recovered).toBe(''); // the new trailing column defaults blank
+  });
+
+  test('parseUsage pins the READER column order: a hand-typed 15-column row maps each field to its documented position', () => {
     // The writer golden above pins logUsage's serialization; this pins the
     // reader independently. parseUsage destructures positionally, so a reorder
     // of ITS destructuring (e.g. swapping collided/evicted) would not be caught
@@ -1442,7 +1473,7 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
     // per column makes any reader reorder fail this full `toEqual`.
     writeFileSync(
       join(dir, '.nb-usage.log'),
-      '2026-01-02T03:04:05.000Z\tmyshelf\tmerge\tok\t1234ms\tsess-7\taaa,bbb\tmerged\tccc\tddd:0.5\tduplicate\tsome note\ttoo_long\teee:0\n',
+      '2026-01-02T03:04:05.000Z\tmyshelf\tmerge\tok\t1234ms\tsess-7\taaa,bbb\tmerged\tccc\tddd:0.5\tduplicate\tsome note\ttoo_long\teee:0\t2:1\n',
       'utf-8',
     );
     expect(parseUsage(dir)[0]).toEqual({
@@ -1460,17 +1491,18 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       note: 'some note',
       errorClass: 'too_long',
       decayed: 'eee:0',
+      recovered: '2:1',
     });
   });
 
-  test('parseUsage reads a MIXED post-upgrade ring: a legacy 5-column row followed by a full 14-column row', () => {
+  test('parseUsage reads a MIXED post-upgrade ring: a legacy 5-column row followed by a full 15-column row', () => {
     // The real on-disk state right after an upgrade: old rows written by the
-    // pre-richer-columns code, then new rows with all 14. Both must parse in one
+    // pre-richer-columns code, then new rows with all 15. Both must parse in one
     // file — the legacy row with blank richer columns, the new row fully.
     writeFileSync(
       join(dir, '.nb-usage.log'),
       '2026-01-01T00:00:00.000Z\tp\tadd\tok\t5ms\n' +
-        '2026-01-02T03:04:05.000Z\ts\tmerge\terr\t9ms\tsess\taaa\tmerged\tccc\tddd:0.5\tduplicate\tnote\tbad_args\tfff:2\n',
+        '2026-01-02T03:04:05.000Z\ts\tmerge\terr\t9ms\tsess\taaa\tmerged\tccc\tddd:0.5\tduplicate\tnote\tbad_args\tfff:2\t1:0\n',
       'utf-8',
     );
     const rows = parseUsage(dir);
@@ -1491,6 +1523,7 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       note: '',
       errorClass: '',
       decayed: '',
+      recovered: '',
     });
     // Full row: every richer column is parsed into its field.
     expect(rows[1]).toEqual({
@@ -1508,7 +1541,135 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       note: 'note',
       errorClass: 'bad_args',
       decayed: 'fff:2',
+      recovered: '1:0',
     });
+  });
+});
+
+describe('crash-recovery observability (issue #309)', () => {
+  test('withLock tallies a stale-lock steal as a crash-recovery event, mutation unchanged', async () => {
+    // Acceptance: pre-age a lock so the next mutation steals it. The steal must be
+    // recorded (the tally) WITHOUT changing the recovery action — the add still lands.
+    const lock = join(dir, '.nb.lock');
+    mkdirSync(lock); // a crashed nb left the lock dir behind
+    const aged = Date.now() / 1000 - 20; // back-date mtime 20s (> 10s default stale threshold)
+    utimesSync(lock, aged, aged);
+    const r = await addEntry(dir, 'stale', 'written after stealing a stale lock');
+    expect(r.added).toBe(true); // recovery behavior is unchanged — the mutation completes
+    const drained = drainPendingRecovery();
+    expect(drained.lockSteals).toBe(1);
+    expect(drained.tempReaps).toBe(0);
+    expect(existsSync(lock)).toBe(false); // the stolen lock is still released at the end
+  });
+
+  test('reapLeftoverTemps reports the count it removed, tallied as temp-reaps during a mutation', async () => {
+    // Acceptance: plant crash debris — a per-pid shelf temp and a usage-log temp a
+    // dead writer left — then run a mutation. Both are reaped and counted.
+    writeFileSync(join(dir, 'scout.md.99999.tmp'), 'half-written', 'utf-8');
+    writeFileSync(join(dir, '.nb-usage.log.99999.tmp'), 'half-written', 'utf-8');
+    const r = await addEntry(dir, 'victim', 'a mutation that reaps crash debris');
+    expect(r.added).toBe(true);
+    const drained = drainPendingRecovery();
+    expect(drained.lockSteals).toBe(0);
+    expect(drained.tempReaps).toBe(2); // both planted temps reaped
+    expect(existsSync(join(dir, 'scout.md.99999.tmp'))).toBe(false);
+    expect(existsSync(join(dir, '.nb-usage.log.99999.tmp'))).toBe(false);
+  });
+
+  test('reapLeftoverTemps returns 0 when there is no debris and on an unreadable dir', () => {
+    expect(reapLeftoverTemps(dir)).toBe(0); // empty dir — nothing to reap
+    expect(reapLeftoverTemps(join(dir, 'does-not-exist'))).toBe(0); // unreadable — never throws
+  });
+
+  test('logUsage drains the recovery tally into the recovered column; each event counts once', () => {
+    noteRecovery('lock-steal', 1);
+    noteRecovery('temp-reap', 3);
+    logUsage(dir, 'patcher', 'add', true, 1, { outcome: 'accepted' });
+    expect(parseUsage(dir)[0].recovered).toBe('1:3'); // <lockSteals>:<tempReaps>
+    // The next call drains to blank — the event was attributed to exactly one row.
+    logUsage(dir, 'patcher', 'show', true, 1);
+    expect(parseUsage(dir)[1].recovered).toBe('');
+  });
+
+  test('a non-positive recovery count is ignored and never throws', () => {
+    expect(() => noteRecovery('temp-reap', 0)).not.toThrow();
+    noteRecovery('lock-steal', 0);
+    noteRecovery('temp-reap', -5);
+    expect(drainPendingRecovery()).toEqual({ lockSteals: 0, tempReaps: 0 });
+  });
+
+  test('nb stats surfaces window-summed crash recovery, deployment-wide (acceptance)', () => {
+    const now = Date.now();
+    // A steal on one shelf, a double-reap on another, and a clean mutation.
+    noteRecovery('lock-steal', 1);
+    logUsage(dir, 'patcher', 'add', true, 1);
+    noteRecovery('temp-reap', 2);
+    logUsage(dir, 'scout', 'merge', true, 1);
+    logUsage(dir, 'patcher', 'vote', true, 1); // no recovery
+    const rep = stats(dir, { now });
+    expect(rep.crashRecovery).toEqual({ lockSteals: 1, tempReaps: 2 });
+    // Deployment-wide: a shelf-scoped report shows the SAME totals (the lock and
+    // temp debris are dir-global, like the usage ring), not just the shelf's own.
+    expect(stats(dir, { shelf: 'scout', now }).crashRecovery).toEqual({ lockSteals: 1, tempReaps: 2 });
+    // The field is additive — the schema version does not bump (#172 policy).
+    expect(rep.schemaVersion).toBe(1);
+  });
+
+  test('a steal and a reap on the same call combine into one recovered pair', async () => {
+    const lock = join(dir, '.nb.lock');
+    mkdirSync(lock);
+    const aged = Date.now() / 1000 - 20;
+    utimesSync(lock, aged, aged);
+    writeFileSync(join(dir, 'ghost.md.88888.tmp'), 'half-written', 'utf-8'); // crash-left shelf temp
+    await addEntry(dir, 'both', 'stole a lock and reaped a temp in one call');
+    // The acquire steals the stale lock; reapLeftoverTemps (run before fn) removes
+    // the planted temp — both tallied onto the single call.
+    expect(drainPendingRecovery()).toEqual({ lockSteals: 1, tempReaps: 1 });
+  });
+
+  test('a mutation whose body throws after a steal still tallies the recovery', async () => {
+    const lock = join(dir, '.nb.lock');
+    mkdirSync(lock);
+    const aged = Date.now() / 1000 - 20;
+    utimesSync(lock, aged, aged);
+    // The steal happens during lock acquire, BEFORE fn runs; a throwing fn must
+    // not lose the recovery — the next logUsage (the CLI's finally on an error
+    // exit) still records it, and the lock is still released on the throw path.
+    await expect(withLock(dir, () => { throw new Error('boom'); })).rejects.toThrow('boom');
+    expect(drainPendingRecovery().lockSteals).toBe(1);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test('crash recovery counts a row at the window edge and excludes one just beyond it', () => {
+    const now = Date.parse('2026-10-31T12:00:00Z');
+    const windowMs = 7 * 86_400_000;
+    const mkRow = (ts: string, rec: string): string =>
+      [ts, 'p', 'add', 'ok', '1ms', '', '', '', '', '', '', '', '', '', rec].join('\t');
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      // Exactly at the window edge (now - windowMs): inside, since the gate is `<=`.
+      mkRow(new Date(now - windowMs).toISOString(), '1:0') + '\n' +
+        // 1ms beyond the edge: excluded.
+        mkRow(new Date(now - windowMs - 1).toISOString(), '9:9') + '\n',
+      'utf-8',
+    );
+    expect(stats(dir, { now, windowMs }).crashRecovery).toEqual({ lockSteals: 1, tempReaps: 0 });
+  });
+
+  test('a malformed recovered column contributes 0 and never NaN', () => {
+    const now = Date.parse('2026-10-31T12:00:00Z');
+    const mkRow = (rec: string): string =>
+      ['2026-10-31T11:00:00.000Z', 'p', 'add', 'ok', '1ms', '', '', '', '', '', '', '', '', '', rec].join('\t');
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      // 'abc' and 'x:y' are garbage → 0:0; only the well-formed '2:4' contributes.
+      [mkRow('abc'), mkRow('x:y'), mkRow('2:4')].join('\n') + '\n',
+      'utf-8',
+    );
+    const cr = stats(dir, { now, windowMs: 7 * 86_400_000 }).crashRecovery;
+    expect(Number.isNaN(cr.lockSteals)).toBe(false);
+    expect(Number.isNaN(cr.tempReaps)).toBe(false);
+    expect(cr).toEqual({ lockSteals: 2, tempReaps: 4 });
   });
 });
 
@@ -2020,7 +2181,7 @@ describe('usage log + stats', () => {
     const rows = raw.split('\n').filter((l) => l !== '');
     expect(rows.length).toBe(1); // the CR/LF did not spawn extra rows
     const cols = rows[0].split('\t');
-    expect(cols.length).toBe(14); // five base + five richer + two reason columns + errorClass + decayed, all tabs collapsed
+    expect(cols.length).toBe(15); // five base + five richer + two reason columns + errorClass + decayed + recovered, all tabs collapsed
     expect(cols[1]).toBe('evil role drop table'); // shelf: tab+CR+LF all collapsed to single spaces
     // stats still parses it as one call attributed to the sanitized command.
     const rep = stats(dir, { now: Date.now() });
@@ -2254,6 +2415,7 @@ describe('usage log + stats', () => {
       [
         'activity',
         'anomalies',
+        'crashRecovery',
         'errorCauses',
         'generatedAt',
         'notebookTotals',
@@ -2440,9 +2602,10 @@ describe('usage log + stats', () => {
     // Every surviving line is a complete, well-formed usage row — no torn/partial
     // line (the corruption a shared temp path could leave).
     for (const l of lines) {
-      // Five base columns, the five richer ones, the two reason columns, then the
-      // trailing errorClass column (all empty for a successful `show`).
-      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){9}$/);
+      // Five base columns, then ten richer ones (session, entries, outcome,
+      // collided, evicted, reason, note, errorClass, decayed, recovered) — all
+      // empty for a successful `show`, so the row is 15 tab-separated columns.
+      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){10}$/);
     }
     // No stray temp file lingered: every writer's rename consumed its own temp.
     expect(readdirSync(dir).filter((f) => f.startsWith('.nb-usage.log.') && f.endsWith('.tmp'))).toEqual([]);

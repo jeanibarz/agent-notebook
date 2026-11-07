@@ -1,14 +1,14 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS } from './cli.js';
-import { entryId, parseUsage, usageFile } from './notebook.js';
+import { drainPendingRecovery, entryId, parseUsage, usageFile } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
@@ -43,6 +43,9 @@ beforeEach(() => {
   // then pointed at this test's temp dir below (issue #230).
   for (const k of MANAGED_ENV) delete process.env[k];
   process.env.NB_DIR = dir;
+  // Reset the process-global crash-recovery tally (issue #309) so a steal/reap in
+  // one in-process CLI run can never leak its count into a later test's usage row.
+  drainPendingRecovery();
 });
 afterEach(() => {
   for (const k of MANAGED_ENV) {
@@ -974,6 +977,38 @@ describe('runNbCli', () => {
     const s = await run(['stats', 'patcher']);
     expect(s.code).toBe(0);
     expect(s.out).toContain('usage ring: 3/5000 rows');
+  });
+
+  test('a clean ring reports zero crash recovery, shown not omitted, with no warning marker (issue #309)', async () => {
+    await run(['add', 'patcher', 'a lesson with no crash in sight']);
+    const s = await run(['stats']);
+    expect(s.code).toBe(0);
+    // Zero is shown (plural wording) so "measured, healthy" isn't read as "not
+    // measured", and the ⚠ marker only appears when something was actually recovered.
+    expect(s.out).toContain('crash recovery: 0 stale locks stolen, 0 leftover temps reaped (window)');
+    expect(s.out).not.toContain('⚠ crashes recovered');
+  });
+
+  test('a mutation over a stale lock + crash-left temp surfaces in nb stats (issue #309)', async () => {
+    // End-to-end acceptance: pre-age the lock and plant a per-pid shelf temp so the
+    // next real `nb add` steals the lock and reaps the temp; the recovery must then
+    // show up in both the human stats table and --json, without failing the add.
+    const lock = join(dir, '.nb.lock');
+    mkdirSync(lock); // a crashed nb left the lock behind
+    const aged = Date.now() / 1000 - 20; // > 10s default stale threshold
+    utimesSync(lock, aged, aged);
+    writeFileSync(join(dir, 'scout.md.99999.tmp'), 'half-written', 'utf-8'); // crash-left temp
+
+    const add = await run(['add', 'patcher', 'a lesson added after crash recovery']);
+    expect(add.code).toBe(0); // recovery did not break the mutation
+
+    const human = await run(['stats']);
+    expect(human.code).toBe(0);
+    // Singular wording at a count of 1, and the warning marker flags the nonzero.
+    expect(human.out).toContain('crash recovery: 1 stale lock stolen, 1 leftover temp reaped (window)  ⚠ crashes recovered');
+
+    const js = await run(['stats', '--json']);
+    expect(JSON.parse(js.out).crashRecovery).toEqual({ lockSteals: 1, tempReaps: 1 });
   });
 
   // --exit-code (issue #129): the opt-in health gate. Seed a tight loop of calls

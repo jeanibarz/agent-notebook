@@ -10,6 +10,20 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb stats` now surfaces crash/interrupt recovery, so silent mid-write crashes become observable (#309).**
+  Two recovery paths each mean a previous `nb` died mid-mutation — the stale-lock steal (`withLock`)
+  and the leftover-temp reap (`reapLeftoverTemps`) — yet both were entirely silent, so an operator
+  running `nb` from agent hooks could not answer "are my agents crashing mid-write and losing updates?".
+  Each usage row now carries a trailing `recovered` column (`<lockSteals>:<tempReaps>`, blank in the
+  common case), and `nb stats` sums it window-wide into a new `crashRecovery: { lockSteals, tempReaps }`
+  readout — shown as a `crash recovery: N stale locks stolen, M leftover temps reaped (window)` line in
+  the human table and under a new top-level `crashRecovery` key in `--json`. Like the usage-ring
+  occupancy readout it is deployment-wide (the lock and temp debris are shared across shelves), so a
+  `[<shelf>]` scope does not narrow it; only the window applies. A clean deployment reports `{ 0, 0 }`,
+  shown rather than omitted so "measured, healthy" is never confused with "not measured". The recovery
+  actions themselves are unchanged and the counting is best-effort — a logging failure never fails a
+  mutation. `STATS_SCHEMA_VERSION` stays `1` (the field is additive). See
+  [FR-STATS-007](docs/requirements.md#fr-stats-007).
 - **`nb config` now reports the behavior-critical string env vars `NB_DIR`, `NB_SESSION`, and `NB_ASCII` (#312).**
   The command listed only the 14 numeric clamp tunables, so the three string env vars that most often
   explain a misbehaving deployment were structurally invisible — including `NB_SESSION`, whose unset
