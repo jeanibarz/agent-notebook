@@ -43,6 +43,7 @@ import {
   entryId,
   errMin,
   errRate,
+  formatEvictedUsage,
   getDescription,
   getMetaValue,
   isValidWindow,
@@ -882,7 +883,9 @@ export async function runNbCli(
         // (outcome=accepted ∧ collided≠'') is the measurable near-duplicate /
         // paraphrase-miss signal, distinct from a hard `dedup-blocked`.
         else if (r.nearId) meta.collided = r.nearId;
-        if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
+        // Record EVERY evicted entry (a cap decrease can evict many at once —
+        // issue #306), not just the first, so the usage log never undercounts.
+        if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
         if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
         // `add` has no seeded enum yet (free text only): a `--note` records
         // free text, and a stray `--reason` buckets to `other` so its vocabulary
@@ -903,7 +906,14 @@ export async function runNbCli(
         else if (r.reason === 'too-long') throw new Error(`lesson too long: ${r.length} chars, ${r.overflow} over the ${maxChars()} limit — trim at least ${r.overflow} and retry as ONE complete line; it was NOT truncated or stored.`);
         else {
           process.stdout.write(`added — ${plural(r.size, 'line')}`);
-          if (r.evicted) process.stdout.write(` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text})`);
+          if (r.evicted) {
+            // A cap decrease trims the shelf all the way down in one call, so
+            // report the extra evictions rather than hiding them (issue #306).
+            const more = r.evictedAll.length - 1;
+            process.stdout.write(
+              ` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text}${more > 0 ? ` +${plural(more, 'more line')}` : ''})`,
+            );
+          }
           if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
           process.stdout.write('\n');
           // Non-blocking near-duplicate advisory: the lesson WAS stored (stdout
@@ -982,7 +992,9 @@ export async function runNbCli(
         const r = await merge(dir, shelf, a, b, merged);
         meta.entries = [...(r.sources ?? []), ...(r.id ? [r.id] : [])];
         meta.outcome = 'merged';
-        if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
+        // Record EVERY evicted entry (a cap decrease can evict many at once —
+        // issue #306), not just the first, so the usage log never undercounts.
+        if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
         if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
         // Reason lives in the usage log only (merge enum: duplicate · other).
         {
@@ -993,7 +1005,14 @@ export async function runNbCli(
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else {
           process.stdout.write(`merged two entries into one — ${r.size} lines`);
-          if (r.evicted) process.stdout.write(` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text})`);
+          if (r.evicted) {
+            // A cap decrease trims the shelf all the way down in one call, so
+            // report the extra evictions rather than hiding them (issue #306).
+            const more = r.evictedAll.length - 1;
+            process.stdout.write(
+              ` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text}${more > 0 ? ` +${plural(more, 'more line')}` : ''})`,
+            );
+          }
           if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
           process.stdout.write('\n');
         }
@@ -1011,14 +1030,23 @@ export async function runNbCli(
         // the reason lives in the usage log only, never in the notebook.
         meta.entries = [r.source, ...r.ids];
         meta.outcome = 'split';
-        if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
+        // Record EVERY evicted entry (a cap decrease can evict many at once —
+        // issue #306), not just the first, so the usage log never undercounts.
+        if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
         if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
         if (reason) meta.reason = reason;
         if (note) meta.note = note;
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else {
           process.stdout.write(`split one entry into two — ${r.size} lines`);
-          if (r.evicted) process.stdout.write(` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text})`);
+          if (r.evicted) {
+            // A cap decrease trims the shelf all the way down in one call, so
+            // report the extra evictions rather than hiding them (issue #306).
+            const more = r.evictedAll.length - 1;
+            process.stdout.write(
+              ` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text}${more > 0 ? ` +${plural(more, 'more line')}` : ''})`,
+            );
+          }
           if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
           process.stdout.write('\n');
         }
@@ -1057,7 +1085,9 @@ export async function runNbCli(
         meta.entries = [r.id];
         meta.outcome = r.reason === 'moved' ? 'moved' : 'move-blocked';
         if (r.collidedId) meta.collided = r.collidedId;
-        if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
+        // Record EVERY evicted entry (a cap decrease can evict many at once —
+        // issue #306), not just the first, so the usage log never undercounts.
+        if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
         if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
         // Reason lives in the usage log only (move enum: consolidate · other).
         {
@@ -1075,7 +1105,10 @@ export async function runNbCli(
             `moved [${fmt(r.score)}] ${r.text} — "${from}" now ${r.fromSize}, "${to}" now ${r.toSize} lines`,
           );
           if (r.evicted) {
-            process.stdout.write(` (evicted lowest-scored from "${to}": [${fmt(r.evicted.score)}] ${r.evicted.text})`);
+            const more = r.evictedAll.length - 1;
+            process.stdout.write(
+              ` (evicted lowest-scored from "${to}": [${fmt(r.evicted.score)}] ${r.evicted.text}${more > 0 ? ` +${plural(more, 'more line')}` : ''})`,
+            );
           }
           if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest in "${to}" −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
           process.stdout.write('\n');
