@@ -977,6 +977,12 @@ export async function runNbCli(
           // the usage row mirrors the single-vote success path.
           meta.entries = landed.map((r) => r.id as string);
           meta.outcome = delta > 0 ? 'up' : 'down';
+          // A ≥1-landed batch still exits 0, but any stale ids it skipped are real
+          // selector misses the err-rate table (keyed on ok=false) can't see.
+          // Record the count so `nb stats` folds them into the vote error-cause
+          // readout instead of laundering them out (issue #310). It is a dedicated
+          // miss counter, NOT errorClass, so the partial success keeps exit 0.
+          if (failed.length > 0) meta.misses = failed.length;
           // Any per-id failures were already reported on stderr above.
           break;
         }

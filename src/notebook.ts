@@ -1893,8 +1893,10 @@ export interface UsageRow {
   errorClass: string;
   /** For a write that aged a line (issue #293): `<id>:<postDockScore>` of the stalest survivor docked −1 by the cap's anti-immortality step; `''` otherwise and on pre-#293 rows. */
   decayed: string;
-  /** Crash recovery performed during this call (issue #309): `<lockSteals>:<tempReaps>` — stale locks stolen and leftover temps reaped while acquiring the lock, each count a sign a prior nb died mid-write; `''` when none (the common case) and on pre-#309 rows. Trailing column. */
+  /** Crash recovery performed during this call (issue #309): `<lockSteals>:<tempReaps>` — stale locks stolen and leftover temps reaped while acquiring the lock, each count a sign a prior nb died mid-write; `''` when none (the common case) and on pre-#309 rows. */
   recovered: string;
+  /** Batch-vote partial selector misses (issue #310): the count of ids that did NOT resolve in a ≥1-landed batch `vote`. That call exits 0 (`ok=true`) so its misses never reach the err-rate table; recording the count here lets `nb stats` fold them into the vote error-cause readout instead of laundering "voting on ids that no longer exist" out of it. `0` when none (the common case) and on pre-#310 rows. Trailing column. */
+  misses: number;
 }
 
 /**
@@ -1927,6 +1929,14 @@ export interface UsageMeta {
   errorClass?: ErrorClass;
   /** `<id>:<postDockScore>` of the line the cap's aging step docked −1. */
   decayed?: string;
+  /**
+   * Batch-vote partial selector-miss count to record (issue #310): set only by
+   * the CLI's ≥1-landed batch-`vote` path when some ids were stale. A
+   * non-negative integer; absent or `0` → the column is blank. Deliberately
+   * NOT `errorClass` — a ≥1-landed batch still exits 0, so this is a success-row
+   * signal, not an error class.
+   */
+  misses?: number;
 }
 
 /**
@@ -2135,9 +2145,16 @@ export function logUsage(
     // needed (no caller text can reach this column).
     const rec = drainPendingRecovery();
     const recovered = rec.lockSteals > 0 || rec.tempReaps > 0 ? `${rec.lockSteals}:${rec.tempReaps}` : '';
+    // Batch-vote partial misses (issue #310): the count of stale ids skipped by a
+    // ≥1-landed batch `vote`. That call exits 0 (`ok=true`) so its misses never
+    // reach the err-rate table; recording them lets `nb stats` fold them into the
+    // vote error-cause readout. A machine-generated non-negative integer (no
+    // caller text, so no sanitize), blank in the common no-miss case so an old
+    // reader and old rows are unchanged.
+    const misses = meta.misses && meta.misses > 0 ? String(Math.round(meta.misses)) : '';
     const line =
       `${new Date().toISOString()}\t${sanitizeUsageField(shelf)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
-      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}\t${decayed}\t${recovered}`;
+      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}\t${decayed}\t${recovered}\t${misses}`;
     const ring = usageRing();
     const compactAt = ring + usageRingSlack();
 
@@ -2213,10 +2230,11 @@ export function parseUsage(dir: string): UsageRow[] {
     // Positional parse, tolerant of old five-column rows: the richer columns
     // (session…recovered) are undefined on a pre-upgrade row and default to
     // blank/empty, so a ring written before this change still reads cleanly.
-    // `recovered` (issue #309) is the current trailing column, appended after
-    // `decayed` (#293); a row from before either ends earlier, so the missing
-    // trailing columns are undefined here and default to `''`.
-    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note, errorClass, decayed, recovered] =
+    // `misses` (issue #310) is the current trailing column, appended after
+    // `recovered` (#309), itself after `decayed` (#293); a row from before any of
+    // them ends earlier, so the missing trailing columns are undefined here and
+    // default to `''`/`0`.
+    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note, errorClass, decayed, recovered, misses] =
       line.split('\t');
     if (!ts || !command) continue;
     rows.push({
@@ -2235,6 +2253,11 @@ export function parseUsage(dir: string): UsageRow[] {
       errorClass: errorClass ?? '',
       decayed: decayed ?? '',
       recovered: recovered ?? '',
+      // Blank/absent (pre-#310 rows and the common no-miss case) → 0. Clamped to
+      // ≥0 so a corrupt/hand-edited negative cell can never subtract from the
+      // vote miss-count aggregation (it is only ever written as a non-negative
+      // count).
+      misses: Math.max(0, Number.parseInt(misses ?? '', 10) || 0),
     });
   }
   return rows;
@@ -2262,7 +2285,7 @@ export interface CommandStat {
  */
 export interface ErrorCause {
   command: string;
-  /** Total error rows for this command in the window (the breakdown's denominator). */
+  /** Total miss events for this command in the window (the breakdown's denominator): error rows plus, for `vote`, the batch partial selector misses (issue #310) that each exit 0 yet skip a stale id. */
   errors: number;
   /** Dominant-first cause → share of this command's errors, as an integer percent. */
   breakdown: { cause: string; pct: number }[];
@@ -2790,10 +2813,23 @@ export function stats(
       const errRows = rows.filter((r) => !r.ok);
       const counts = new Map<string, number>();
       for (const r of errRows) counts.set(errorCause(r), (counts.get(errorCause(r)) ?? 0) + 1);
+      // Fold in batch-vote partial misses (issue #310): a ≥1-landed batch `vote`
+      // exits 0 (`ok=true`), so it is NOT an error row, yet each stale id it
+      // skipped is a genuine selector miss the err-rate table can't see. Count
+      // each as a `no_match` cause — the same class a wholly-failed vote stamps —
+      // so the vote selector-miss readout is no longer blind to them. `misses` is
+      // only ever recorded on vote rows, so this is a no-op for every other
+      // command. The per-command error *rate* (perCommand) is untouched: it keeps
+      // counting error ROWS, so a batch that limped to exit 0 stays a success
+      // there — only this cause readout surfaces the laundered misses.
+      let partialMisses = 0;
+      for (const r of rows) partialMisses += r.misses;
+      if (partialMisses > 0) counts.set('no_match', (counts.get('no_match') ?? 0) + partialMisses);
+      const errors = errRows.length + partialMisses;
       const breakdown = [...counts.entries()]
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-        .map(([cause, n]) => ({ cause, pct: Math.round((n / errRows.length) * 100) }));
-      return { command, errors: errRows.length, breakdown };
+        .map(([cause, n]) => ({ cause, pct: Math.round((n / errors) * 100) }));
+      return { command, errors, breakdown };
     })
     .filter((e) => e.errors >= ERROR_CAUSE_MIN)
     .sort((a, b) => b.errors - a.errors || a.command.localeCompare(b.command));
