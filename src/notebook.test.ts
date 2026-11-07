@@ -1723,7 +1723,10 @@ describe('move (score-preserving cross-shelf move, issue #103)', () => {
       // The source rewrite fails, so move rejects — but the target write already committed.
       await expect(move(dir, 'from', 'to', 'crash-safety')).rejects.toThrow(/injected rename failure/);
       // The target was written FIRST: its rename ran and committed before the source's.
-      expect(fsHook.renames).toEqual([`${toFile}.tmp`, `${fromFile}.tmp`]);
+      expect(fsHook.renames).toEqual([
+        `${toFile}.${process.pid}.tmp`, // per-process shelf temp (issue #270)
+        `${fromFile}.${process.pid}.tmp`,
+      ]);
     } finally {
       fsHook.renames = null; // leave the shared hook as the other tests expect it
       fsHook.failRenameTo = null;
@@ -3059,6 +3062,27 @@ describe('durable writes (issue #15)', () => {
     expect(existsSync(join(dir, 'patcher.md.tmp'))).toBe(false);
   });
 
+  test('the atomic-write temp path carries this process pid (issue #270)', async () => {
+    // writeEntries renames from `<shelf>.md.<pid>.tmp`, never the fixed
+    // `<shelf>.md.tmp`. withLock's single-host mkdir spinlock can declare a slow
+    // holder STALE and let a second process steal the lock mid-write (a
+    // network-FS fsync stall, heavy load, or a lowered NB_STALE_LOCK_MS); a
+    // shared temp would then have both writers open+truncate+write the SAME path,
+    // interleaving bytes before either rename and corrupting the notebook. A
+    // per-process temp keeps each writer's temp distinct, so the atomic rename
+    // degrades a stolen-lock overlap to a lost update, never a torn file. Pin the
+    // naming invariant on the real atomic-rename source — a revert to the shared
+    // `${file}.tmp` fails here.
+    fsHook.renames = []; // capture the atomic-rename source path
+    try {
+      await addEntry(dir, 'patcher', 'per-process temp lesson');
+      const file = join(dir, 'patcher.md');
+      expect(fsHook.renames).toEqual([`${file}.${process.pid}.tmp`]);
+    } finally {
+      fsHook.renames = null; // leave the shared hook as the other tests expect it
+    }
+  });
+
   test('fsyncs the body before the rename and the parent directory after it', async () => {
     fsHook.events = [];
     await addEntry(dir, 'patcher', 'ordering lesson');
@@ -3122,6 +3146,35 @@ describe('locking (mkdir spinlock)', () => {
     const texts = readEntries(dir, 'race').map((e) => e.text).sort();
     const expected = Array.from({ length: N }, (_, i) => `cross process lesson ${i}`).sort();
     expect(texts).toEqual(expected); // all N present, none lost
+  }, 30_000);
+
+  test('cross-process: concurrent writers to one shelf under a steal-prone lock leave a whole, non-torn file and no stray temp (issue #270) [timing]', async () => {
+    // The acceptance scenario for #270: overlapping writes to the SAME shelf with
+    // the lock made steal-prone (NB_STALE_LOCK_MS at its 100ms floor), so a slow
+    // holder can be declared stale and a second process writes while the first is
+    // still mid-flight. Before #270 both writers opened and truncated the SAME
+    // `race.md.tmp`, so one writer's rename could publish a file spliced from both
+    // — a torn notebook. With a per-process temp each writer renames its own
+    // complete file atomically: the published notebook is ALWAYS wholly one
+    // writer's content (an overlap degrades to a lost update, never corruption),
+    // and every writer's temp is consumed by its own rename.
+    const N = 10;
+    const env = { ...process.env, NB_DIR: dir, NB_STALE_LOCK_MS: '100', NB_LOCK_GRACE_MS: '2000' };
+    delete env.NB_MAX_LINES; // default cap (50) >> N, so nothing is evicted
+    const lessons = Array.from({ length: N }, (_, i) => `issue 270 overlap lesson number ${i}`);
+    await Promise.all(
+      lessons.map((text) => execFileAsync(process.execPath, [CLI, 'add', 'race', text], { env })),
+    );
+    // Every surviving line is EXACTLY one writer's lesson — never a splice of two
+    // (the corruption a shared temp could publish). A steal may drop a lesson
+    // (lost update), so we assert content integrity, not that all N survive.
+    const texts = readEntries(dir, 'race').map((e) => e.text);
+    expect(texts.length).toBeGreaterThan(0); // at least one writer committed
+    for (const t of texts) expect(lessons).toContain(t); // no torn/spliced text
+    expect(new Set(texts).size).toBe(texts.length); // no duplicated/half-written rows
+    // No stray atomic-write temp lingered: every rename consumed its own per-pid temp.
+    const strays = readdirSync(dir).filter((f) => f.startsWith('race.md') && f.endsWith('.tmp'));
+    expect(strays).toEqual([]);
   }, 30_000);
 
   test('an operation blocked by a live lock waits, then acquires once the lock is freed [timing]', async () => {
@@ -3301,7 +3354,8 @@ describe('reaps an emptied, undescribed phantom shelf (issue #209)', () => {
 describe('reaps leftover temps on lock acquire (issues #46, #163)', () => {
   // A crash between an atomic write's temp and its rename leaves an orphan in the
   // notebooks dir that nothing else removes. The next locked mutation sweeps this
-  // writer's two temp conventions — `<shelf>.md.tmp` (writeFileDurable, #46) and
+  // writer's two temp conventions — `<shelf>.md.<pid>.tmp` (writeFileDurable,
+  // per-process since #270; the legacy shared `<shelf>.md.tmp` is still swept) and
   // `.nb-usage.log.<pid>.tmp` (usage-log compaction, #163) — and never a real
   // notebook, the live usage log, its `.count` sidecar, or the `.nb.lock`.
 
@@ -3314,6 +3368,32 @@ describe('reaps leftover temps on lock acquire (issues #46, #163)', () => {
     const r = await addEntry(dir, 'patcher', 'a fresh lesson');
     expect(r.added).toBe(true);
     expect(existsSync(orphan)).toBe(false);
+  });
+
+  test('a planted per-process shelf temp `<shelf>.md.<pid>.tmp` is reaped too (issue #270)', async () => {
+    // Since #270 a durable notebook write renames from `<shelf>.md.<pid>.tmp`, so
+    // a crash between its write and rename leaves that per-process orphan — the
+    // common case now, not the legacy `<shelf>.md.tmp`. A FOREIGN pid models a
+    // *crashed* writer (not this process) and guards against a regex that only
+    // swept the legacy name.
+    const orphan = join(dir, 'shelf.md.999999.tmp');
+    writeFileSync(orphan, 'crash debris from an interrupted per-process write', 'utf-8');
+    expect(existsSync(orphan)).toBe(true);
+    const r = await addEntry(dir, 'patcher', 'a fresh lesson');
+    expect(r.added).toBe(true);
+    expect(existsSync(orphan)).toBe(false);
+  });
+
+  test('a `.md.<non-numeric>.tmp` is NOT reaped — the sweep stays pinned to a numeric pid (issue #270)', async () => {
+    // process.pid is numeric, so the shelf-temp match is `<shelf>.md.tmp` or
+    // `<shelf>.md.<digits>.tmp` — never arbitrary `.md.<anything>.tmp`. A file
+    // with a non-numeric middle segment is not this writer's convention (and
+    // could belong to another tool), so it must survive. This pins the `\d+`
+    // precision: the per-pid widening did not turn the sweep into `.md.*.tmp`.
+    const foreign = join(dir, 'shelf.md.backup.tmp');
+    writeFileSync(foreign, 'not our temp — a non-numeric middle segment', 'utf-8');
+    await addEntry(dir, 'patcher', 'triggers a reap');
+    expect(existsSync(foreign)).toBe(true);
   });
 
   test('real *.md notebooks are never deleted by the reap', async () => {
