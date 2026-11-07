@@ -35,6 +35,19 @@ describe('Node-18 runtime smoke (#231)', () => {
     expect(ci).toMatch(/npm test[\s\S]*?if:\s*matrix\.node-version != 18/);
   });
 
+  test('the release workflow gates publish on a Node-18 smoke leg (#301)', () => {
+    const rel = read('.github/workflows/release.yml');
+    const publishAt = rel.indexOf('\n  publish:');
+    const verify = rel.slice(rel.indexOf('\n  verify:'), publishAt);
+    // A matrix job that includes Node 18 and runs the smoke on that leg only...
+    expect(verify).toMatch(/node-version:\s*\[[^\]]*\b18\b[^\]]*\]/);
+    expect(verify).toMatch(/node scripts\/smoke-node18\.mjs\s*\n\s*if:\s*matrix\.node-version == 18/);
+    // ...and publish cannot start until that job succeeds.
+    const publish = rel.slice(publishAt);
+    expect(publish).toMatch(/^\s+needs:\s*(verify|\[[^\]]*\bverify\b[^\]]*\])\s*$/m);
+    expect(publish).toContain('npm publish');
+  });
+
   test('the smoke stays dependency-free (only node: builtins)', () => {
     const src = read('scripts/smoke-node18.mjs');
     const imports = [...src.matchAll(/^import\s.*?from\s+'([^']+)'/gm)].map((m) => m[1]);
