@@ -653,6 +653,23 @@ clamps). The command is in `KNOWN_COMMANDS`/HELP/dispatch so the [FR-CLI-001](#f
 guard stays green.
 *Proven by:* `cli.test.ts` → `describe('config — effective (post-clamp) tunables (issue #188)')`.
 
+<a id="fr-config-002"></a>
+**FR-CONFIG-002 (Should).** Below the numeric tunables, `nb config` SHALL print the three
+behavior-critical *string* env vars that most often explain a misbehaving deployment but that
+`FR-CONFIG-001`'s numeric table structurally cannot hold: `NB_DIR` (storage location),
+`NB_SESSION` (the id the usage/engagement diagnostics group by — its unset state is the usual
+cause of `nb stats` reporting "no engaged sessions"), and `NB_ASCII` (rendering mode). Each SHALL be shown as `NAME=value` where `value` is read from the
+SAME resolver the hot path uses — `notebooksDir()`, the effective `NB_SESSION`, and `asciiMode()`
+(post-locale) — so it can never drift from the value in force, and SHALL be tagged `(env)` when
+the var itself is defined or `(default)` otherwise (the `!== undefined` rule of
+[DP-5](#dp-5): a set-but-blank `NB_DIR` reads `(env)` while its value falls back to the default
+dir; an `NB_ASCII` left unset but forced on by a non-UTF-8 locale reads `on (default)`).
+`nb config --json` SHALL carry these under a new top-level `environment` key, keyed by var name,
+each value `{ value, source }`, leaving the numeric rows' keys and `{ value, source, env }` shape
+unchanged so the `--json` contract stays backward-compatible (a new section, not a changed row
+type).
+*Proven by:* `cli.test.ts` → `describe('string env section — NB_DIR / NB_SESSION / NB_ASCII (issue #312)')`.
+
 ### 4.11 Durability & concurrency
 
 <a id="fr-lock-001"></a>

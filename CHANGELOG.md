@@ -10,6 +10,15 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb config` now reports the behavior-critical string env vars `NB_DIR`, `NB_SESSION`, and `NB_ASCII` (#312).**
+  The command listed only the 14 numeric clamp tunables, so the three string env vars that most often
+  explain a misbehaving deployment were structurally invisible — including `NB_SESSION`, whose unset
+  state is the usual cause of `nb stats` reporting "no engaged sessions". A new `environment` section
+  prints each as `NAME=value`, read from the same resolver the hot path uses (`notebooksDir()`, the
+  effective `NB_SESSION`, `asciiMode()`), tagged `(env)` or `(default)` like the numeric rows. Under
+  `--json` the vars live under a new top-level `environment` key (`{ value, source }` each); the numeric
+  rows keep their exact keys and `{ value, source, env }` shape, so the `--json` contract stays
+  backward-compatible. See [FR-CONFIG-002](docs/requirements.md#fr-config-002).
 - **`nb show` reads several shelves in one call, and `--json` entries now carry a dedup `key` (#286).**
   `nb show <a> <b> <c>` now prints every named shelf instead of silently dropping all but the
   first, and under `--json` returns a per-shelf array of `{shelf, description, entries, exists}`
