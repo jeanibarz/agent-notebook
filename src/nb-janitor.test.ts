@@ -518,3 +518,116 @@ describe('nb-janitor section 4 — git history vs git failure (issue #269)', () 
     expect(human).not.toContain(NOT_A_REPO);
   });
 });
+
+// The usage ring is bounded by ROW COUNT, not time: sections 1/4/6/7 keep only
+// rows within `now - --days`, but an active store rotates old rows out, so a wide
+// window can reach back further than the ring retains and report a false
+// all-clear. The janitor now detects this and prints a caveat (#275). These tests
+// drive the real script against a seeded ring, overriding NB_USAGE_RING so a
+// small, cheap log can reach "capacity".
+describe('nb-janitor — --days window vs usage-ring span (#275)', () => {
+  const DAY = 86400000;
+  // A usage row whose timestamp is `daysAgo` whole days before now, so the test
+  // is independent of the wall-clock date (unlike the fixed TS the other suites
+  // use). Minimal columns: ts, shelf, command, status, ms, session(blank).
+  function ageRow(shelf: string, command: string, daysAgo: number): string {
+    return `${new Date(Date.now() - daysAgo * DAY).toISOString()}\t${shelf}\t${command}\tok\t2ms\t`;
+  }
+  function run(args: string[], ring?: string): string {
+    const env = { ...process.env, NB_DIR: dir, ...(ring !== undefined ? { NB_USAGE_RING: ring } : {}) };
+    return execFileSync('node', [janitor, ...args], { env, encoding: 'utf-8' });
+  }
+  type UsageWindow = {
+    ring: number;
+    rows: number;
+    atCapacity: boolean;
+    requestedDays: number;
+    coverageDays: number | null;
+    blind: boolean;
+  };
+  function usageWindow(args: string[], ring?: string): UsageWindow {
+    return JSON.parse(run(['--json', ...args], ring)).usageWindow;
+  }
+
+  test('a full ring whose span is shorter than --days is flagged blind, with a caveat', () => {
+    // 100 rows (the NB_USAGE_RING floor), all from ~2 days ago → the ring is at
+    // capacity but spans only days, while --days 90 reaches back three months.
+    seed(Array.from({ length: 100 }, () => ageRow('busy', 'show', 2)));
+    const w = usageWindow(['--days', '90'], '100');
+    expect(w.ring).toBe(100);
+    expect(w.atCapacity).toBe(true);
+    expect(w.coverageDays).toBe(2);
+    expect(w.requestedDays).toBe(90);
+    expect(w.blind).toBe(true);
+
+    const human = run(['--days', '90'], '100');
+    expect(human).toContain('partially blind');
+    expect(human).toContain('raise NB_USAGE_RING');
+    expect(human).toContain('retains only the last 2d of activity');
+  });
+
+  test('a ring below capacity is never flagged blind, even with a wide --days (young store, no false alarm)', () => {
+    // Only 3 rows, far below the 100-row ring → nothing has been evicted; the
+    // store is simply young. The window is not "blind" — raising the ring would
+    // not help — so no caveat fires. This pins the capacity guard.
+    seed([ageRow('new', 'show', 1), ageRow('new', 'show', 1), ageRow('new', 'show', 1)]);
+    const w = usageWindow(['--days', '365'], '100');
+    expect(w.atCapacity).toBe(false);
+    expect(w.blind).toBe(false);
+    expect(run(['--days', '365'], '100')).not.toContain('partially blind');
+  });
+
+  test('a full ring that already spans more than --days is not blind (the window fits the data)', () => {
+    // 100 rows, the oldest 200 days old → the ring covers more than the 30-day
+    // window, so every day the window asks for is backed by retained rows.
+    const rows = Array.from({ length: 99 }, () => ageRow('busy', 'show', 1));
+    rows.push(ageRow('busy', 'show', 200)); // oldest row predates the window
+    seed(rows);
+    const w = usageWindow(['--days', '30'], '100');
+    expect(w.atCapacity).toBe(true);
+    expect(w.blind).toBe(false);
+    expect(run(['--days', '30'], '100')).not.toContain('partially blind');
+  });
+
+  test('no usage log → no blindness flag and no caveat (degrades cleanly)', () => {
+    // No .nb-usage.log at all: coverage is unknown, nothing is blind.
+    const w = usageWindow(['--days', '90']);
+    expect(w.rows).toBe(0);
+    expect(w.coverageDays).toBe(null);
+    expect(w.blind).toBe(false);
+    expect(run(['--days', '90'])).not.toContain('partially blind');
+  });
+
+  test('99 rows in a 100-row ring is below capacity — the >= guard is not off-by-one', () => {
+    // One short of the ring: nothing has rotated out yet, so even a wide window
+    // is fully backed by data. Pins the N-1 boundary of `usage.length >= ring`.
+    seed(Array.from({ length: 99 }, () => ageRow('busy', 'show', 2)));
+    const w = usageWindow(['--days', '90'], '100');
+    expect(w.rows).toBe(99);
+    expect(w.atCapacity).toBe(false);
+    expect(w.blind).toBe(false);
+    expect(run(['--days', '90'], '100')).not.toContain('partially blind');
+  });
+
+  test('mirrors the core NB_USAGE_RING clamp (floor 100, ceiling 100000, default 5000)', () => {
+    // The capacity test is only meaningful if the janitor judges against the SAME
+    // ring the core writes to. A wrong clamp would misfire on every real store
+    // while these tests (which pass NB_USAGE_RING=100) stayed green — so pin it.
+    seed([ageRow('x', 'show', 1)]);
+    expect(usageWindow(['--days', '30'], '10').ring).toBe(100); // below floor clamps up
+    expect(usageWindow(['--days', '30'], '0').ring).toBe(100); // a FINITE 0 clamps up to the floor, it does NOT fall back to 5000 (core clampInt parity)
+    expect(usageWindow(['--days', '30'], '999999').ring).toBe(100000); // above ceiling clamps down
+    expect(usageWindow(['--days', '30'], 'not-a-number').ring).toBe(5000); // unparseable → default
+  });
+
+  test('a full ring spanning only hours reports coverageDays 0 and an "under a day" caveat', () => {
+    // Oldest row ~3 hours old → (now - oldest)/DAY floors to 0; exercises the
+    // sub-day label branch the `2d` test does not reach.
+    const ts = new Date(Date.now() - 3 * 3600000).toISOString();
+    seed(Array.from({ length: 100 }, () => `${ts}\tbusy\tshow\tok\t2ms\t`));
+    const w = usageWindow(['--days', '30'], '100');
+    expect(w.coverageDays).toBe(0);
+    expect(w.blind).toBe(true);
+    expect(run(['--days', '30'], '100')).toContain('under a day');
+  });
+});

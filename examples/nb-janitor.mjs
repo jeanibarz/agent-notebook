@@ -65,6 +65,20 @@ const NB_DIR =
     ? process.env.NB_DIR
     : join(homedir(), '.agent-notebook', 'notebooks');
 const MAX_LINES = Number.parseInt(process.env.NB_MAX_LINES ?? '50', 10) || 50;
+// The usage ring is bounded by ROW COUNT, not time (see notebook.ts usageRing():
+// default 5000, clamped to 100..100000). Mirror that clamp so we can tell when a
+// `--days` window reaches further back than the rows the ring still retains — an
+// active store rotates old rows out, so a wide window can be partially blind to
+// evicted activity and otherwise report a false all-clear (#275).
+// Mirror notebook.ts clampInt() EXACTLY (default 5000 only when the value is
+// non-finite; a finite 0 or negative clamps UP to the 100 floor, it does NOT
+// fall back to the default) — the `|| 5000` idiom would mishandle `NB_USAGE_RING=0`
+// (→ 5000 here vs 100 in core) and misjudge capacity.
+const USAGE_RING = (() => {
+  const raw = process.env.NB_USAGE_RING;
+  const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? Math.min(100000, Math.max(100, n)) : 5000;
+})();
 
 // ---- read the store (mirrors the package's file conventions) --------------
 function readNotebooks(dir) {
@@ -206,6 +220,30 @@ const notebooks = readNotebooks(NB_DIR);
 const usage = readUsage(NB_DIR);
 const history = gitHistory(NB_DIR, DAYS);
 const now = Date.now();
+
+// --days blindness guard (#275): sections 1, 4, 6 and 7 keep only rows within
+// `now - DAYS`, but the usage ring is bounded by ROW COUNT, not time, so an
+// active store rotates old rows out. When the ring is AT CAPACITY and its oldest
+// retained row is NEWER than the window start, the `--days` window reaches back
+// further than any row we still have: those sections then see only part of the
+// window and can print a false all-clear. Requiring capacity (not just "oldest
+// row is recent") avoids misfiring on a young store that simply has < DAYS of
+// history — raising NB_USAGE_RING would not help there. Compute `min` with a loop
+// rather than `Math.min(...usage)` so a 100k-row ring can't overflow the stack.
+let oldestUsage = null;
+for (const r of usage)
+  if (Number.isFinite(r.t) && (oldestUsage === null || r.t < oldestUsage)) oldestUsage = r.t;
+const usageAtCapacity = usage.length >= USAGE_RING;
+const usageWindowBlind = usageAtCapacity && oldestUsage !== null && oldestUsage > now - DAYS * 86400000;
+const usageCoverageDays = oldestUsage === null ? null : Math.floor((now - oldestUsage) / 86400000);
+const usageWindow = {
+  ring: USAGE_RING,
+  rows: usage.length,
+  atCapacity: usageAtCapacity,
+  requestedDays: DAYS,
+  coverageDays: usageCoverageDays,
+  blind: usageWindowBlind,
+};
 
 // 1) lessons lost to eviction. A full shelf is the normal state: eviction and
 //    aging only run at the cap, and they are what retire unused lessons. So
@@ -457,6 +495,7 @@ const report = {
   curation,
   undescribed,
   usageRows: usage.length,
+  usageWindow,
 };
 
 if (JSON_OUT) {
@@ -468,6 +507,12 @@ if (JSON_OUT) {
 const out = [];
 const H = (s) => out.push('', `── ${s} ` + '─'.repeat(Math.max(0, 60 - s.length)));
 out.push(`nb-janitor — ${report.notebooks} notebooks, ${report.totalLessons} lessons in ${NB_DIR}`);
+if (usageWindowBlind)
+  out.push(
+    `  ⚠️  usage log retains only the last ${usageCoverageDays >= 1 ? `${usageCoverageDays}d` : 'under a day'} of activity ` +
+      `(ring full at ${USAGE_RING} rows); the --days ${DAYS} window reaches further back, so sections 1/4/6/7 are ` +
+      `partially blind to evicted rows and may understate — raise NB_USAGE_RING or lower --days.`,
+  );
 
 H(`1. Lessons lost to eviction (last ${DAYS}d)`);
 out.push(
