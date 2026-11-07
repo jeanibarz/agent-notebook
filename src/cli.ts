@@ -1184,7 +1184,10 @@ export async function runNbCli(
         break;
       }
       case 'stats': {
-        const rest = argv.slice(1);
+        // Flags come from the `--`-aware `flagArgs` (global `--json` already
+        // stripped), so tokens after the terminator are never read as flags
+        // (issue #302). Post-`--` operands stay eligible as the shelf positional.
+        const rest = flagArgs.slice(1);
         // Opt-in health gate (#129): with --exit-code, a window holding >=1
         // anomaly exits non-zero (3 — distinct from 1=handled error /
         // 2=unknown command) so `nb stats --exit-code >/dev/null || alert` is a
@@ -1207,7 +1210,9 @@ export async function runNbCli(
           );
         }
         const windowMs = sinceIdx >= 0 ? parseWindowMs(sinceVal) : undefined;
-        const maybeShelf = rest.find((a, i) => !a.startsWith('--') && (sinceIdx < 0 || i !== sinceIdx + 1));
+        const maybeShelf =
+          rest.find((a, i) => !a.startsWith('--') && (sinceIdx < 0 || i !== sinceIdx + 1)) ??
+          operands.find((a) => !a.startsWith('--'));
         shelf = maybeShelf ?? '-';
         // Compute the report once: both the --json dump and the human render
         // consume it, and the --exit-code gate reads its anomaly count.
@@ -1216,7 +1221,7 @@ export async function runNbCli(
         // supervising agent can act on a loop/went-silent/high-error-rate
         // anomaly without regex-parsing the human table. The --since warning
         // above stays on stderr, keeping stdout pure JSON.
-        if (rest.includes('--json')) {
+        if (json) {
           process.stdout.write(JSON.stringify(rep) + '\n');
         } else {
           process.stdout.write(renderStats(rep, maybeShelf) + '\n');

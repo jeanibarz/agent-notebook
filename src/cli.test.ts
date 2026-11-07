@@ -687,6 +687,15 @@ describe('runNbCli', () => {
       expect(r.err).not.toContain('unknown option');
     });
 
+    test('stats honors the `--` terminator: `-- --json` stays human, `-- --exit-code` skips the gate (issue #302)', async () => {
+      const r = await run(['stats', '--', '--json']);
+      expect(r.code).toBe(0);
+      expect(() => JSON.parse(r.out)).toThrow();
+      const g = await run(['stats', '--', '--exit-code']);
+      expect(g.code).toBe(0);
+      expect(g.out).not.toMatch(/^\{/);
+    });
+
     test('a bare trailing `--` (vote downvote alias) is never treated as an unknown flag', async () => {
       await run(['add', 'patcher', 'downvote me']);
       const r = await run(['vote', 'patcher', 'downvote', '--']); // `--` == -1
