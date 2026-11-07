@@ -482,3 +482,99 @@ describe('nb-backup.sh serializes its commit on the wrapper\'s .nb-git.lock (iss
     expect(existsSync(gitLock())).toBe(false);
   });
 });
+
+// Guards issue #311: NB_BACKUP_PUSH_TIMEOUT was only checked against the literal
+// "0", never validated. A malformed duration (e.g. "5min", "abc") makes
+// `timeout "$PUSH_TIMEOUT" git push` exit 125 ("invalid time interval"), which
+// the push step logs as the generic "PUSH FAILED — will retry next run" on EVERY
+// run — indistinguishable from a real transient failure. So a single typo
+// permanently disables the off-machine backup while the operator believes it is
+// retrying. The fix validates the value against the documented `timeout` grammar
+// and, on a mismatch, logs a DISTINCT config error and falls back to the default.
+describe('nb-backup.sh validates NB_BACKUP_PUSH_TIMEOUT (issue #311)', () => {
+  /** Seed a commit + a REACHABLE local bare remote, then run the real script with
+   *  the given NB_BACKUP_PUSH_TIMEOUT. With a reachable remote the ONLY thing that
+   *  can fail the push is a malformed timeout, so the log distinguishes the fix
+   *  (push succeeds after fallback) from the bug (`timeout bad …` → exit 125 →
+   *  "PUSH FAILED"). The bare remote is always cleaned up, even if a later
+   *  assertion throws, so a failing test can't leak a temp dir. */
+  function runWithRemote(timeoutVal: string): { status: number; log: string } {
+    const remote = mkdtempSync(join(tmpdir(), 'agent-notebook-backup-remote-'));
+    try {
+      execFileSync('git', ['init', '--bare', '-q', remote]);
+      writeFileSync(join(dir, 'note.txt'), 'x', 'utf-8');
+      execFileSync('git', ['-C', dir, 'add', 'note.txt'], { stdio: 'ignore' });
+      execFileSync('git', ['-C', dir, 'commit', '-q', '-m', 'seed'], { stdio: 'ignore' });
+      execFileSync('git', ['-C', dir, 'remote', 'add', 'origin', remote], { stdio: 'ignore' });
+
+      const env: NodeJS.ProcessEnv = { ...process.env, NB_DIR: dir, NB_BACKUP_PUSH_TIMEOUT: timeoutVal };
+      delete env.XDG_RUNTIME_DIR;
+      const r = spawnSync('bash', [script], { env, encoding: 'utf-8', timeout: 30_000 });
+      return { status: r.status ?? 1, log: readFileSync(join(dir, '.nb-backup.log'), 'utf-8') };
+    } finally {
+      rmSync(remote, { recursive: true, force: true });
+    }
+  }
+
+  test('the duration is validated against the `timeout` grammar before use (real code, not comments)', () => {
+    // Pin the real guard (comments stripped) so a refactor can't silently drop it
+    // and let a malformed value reach `timeout` again. The pattern is anchored to
+    // the s/m/h/d grammar but loose between the number and the suffix, so the
+    // decimal group can evolve without re-pinning its exact spelling.
+    expect(codeOnly).toMatch(/PUSH_TIMEOUT_RE=.*\^\[0-9\]\+.*\[smhd\]\?\$/);
+    // The validator actually applies that pattern to the value.
+    expect(codeOnly).toMatch(/\$PUSH_TIMEOUT"?\s*=~\s*\$PUSH_TIMEOUT_RE/);
+    // The fallback is the documented default, not a disable (0).
+    expect(codeOnly).toMatch(/PUSH_TIMEOUT=300/);
+  });
+
+  // Malformed values: each must be rejected with a DISTINCT config error, fall
+  // back to the default 300 (not a disable), and still push — so one typo can no
+  // longer masquerade as a permanent transient "PUSH FAILED". `5min` is the
+  // issue's own example; `abc` a non-numeric typo.
+  test.skipIf(!hasTimeout).each(['5min', 'abc', 'bad'])(
+    'an invalid value (%s) logs a distinct config error, falls back to 300, and still pushes',
+    (bad) => {
+      const { status, log } = runWithRemote(bad);
+      expect(status).toBe(0); // the backup is NOT wedged by the typo
+      // A DISTINCT config-error diagnostic that names the offending variable...
+      expect(log).toMatch(/CONFIG ERROR.*NB_BACKUP_PUSH_TIMEOUT/);
+      // ...and explicitly falls back to 300 — proving the default, not a disable.
+      expect(log).toMatch(/falling back to 300/);
+      // ...NOT the generic transient-failure line it used to masquerade as.
+      expect(log).not.toContain('PUSH FAILED');
+      // The fallback actually pushed: the remote received the branch.
+      expect(log).toMatch(/pushed .* OK/);
+    },
+    30_000,
+  );
+
+  // Valid durations must behave exactly as before: push cleanly, no config error.
+  // `5m` is the documented example; `30.5` / `1.5m` are decimals GNU `timeout`
+  // accepts, so the validator must NOT reject them (they are "any timeout
+  // duration" per the header) — a regression guard on the grammar's breadth,
+  // covering a bare decimal and a decimal-with-unit. The decimals are kept large
+  // on purpose: they still wrap the real push in `timeout`, but with a generous
+  // ceiling so the local-remote push can't flake under a tight sub-second bound.
+  test.skipIf(!hasTimeout).each(['300', '5m', '30.5', '1.5m'])(
+    'a valid duration (%s) pushes with no config error',
+    (good) => {
+      const { status, log } = runWithRemote(good);
+      expect(status).toBe(0);
+      expect(log).toMatch(/pushed .* OK/);
+      expect(log).not.toContain('CONFIG ERROR');
+      expect(log).not.toContain('PUSH FAILED');
+    },
+    30_000,
+  );
+
+  test.skipIf(!hasTimeout)('"0" is a valid value: it disables the wrapper and is not flagged as a config error', () => {
+    // The header documents "0" as "disables the cap". It matches the grammar, so
+    // it must NOT trip the config-error guard, and the push (unwrapped) succeeds.
+    const { status, log } = runWithRemote('0');
+    expect(status).toBe(0);
+    expect(log).not.toContain('CONFIG ERROR');
+    expect(log).not.toContain('PUSH FAILED');
+    expect(log).toMatch(/pushed .* OK/);
+  });
+});
