@@ -5,6 +5,11 @@
 # bug fixes. Dependabot opens PRs that bump a pinned SHA to the newest release's
 # SHA, keeping the project BOTH pinned AND current, with a human review gate on
 # each bump.
+#
+# The npm dev toolchain (typescript, vitest, @vitest/coverage-v8, @types/node)
+# is tracked too: it runs `npm ci`/build/test inside the release job that holds
+# `id-token: write` (OIDC Trusted Publishing), so a stale or compromised
+# devDependency is a path into the privileged publish job.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
@@ -15,5 +20,15 @@ updates:
     # the review load low.
     groups:
       github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # One grouped PR per week for all dev-toolchain bumps, to keep review load low.
+    groups:
+      npm-dev-toolchain:
         patterns:
           - "*"
