@@ -282,7 +282,8 @@ function writeUsageState(dir: string, rows: number, bytes: number): void {
 
 /**
  * The characters that must never reach a terminal or an agent's context: C0
- * controls (tab/CR/LF are handled separately as whitespace) including ESC, NUL
+ * controls other than the whitespace ones (tab, LF, VT, FF, CR — the `\s` pass turns
+ * those into a space, so a form feed still separates words) including ESC, NUL
  * and BEL; DEL; C1 controls (U+0080–U+009F, from which a raw ESC byte can be
  * re-formed); bidi embedding/override/isolate marks (U+202A–202E, U+2066–2069)
  * that make a line read differently from what it contains; and invisible
@@ -290,7 +291,7 @@ function writeUsageState(dir: string, rows: number, bytes: number): void {
  * check. U+200D (ZWJ) and the variation selectors are deliberately KEPT so emoji
  * ZWJ sequences survive (issue #335).
  */
-const CONTROL_CHARS_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g;
+const CONTROL_CHARS_RE = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g;
 
 /**
  * Drop the terminal-manipulating / invisible characters ({@link CONTROL_CHARS_RE})

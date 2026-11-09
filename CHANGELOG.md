@@ -25,7 +25,7 @@ versions are listed plainly.
   `sanitizeLesson` only collapsed whitespace, so ANSI/OSC escapes, NUL/BEL, C1 controls,
   bidi overrides and zero-width characters were stored verbatim and echoed raw by
   `nb show`, `nb list` and `nb search` (and injected into harness context). `sanitizeLesson`
-  now strips C0 controls (except the tab/CR/LF it normalises), DEL, C1 controls, bidi
+  now strips C0 controls (except tab/LF/VT/FF/CR, which still become a space), DEL, C1 controls, bidi
   embedding/override/isolate marks and zero-width characters, while keeping ZWJ and
   variation selectors so emoji survive; the render paths strip the same classes too, so a
   shelf file stored before this rule cannot emit an escape either. Zero-width characters

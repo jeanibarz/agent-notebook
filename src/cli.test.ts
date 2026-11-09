@@ -3968,19 +3968,19 @@ describe('stats names a shelf that does not exist (issue #341)', () => {
 // before the sanitizer existed.
 describe('printed output carries no raw control bytes (issue #335)', () => {
   // eslint-disable-next-line no-control-regex
-  const bad = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/;
+  const bad = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/;
 
   test('show/list/search never print an ESC, even for a pre-existing shelf file', async () => {
     await run(['add', 's', 'ansi \u001b[31mred\u001b[0m \u001b]0;title\u0007 injected']);
     await run(['describe', 's', 'desc \u001b[31mred']);
-    writeFileSync(join(dir, 'old.md'), '+1\tlegacy \u001b[31mred\u001b[0m line\n', 'utf-8');
+    writeFileSync(join(dir, 'old.md'), '+1\tlegacy \u001b[31mred\u001b[0m \u200bz\u202ew line\n', 'utf-8');
     for (const args of [['show', 's'], ['show', 'old'], ['list'], ['search', 'red'], ['show', 'old', '--json']]) {
       const r = await run(args);
       expect(r.code).toBe(0);
       expect(r.out).not.toMatch(bad);
       expect(r.err).not.toMatch(bad);
     }
-    expect((await run(['show', 'old'])).out).toContain('legacy [31mred[0m line');
+    expect((await run(['show', 'old'])).out).toContain('legacy [31mred[0m zw line');
   });
 });
 

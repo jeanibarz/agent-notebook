@@ -904,6 +904,11 @@ describe('serialization round-trip', () => {
     expect(sanitizeLesson(`keep ${family} 👍🏽 café 漢字`)).toBe(`keep ${family} 👍🏽 café 漢字`);
   });
 
+  test('VT and FF stay whitespace: they become a space, not a deletion (issue #335)', () => {
+    expect(sanitizeLesson('page1\fpage2')).toBe('page1 page2');
+    expect(sanitizeLesson('a\vb\u000b\u000cc')).toBe('a b c');
+  });
+
   test('a lesson with control bytes is stored clean and the exact-dup check sees through ZWSP (issue #335)', async () => {
     expect((await addEntry(dir, 's', 'x\u001b[31my\u0000z\u202e!')).added).toBe(true);
     expect(readEntries(dir, 's')[0].text).toBe('x[31myz!');
@@ -919,7 +924,7 @@ describe('serialization round-trip', () => {
     await setDescription(dir, 's', 'desc \u001b[31mred\u0000');
     // A pre-existing file that already holds an ESC byte (stored before the rule).
     writeFileSync(join(dir, 'old.md'), '+1\tlegacy \u001b[31mred\u001b[0m line\n', 'utf-8');
-    const bad = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/;
+    const bad = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/;
     expect(render(dir, 's')).not.toMatch(bad);
     expect(renderEntries('s', readEntries(dir, 's'))).not.toMatch(bad);
     expect(render(dir, 'old')).not.toMatch(bad);
