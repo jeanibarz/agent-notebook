@@ -453,8 +453,18 @@ a shelf (a `--`-prefixed shelf name is unreachable). **Rationale:** the usage-lo
 filename is an internal detail a supervisor must not hard-code to tail/back it up
 ([#169](https://github.com/jeanibarz/agent-notebook/issues/169)) — the same
 `$NB_DIR/<file>` coupling `nb path` was introduced ([#14](https://github.com/jeanibarz/agent-notebook/issues/14)) to remove.
-*Proven by:* `cli.test.ts` → the `path --usage …` and `path with an unrecognized
---flag …` cases.
+`NB_DIR` SHALL have a single leading `~` (or `~/…`; `~\…` on Windows) expanded to
+the home directory before use, so a value set from a source without shell expansion
+(`settings.json` `env`, systemd, cron, `.env`) resolves like its shell equivalent
+instead of creating a literal `~` directory
+([#334](https://github.com/jeanibarz/agent-notebook/issues/334)); `~user/…`,
+absolute and relative values are used verbatim. The shipped helper scripts under
+`examples/` (git wrapper, janitor, backup, retrospective hook) SHALL resolve `NB_DIR` the
+same way.
+*Proven by:* `cli.test.ts` → the `path --usage …`, `path with an unrecognized
+--flag …` and `NB_DIR with a leading ~ is expanded … (issue #334)` cases;
+`notebook.test.ts` → `NB_DIR leading-tilde expansion (issue #334)`;
+`examples-nb-dir-tilde.test.ts` (the helper scripts).
 
 <a id="fr-list-001"></a>
 **FR-LIST-001 (Should).** `listNotebooks(dir, {prefix?, limit?})` SHALL return the

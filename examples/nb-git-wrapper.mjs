@@ -87,10 +87,20 @@ function cleanGitEnv() {
   return env;
 }
 
+/** Expand a leading `~` / `~/…` (and `~\\…` on Windows) exactly like the package's
+ *  `expandHomeDir` (issue #334): `NB_DIR` set where no shell expands it (settings.json
+ *  `env`, systemd, cron) must not become a literal `~` directory. `~user/…` is left alone. */
+function expandHome(value) {
+  if (value === '~') return homedir();
+  if (value.startsWith('~/')) return join(homedir(), value.slice(2));
+  if (process.platform === 'win32' && value.startsWith('~\\')) return join(homedir(), value.slice(2));
+  return value;
+}
+
 /** The notebooks directory the CLI will use — mirrors the package's resolution. */
 function notebooksDir() {
   const fromEnv = process.env.NB_DIR;
-  return fromEnv && fromEnv.trim() !== '' ? fromEnv : join(homedir(), '.agent-notebook', 'notebooks');
+  return fromEnv && fromEnv.trim() !== '' ? expandHome(fromEnv) : join(homedir(), '.agent-notebook', 'notebooks');
 }
 
 /** Resolve the installed `agent-notebook` package's compiled CLI entry. */
@@ -276,9 +286,9 @@ async function autoCommit(dir, argv) {
 }
 
 async function main() {
-  if (!process.env.NB_DIR || process.env.NB_DIR.trim() === '') {
-    process.env.NB_DIR = notebooksDir();
-  }
+  // Always normalise: fills the default AND expands a leading `~` (issue #334), so the
+  // git section and the CLI child agree on one directory.
+  process.env.NB_DIR = notebooksDir();
   let entry;
   try {
     entry = resolveNbCliEntry();

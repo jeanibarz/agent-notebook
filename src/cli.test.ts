@@ -1635,6 +1635,39 @@ describe('runNbCli', () => {
     expect(r.err).toContain('missing <id|query>');
   });
 
+  test('NB_DIR with a leading ~ is expanded by nb itself (issue #334)', async () => {
+    // A harness (settings.json `env`, systemd, cron) sets NB_DIR without a
+    // shell expanding the tilde. nb must expand it, so the notebook lands in
+    // $HOME/x — not a literal `./~` directory under whatever the CWD is — and
+    // `nb path`/`nb config` report the expanded absolute path.
+    const tmpHome = mkdtempSync(join(tmpdir(), 'agent-notebook-home-'));
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-notebook-cwd-'));
+    const savedHome = process.env.HOME;
+    const savedCwd = process.cwd();
+    try {
+      process.env.HOME = tmpHome;
+      process.env.NB_DIR = '~/x';
+      process.chdir(cwd);
+      expect((await run(['add', 's', 'tilde test lesson'])).code).toBe(0);
+      const expected = join(tmpHome, 'x');
+      expect(existsSync(join(expected, 's.md'))).toBe(true);
+      expect(existsSync(join(cwd, '~'))).toBe(false);
+      expect((await run(['path'])).out).toBe(`${expected}\n`);
+      expect((await run(['path', '--usage'])).out).toBe(`${usageFile(expected)}\n`);
+      expect((await run(['config'])).out).toMatch(
+        new RegExp(`^NB_DIR=${expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+\\(env\\)$`, 'm'),
+      );
+      // The usage log lands under the expanded dir, not the literal `~` one.
+      expect(parseUsage(expected).length).toBeGreaterThan(0);
+    } finally {
+      process.chdir(savedCwd);
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test('path with no shelf prints the notebooks dir (respecting NB_DIR)', async () => {
     const r = await run(['path']);
     expect(r.code).toBe(0);

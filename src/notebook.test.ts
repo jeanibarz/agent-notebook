@@ -121,6 +121,8 @@ import {
   STATS_SCHEMA_VERSION,
   usageRing,
   usageRingSlack,
+  expandHomeDir,
+  notebooksDir,
   vote,
   voteMany,
   withLock,
@@ -2289,6 +2291,75 @@ describe('shelf safety', () => {
     // A reserved device name only in an interior segment is not reserved (Windows
     // resolves the device from the leading segment only), so `review.con` is fine.
     expect(() => assertSafeShelf('review.con')).not.toThrow();
+  });
+});
+
+describe('NB_DIR leading-tilde expansion (issue #334)', () => {
+  // A process env from Claude Code `settings.json`, systemd, cron or a `.env`
+  // file never passes through a shell, so `NB_DIR=~/x` used to be taken
+  // verbatim and wrote a literal `~` directory under the CWD. `notebooksDir()`
+  // now expands a LEADING `~` itself; every other form is left untouched.
+  const savedHome = process.env.HOME;
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    delete process.env.NB_DIR;
+  });
+
+  test('a bare `~` resolves to the home directory', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agent-notebook-home-'));
+    try {
+      process.env.HOME = home;
+      expect(expandHomeDir('~')).toBe(home);
+      expect(notebooksDir()).not.toBe(home); // NB_DIR unset → default
+      process.env.NB_DIR = '~';
+      expect(notebooksDir()).toBe(home);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('`~/x` and `~/` resolve under the home directory', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agent-notebook-home-'));
+    try {
+      process.env.HOME = home;
+      expect(expandHomeDir('~/x')).toBe(join(home, 'x'));
+      expect(expandHomeDir('~/a/b')).toBe(join(home, 'a', 'b'));
+      expect(expandHomeDir('~/')).toBe(join(home));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('`~user/x`, absolute and relative paths are unchanged', () => {
+    expect(expandHomeDir('~user/x')).toBe('~user/x');
+    expect(expandHomeDir('/abs/x')).toBe('/abs/x');
+    expect(expandHomeDir('rel/x')).toBe('rel/x');
+    expect(expandHomeDir('x~y')).toBe('x~y'); // an interior tilde is not a home prefix
+    // `nb` must never silently rewrite a relative value; it is used as-is.
+    process.env.NB_DIR = '~user/x';
+    expect(notebooksDir()).toBe('~user/x');
+    process.env.NB_DIR = '/abs/x';
+    expect(notebooksDir()).toBe('/abs/x');
+  });
+
+  test('a leading `~` reaches addEntry through notebooksDir (no literal ./~ dir)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agent-notebook-home-'));
+    const literal = join(process.cwd(), '~'); // where an unexpanded `~/nb334` would land
+    expect(existsSync(literal)).toBe(false); // precondition: nothing stray from an earlier run
+    try {
+      process.env.HOME = home;
+      process.env.NB_DIR = '~/nb334';
+      const target = notebooksDir();
+      expect(target).toBe(join(home, 'nb334'));
+      await addEntry(target, 's', 'tilde test lesson');
+      expect(existsSync(join(target, 's.md'))).toBe(true);
+      expect(existsSync(literal)).toBe(false); // no literal ~ dir in the cwd
+    } finally {
+      rmSync(literal, { recursive: true, force: true }); // only reached with content if the fix regresses
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
