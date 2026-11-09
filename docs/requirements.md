@@ -536,10 +536,19 @@ phantom (reaped) from a deliberate trigger (kept) without adding a field to a le
 ### 4.10 CLI contract
 
 <a id="fr-cli-001"></a>
-**FR-CLI-001 (Must).** `nb` SHALL implement: `show`, `add <shelf> ("<lesson>"|-)`,
-`vote`, `merge`, `split <shelf> <id|query> "<a>" "<b>"`,
-`rm`, `move <from> <to> <id|query>`, `describe <shelf> ["<text>"]`, `stats [<shelf>] [--since <N{d,h,m}>] [--json]`, `path [<shelf>]`, `config [--json]`,
-`list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`), `--help`, `--version`.
+**FR-CLI-001 (Must).** `nb` SHALL implement: `show <shelf>... [--json]` (one or more
+shelves; `--json` emits a lone object for one shelf, an array for several),
+`stale <shelf> [--limit <N>] [--json]` (cull candidates, [FR-CLI-010](#fr-cli-010)),
+`add <shelf> ("<lesson>"|-)`,
+`vote <shelf> <id|query> +1|-1` (a comma-separated id list is the batch form),
+`merge`, `split <shelf> <id|query> "<a>" "<b>"`,
+`rm`, `move <from> <to> <id|query>`, `describe <shelf> ["<text>"|-]`,
+`search <query> [prefix] [--any] [--limit <N>]`,
+`stats [<shelf>] [--since <N{d,h,m}>] [--json] [--exit-code]`, `path [<shelf>] [--usage] [--json]`, `config [--json]`,
+`list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`),
+`completion <bash|zsh>` ([FR-CLI-010](#fr-cli-010)), `--help`, `--version`. Every command
+dispatched by `src/cli.ts` SHALL be named in this paragraph (guarded by `cli.test.ts` →
+`describe('HELP ↔ dispatch drift guard (issue #131)')`, issue #340).
 The `-` lesson operand of `add` reads from stdin per
 [FR-ADD-007](#fr-add-007). The optional `[--reason <code>] [--note "<text>"]` flags are
 consumed by every mutating op — `add`, `merge`, `rm`, `split`, `move`, and `describe` — (the
@@ -648,6 +657,18 @@ trailing `--` are literal operands, never checked as flags; a value-taking flag'
 token (`--note --json`) is consumed, never re-examined. An unknown *command* is unaffected —
 it keeps the exit-`2` [FR-CLI-002](#fr-cli-002) path, never downgraded to this exit-`1` one.
 *Proven by:* `cli.test.ts` → `describe('nb unknown-flag rejection (issue #267)')`.
+
+<a id="fr-cli-010"></a>
+**FR-CLI-010 (Should).** `nb completion <bash|zsh>` SHALL print a static, offline,
+dependency-free shell-completion script to stdout and exit `0`; it SHALL perform no network
+access and mutate no notebook. The script completes the command set and, where a command
+takes a shelf, existing shelf names via a guarded `nb list` call. A missing or unsupported
+shell SHALL be a `bad_args` error (exit `1`, naming the supported shells), not an unknown
+command (exit `2`). The shipped `examples/completion/` files SHALL match the emitter.
+`nb stale <shelf> [--limit <N>] [--json]` is read-only and lists cull candidates, lowest
+score then stalest first (see the stale-candidates requirement above).
+*Proven by:* `cli.test.ts` → `describe('nb completion (shell completion, issue #187)')`
+and `describe('nb stale — cull candidates (issue #240)')`.
 
 <a id="fr-config-001"></a>
 **FR-CONFIG-001 (Should).** `nb config` SHALL print every effective (post-clamp) tunable
