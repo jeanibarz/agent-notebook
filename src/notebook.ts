@@ -200,10 +200,25 @@ export function assertSafeShelf(shelf: string): void {
 /** @deprecated use assertSafeShelf — same function, kept so existing callers keep working. */
 export const assertSafeRole = assertSafeShelf;
 
-/** The notebooks directory. `NB_DIR` overrides; default `~/.agent-notebook/notebooks`. */
+/**
+ * Expand a leading `~` (optionally followed by `/`, or `\` on Windows) to the
+ * home directory. Deliberately narrow (issue #334): only `~` and `~/…` (and
+ * `~\…` on Windows) expand — `~user/…` is left untouched, as is any value with
+ * no leading `~`. A process env supplied by `settings.json`, systemd or cron
+ * never passes through a shell, so `NB_DIR=~/x` would otherwise create a
+ * literal `~` directory under the current working directory.
+ */
+export function expandHomeDir(value: string): string {
+  if (value === '~') return homedir();
+  if (value.startsWith('~/')) return join(homedir(), value.slice(2));
+  if (process.platform === 'win32' && value.startsWith('~\\')) return join(homedir(), value.slice(2));
+  return value;
+}
+
+/** The notebooks directory. `NB_DIR` overrides (with a leading `~` expanded); default `~/.agent-notebook/notebooks`. */
 export function notebooksDir(): string {
   return process.env.NB_DIR && process.env.NB_DIR.trim() !== ''
-    ? process.env.NB_DIR
+    ? expandHomeDir(process.env.NB_DIR)
     : join(homedir(), '.agent-notebook', 'notebooks');
 }
 

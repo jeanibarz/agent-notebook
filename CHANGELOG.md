@@ -31,6 +31,17 @@ versions are listed plainly.
   shelf file stored before this rule cannot emit an escape either. Zero-width characters
   no longer defeat the exact-duplicate check. See
   [FR-MODEL-002](docs/requirements.md#fr-model-002).
+- **`NB_DIR` with a leading `~` is expanded by `nb` itself instead of creating a literal `~` directory (#334).**
+  `notebooksDir()` used `NB_DIR` verbatim, so a value like `~/notes` set from a place
+  that does no shell expansion — Claude Code `settings.json` `env`, Codex config,
+  systemd units, cron, `.env` files — made `nb` write into a directory *literally*
+  named `~` under the current working directory. Each hook from a different project
+  then forked a new, empty notebook; `nb add` exited `0` but the next session looked
+  empty. A leading `~` (or `~/…`, and `~\…` on Windows) now expands to the home
+  directory for every path `nb` derives from it (shelves, the usage log, `nb path`,
+  `nb config`). `~user/…`, absolute and relative paths are unchanged by design.
+  **Migration note:** if you already have data under a literal `~` directory from this
+  bug, move it to the intended home path — `nb` will no longer look there.
 - **Batch-vote partial selector-misses are no longer laundered out of `nb stats`' vote error causes (#310).**
   A batch vote (`nb vote <shelf> id1,id2,id3 +1`) that resolved at least one id but skipped others
   exited `0` and wrote a clean success row — no `errorClass` — so its stale ids were invisible to the
