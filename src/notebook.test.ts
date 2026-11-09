@@ -892,6 +892,46 @@ describe('serialization round-trip', () => {
     ]);
   });
 
+  test('sanitizeLesson strips ESC/NUL/C1/bidi/zero-width but keeps emoji ZWJ and non-ASCII (issue #335)', () => {
+    // ESC, BEL, NUL, DEL, a C1 control, ZWSP, RTL override, word joiner, BOM, isolate.
+    const evil = 'a\u001b[31mred\u001b[0m\u0007b\u0000c\u007fd\u0085e\u200bf\u202eg\u2060h\uFEFFi\u2066j';
+    const clean = sanitizeLesson(evil);
+    expect(clean).toBe('a[31mred[0mbcdefghij');
+    // No raw control / bidi / zero-width bytes survive.
+    expect(clean).not.toMatch(/[\u0000-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/);
+    // Emoji ZWJ sequence (ZWJ U+200D) and a variation selector are preserved.
+    const family = '\u{1F469}\u200D\u{1F469}\u200D\u{1F467}';
+    expect(sanitizeLesson(`keep ${family} 👍🏽 café 漢字`)).toBe(`keep ${family} 👍🏽 café 漢字`);
+  });
+
+  test('a lesson with control bytes is stored clean and the exact-dup check sees through ZWSP (issue #335)', async () => {
+    expect((await addEntry(dir, 's', 'x\u001b[31my\u0000z\u202e!')).added).toBe(true);
+    expect(readEntries(dir, 's')[0].text).toBe('x[31myz!');
+    expect((await addEntry(dir, 'z', 'ab')).added).toBe(true);
+    const zwsp = await addEntry(dir, 'z', 'a\u200bb');
+    expect(zwsp.added).toBe(false);
+    expect(zwsp.reason).toBe('duplicate');
+    expect(readEntries(dir, 'z')).toHaveLength(1);
+  });
+
+  test('show/list/search output contains no raw control bytes (issue #335)', async () => {
+    await addEntry(dir, 's', 'ansi \u001b[31mred\u001b[0m \u001b]0;title\u0007 injected');
+    await setDescription(dir, 's', 'desc \u001b[31mred\u0000');
+    // A pre-existing file that already holds an ESC byte (stored before the rule).
+    writeFileSync(join(dir, 'old.md'), '+1\tlegacy \u001b[31mred\u001b[0m line\n', 'utf-8');
+    const bad = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/;
+    expect(render(dir, 's')).not.toMatch(bad);
+    expect(renderEntries('s', readEntries(dir, 's'))).not.toMatch(bad);
+    expect(render(dir, 'old')).not.toMatch(bad);
+    expect(render(dir, 'old')).toContain('legacy [31mred[0m line');
+    const listing = listNotebooks(dir);
+    expect(JSON.stringify(listing)).not.toMatch(bad);
+    expect(listing.rows.find((r) => r.shelf === 's')!.desc).toBe('desc [31mred');
+    const found = search(dir, 'red');
+    expect(JSON.stringify(found)).not.toMatch(bad);
+    expect(showJson(dir, 's').description).toBe('desc [31mred');
+  });
+
   test('sanitizeLesson is idempotent — a second pass is a fixed point', () => {
     for (const raw of RAW_LESSONS) {
       const once = sanitizeLesson(raw);
