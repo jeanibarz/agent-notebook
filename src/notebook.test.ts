@@ -1651,6 +1651,8 @@ describe('lock ownership (issue #331)', () => {
   test('two waiters racing one stale lock: only one steals; the loser cannot remove the winner\'s live lock', () => {
     mkdirSync(lock());
     writeFileSync(join(lock(), 'owner'), 'dead.token', 'utf-8');
+    const aged = Date.now() / 1000 - 20;
+    utimesSync(join(lock(), 'owner'), aged, aged);
     // B and C both observed token 'dead.token'. B steals and re-creates its own lock.
     expect(stealStale(lock(), 'dead.token')).toBe(true);
     mkdirSync(lock());
@@ -1665,6 +1667,33 @@ describe('lock ownership (issue #331)', () => {
     mkdirSync(lock());
     mkdirSync(join(lock(), 'reap')); // another stealer mid-steal
     expect(stealStale(lock(), null)).toBe(false);
+    expect(existsSync(lock())).toBe(true);
+  });
+
+  test('a lock whose owner file is fresh is not stolen even if the observer saw a stale mtime (issue #331 TOCTOU)', () => {
+    mkdirSync(lock());
+    writeFileSync(join(lock(), 'owner'), 'C.live', 'utf-8'); // fresh owner file
+    expect(stealStale(lock(), 'C.live', 10_000)).toBe(false);
+    expect(readFileSync(join(lock(), 'owner'), 'utf-8')).toBe('C.live');
+  });
+
+  test('a stealer that died holding the reap mutex does not wedge the lock forever', () => {
+    mkdirSync(lock());
+    writeFileSync(join(lock(), 'owner'), 'dead.token', 'utf-8');
+    mkdirSync(join(lock(), 'reap'));
+    const aged = Date.now() / 1000 - 20;
+    utimesSync(join(lock(), 'reap'), aged, aged);
+    utimesSync(join(lock(), 'owner'), aged, aged);
+    expect(stealStale(lock(), 'dead.token', 10_000)).toBe(false); // clears the aged reap
+    expect(stealStale(lock(), 'dead.token', 10_000)).toBe(true); // next attempt steals
+  });
+
+  test('release yields to a stealer holding the reap mutex instead of racing it', () => {
+    // the holder's release path takes the same mutex; with it held, the lock stays
+    mkdirSync(lock());
+    writeFileSync(join(lock(), 'owner'), 'x.y', 'utf-8');
+    mkdirSync(join(lock(), 'reap'));
+    expect(stealStale(lock(), 'x.y', 10_000)).toBe(false);
     expect(existsSync(lock())).toBe(true);
   });
 
