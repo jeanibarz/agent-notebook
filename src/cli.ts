@@ -1259,6 +1259,33 @@ export async function runNbCli(
         // Compute the report once: both the --json dump and the human render
         // consume it, and the --exit-code gate reads its anomaly count.
         const rep = stats(dir, { shelf: maybeShelf, windowMs });
+        // A shelf operand that names a shelf never created is almost always a
+        // typo, yet `stats` (unlike the mutations, #200, and `show`, #166) never
+        // validated it — a misspelling produced a plausible, empty report that
+        // reads exactly like a real shelf gone silent, a wrong conclusion in a
+        // command whose job is to surface unused shelves (issue #341). Keep the
+        // exit code and stdout byte-identical (this is advisory only) and print
+        // one stderr note. "No rows for this shelf" must ignore the rows `stats`
+        // itself logs (the shared `finally` records every call under the operand
+        // as its shelf), or the note would fire only on the first run and a
+        // repeat of the same typo would go quiet. So count only non-`stats`
+        // commands: a retired shelf with real history (add/vote/...) has such rows
+        // and is never flagged.
+        // An unsafe shelf name makes `notebookExists` throw; skip the note so the
+        // advisory check can't turn a tolerated bad operand into a new error.
+        if (maybeShelf && !rep.perCommand.some((c) => c.command !== 'stats' && c.calls > 0)) {
+          let exists = true;
+          try {
+            exists = notebookExists(dir, maybeShelf);
+          } catch {
+            // unsafe shelf name — leave stats' existing forgiving behavior alone
+          }
+          if (!exists) {
+            const near = closestShelf(maybeShelf, listShelves(dir));
+            const hint = near ? ` — did you mean "${near}"?` : '';
+            process.stderr.write(`nb stats: no shelf named "${maybeShelf}"${hint}\n`);
+          }
+        }
         // `--json` emits the raw StatsReport (stable, machine-readable) so a
         // supervising agent can act on a loop/went-silent/high-error-rate
         // anomaly without regex-parsing the human table. The --since warning

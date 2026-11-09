@@ -3896,6 +3896,75 @@ describe('mutations distinguish a missing shelf from an empty one (issue #200)',
   });
 });
 
+// Issue #341: `stats` takes a shelf operand but (unlike the mutations, #200, and
+// `show`, #166) never validated it, so a typo produced a plausible, empty report
+// indistinguishable from a real shelf with no recent activity — a wrong
+// conclusion in a command meant to surface unused shelves. The fix is advisory
+// only: one stderr note (with a did-you-mean when close), stdout/exit unchanged.
+describe('stats names a shelf that does not exist (issue #341)', () => {
+  test('a typo prints a did-you-mean stderr note while stdout stays the normal report', async () => {
+    await run(['add', 'patcher', 'some lesson']); // a real shelf to be near
+    const r = await run(['stats', 'pather']); // typo of `patcher`
+    expect(r.code).toBe(0); // advisory only — never an error
+    expect(r.err).toContain('nb stats: no shelf named "pather"');
+    expect(r.err).toContain('did you mean "patcher"?');
+    // stdout is byte-identical to today: the report still renders normally.
+    expect(r.out).toContain('nb usage — shelf pather, window 7d');
+  });
+
+  test('no suggestion when no shelf is close, but the missing-shelf note still prints', async () => {
+    await run(['add', 'patcher', 'some lesson']);
+    const r = await run(['stats', 'zzzzzz']);
+    expect(r.code).toBe(0);
+    expect(r.err).toContain('nb stats: no shelf named "zzzzzz"');
+    expect(r.err).not.toContain('did you mean');
+  });
+
+  test('an existing shelf prints no note', async () => {
+    await run(['add', 'patcher', 'some lesson']);
+    const r = await run(['stats', 'patcher']);
+    expect(r.code).toBe(0);
+    expect(r.err).toBe('');
+  });
+
+  test('a retired shelf with historical rows is not flagged (only "no rows" is a typo signal)', async () => {
+    await run(['add', 'retired', 'an old lesson']); // leaves a usage row under `retired`
+    rmSync(join(dir, 'retired.md')); // shelf file removed, history remains
+    const r = await run(['stats', 'retired']);
+    expect(r.code).toBe(0);
+    expect(r.err).not.toContain('no shelf named');
+    expect(r.out).toContain('nb usage — shelf retired'); // historical call is still reported
+  });
+
+  test('the note repeats on every `stats <typo>` call, not just the first (stats logs its own row)', async () => {
+    await run(['add', 'patcher', 'some lesson']);
+    for (let i = 0; i < 3; i++) {
+      const r = await run(['stats', 'pather']);
+      expect(r.code).toBe(0);
+      expect(r.err).toContain('nb stats: no shelf named "pather" — did you mean "patcher"?');
+    }
+  });
+
+  test('a retired shelf still gets no note after repeated stats calls', async () => {
+    await run(['add', 'retired', 'an old lesson']);
+    rmSync(join(dir, 'retired.md'));
+    for (let i = 0; i < 3; i++) {
+      const r = await run(['stats', 'retired']);
+      expect(r.err).not.toContain('no shelf named');
+    }
+  });
+
+  test('--json stdout stays a single valid StatsReport object while the note goes to stderr', async () => {
+    await run(['add', 'patcher', 'some lesson']);
+    const r = await run(['stats', 'pather', '--json']);
+    expect(r.code).toBe(0);
+    const rep = JSON.parse(r.out) as { window: string; totalCalls: number };
+    expect(rep.window).toBe('7d');
+    expect(typeof rep.totalCalls).toBe('number');
+    expect(r.err).toContain('nb stats: no shelf named "pather"');
+  });
+});
+
 // Issue #187: `nb completion <bash|zsh>` prints a static, dependency-free
 // completion script. These guard the acceptance criteria — each shell prints a
 // valid, sourceable script and exits 0; the script completes the known command
