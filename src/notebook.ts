@@ -17,7 +17,7 @@
 // a call is a millisecond and offline.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, rmdirSync, unlinkSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -477,6 +477,72 @@ export function setMetaValue(lines: string[], key: string, value: string): strin
 // withLock on a different dir could not strand the outer lock. The flag is only a
 // hint for the signal handler, never the sole release path. (issue #247)
 let heldLock: string | null = null;
+// Owner token of `heldLock` (issue #331): `<pid>.<random nonce>`, written to
+// `<lock>/owner` right after the mkdir wins. Release and steal compare it, so a
+// holder that outlived the stale threshold can never free the thief's live lock.
+let heldToken: string | null = null;
+
+const OWNER_FILE = 'owner';
+const REAP_DIR = 'reap';
+
+/** The owner token recorded in a lock dir, or null if none (legacy/crash-before-write/vanished). */
+function readOwner(lock: string): string | null {
+  try {
+    return readFileSync(join(lock, OWNER_FILE), 'utf-8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Empty and remove a lock dir. Throws if the dir is already gone. */
+function removeLockDir(lock: string): void {
+  try { unlinkSync(join(lock, OWNER_FILE)); } catch { /* legacy lock has none */ }
+  try { rmdirSync(join(lock, REAP_DIR)); } catch { /* no stealer mid-flight */ }
+  rmdirSync(lock);
+}
+
+/**
+ * Remove `lock` only if it still carries OUR token; a stolen lock is left to its
+ * thief. `token === null` means our owner-file write failed (e.g. ENOSPC), so
+ * ownership cannot be proven — fall back to the pre-#331 unconditional release
+ * rather than strand the lock. The check-and-remove runs under the lock's `reap`
+ * mutex (the same one stealers take), so a stealer cannot interleave between our
+ * token check and our rmdir; if a stealer holds it, we were judged stale and the
+ * stealer finishes the job.
+ */
+function releaseOwned(lock: string, token: string | null): void {
+  if (token === null) {
+    try { removeLockDir(lock); } catch { /* already gone */ }
+    return;
+  }
+  const reap = join(lock, REAP_DIR);
+  let haveMutex = false;
+  // A stealer holds `reap` only for microseconds, so retry briefly rather than
+  // leak a live lock when it backs off (it leaves the lock for us to release).
+  for (let i = 0; i < 20 && !haveMutex; i++) {
+    try {
+      mkdirSync(reap);
+      haveMutex = true;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      // ENOENT: lock already gone. Anything but EEXIST (ENOSPC/EDQUOT/EACCES…)
+      // means `reap` cannot be created at all: release without the mutex rather
+      // than strand the lock (as the pre-#331 unconditional rmdir would not).
+      if (code === 'ENOENT') return;
+      if (code !== 'EEXIST') break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+  try {
+    if (readOwner(lock) !== token) {
+      if (haveMutex) { try { rmdirSync(reap); } catch { /* gone */ } }
+      return;
+    }
+    removeLockDir(lock);
+  } catch {
+    if (haveMutex) { try { rmdirSync(reap); } catch { /* gone */ } }
+  }
+}
 
 /**
  * Release the `.nb.lock` this process owns, if any, and clear the ownership flag.
@@ -492,13 +558,11 @@ let heldLock: string | null = null;
  */
 export function releaseHeldLock(): void {
   const lock = heldLock;
+  const token = heldToken;
   if (lock === null) return;
   heldLock = null; // clear first so a second call is a no-op
-  try {
-    rmdirSync(lock);
-  } catch {
-    /* best-effort release — the directory may already be gone */
-  }
+  heldToken = null;
+  releaseOwned(lock, token);
 }
 
 // ---------------------------------------------------------------------------
@@ -557,10 +621,26 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
   // instead of giving up first (the fixed 2s-vs-10s mismatch, issue #133).
   const budgetMs = staleMs + lockGraceMs();
   const deadline = Date.now() + budgetMs;
+  const token = `${process.pid}.${randomBytes(8).toString('hex')}`;
+  let ownToken: string | null = token;
   for (;;) {
     try {
       mkdirSync(lock); // atomic: succeeds only if it did not exist
       heldLock = lock; // we now own this lock (the signal handler may reap it)
+      try {
+        writeFileSync(join(lock, OWNER_FILE), token, 'utf-8');
+        heldToken = token;
+      } catch (werr) {
+        if ((werr as NodeJS.ErrnoException)?.code === 'ENOENT') {
+          // The lock dir was removed under us (a racing stealer): we do NOT hold
+          // the lock. Do not run fn or release anything — re-acquire.
+          heldLock = null;
+          heldToken = null;
+          continue;
+        }
+        heldToken = null; // cannot prove ownership; release falls back to unconditional
+      }
+      ownToken = heldToken;
       break;
     } catch (err) {
       // EEXIST is the ONLY code that means "the lock is genuinely held": the
@@ -582,14 +662,18 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
       // Stale-lock recovery: a crashed nb process can leave .nb.lock behind.
       // Steal it once its holder has been silent longer than the stale threshold.
       try {
+        // Read the token BEFORE the mtime: a stale mtime that follows a token read
+        // can only belong to that same lock generation (a replacement lock is
+        // fresh), so the (token, stale) pair is consistent (issue #331).
+        const observed = readOwner(lock);
         if (Date.now() - statSync(lock).mtimeMs > staleMs) {
-          rmdirSync(lock);
-          // A stale lock we just stole is evidence its holder crashed while
-          // holding it — tally the steal (issue #309). Counted only after a
-          // successful rmdir: if the lock vanished first, rmdirSync throws into
-          // the catch below and we retry without counting a phantom steal.
-          noteRecovery('lock-steal');
-          continue;
+          if (stealStale(lock, observed, staleMs)) {
+            // A stale lock we just stole is evidence its holder crashed while
+            // holding it — tally the steal (issue #309), only after a confirmed
+            // removal so a lost race never counts a phantom steal.
+            noteRecovery('lock-steal');
+            continue;
+          }
         }
       } catch {
         /* lock vanished between mkdir and stat — just retry */
@@ -612,12 +696,70 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
     // (rather than whatever `heldLock` points at) keeps the normal path correct
     // regardless of the flag: a signal handler that already reaped and nulled it,
     // or a hypothetical future nested withLock, cannot strand this lock.
-    if (heldLock === lock) heldLock = null;
-    try {
-      rmdirSync(lock);
-    } catch {
-      /* best-effort release */
+    if (heldLock === lock) {
+      heldLock = null;
+      heldToken = null;
     }
+    // Ownership-checked (issue #331): if we outlived the stale threshold and a
+    // thief took the lock, its token differs and we leave its live lock alone.
+    releaseOwned(lock, ownToken);
+  }
+}
+
+/**
+ * Steal a stale lock without racing other stealers (issue #331). Stealers
+ * serialize on a `reap` subdirectory INSIDE the lock dir, so the mutex belongs to
+ * one lock generation: if the lock was already stolen and recreated, the mutex
+ * we win is the new holder's, and the re-check under it (same owner token, mtime
+ * still stale) fails, so we back off instead of removing a live lock. Returns
+ * true only when this call removed the stale lock.
+ */
+export function stealStale(lock: string, observed: string | null, staleMs = staleLockMs()): boolean {
+  const reap = join(lock, REAP_DIR);
+  try {
+    mkdirSync(reap);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'EEXIST') {
+      // `reap` cannot be created (ENOSPC/EDQUOT/EACCES, or the lock vanished):
+      // do not wedge — fall back to a token-checked removal without the mutex.
+      try {
+        if (readOwner(lock) !== observed) return false;
+        removeLockDir(lock);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    // Another stealer/releaser is mid-flight — unless it died holding `reap`,
+    // which would wedge the lock forever. An aged `reap` is crash debris: clear it.
+    try {
+      if (Date.now() - statSync(reap).mtimeMs > staleMs) rmdirSync(reap);
+    } catch { /* gone or raced — retry */ }
+    return false;
+  }
+  try {
+    // The lock-dir mtime cannot be re-checked here (creating `reap` just bumped
+    // it). A token-bearing lock is re-proven stale via its owner file's mtime,
+    // which `reap` does not touch; the unique token pins the generation. A
+    // token-less lock (legacy / just-created) can only be confirmed token-less.
+    let stale = true;
+    if (observed !== null) {
+      try {
+        stale = Date.now() - statSync(join(lock, OWNER_FILE)).mtimeMs > staleMs;
+      } catch {
+        stale = false;
+      }
+    }
+    if (readOwner(lock) !== observed || !stale) {
+      try { rmdirSync(reap); } catch { /* lock gone */ }
+      return false;
+    }
+    removeLockDir(lock);
+    return true;
+  } catch {
+    try { rmdirSync(reap); } catch { /* already gone */ }
+    return false;
   }
 }
 
