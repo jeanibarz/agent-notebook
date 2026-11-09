@@ -99,6 +99,7 @@ import {
   parseWindowMs,
   noteRecovery,
   drainPendingRecovery,
+  stealStale,
   readEntries,
   reapLeftoverTemps,
   readMetaLines,
@@ -123,6 +124,7 @@ import {
   usageRingSlack,
   vote,
   voteMany,
+  releaseHeldLock,
   withLock,
 } from './notebook.js';
 import { runNbCli } from './cli.js';
@@ -1612,6 +1614,67 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       recovered: '1:0',
       misses: 2,
     });
+  });
+});
+
+describe('lock ownership (issue #331)', () => {
+  const lock = () => join(dir, '.nb.lock');
+
+  test("a holder whose lock was stolen does not free the thief's live lock on release", async () => {
+    await withLock(dir, () => {
+      // Simulate: we outlived the stale threshold and thief B took over.
+      rmSync(lock(), { recursive: true });
+      mkdirSync(lock());
+      writeFileSync(join(lock(), 'owner'), 'B.thief-token', 'utf-8');
+    });
+    expect(existsSync(lock())).toBe(true); // A's finally left B's lock in place
+    expect(readFileSync(join(lock(), 'owner'), 'utf-8')).toBe('B.thief-token');
+  });
+
+  test('releaseHeldLock also leaves a thief-owned lock alone', async () => {
+    await withLock(dir, () => {
+      rmSync(lock(), { recursive: true });
+      mkdirSync(lock());
+      writeFileSync(join(lock(), 'owner'), 'B.thief-token', 'utf-8');
+      releaseHeldLock();
+    });
+    expect(existsSync(lock())).toBe(true);
+  });
+
+  test('a normal holder still releases its own lock, owner file and all', async () => {
+    await withLock(dir, () => {
+      expect(readFileSync(join(lock(), 'owner'), 'utf-8')).toMatch(/^\d+\.[0-9a-f]+$/);
+    });
+    expect(existsSync(lock())).toBe(false);
+  });
+
+  test('two waiters racing one stale lock: only one steals; the loser cannot remove the winner\'s live lock', () => {
+    mkdirSync(lock());
+    writeFileSync(join(lock(), 'owner'), 'dead.token', 'utf-8');
+    // B and C both observed token 'dead.token'. B steals and re-creates its own lock.
+    expect(stealStale(lock(), 'dead.token')).toBe(true);
+    mkdirSync(lock());
+    writeFileSync(join(lock(), 'owner'), 'B.live-token', 'utf-8');
+    // C, acting on its stale observation, must back off.
+    expect(stealStale(lock(), 'dead.token')).toBe(false);
+    expect(readFileSync(join(lock(), 'owner'), 'utf-8')).toBe('B.live-token');
+    expect(existsSync(join(lock(), 'reap'))).toBe(false); // C's mutex dir cleaned up
+  });
+
+  test('a stealer excludes a concurrent stealer while its reap mutex is held', () => {
+    mkdirSync(lock());
+    mkdirSync(join(lock(), 'reap')); // another stealer mid-steal
+    expect(stealStale(lock(), null)).toBe(false);
+    expect(existsSync(lock())).toBe(true);
+  });
+
+  test('a legacy token-less stale lock is still stolen', async () => {
+    mkdirSync(lock());
+    const aged = Date.now() / 1000 - 20;
+    utimesSync(lock(), aged, aged);
+    const r = await addEntry(dir, 'legacy', 'stolen from a token-less lock');
+    expect(r.added).toBe(true);
+    expect(drainPendingRecovery().lockSteals).toBe(1);
   });
 });
 
