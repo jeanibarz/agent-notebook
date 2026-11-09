@@ -2344,16 +2344,20 @@ describe('NB_DIR leading-tilde expansion (issue #334)', () => {
     expect(notebooksDir()).toBe('/abs/x');
   });
 
-  test('a leading `~` reaches addEntry through notebooksDir (no literal ./~ dir)', () => {
+  test('a leading `~` reaches addEntry through notebooksDir (no literal ./~ dir)', async () => {
     const home = mkdtempSync(join(tmpdir(), 'agent-notebook-home-'));
+    const literal = join(process.cwd(), '~'); // where an unexpanded `~/nb334` would land
+    expect(existsSync(literal)).toBe(false); // precondition: nothing stray from an earlier run
     try {
       process.env.HOME = home;
       process.env.NB_DIR = '~/nb334';
       const target = notebooksDir();
-      addEntry(target, 's', 'tilde test lesson');
+      expect(target).toBe(join(home, 'nb334'));
+      await addEntry(target, 's', 'tilde test lesson');
       expect(existsSync(join(target, 's.md'))).toBe(true);
-      expect(existsSync(join(home, '~'))).toBe(false); // no literal ~ dir under home
+      expect(existsSync(literal)).toBe(false); // no literal ~ dir in the cwd
     } finally {
+      rmSync(literal, { recursive: true, force: true }); // only reached with content if the fix regresses
       rmSync(home, { recursive: true, force: true });
     }
   });

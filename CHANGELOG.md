@@ -39,7 +39,11 @@ versions are listed plainly.
   then forked a new, empty notebook; `nb add` exited `0` but the next session looked
   empty. A leading `~` (or `~/…`, and `~\…` on Windows) now expands to the home
   directory for every path `nb` derives from it (shelves, the usage log, `nb path`,
-  `nb config`). `~user/…`, absolute and relative paths are unchanged by design.
+  `nb config`). The shipped helpers
+  (`examples/nb-git-wrapper.mjs`, `nb-janitor.mjs`, `nb-backup.sh` and the Claude Code
+  `nb-retrospective.sh` hook) expand it the same way, so the auto-commit wrapper still commits and
+  the hook no longer creates a literal `./~` directory in a project. `~user/…`, absolute and
+  relative paths are unchanged by design.
   **Migration note:** if you already have data under a literal `~` directory from this
   bug, move it to the intended home path — `nb` will no longer look there.
 - **Batch-vote partial selector-misses are no longer laundered out of `nb stats`' vote error causes (#310).**

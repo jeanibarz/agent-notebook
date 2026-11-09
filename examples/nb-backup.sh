@@ -52,6 +52,13 @@
 
 set -uo pipefail
 
+# A leading `~` / `~/` in NB_DIR is expanded here, exactly like the package does (issue #334):
+# a value set where no shell expands it (settings.json env, systemd, cron) would otherwise
+# create a literal `~` directory in the current project. `~user/...` is left alone.
+case "${NB_DIR:-}" in
+  "~") NB_DIR="$HOME" ;;
+  "~/"*) NB_DIR="$HOME/${NB_DIR#\~/}" ;;
+esac
 NB_DIR="${NB_DIR:-${HOME}/.agent-notebook/notebooks}"
 LOG_FILE="${NB_DIR}/.nb-backup.log"
 # Keep the lock in a user-owned, non-shared location so it can't collide with or

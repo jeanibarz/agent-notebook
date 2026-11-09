@@ -60,9 +60,19 @@ const flag = (name, dflt) => {
 const JSON_OUT = argv.includes('--json');
 const DAYS = Math.max(1, Number.parseInt(flag('--days', '30'), 10) || 30);
 const SIM = Math.min(1, Math.max(0, Number.parseFloat(flag('--sim', '0.6')) || 0.6));
+/** Expand a leading `~` / `~/…` (and `~\\…` on Windows) exactly like the package's
+ *  `expandHomeDir` (issue #334): `NB_DIR` set where no shell expands it (settings.json
+ *  `env`, systemd, cron) must not become a literal `~` directory. `~user/…` is left alone. */
+function expandHome(value) {
+  if (value === '~') return homedir();
+  if (value.startsWith('~/')) return join(homedir(), value.slice(2));
+  if (process.platform === 'win32' && value.startsWith('~\\')) return join(homedir(), value.slice(2));
+  return value;
+}
+
 const NB_DIR =
   process.env.NB_DIR && process.env.NB_DIR.trim() !== ''
-    ? process.env.NB_DIR
+    ? expandHome(process.env.NB_DIR)
     : join(homedir(), '.agent-notebook', 'notebooks');
 const MAX_LINES = Number.parseInt(process.env.NB_MAX_LINES ?? '50', 10) || 50;
 // The usage ring is bounded by ROW COUNT, not time (see notebook.ts usageRing():

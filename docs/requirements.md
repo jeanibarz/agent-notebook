@@ -458,10 +458,13 @@ the home directory before use, so a value set from a source without shell expans
 (`settings.json` `env`, systemd, cron, `.env`) resolves like its shell equivalent
 instead of creating a literal `~` directory
 ([#334](https://github.com/jeanibarz/agent-notebook/issues/334)); `~user/…`,
-absolute and relative values are used verbatim.
+absolute and relative values are used verbatim. The shipped helper scripts under
+`examples/` (git wrapper, janitor, backup, retrospective hook) SHALL resolve `NB_DIR` the
+same way.
 *Proven by:* `cli.test.ts` → the `path --usage …`, `path with an unrecognized
 --flag …` and `NB_DIR with a leading ~ is expanded … (issue #334)` cases;
-`notebook.test.ts` → `NB_DIR leading-tilde expansion (issue #334)`.
+`notebook.test.ts` → `NB_DIR leading-tilde expansion (issue #334)`;
+`examples-nb-dir-tilde.test.ts` (the helper scripts).
 
 <a id="fr-list-001"></a>
 **FR-LIST-001 (Should).** `listNotebooks(dir, {prefix?, limit?})` SHALL return the
