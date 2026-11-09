@@ -3701,6 +3701,22 @@ describe('HELP ↔ dispatch drift guard (issue #131)', () => {
     expect(orphans).toEqual([]);
   });
 
+  // The spec (docs/requirements.md FR-CLI-001) is the authoritative command
+  // list, so it must name every dispatched command too (issue #340). Matches on
+  // command NAMES as whole tokens within the FR-CLI-001 paragraph, not prose.
+  test('every dispatched command is named in the FR-CLI-001 paragraph of requirements.md', () => {
+    const spec = readFileSync(join(REPO_ROOT, 'docs', 'requirements.md'), 'utf8');
+    const start = spec.indexOf('**FR-CLI-001');
+    expect(start).not.toBe(-1);
+    const end = spec.indexOf('<a id="fr-cli-002">', start);
+    expect(end).toBeGreaterThan(start);
+    const para = spec.slice(start, end);
+    const missing = dispatched.filter(
+      (cmd) => !new RegExp('(^|[^\\w-])' + cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])').test(para),
+    );
+    expect(missing).toEqual([]);
+  });
+
   // Anti-vacuous-pass anchor: if the `case` parser silently returned an empty set
   // the equality guards above could pass trivially, so pin that the derived
   // dispatched set actually captured the full known current command set
