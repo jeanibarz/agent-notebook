@@ -501,19 +501,31 @@ function releaseOwned(lock: string, token: string | null): void {
     return;
   }
   const reap = join(lock, REAP_DIR);
-  try {
-    mkdirSync(reap);
-  } catch {
-    return; // stealer mid-steal (or lock already gone)
+  let haveMutex = false;
+  // A stealer holds `reap` only for microseconds, so retry briefly rather than
+  // leak a live lock when it backs off (it leaves the lock for us to release).
+  for (let i = 0; i < 20 && !haveMutex; i++) {
+    try {
+      mkdirSync(reap);
+      haveMutex = true;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      // ENOENT: lock already gone. Anything but EEXIST (ENOSPC/EDQUOT/EACCES…)
+      // means `reap` cannot be created at all: release without the mutex rather
+      // than strand the lock (as the pre-#331 unconditional rmdir would not).
+      if (code === 'ENOENT') return;
+      if (code !== 'EEXIST') break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
   }
   try {
     if (readOwner(lock) !== token) {
-      try { rmdirSync(reap); } catch { /* gone */ }
+      if (haveMutex) { try { rmdirSync(reap); } catch { /* gone */ } }
       return;
     }
     removeLockDir(lock);
   } catch {
-    try { rmdirSync(reap); } catch { /* gone */ }
+    if (haveMutex) { try { rmdirSync(reap); } catch { /* gone */ } }
   }
 }
 
@@ -603,7 +615,14 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
       try {
         writeFileSync(join(lock, OWNER_FILE), token, 'utf-8');
         heldToken = token;
-      } catch {
+      } catch (werr) {
+        if ((werr as NodeJS.ErrnoException)?.code === 'ENOENT') {
+          // The lock dir was removed under us (a racing stealer): we do NOT hold
+          // the lock. Do not run fn or release anything — re-acquire.
+          heldLock = null;
+          heldToken = null;
+          continue;
+        }
         heldToken = null; // cannot prove ownership; release falls back to unconditional
       }
       ownToken = heldToken;
@@ -684,7 +703,19 @@ export function stealStale(lock: string, observed: string | null, staleMs = stal
   const reap = join(lock, REAP_DIR);
   try {
     mkdirSync(reap);
-  } catch {
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'EEXIST') {
+      // `reap` cannot be created (ENOSPC/EDQUOT/EACCES, or the lock vanished):
+      // do not wedge — fall back to a token-checked removal without the mutex.
+      try {
+        if (readOwner(lock) !== observed) return false;
+        removeLockDir(lock);
+        return true;
+      } catch {
+        return false;
+      }
+    }
     // Another stealer/releaser is mid-flight — unless it died holding `reap`,
     // which would wedge the lock forever. An aged `reap` is crash debris: clear it.
     try {
