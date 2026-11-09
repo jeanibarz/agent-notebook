@@ -538,7 +538,7 @@ phantom (reaped) from a deliberate trigger (kept) without adding a field to a le
 <a id="fr-cli-001"></a>
 **FR-CLI-001 (Must).** `nb` SHALL implement: `show <shelf>... [--json]` (one or more
 shelves; `--json` emits a lone object for one shelf, an array for several),
-`stale <shelf> [--limit <N>] [--json]` (cull candidates, [FR-CLI-010](#fr-cli-010)),
+`stale <shelf> [--limit <N>] [--json]` (cull candidates, [FR-SHOW-003](#fr-show-003)),
 `add <shelf> ("<lesson>"|-)`,
 `vote <shelf> <id|query> +1|-1` (a comma-separated id list is the batch form),
 `merge`, `split <shelf> <id|query> "<a>" "<b>"`,
@@ -666,7 +666,7 @@ takes a shelf, existing shelf names via a guarded `nb list` call. A missing or u
 shell SHALL be a `bad_args` error (exit `1`, naming the supported shells), not an unknown
 command (exit `2`). The shipped `examples/completion/` files SHALL match the emitter.
 `nb stale <shelf> [--limit <N>] [--json]` is read-only and lists cull candidates, lowest
-score then stalest first (see the stale-candidates requirement above).
+score then stalest first (see [FR-SHOW-003](#fr-show-003)).
 *Proven by:* `cli.test.ts` → `describe('nb completion (shell completion, issue #187)')`
 and `describe('nb stale — cull candidates (issue #240)')`.
 
