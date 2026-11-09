@@ -3936,6 +3936,24 @@ describe('stats names a shelf that does not exist (issue #341)', () => {
     expect(r.out).toContain('nb usage — shelf retired'); // historical call is still reported
   });
 
+  test('the note repeats on every `stats <typo>` call, not just the first (stats logs its own row)', async () => {
+    await run(['add', 'patcher', 'some lesson']);
+    for (let i = 0; i < 3; i++) {
+      const r = await run(['stats', 'pather']);
+      expect(r.code).toBe(0);
+      expect(r.err).toContain('nb stats: no shelf named "pather" — did you mean "patcher"?');
+    }
+  });
+
+  test('a retired shelf still gets no note after repeated stats calls', async () => {
+    await run(['add', 'retired', 'an old lesson']);
+    rmSync(join(dir, 'retired.md'));
+    for (let i = 0; i < 3; i++) {
+      const r = await run(['stats', 'retired']);
+      expect(r.err).not.toContain('no shelf named');
+    }
+  });
+
   test('--json stdout stays a single valid StatsReport object while the note goes to stderr', async () => {
     await run(['add', 'patcher', 'some lesson']);
     const r = await run(['stats', 'pather', '--json']);

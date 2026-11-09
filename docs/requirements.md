@@ -1066,8 +1066,8 @@ so a typo is never mistaken for a real shelf that has gone
 silent. The note is **advisory only**: the exit code and stdout (the human table and the
 `--json` `StatsReport`, still a single valid object) SHALL be unchanged. A shelf that no
 longer exists but still has historical in-window rows SHALL NOT be flagged — only the
-"no rows other than the current call" case is a typo signal (the current call is logged
-after the read). An unsafe shelf name SHALL keep `stats`' existing forgiving behaviour
+"no rows other than `stats`' own" case is a typo signal (`stats` logs each call under the
+operand as its shelf, so its own rows are ignored and the note repeats on every call). An unsafe shelf name SHALL keep `stats`' existing forgiving behaviour
 (no note, no new error).
 **Rationale:** The mutations answer an unknown shelf with a did-you-mean (#200) and `show`
 distinguishes missing from empty (#166), but `stats` validated only `--since` — a misspelled
@@ -1075,7 +1075,8 @@ shelf produced a plausible, empty report indistinguishable from a truly silent s
 exact wrong conclusion a command built to surface unused shelves must not invite (issue #341).
 *Proven by:* `cli.test.ts` → `describe('stats names a shelf that does not exist (issue #341)')`
 (a typo notes with a suggestion while stdout is unchanged; no suggestion when nothing is
-close; an existing shelf and a retired shelf with history print no note; `--json` stays one
+close; the note repeats on every repeated call; an existing shelf and a retired shelf with
+history print no note; `--json` stays one
 valid object).
 
 ### 4.13 Notebook descriptions & metadata

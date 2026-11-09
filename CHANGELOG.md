@@ -15,8 +15,8 @@ versions are listed plainly.
   did-you-mean, #200) and `show` (which distinguishes missing from empty, #166), never validated it —
   so a misspelled shelf produced a plausible, empty report indistinguishable from a real shelf with no
   recent activity, the exact wrong conclusion a command built to surface unused shelves must not invite.
-  When the operand has no `<shelf>.md` **and** the window holds no usage rows for it (other than the
-  current call), `stats` now prints one advisory note on **stderr** — `nb stats: no shelf named "X"`,
+  When the operand has no `<shelf>.md` **and** the window holds no usage rows for it (ignoring `stats`' own
+  rows, so the note repeats on every call), `stats` now prints one advisory note on **stderr** — `nb stats: no shelf named "X"`,
   plus `— did you mean "Y"?` when a shelf is close (reusing #200's `closestShelf`). It is advisory only:
   the exit code and stdout (the human table and the `--json` `StatsReport`, still one valid object) are
   unchanged, and a retired shelf that still has historical in-window rows is not flagged. See

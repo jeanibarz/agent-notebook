@@ -1265,13 +1265,15 @@ export async function runNbCli(
         // reads exactly like a real shelf gone silent, a wrong conclusion in a
         // command whose job is to surface unused shelves (issue #341). Keep the
         // exit code and stdout byte-identical (this is advisory only) and print
-        // one stderr note. `rep.totalCalls === 0` is the "no rows other than the
-        // current call" test: this `stats` row is logged only afterwards (the
-        // shared `finally`), so it is not yet in the report. A retired shelf that
-        // still has historical rows has `totalCalls > 0` and is never flagged.
+        // one stderr note. "No rows for this shelf" must ignore the rows `stats`
+        // itself logs (the shared `finally` records every call under the operand
+        // as its shelf), or the note would fire only on the first run and a
+        // repeat of the same typo would go quiet. So count only non-`stats`
+        // commands: a retired shelf with real history (add/vote/...) has such rows
+        // and is never flagged.
         // An unsafe shelf name makes `notebookExists` throw; skip the note so the
         // advisory check can't turn a tolerated bad operand into a new error.
-        if (maybeShelf && rep.totalCalls === 0) {
+        if (maybeShelf && !rep.perCommand.some((c) => c.command !== 'stats' && c.calls > 0)) {
           let exists = true;
           try {
             exists = notebookExists(dir, maybeShelf);
