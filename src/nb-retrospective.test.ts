@@ -272,3 +272,12 @@ describe('nb-retrospective.sh atomic sentinel claim (issue #245)', () => {
     expect(readFileSync(sentinel, 'utf-8')).toBe('ORIGINAL-CLAIM');
   });
 });
+
+describe('nb-retrospective.sh length target (issue #342)', () => {
+  test('the nudge gives an actionable ~150-char target while keeping the 200 cap', () => {
+    const reason = (JSON.parse(runHook({ session_id: 'sess-len' })) as { reason: string }).reason;
+    expect(reason).toContain('<=200-char lesson');
+    expect(reason).toMatch(/aim for ~150 chars/);
+    expect(reason).toMatch(/rejected, not truncated/);
+  });
+});
