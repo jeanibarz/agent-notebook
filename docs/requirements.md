@@ -164,9 +164,22 @@ by how well it surfaces relevant lessons the agent did not ask for.
 SHALL serialize as `"<±score>\t<text>"` (score always sign-prefixed).
 
 <a id="fr-model-002"></a>
-**FR-MODEL-002 (Must).** `sanitizeLesson` SHALL replace any tab/CR/LF with a space,
-collapse runs of whitespace to one space, and trim — and SHALL NOT truncate.
-*Acceptance:* `sanitizeLesson("a\n b\tc")` → `"a b c"`; a 50-char input stays 50 chars.
+**FR-MODEL-002 (Must).** `sanitizeLesson` SHALL strip terminal-manipulating and
+invisible characters, then replace any whitespace control (tab/CR/LF/VT/FF) with a space, collapse runs of
+whitespace to one space, and trim — and SHALL NOT truncate. The stripped classes are:
+C0 controls other than the whitespace ones it normalises (tab, LF, VT `U+000B`, FF `U+000C`, CR) (so ESC `U+001B`,
+NUL `U+0000` and BEL `U+0007`); DEL (`U+007F`); C1 controls (`U+0080–U+009F`); bidi
+embedding/override/isolate marks (`U+202A–U+202E`, `U+2066–U+2069`); and invisible
+zero-width characters (`U+200B`, `U+2060`, `U+FEFF`). It SHALL KEEP `U+200D` (ZWJ) and
+the variation selectors so emoji ZWJ sequences survive. Because stored data may
+predate this rule, the render paths (`render`, `list`, `search`, `show --json`, and
+the `show`/`describe`/`list`/`search` text output) SHALL also strip these classes, so
+a line written before the rule cannot emit a raw escape either.
+*Acceptance:* `sanitizeLesson("a\n b\tc")` → `"a b c"`; a 50-char input stays 50 chars;
+`sanitizeLesson("x\u001b[31my\u0000z\u202e!")` drops every listed character; a stored
+ESC byte never reaches `show`/`list`/`search` output; emoji ZWJ and CJK text round-trip
+unchanged; `sanitizeLesson("page1\fpage2")` → `"page1 page2"` (VT/FF stay whitespace) (issue #335).
+*Proven by:* `notebook.test.ts` → the three `issue #335` tests in `describe('serialization round-trip')`, and `cli.test.ts` → `describe('printed output carries no raw control bytes (issue #335)')`.
 
 <a id="fr-model-003"></a>
 **FR-MODEL-003 (Should).** `readEntries` SHALL tolerate a hand-edited line with no

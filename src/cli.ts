@@ -79,6 +79,7 @@ import {
   split,
   staleLockMs,
   stats,
+  stripControlChars,
   usageFile,
   usageRing,
   usageRingSlack,
@@ -774,7 +775,8 @@ export async function runNbCli(
             const { metaLines, entries } = readShelf(dir, s);
             // Print the one-line description (if any) as a header above the lessons,
             // so a reader sees what the notebook is *for* before its contents.
-            const desc = getMetaValue(metaLines, DESC_KEY);
+            const descRaw = getMetaValue(metaLines, DESC_KEY);
+            const desc = descRaw === null ? null : stripControlChars(descRaw);
             if (desc) process.stdout.write(`# desc: ${desc}\n`);
             // A shelf that was never created (e.g. a typo) must not read as a real
             // empty notebook — that would mislead (DP-5, issue #166). Say "no
@@ -1157,7 +1159,8 @@ export async function runNbCli(
           else if (r.desc === null) process.stdout.write(`description cleared for shelf "${shelf}"\n`);
           else process.stdout.write(`description set for shelf "${shelf}": ${r.desc}\n`);
         } else {
-          const desc = getDescription(dir, shelf);
+          const descRaw = getDescription(dir, shelf);
+          const desc = descRaw === null ? null : stripControlChars(descRaw);
           if (json) process.stdout.write(JSON.stringify({ role: shelf, shelf, desc, set: false }) + '\n');
           else if (desc) process.stdout.write(desc + '\n');
           else process.stderr.write(`no description set for shelf "${shelf}" — set one with \`nb describe ${shelf} "<text>"\`\n`);

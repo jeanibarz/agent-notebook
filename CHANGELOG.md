@@ -21,6 +21,16 @@ versions are listed plainly.
   the exit code and stdout (the human table and the `--json` `StatsReport`, still one valid object) are
   unchanged, and a retired shelf that still has historical in-window rows is not flagged. See
   [FR-STATS-009](docs/requirements.md#fr-stats-009).
+- **Lessons and descriptions can no longer inject terminal escape sequences (#335).**
+  `sanitizeLesson` only collapsed whitespace, so ANSI/OSC escapes, NUL/BEL, C1 controls,
+  bidi overrides and zero-width characters were stored verbatim and echoed raw by
+  `nb show`, `nb list` and `nb search` (and injected into harness context). `sanitizeLesson`
+  now strips C0 controls (except tab/LF/VT/FF/CR, which still become a space), DEL, C1 controls, bidi
+  embedding/override/isolate marks and zero-width characters, while keeping ZWJ and
+  variation selectors so emoji survive; the render paths strip the same classes too, so a
+  shelf file stored before this rule cannot emit an escape either. Zero-width characters
+  no longer defeat the exact-duplicate check. See
+  [FR-MODEL-002](docs/requirements.md#fr-model-002).
 - **Batch-vote partial selector-misses are no longer laundered out of `nb stats`' vote error causes (#310).**
   A batch vote (`nb vote <shelf> id1,id2,id3 +1`) that resolved at least one id but skipped others
   exited `0` and wrote a clean success row — no `errorClass` — so its stale ids were invisible to the

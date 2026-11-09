@@ -281,13 +281,45 @@ function writeUsageState(dir: string, rows: number, bytes: number): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * The characters that must never reach a terminal or an agent's context: C0
+ * controls other than the whitespace ones (tab, LF, VT, FF, CR — the `\s` pass turns
+ * those into a space, so a form feed still separates words) including ESC, NUL
+ * and BEL; DEL; C1 controls (U+0080–U+009F, from which a raw ESC byte can be
+ * re-formed); bidi embedding/override/isolate marks (U+202A–202E, U+2066–2069)
+ * that make a line read differently from what it contains; and invisible
+ * zero-width characters (U+200B, U+2060, U+FEFF) that defeat the exact-duplicate
+ * check. U+200D (ZWJ) and the variation selectors are deliberately KEPT so emoji
+ * ZWJ sequences survive (issue #335).
+ */
+const CONTROL_CHARS_RE = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g;
+
+/**
+ * Drop the terminal-manipulating / invisible characters ({@link CONTROL_CHARS_RE})
+ * without otherwise touching the text. Applied on write (via {@link sanitizeLesson})
+ * AND on every render path, so a shelf file stored before this rule existed can
+ * never emit a raw escape either.
+ */
+export function stripControlChars(raw: string): string {
+  return raw.replace(CONTROL_CHARS_RE, '');
+}
+
+/** {@link stripControlChars} that passes `null` through — for the optional description value. */
+function stripControlCharsNullable(raw: string | null): string | null {
+  return raw === null ? null : stripControlChars(raw);
+}
+
+/**
  * Flatten a lesson to a single whitespace-collapsed line with no tab (our field
- * separator). Does NOT truncate: the caller enforces the length cap by rejecting
- * an over-long write (addEntry/merge), so the agent can retry with a shorter
- * *complete* lesson instead of silently storing a cut-off, possibly useless one.
+ * separator), dropping control/invisible/bidi characters ({@link stripControlChars}).
+ * Does NOT truncate: the caller enforces the length cap by rejecting an over-long
+ * write (addEntry/merge), so the agent can retry with a shorter *complete* lesson
+ * instead of silently storing a cut-off, possibly useless one.
  */
 export function sanitizeLesson(raw: string): string {
-  return raw.replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return stripControlChars(raw)
+    .replace(/[\t\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function parseLine(line: string): Entry | null {
@@ -1485,11 +1517,11 @@ export function showJson(dir: string, shelf: string): ShowResult {
   return {
     role: shelf,
     shelf,
-    description: getMetaValue(metaLines, DESC_KEY),
+    description: stripControlCharsNullable(getMetaValue(metaLines, DESC_KEY)),
     entries: ord.map((x) => ({
       id: entryId(x.e.text),
       score: x.e.score,
-      text: x.e.text,
+      text: stripControlChars(x.e.text),
       key: dedupKey(x.e.text),
     })),
     exists: notebookExists(dir, shelf),
@@ -1559,7 +1591,7 @@ export function staleCandidates(dir: string, shelf: string, limit?: number): Sta
   return {
     shelf,
     total: entries.length,
-    entries: capped.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text })),
+    entries: capped.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: stripControlChars(x.e.text) })),
     exists: notebookExists(dir, shelf),
   };
 }
@@ -1582,7 +1614,7 @@ export function renderEntries(shelf: string, entries: Entry[]): string {
   return ord
     .map((x) => {
       const s = x.e.score >= 0 ? `+${x.e.score}` : `${x.e.score}`;
-      return `${entryId(x.e.text)}  [${s}]  ${x.e.text}`;
+      return `${entryId(x.e.text)}  [${s}]  ${stripControlChars(x.e.text)}`;
     })
     .join('\n');
 }
@@ -1664,10 +1696,10 @@ export function listNotebooks(dir: string, opts: ListOptions = {}): NotebookList
       // One read per shelf for both the lesson count and the description (issue
       // #201): the index used to read each file twice (readEntries + getDescription).
       const { metaLines, entries } = readShelf(dir, shelf);
-      const desc = getMetaValue(metaLines, DESC_KEY);
+      const desc = stripControlCharsNullable(getMetaValue(metaLines, DESC_KEY));
       // Fall back to the top-scored lesson only when there is no explicit
       // description; `ordered` is score-desc with an insertion-order tie-break.
-      const auto = desc === null && entries.length > 0 ? ordered(entries)[0].e.text : null;
+      const auto = desc === null && entries.length > 0 ? stripControlChars(ordered(entries)[0].e.text) : null;
       return { role: shelf, shelf, lessons: entries.length, desc, auto };
     })
     .filter((n) => n.lessons > 0 || n.desc !== null);
@@ -1776,7 +1808,7 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
     // One read per shelf for both entries and description (issue #201): the
     // keyword scan used to read each file twice (readEntries + getDescription).
     const { metaLines, entries } = readShelf(dir, shelf);
-    const desc = getMetaValue(metaLines, DESC_KEY);
+    const desc = stripControlCharsNullable(getMetaValue(metaLines, DESC_KEY));
     // Tag each hit with its file-order index so equal (matched, score) hits keep a
     // stable, insertion-order sequence ([DP-3]); the index is dropped from output.
     const tagged = entries
@@ -1790,7 +1822,7 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
       shelf,
       desc,
       descMatched,
-      hits: tagged.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text, matched: x.matched })),
+      hits: tagged.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: stripControlChars(x.e.text), matched: x.matched })),
     });
   }
 
