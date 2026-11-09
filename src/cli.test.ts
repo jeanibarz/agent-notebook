@@ -3962,6 +3962,9 @@ describe('stats names a shelf that does not exist (issue #341)', () => {
     expect(rep.window).toBe('7d');
     expect(typeof rep.totalCalls).toBe('number');
     expect(r.err).toContain('nb stats: no shelf named "pather"');
+  });
+});
+
 // Issue #335: lessons and descriptions are free text printed to a terminal and
 // injected into agent context, so no raw control / bidi / zero-width byte may reach
 // stdout from `show`, `list` or `search` — including from a shelf file written
