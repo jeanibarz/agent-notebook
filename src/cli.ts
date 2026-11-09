@@ -1259,6 +1259,31 @@ export async function runNbCli(
         // Compute the report once: both the --json dump and the human render
         // consume it, and the --exit-code gate reads its anomaly count.
         const rep = stats(dir, { shelf: maybeShelf, windowMs });
+        // A shelf operand that names a shelf never created is almost always a
+        // typo, yet `stats` (unlike the mutations, #200, and `show`, #166) never
+        // validated it — a misspelling produced a plausible, empty report that
+        // reads exactly like a real shelf gone silent, a wrong conclusion in a
+        // command whose job is to surface unused shelves (issue #341). Keep the
+        // exit code and stdout byte-identical (this is advisory only) and print
+        // one stderr note. `rep.totalCalls === 0` is the "no rows other than the
+        // current call" test: this `stats` row is logged only afterwards (the
+        // shared `finally`), so it is not yet in the report. A retired shelf that
+        // still has historical rows has `totalCalls > 0` and is never flagged.
+        // An unsafe shelf name makes `notebookExists` throw; skip the note so the
+        // advisory check can't turn a tolerated bad operand into a new error.
+        if (maybeShelf && rep.totalCalls === 0) {
+          let exists = true;
+          try {
+            exists = notebookExists(dir, maybeShelf);
+          } catch {
+            // unsafe shelf name — leave stats' existing forgiving behavior alone
+          }
+          if (!exists) {
+            const near = closestShelf(maybeShelf, listShelves(dir));
+            const hint = near ? ` — did you mean "${near}"?` : '';
+            process.stderr.write(`nb stats: no shelf named "${maybeShelf}"${hint}\n`);
+          }
+        }
         // `--json` emits the raw StatsReport (stable, machine-readable) so a
         // supervising agent can act on a loop/went-silent/high-error-rate
         // anomaly without regex-parsing the human table. The --since warning

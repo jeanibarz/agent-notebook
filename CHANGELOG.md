@@ -10,6 +10,17 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Fixed
+- **`nb stats <shelf>` no longer lets a typo read as a real but silent shelf (#341).**
+  `stats` takes a shelf operand but, unlike the mutations (which answer an unknown shelf with a
+  did-you-mean, #200) and `show` (which distinguishes missing from empty, #166), never validated it —
+  so a misspelled shelf produced a plausible, empty report indistinguishable from a real shelf with no
+  recent activity, the exact wrong conclusion a command built to surface unused shelves must not invite.
+  When the operand has no `<shelf>.md` **and** the window holds no usage rows for it (other than the
+  current call), `stats` now prints one advisory note on **stderr** — `nb stats: no shelf named "X"`,
+  plus `— did you mean "Y"?` when a shelf is close (reusing #200's `closestShelf`). It is advisory only:
+  the exit code and stdout (the human table and the `--json` `StatsReport`, still one valid object) are
+  unchanged, and a retired shelf that still has historical in-window rows is not flagged. See
+  [FR-STATS-009](docs/requirements.md#fr-stats-009).
 - **Batch-vote partial selector-misses are no longer laundered out of `nb stats`' vote error causes (#310).**
   A batch vote (`nb vote <shelf> id1,id2,id3 +1`) that resolved at least one id but skipped others
   exited `0` and wrote a clean success row — no `errorClass` — so its stale ids were invisible to the

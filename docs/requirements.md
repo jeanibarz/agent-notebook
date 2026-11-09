@@ -1057,6 +1057,27 @@ paths record no misses), and `notebook.test.ts` → `describe('usage log + stats
 round-trips the column, clamps a negative cell, folds into the vote error causes without
 inflating the error rate, and respects the noise floor on miss events).
 
+<a id="fr-stats-009"></a>
+**FR-STATS-009 (Should).** When `stats` is scoped to a shelf operand that has no
+`<shelf>.md` AND the requested window holds no usage rows for it, `stats` SHALL print one
+advisory note on **stderr** (`nb stats: no shelf named "<x>"`, plus `— did you mean "<y>"?`
+when a shelf is close, reusing the `closestShelf` did-you-mean helper from issue #200),
+so a typo is never mistaken for a real shelf that has gone
+silent. The note is **advisory only**: the exit code and stdout (the human table and the
+`--json` `StatsReport`, still a single valid object) SHALL be unchanged. A shelf that no
+longer exists but still has historical in-window rows SHALL NOT be flagged — only the
+"no rows other than the current call" case is a typo signal (the current call is logged
+after the read). An unsafe shelf name SHALL keep `stats`' existing forgiving behaviour
+(no note, no new error).
+**Rationale:** The mutations answer an unknown shelf with a did-you-mean (#200) and `show`
+distinguishes missing from empty (#166), but `stats` validated only `--since` — a misspelled
+shelf produced a plausible, empty report indistinguishable from a truly silent shelf, the
+exact wrong conclusion a command built to surface unused shelves must not invite (issue #341).
+*Proven by:* `cli.test.ts` → `describe('stats names a shelf that does not exist (issue #341)')`
+(a typo notes with a suggestion while stdout is unchanged; no suggestion when nothing is
+close; an existing shelf and a retired shelf with history print no note; `--json` stays one
+valid object).
+
 ### 4.13 Notebook descriptions & metadata
 
 <a id="fr-desc-001"></a>
