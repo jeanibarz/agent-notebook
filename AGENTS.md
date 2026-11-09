@@ -110,8 +110,8 @@ notebook so the next run of this task starts wiser:
 4. **Add at most one new lesson** — to the shelf whose lessons are needed in the same
    situations as this one (check `nb list` if unsure which; start a new shelf only if
    no existing shelf fits). Make it the single most useful, non-obvious thing you learned
-   that you would want *surfaced to you* next time. One line, ≤200 chars,
-   concrete, no preamble. Adding nothing is a valid and honest outcome.
+   that you would want *surfaced to you* next time. One line, ≤200 chars
+   (aim for ~150 / one clause), concrete, no preamble. Adding nothing is a valid and honest outcome.
    ```sh
    nb add "<shelf>" "fresh worktree has no node_modules — run npm install before build/test"
    ```
@@ -136,6 +136,8 @@ Rules the tool enforces, so you don't have to guess:
 
 - **One line, ≤200 characters.** An over-long `add` is *rejected*, never
   truncated — rewrite it shorter and complete, don't store a cut-off fragment.
+  You can't count characters reliably, so aim for ~150 (one clause, no preamble) to stay
+  safely under the cap.
 - **Near-duplicates are skipped.** If a lesson already says it, your `add` is a
   no-op; that's a signal the notebook already covered you (good), not a failure.
 - **A reason is always optional.** Omit it rather than invent one; an unknown
@@ -169,7 +171,7 @@ END (retro) nb vote <shelf> <id> +1   # the lessons that helped
             nb vote <shelf> <id> -1   # the ones that misled (vote takes no --reason)
             nb rm   <shelf> <id> --reason obsolete   # what no longer applies
             nb merge/split …         # keep it tidy
-            nb add  <shelf> "<=200-char lesson"       # at most ONE, to the fitting notebook
+            nb add  <shelf> "<=200-char lesson (aim ~150)"  # at most ONE, to the fitting notebook
 ```
 
 ---

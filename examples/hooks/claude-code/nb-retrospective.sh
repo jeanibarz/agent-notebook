@@ -73,6 +73,7 @@ const reason = [
   `  3. nb rm   <shelf> <id> --reason obsolete   — anything incorrect / no longer true`,
   `  4. nb merge/split <shelf> …    — only if lessons repeat or a line holds two`,
   `  5. nb add  <shelf> "<=200-char lesson"   — at MOST one new, non-obvious lesson, to the notebook it fits (or none)`,
+  `     Length: aim for ~150 chars / one clause, no preamble — over 200 is rejected, not truncated.`,
   `Do not pad to hit a quota — "nothing new worth storing" is a valid outcome. Then stop.`,
 ].join('\n');
 
