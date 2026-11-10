@@ -306,6 +306,7 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
       shelf(`parity${i}@two`, [[1, text]]);
     });
     const groups = json().crossShelfDups;
+    console.log('DEBUG362 files=' + JSON.stringify(readdirSync(dir).sort()) + ' bases=' + JSON.stringify(groups.map((g) => g.base)));
     expect(groups.length).toBe(samples.length);
     samples.forEach((_, i) => {
       const d = groups.find((g) => g.base === `parity${i}`)!;
