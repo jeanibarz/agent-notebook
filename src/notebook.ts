@@ -422,6 +422,22 @@ export function sanitizeLesson(raw: string): string {
     .trim();
 }
 
+/**
+ * Recognize a git merge-conflict marker line (issue #333): a line-start `<<<<<<<`
+ * or `>>>>>>>` followed by a space or the end of the line, or a bare `=======`
+ * (nothing else on it). Anchored, so a lesson that merely contains `=======`
+ * mid-line, or the ordinary hand-edited tab-less line, is not a marker. A shelf
+ * that holds one came from an unresolved `git merge`/`pull` on a git-versioned
+ * notebook, and rewriting it would bake the markers in as lessons — so reads
+ * warn and mutations refuse instead.
+ */
+const CONFLICT_MARKER_RE = /^(?:<<<<<<<|>>>>>>>)(?: |$)|^=======$/;
+
+/** True when `line` is a git merge-conflict marker (see {@link CONFLICT_MARKER_RE}). */
+export function isConflictMarker(line: string): boolean {
+  return CONFLICT_MARKER_RE.test(line);
+}
+
 function parseLine(line: string): Entry | null {
   if (line.trim() === '') return null;
   const tab = line.indexOf('\t');
@@ -949,6 +965,13 @@ export interface ShelfContents {
   metaLines: string[];
   /** The parsed entries after the metadata block — identical to {@link readEntries}. */
   entries: Entry[];
+  /**
+   * The first git merge-conflict marker line found in the file, or `null` for a
+   * clean shelf (issue #333). Read commands warn and mutation commands refuse
+   * when it is set — the file is the output of an unresolved `git merge`, and
+   * rewriting it would persist the markers as real lessons.
+   */
+  conflict: string | null;
 }
 
 /**
@@ -967,9 +990,10 @@ export interface ShelfContents {
  */
 export function readShelf(dir: string, shelf: string): ShelfContents {
   const file = shelfFile(dir, shelf);
-  if (!existsSync(file)) return { metaLines: [], entries: [] };
+  if (!existsSync(file)) return { metaLines: [], entries: [], conflict: null };
   const metaLines: string[] = [];
   const entries: Entry[] = [];
+  let conflict: string | null = null;
   // One scan splits the file: the leading run of `# key:` lines is metadata, and
   // the first non-metadata line flips `inMeta` so every remaining line parses as
   // an entry — matching readMetaLines (leading block) and readEntries (the rest).
@@ -989,10 +1013,14 @@ export function readShelf(dir: string, shelf: string): ShelfContents {
   try {
     raw = readFileSync(file, 'utf-8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { metaLines: [], entries: [] };
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { metaLines: [], entries: [], conflict: null };
     throw err;
   }
   for (const line of (raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw).split(/\r?\n/)) {
+    // A merge-conflict marker is not a lesson (issue #333): record the first one
+    // so callers can warn/refuse, but still parse the line below so show/list
+    // output stays what a read would have produced before the guard.
+    if (conflict === null && isConflictMarker(line)) conflict = line;
     if (inMeta && META_RE.test(line)) {
       metaLines.push(line);
       continue;
@@ -1001,7 +1029,7 @@ export function readShelf(dir: string, shelf: string): ShelfContents {
     const e = parseLine(line);
     if (e && e.text !== '') entries.push(e);
   }
-  return { metaLines, entries };
+  return { metaLines, entries, conflict };
 }
 
 /**
@@ -1213,7 +1241,8 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     const text = sanitizeLesson(lesson);
     // One scan for entries AND the metadata block, passed through to writeEntries
     // below so the mutation reads the shelf once, not twice (issue #251).
-    const { metaLines, entries } = readShelf(dir, shelf);
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
     if (text === '') return { added: false, reason: 'empty', evicted: null, evictedAll: [], decayed: null, size: entries.length };
     const id = entryId(text);
     const cap = maxChars();
@@ -1344,7 +1373,8 @@ export function vote(dir: string, shelf: string, selector: string, delta: number
     if (delta !== 1 && delta !== -1) throw new NbError('bad_args', 'vote delta must be +1 or -1');
     // One scan for entries AND the metadata block, passed through to writeEntries
     // below so the mutation reads the shelf once, not twice (issue #251).
-    const { metaLines, entries } = readShelf(dir, shelf);
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
     if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     entries[idx].score += delta;
@@ -1396,7 +1426,8 @@ export function voteMany(dir: string, shelf: string, selectors: string[], delta:
     if (selectors.length === 0) throw new NbError('bad_args', 'vote needs at least one id');
     // One scan for entries AND the metadata block, passed through to writeEntries
     // below so the mutation reads the shelf once, not twice (issue #251).
-    const { metaLines, entries } = readShelf(dir, shelf);
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
     if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const results: VoteManyItem[] = [];
     // Resolve every selector against the ORIGINAL array first (indices are only
@@ -1444,7 +1475,8 @@ export function merge(dir: string, shelf: string, selA: string, selB: string, me
   return withLock(dir, () => {
     // One scan for entries AND the metadata block, passed through to writeEntries
     // below so the mutation reads the shelf once, not twice (issue #251).
-    const { metaLines, entries } = readShelf(dir, shelf);
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
     const ia = selectIndex(entries, selA);
     const ib = selectIndex(entries, selB);
     if (ia === ib) throw new NbError('bad_args', 'merge needs two different entries');
@@ -1503,7 +1535,8 @@ export function split(
   return withLock(dir, () => {
     // One scan for entries AND the metadata block, passed through to writeEntries
     // below so the mutation reads the shelf once, not twice (issue #251).
-    const { metaLines, entries } = readShelf(dir, shelf);
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
     if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     const original = entries[idx];
@@ -1549,7 +1582,8 @@ export function remove(dir: string, shelf: string, selector: string): Promise<Vo
   return withLock(dir, () => {
     // Read entries AND the metadata block in one scan: the reap below must tell a
     // described-but-empty notebook (kept) from a true phantom (reaped), issue #209.
-    const { metaLines, entries } = readShelf(dir, shelf);
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
     if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     const [gone] = entries.splice(idx, 1);
@@ -1610,12 +1644,16 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
     if (fromShelf === toShelf) {
       throw new NbError('bad_args', `move needs two different shelves (source and target are both "${fromShelf}")`);
     }
-    const source = readEntries(dir, fromShelf);
+    const sourceRead = readShelf(dir, fromShelf);
+    assertNotConflicted(fromShelf, sourceRead.conflict);
+    const source = sourceRead.entries;
     if (source.length === 0) throw new NbError('no_match', `notebook for shelf "${fromShelf}" is empty`);
     const idx = selectIndex(source, selector);
     const moving = source[idx];
     const id = entryId(moving.text);
-    const target = readEntries(dir, toShelf);
+    const targetRead = readShelf(dir, toShelf);
+    assertNotConflicted(toShelf, targetRead.conflict);
+    const target = targetRead.entries;
     const key = dedupKey(moving.text);
     const collider = target.find((e) => dedupKey(e.text) === key);
     if (collider) {
@@ -1662,6 +1700,24 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
 /** The `desc` metadata key: a notebook's optional one-line description/trigger. */
 export const DESC_KEY = 'desc';
 
+/**
+ * The handled refusal a MUTATION raises when its shelf holds a git merge-conflict
+ * marker (issue #333). The shelf read as-is for a read command, but rewriting it
+ * (add/vote/merge/split/rm/move/describe) would persist the marker lines as real
+ * lessons and erase the signal that a merge still needs resolving — so the write
+ * is refused, the file is left byte-identical, and the message names the shelf and
+ * the first offending line so the caller can run `git merge` / fix the file first.
+ * Classified `corrupt` in the usage log so `nb stats` can surface it.
+ */
+function assertNotConflicted(shelf: string, conflict: string | null): void {
+  if (conflict === null) return;
+  throw new NbError(
+    'corrupt',
+    `notebook for shelf "${shelf}" contains a git merge-conflict marker (${JSON.stringify(conflict)}) — ` +
+      `resolve the merge conflict in ${shelf}.md first; refusing to rewrite it`,
+  );
+}
+
 export interface DescribeResult {
   /** @deprecated use shelf */
   role: string;
@@ -1697,8 +1753,9 @@ export function setDescription(dir: string, shelf: string, text: string): Promis
       // Reject rather than truncate, exactly as add/merge/split do.
       throw new NbError('too_long', `description is ${clean.length} chars; max is ${maxChars()} — shorten it`);
     }
-    const entries = readEntries(dir, shelf);
-    const meta = setMetaValue(readMetaLines(dir, shelf), DESC_KEY, clean);
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
+    const meta = setMetaValue(metaLines, DESC_KEY, clean);
     writeEntries(dir, shelf, entries, meta);
     return { role: shelf, shelf, desc: clean === '' ? null : clean, set: true };
   });
@@ -1920,6 +1977,21 @@ export interface SkippedShelf {
 }
 
 /**
+ * A shelf whose file holds an unresolved git merge-conflict marker (issue #333).
+ * A read command still reads it exactly as before (so `show`/`list`/`search`/
+ * `stale` output is unchanged and `--json` stays valid) but names it in one
+ * stderr warning; a mutation refuses instead of rewriting the markers in as real
+ * lessons. `marker` is the first offending line, so the caller can say WHICH line
+ * (and thus which side of a merge) needs resolving.
+ */
+export interface ConflictShelf {
+  /** The shelf whose `<shelf>.md` holds a conflict marker. */
+  shelf: string;
+  /** The first merge-conflict marker line found in the file. */
+  marker: string;
+}
+
+/**
  * Run `fn` for one shelf, returning `undefined` (and the errno code) instead of
  * throwing when the read fails with anything but `ENOENT` (which `readShelf`
  * already swallows as an empty shelf). Shared by the two cross-shelf scans so a
@@ -1963,6 +2035,13 @@ export interface NotebookListing {
    * but the CLI omits it when empty).
    */
   skipped: SkippedShelf[];
+  /**
+   * Shelves whose file holds a git merge-conflict marker (issue #333), so the
+   * index row is still shown (the lessons read as before) but the CLI warns on
+   * stderr that the shelf must be resolved. Empty on a healthy store, so the
+   * `--json` field is emitted only when non-empty (healthy output is unchanged).
+   */
+  conflicts: ConflictShelf[];
 }
 
 /**
@@ -1982,6 +2061,7 @@ export interface NotebookListing {
 export function listNotebooks(dir: string, opts: ListOptions = {}): NotebookListing {
   const prefix = opts.prefix ?? '';
   const skipped: SkippedShelf[] = [];
+  const conflicts: ConflictShelf[] = [];
   const matches = listShelves(dir)
     .filter((shelf) => shelf.startsWith(prefix))
     .map((shelf): NotebookSummary | null => {
@@ -1994,7 +2074,8 @@ export function listNotebooks(dir: string, opts: ListOptions = {}): NotebookList
         skipped.push(read.error);
         return null;
       }
-      const { metaLines, entries } = read.value!;
+      const { metaLines, entries, conflict } = read.value!;
+      if (conflict !== null) conflicts.push({ shelf, marker: conflict });
       const desc = stripControlCharsNullable(getMetaValue(metaLines, DESC_KEY));
       // Fall back to the top-scored lesson only when there is no explicit
       // description; `ordered` is score-desc with an insertion-order tie-break.
@@ -2006,7 +2087,7 @@ export function listNotebooks(dir: string, opts: ListOptions = {}): NotebookList
   matches.sort((a, b) => b.lessons - a.lessons || a.shelf.localeCompare(b.shelf));
   const { limit } = opts;
   const rows = limit != null ? matches.slice(0, Math.max(0, limit)) : matches;
-  return { dir, total: matches.length, rows, skipped };
+  return { dir, total: matches.length, rows, skipped, conflicts };
 }
 
 // ---------------------------------------------------------------------------
@@ -2079,6 +2160,12 @@ export interface SearchResult {
    * store.
    */
   skipped: SkippedShelf[];
+  /**
+   * Shelves in scope whose file holds a git merge-conflict marker (issue #333);
+   * their lessons are still searched (a read is never refused) but the CLI warns
+   * on stderr. Empty on a healthy store.
+   */
+  conflicts: ConflictShelf[];
 }
 
 /**
@@ -2100,7 +2187,7 @@ export interface SearchResult {
  */
 export function search(dir: string, query: string, opts: SearchOptions = {}): SearchResult {
   const terms = query.toLowerCase().split(/\s+/).filter((t) => t !== '');
-  if (terms.length === 0) return { terms: [], groups: [], total: 0, surfacedIds: [], skipped: [] };
+  if (terms.length === 0) return { terms: [], groups: [], total: 0, surfacedIds: [], skipped: [], conflicts: [] };
   const prefix = opts.prefix ?? '';
   const needAll = !opts.any;
   const isHit = (matched: number): boolean => (needAll ? matched === terms.length : matched >= 1);
@@ -2111,6 +2198,7 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
 
   const groups: SearchGroup[] = [];
   const skipped: SkippedShelf[] = [];
+  const conflicts: ConflictShelf[] = [];
   for (const shelf of listShelves(dir).filter((r) => r.startsWith(prefix))) {
     // One read per shelf for both entries and description (issue #201): the
     // keyword scan used to read each file twice (readEntries + getDescription).
@@ -2121,7 +2209,8 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
       skipped.push(read.error);
       continue;
     }
-    const { metaLines, entries } = read.value!;
+    const { metaLines, entries, conflict } = read.value!;
+    if (conflict !== null) conflicts.push({ shelf, marker: conflict });
     const desc = stripControlCharsNullable(getMetaValue(metaLines, DESC_KEY));
     // Tag each hit with its file-order index so equal (matched, score) hits keep a
     // stable, insertion-order sequence ([DP-3]); the index is dropped from output.
@@ -2157,7 +2246,7 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
   const total = groups.length;
   const surfacedIds = groups.flatMap((g) => g.hits.map((h) => h.id));
   const bounded = opts.limit != null ? groups.slice(0, Math.max(0, opts.limit)) : groups;
-  return { terms, groups: bounded, total, surfacedIds, skipped };
+  return { terms, groups: bounded, total, surfacedIds, skipped, conflicts };
 }
 
 // ---------------------------------------------------------------------------
@@ -2181,6 +2270,7 @@ export const ERROR_CLASSES = [
   'no_match', // a selector matched no entry (and no notebook/shelf to act on)
   'multiline_refused', // `add … -` was piped more than one line
   'bad_args', // a missing/malformed argument or flag, or an invalid shelf name
+  'corrupt', // a mutation refused because the shelf holds a git merge-conflict marker (issue #333)
   'unknown_subcommand', // an unknown `nb` command (agents guessing names)
   'other', // anything not (yet) classified — the escape hatch
 ] as const;
@@ -2869,6 +2959,13 @@ export interface StatsReport {
    */
   skipped: SkippedShelf[];
   /**
+   * Shelves whose notebook file holds a git merge-conflict marker (issue #333),
+   * the inventory analogue of `skipped`: the shelf is still counted (its lessons
+   * read as stored) but the CLI warns on stderr that it must be resolved. Additive
+   * to the report; `STATS_SCHEMA_VERSION` does not bump. Empty on a healthy store.
+   */
+  conflicts: ConflictShelf[];
+  /**
    * Free diagnostic signals (issue #72): memory-quality observations derived
    * from the same windowed, shelf-scoped usage rows as `anomalies`, but about the
    * notebook (descriptions, cap pressure, mis-aimed lessons) rather than command
@@ -3531,6 +3628,7 @@ export function stats(
   // unreadable shelf so the healthy inventory still prints; a codeless throw still
   // propagates (see `skipUnreadable`).
   const skipped: SkippedShelf[] = [];
+  const conflicts: ConflictShelf[] = [];
   const notebooks: NotebookStat[] = [];
   for (const shelf of inventoryShelves) {
     const read = skipUnreadable(shelf, () => readShelf(dir, shelf));
@@ -3538,6 +3636,7 @@ export function stats(
       skipped.push(read.error);
       continue;
     }
+    if (read.value!.conflict !== null) conflicts.push({ shelf, marker: read.value!.conflict });
     notebooks.push({ role: shelf, shelf, lines: read.value!.entries.length, cap });
   }
   const notebookTotals: NotebookTotals = {
@@ -3616,6 +3715,7 @@ export function stats(
     notebooks,
     notebookTotals,
     skipped,
+    conflicts,
     signals,
     surfacing,
     activity,

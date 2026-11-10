@@ -10,6 +10,18 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Fixed
+- **A shelf with git merge-conflict markers is no longer silently rewritten as clean lessons (#333).**
+  After a `git pull`/`git merge` conflict in a git-versioned notebook, the `<<<<<<<`, `=======` and `>>>>>>>`
+  lines parsed as score-0 lessons, and the next `nb add|vote|rm` wrote them back as real lessons — erasing the
+  only signal that a merge needed resolving, evicting real lessons against the cap, and injecting junk into
+  agent context. `nb` now recognizes the three exact marker shapes at line start (a bare `=======`, or
+  `<<<<<<<`/`>>>>>>>` followed by a space or end of line); a mid-line `=======` or an ordinary hand-edited
+  tab-less line is still a normal tolerated lesson. Read commands (`show`, `list`, `search`, `stale`) still
+  print exactly as before but add one stderr warning naming the shelf and marker (`--json` stdout stays valid
+  JSON, with only the additive `conflicts` field below); the same shelves appear in the additive `conflicts` field of `nb list`/`nb search`
+  `--json` (emitted only when non-empty) and of `nb stats --json` (always present, `[]` when clean, like `skipped`). Every mutation (`add`, `vote`, `merge`, `split`, `rm`, `move`,
+  `describe`) refuses with exit 1 and a new `corrupt` error class that names the shelf and marker line, leaving
+  the file byte-identical. See [FR-MODEL-004](docs/requirements.md#fr-model-004).
 - **One unreadable shelf no longer takes down `nb list`, `nb search` and the session-start index (#332).**
   The cross-shelf scans read every `<shelf>.md` with no per-shelf error handling, so a single
   non-`ENOENT` read failure — `EACCES` on a root-owned or `chmod`'d file left by a `sudo nb`, `EISDIR`

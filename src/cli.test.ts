@@ -4537,3 +4537,104 @@ describe('readBoundedStream (issue #304)', () => {
     expect(await readBoundedStream(gen(['one\r', '\n'], seen), 100)).toBe('one\r\n');
   });
 });
+
+describe('a git merge-conflicted shelf warns on reads and refuses mutations (issue #333)', () => {
+  // A `git merge`/`pull` conflict on a git-versioned notebook leaves `<<<<<<<`,
+  // `=======` and `>>>>>>>` lines in `<shelf>.md`. Reads must keep working (the
+  // lessons print as before, plus one stderr warning) and every mutation must
+  // refuse with exit 1 and leave the file byte-identical — otherwise the next
+  // write would bake the markers in as real lessons and erase the conflict.
+  const MARKED = '+1\tfoo lesson\n<<<<<<< HEAD\n+2\tmine\n=======\n+3\ttheirs\n>>>>>>> branch\n';
+  const seed = (shelf = 'g'): string => {
+    const file = join(dir, `${shelf}.md`);
+    writeFileSync(file, MARKED);
+    return file;
+  };
+
+  test('show prints the stored lessons plus one stderr warning; stdout is unchanged and exit 0', async () => {
+    seed();
+    const r = await run(['show', 'g']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('foo lesson');
+    expect(r.out).toContain('<<<<<<< HEAD');
+    expect(r.err).toContain('shelf "g"');
+    expect(r.err).toContain('<<<<<<< HEAD');
+    expect(r.err.split('\n').filter((l) => l.includes('merge-conflict marker'))).toHaveLength(1);
+  });
+
+  test('show --json stdout is unchanged and valid, warning on stderr', async () => {
+    seed();
+    const r = await run(['show', 'g', '--json']);
+    expect(r.code).toBe(0);
+    const parsed = JSON.parse(r.out);
+    expect(parsed.entries.map((e: { text: string }) => e.text)).toContain('foo lesson');
+    expect(r.err).toContain('merge-conflict marker');
+  });
+
+  test('list / search / stale still print, warn once, and exit 0', async () => {
+    seed();
+    await run(['add', 'ok', 'a clean lesson']);
+    for (const argv of [['list'], ['search', 'foo'], ['stale', 'g']]) {
+      const r = await run(argv);
+      expect(r.code).toBe(0);
+      expect(r.err).toContain('shelf "g"');
+      expect(r.err).toContain('merge-conflict marker');
+    }
+    const list = await run(['list', '--json']);
+    const parsed = JSON.parse(list.out);
+    expect(parsed.conflicts).toEqual([{ shelf: 'g', marker: '<<<<<<< HEAD' }]);
+    expect(parsed.rows.map((x: { shelf: string }) => x.shelf)).toContain('g');
+    expect(list.err).toContain('merge-conflict marker');
+    const search = await run(['search', 'foo', '--json']);
+    expect(JSON.parse(search.out).conflicts).toEqual([{ shelf: 'g', marker: '<<<<<<< HEAD' }]);
+    expect(search.err).toContain('shelf "g"');
+    expect(search.err).toContain('merge-conflict marker');
+  });
+
+  test('list --json stays byte-identical on a healthy store (no conflicts field)', async () => {
+    await run(['add', 'ok', 'a clean lesson']);
+    const r = await run(['list', '--json']);
+    expect(JSON.parse(r.out)).not.toHaveProperty('conflicts');
+    expect(Object.keys(JSON.parse(r.out))).toEqual(['dir', 'total', 'rows']);
+  });
+
+  test('a mid-line ======= or a tab-less hand-edited line is not a conflict', async () => {
+    writeFileSync(join(dir, 'clean.md'), 'a hand-edited line\n1\ta lesson with ======= inside\n');
+    const show = await run(['show', 'clean']);
+    expect(show.code).toBe(0);
+    expect(show.err).not.toContain('merge-conflict');
+    const add = await run(['add', 'clean', 'new one']);
+    expect(add.code).toBe(0);
+  });
+
+  test('every mutation exits 1, names the shelf and marker, and leaves the file byte-identical', async () => {
+    const file = seed();
+    writeFileSync(join(dir, 'h.md'), '+1\tother lesson\n');
+    const before = readFileSync(file, 'utf-8');
+    const id = entryId('foo lesson');
+    const id2 = entryId('mine');
+    const mutations: string[][] = [
+      ['add', 'g', 'new one'],
+      ['vote', 'g', id, '+1'],
+      ['merge', 'g', id, id2, 'merged'],
+      ['split', 'g', id, 'a', 'b'],
+      ['rm', 'g', id],
+      ['move', 'h', 'g', entryId('other lesson')],
+      ['describe', 'g', 'a description'],
+    ];
+    for (const argv of mutations) {
+      const r = await run(argv);
+      expect(r.code, argv.join(' ')).toBe(1);
+      expect(r.err).toContain('shelf "g"');
+      expect(r.err).toContain('merge-conflict marker');
+      expect(readFileSync(file, 'utf-8')).toBe(before);
+    }
+  });
+
+  test('the refusal is logged with errorClass corrupt (issue #333)', async () => {
+    seed();
+    const r = await run(['add', 'g', 'new one']);
+    expect(r.code).toBe(1);
+    expect(parseUsage(dir).at(-1)!.errorClass).toBe('corrupt');
+  });
+});
