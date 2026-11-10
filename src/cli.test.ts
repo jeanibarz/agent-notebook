@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS } from './cli.js';
 import { drainPendingRecovery, entryId, parseUsage, usageFile } from './notebook.js';
+import type { IntTunable, RateTunable } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
@@ -1957,6 +1958,23 @@ describe('runNbCli', () => {
         expect(j.unrecognized).toContainEqual({ name: TYPO, suggestion: 'NB_MAX_LINES' });
       });
 
+      test('an NB_* var with no close match is still listed, without a suggestion (issue #336)', async () => {
+        // The spec promises EVERY unread NB_* var is surfaced; a name far from
+        // any real knob (or one another tool owns) must not be dropped just
+        // because closestMatch found nothing — that is the invisible case the
+        // scan exists to expose.
+        const FAR = 'NB_FAKE_TUNE_XYZ';
+        process.env[FAR] = '1';
+        try {
+          const human = (await run(['config'])).out;
+          expect(human).toMatch(new RegExp(`^${FAR}\\s+\\(not read by nb\\)\\s*$`, 'm'));
+          const j = JSON.parse((await run(['config', '--json'])).out);
+          expect(j.unrecognized).toContainEqual({ name: FAR, suggestion: null });
+        } finally {
+          delete process.env[FAR];
+        }
+      });
+
       test('a var read by the shipped example tooling is never flagged as unknown or mis-suggested', async () => {
         // examples/ ships scripts that legitimately read these (guarded by
         // src/env-docs.test.ts); a user who exports them while following the
@@ -2036,6 +2054,36 @@ describe('runNbCli', () => {
             const j = JSON.parse((await run(['config', '--json'])).out);
             expect(j[name].value, `${name} with ${envVar}=${raw}`).toBe(getter());
             delete process.env[envVar];
+          }
+        }
+      });
+
+      test('a moved int bound is caught: probes at the live lo-1/lo/hi/hi+1, not fixed literals', async () => {
+        // The fixed-literal matrix above can miss a moved bound (a value that is
+        // out of range for both old and new ceilings clamps identically). Derive
+        // the probes from the tunable's OWN declared bounds so shifting a bound
+        // in notebook.ts is exercised the moment it moves — the regression guard
+        // for issue #336 review finding 1.
+        const nb = await import('./notebook.js');
+        const specs: Array<[string, () => number, IntTunable | RateTunable]> = [
+          ['maxLines', nb.maxLines, nb.MAX_LINES],
+          ['maxChars', nb.maxChars, nb.MAX_CHARS],
+          ['usageRing', nb.usageRing, nb.USAGE_RING],
+          ['staleLockMs', nb.staleLockMs, nb.STALE_LOCK_MS],
+          ['lockGraceMs', nb.lockGraceMs, nb.LOCK_GRACE_MS],
+          ['loopN', nb.loopN, nb.LOOP_N],
+          ['loopWindowSec', nb.loopWindowSec, nb.LOOP_WINDOW_S],
+          ['silentHours', nb.silentHours, nb.SILENT_H],
+          ['errMin', nb.errMin, nb.ERR_MIN],
+        ];
+        for (const [name, getter, t] of specs) {
+          const spec = t as IntTunable;
+          const probes = [spec.lo - 1, spec.lo, spec.hi, spec.hi + 1].map(String);
+          for (const raw of probes) {
+            process.env[spec.env] = raw;
+            const j = JSON.parse((await run(['config', '--json'])).out);
+            expect(j[name].value, `${name} with ${spec.env}=${raw}`).toBe(getter());
+            delete process.env[spec.env];
           }
         }
       });

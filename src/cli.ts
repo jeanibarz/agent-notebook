@@ -38,9 +38,12 @@ import {
   asciiMode,
   assertSafeShelf,
   classifyError,
+  COVERAGE_HI,
   coverageHi,
   DESC_KEY,
   entryId,
+  ERR_MIN,
+  ERR_RATE,
   errMin,
   errRate,
   formatEvictedUsage,
@@ -49,20 +52,27 @@ import {
   isValidWindow,
   listNotebooks,
   listShelves,
+  LOCK_GRACE_MS,
   lockGraceMs,
   logUsage,
+  LOOP_N,
+  LOOP_WINDOW_S,
   loopN,
   loopWindowSec,
+  MAX_CHARS,
+  MAX_LINES,
   maxChars,
   maxLines,
   merge,
   move,
   NbError,
+  NEAR_DUP,
   nearThreshold,
   normalizeReason,
   notebookExists,
   notebooksDir,
   parseWindowMs,
+  RECALL_MISS_HI,
   recallMissHi,
   readShelf,
   releaseHeldLock,
@@ -75,19 +85,24 @@ import {
   showJson,
   showJsonMany,
   staleCandidates,
-  silentHours,
   sparkGlyphs,
   sparkline,
   split,
+  SILENT_H,
+  silentHours,
+  STALE_LOCK_MS,
   staleLockMs,
   stats,
   stripControlChars,
+  USAGE_RING,
   usageFile,
   usageRing,
   usageRingSlack,
   vote,
   voteMany,
   type EngagementDiagnosis,
+  type IntTunable,
+  type RateTunable,
   type SearchResult,
   type StatsReport,
   type UsageMeta,
@@ -276,7 +291,7 @@ notes:
     as if honored. A trailing section then prints the three behavior-critical STRING env vars — \`NB_DIR\`
     (storage), \`NB_SESSION\` (the id the usage/engagement diagnostics group by), and \`NB_ASCII\` (rendering
     mode) — each tagged \`(env)\`/\`(default)\`. Any \`NB_*\` var nb does not read is listed as \`unrecognized\`
-    (with a did-you-mean hint); informational only. \`--json\` emits one object keyed by tunable name, each
+    (with a did-you-mean hint when one is close); informational only. \`--json\` emits one object keyed by tunable name, each
     \`{ value, source, env, status, rawValue }\`, plus an \`environment\` key holding the string vars
     (\`{ value, source }\` each) and an \`unrecognized\` array. Read-only — it mutates nothing, and is
     scoped to CONFIGURATION (the knobs), distinct from \`nb stats\` (usage, anomalies, engagement).
@@ -1779,13 +1794,13 @@ interface TunableSpec {
  * `resolveIntEnv` so the registry stays declarative while still reading
  * `process.env` at call time, exactly like the hot-path getters.
  */
-function intTunable(name: string, env: string, dflt: number, lo: number, hi: number): TunableSpec {
-  return { name, env, kind: 'int', resolve: () => resolveIntEnv(process.env[env], dflt, lo, hi) };
+function intTunable(name: string, t: IntTunable): TunableSpec {
+  return { name, env: t.env, kind: 'int', resolve: () => resolveIntEnv(process.env[t.env], t.dflt, t.lo, t.hi) };
 }
 
-/** Resolve a rate tunable (bounds [0, 1]) from `NB_<env>` read live. */
-function rateTunable(name: string, env: string, dflt: number): TunableSpec {
-  return { name, env, kind: 'rate', resolve: () => resolveRateEnv(process.env[env], dflt) };
+/** Resolve a rate tunable (bounds [0, 1]) from its `NB_*` var read live. */
+function rateTunable(name: string, t: RateTunable): TunableSpec {
+  return { name, env: t.env, kind: 'rate', resolve: () => resolveRateEnv(process.env[t.env], t.dflt) };
 }
 
 /**
@@ -1797,19 +1812,19 @@ function rateTunable(name: string, env: string, dflt: number): TunableSpec {
  * it is not a registry entry — it is rendered separately.
  */
 const TUNABLE_REGISTRY: readonly TunableSpec[] = [
-  intTunable('maxLines', 'NB_MAX_LINES', 50, 1, 5000),
-  intTunable('maxChars', 'NB_MAX_CHARS', 200, 20, 2000),
-  rateTunable('nearThreshold', 'NB_NEAR_DUP', 0.5),
-  intTunable('usageRing', 'NB_USAGE_RING', 5000, 100, 100000),
-  intTunable('staleLockMs', 'NB_STALE_LOCK_MS', 10_000, 100, 600_000),
-  intTunable('lockGraceMs', 'NB_LOCK_GRACE_MS', 2_000, 0, 600_000),
-  intTunable('loopN', 'NB_LOOP_N', 10, 2, 1000),
-  intTunable('loopWindowSec', 'NB_LOOP_WINDOW_S', 120, 5, 86_400),
-  intTunable('silentHours', 'NB_SILENT_H', 48, 1, 24 * 365),
-  intTunable('errMin', 'NB_ERR_MIN', 5, 1, 10_000),
-  rateTunable('errRate', 'NB_ERR_RATE', 0.3),
-  rateTunable('coverageHi', 'NB_COVERAGE_HI', 0.5),
-  rateTunable('recallMissHi', 'NB_RECALL_MISS_HI', 0.2),
+  intTunable('maxLines', MAX_LINES),
+  intTunable('maxChars', MAX_CHARS),
+  rateTunable('nearThreshold', NEAR_DUP),
+  intTunable('usageRing', USAGE_RING),
+  intTunable('staleLockMs', STALE_LOCK_MS),
+  intTunable('lockGraceMs', LOCK_GRACE_MS),
+  intTunable('loopN', LOOP_N),
+  intTunable('loopWindowSec', LOOP_WINDOW_S),
+  intTunable('silentHours', SILENT_H),
+  intTunable('errMin', ERR_MIN),
+  rateTunable('errRate', ERR_RATE),
+  rateTunable('coverageHi', COVERAGE_HI),
+  rateTunable('recallMissHi', RECALL_MISS_HI),
 ];
 
 /**
@@ -1921,7 +1936,11 @@ interface UnknownEnv {
  * name gets a `did you mean` hint via the same Levenshtein/prefix matcher the
  * command and shelf typo paths use (`closestMatch`), sorted for deterministic
  * output, the hint sized to the historical `unrecognized by nb` tag so the
- * block stays byte-identical to the pre-round-2 output for a pure typo.
+ * block stays byte-identical to the pre-round-2 output for a pure typo. A name
+ * with NO close match is still listed — the promise is to surface every `NB_*`
+ * var nb does not read, and a far-off typo (or a var some other tool owns) is
+ * exactly the case the operator cannot discover otherwise; it just carries no
+ * hint.
  */
 function unknownEnvVars(): UnknownEnv[] {
   const known = recognizedEnvVars();
@@ -1937,8 +1956,7 @@ function unknownEnvVars(): UnknownEnv[] {
     .map((name) => {
       const hit = closestMatch(name, [...byLower.keys()]);
       return { name, suggestion: hit === undefined ? undefined : byLower.get(hit) };
-    })
-    .filter((u) => u.suggestion !== undefined);
+    });
 }
 
 /**
@@ -2002,7 +2020,7 @@ function renderConfig(rows: ConfigRow[], envRows: EnvRow[], unknown: UnknownEnv[
       return `${`${r.name}=${r.value}`.padEnd(pairW)}  ${base}`;
     }
     const note = statusNote(r, r.kind);
-    const tag = note === '' ? base : base.slice(0, -1) + note + ')';
+    const tag = note === '' ? base : `(env ${r.env}${note})`;
     return `${`${r.name}=${r.value}`.padEnd(pairW)}  ${tag}`;
   });
   const envPairW = envRows.reduce((w, r) => Math.max(w, `${r.name}=${r.value}`.length), 0);
@@ -2013,10 +2031,12 @@ function renderConfig(rows: ConfigRow[], envRows: EnvRow[], unknown: UnknownEnv[
   let out = lines.join('\n') + '\n\n' + envLines.join('\n') + '\n';
   if (unknown.length > 0) {
     // Keep the tag the same width as the historical `(unrecognized by nb)` so a
-    // pure typo re-renders identically; `suggestion` is always present (a far-off
-    // name is dropped before it reaches here).
+    // pure typo re-renders identically. A var with NO close match is still shown
+    // (just without a hint) — every `NB_*` nb does not read must surface.
     const unknownLines = unknown.map((u) => {
-      const tag = `(not read by nb — did you mean ${u.suggestion}?)`;
+      const tag = u.suggestion === undefined
+        ? '(not read by nb)'
+        : `(not read by nb — did you mean ${u.suggestion}?)`;
       return `${u.name}  ${tag.padEnd(UNKNOWN_TAG_HISTORY_WIDTH)}`;
     });
     out += '\n' + unknownLines.join('\n') + '\n';
