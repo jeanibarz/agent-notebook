@@ -18,8 +18,8 @@ versions are listed plainly.
   `<<<<<<<`/`>>>>>>>` followed by a space or end of line); a mid-line `=======` or an ordinary hand-edited
   tab-less line is still a normal tolerated lesson. Read commands (`show`, `list`, `search`, `stale`) still
   print exactly as before but add one stderr warning naming the shelf and marker (`--json` stdout is unchanged
-  and valid); the same shelves appear in the additive `conflicts` field of `nb list`/`nb search`/`nb stats`
-  `--json` (emitted only when non-empty). Every mutation (`add`, `vote`, `merge`, `split`, `rm`, `move`,
+  and valid); the same shelves appear in the additive `conflicts` field of `nb list`/`nb search`
+  `--json` (emitted only when non-empty) and of `nb stats --json` (always present, `[]` when clean, like `skipped`). Every mutation (`add`, `vote`, `merge`, `split`, `rm`, `move`,
   `describe`) refuses with exit 1 and a new `corrupt` error class that names the shelf and marker line, leaving
   the file byte-identical. See [FR-MODEL-004](docs/requirements.md#fr-model-004).
 - **One unreadable shelf no longer takes down `nb list`, `nb search` and the session-start index (#332).**
