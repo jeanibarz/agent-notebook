@@ -469,7 +469,17 @@ coverageHi=0.5      (default)
 recallMissHi=0.2    (default)
 ```
 
-Each line is one effective tunable as `name=value`, read from the same getter the hot path uses — so what `nb config` prints is exactly what the caps, the near-dup advisory, the lock timings, and the `nb stats` anomaly/readout thresholds run with. The tag names the source: `(default)` when the env var is unset, `(env NB_*)` when it is set (the printed value is still the post-clamp effective one, so a value you set out of range shows up corrected), or `(derived …)` for a value computed from another (`usageRingSlack`). `nb config --json` emits one object keyed by tunable name — `{ "maxLines": { "value": 50, "source": "default", "env": "NB_MAX_LINES" }, … }` — for a supervisor to read without parsing the lines. It is read-only, and scoped to *configuration* (the knobs), distinct from `nb stats` (usage, anomalies, engagement).
+Each line is one effective tunable as `name=value`, read from the same getter the hot path uses — so what `nb config` prints is exactly what the caps, the near-dup advisory, the lock timings, and the `nb stats` anomaly/readout thresholds run with. The tag names the source: `(default)` when the env var is unset, `(env NB_*)` when it is set (the printed value is still the post-clamp effective one, so a value you set out of range shows up corrected), or `(derived …)` for a value computed from another (`usageRingSlack`).
+
+A set env var is further annotated with how its value was actually resolved, so a setting that was silently rewritten or thrown away can never read as if it were in force:
+
+- `(env NB_MAX_LINES)` — **honored**: the value you set is in force.
+- `(env NB_NEAR_DUP: clamped to 1 from 2)` — **clamped**: you set a value outside the range, and `nb` used the nearest bound (the raw value you exported is quoted).
+- `(env NB_MAX_LINES: ignored "abc", not an integer; using default)` — **ignored**: the value was unparseable, so `nb` used the built-in default. Integer knobs must be a whole integer: a partially-numeric value like `1e3` or `12.9` is ignored (not silently truncated to `1`/`12`).
+
+Output with no problems is byte-identical to the pre-annotation form. Any `NB_*` variable that `nb` does not read (e.g. a typo like `NB_MAX_LINE`) is listed at the end as `not read by nb`, with a `did you mean …?` hint when a real variable is close. This is **informational only** — other tools may legitimately set `NB_*` variables, so it is never an error and the exit code stays `0`. The knobs read by the tooling this repo ships under [`examples/`](examples/README.md) (`NB_BIN`, `NB_RETRO_TTL_DAYS`, `NB_GIT_AUTOCOMMIT`, `NB_BACKUP_PUSH_TIMEOUT`, `NB_BACKUP_GIT_LOCK_WAIT`) are not listed: they belong to those tools, not to `nb`.
+
+`nb config --json` emits one object keyed by tunable name — `{ "maxLines": { "value": 50, "source": "default", "env": "NB_MAX_LINES", "status": null, "rawValue": null }, … }` — for a supervisor to read without parsing the lines. `status` is `"honored"`/`"clamped"`/`"ignored"` when the var is set (`null` when it is unset or for the derived row), and `rawValue` is the raw env string (`null` when unset). An `unrecognized` array — `[{ "name": "NB_MAX_LINE", "suggestion": "NB_MAX_LINES" }, …]` — lists the same unknown variables. Both are **additive**: the existing `{ value, source, env }` fields and the `source` values (`env`/`default`/`derived`) are unchanged. It is read-only, and scoped to *configuration* (the knobs), distinct from `nb stats` (usage, anomalies, engagement).
 
 ## Programmatic use
 

@@ -62,6 +62,20 @@ versions are listed plainly.
   (additive). See [FR-STATS-008](docs/requirements.md#fr-stats-008).
 
 ### Added
+- **`nb config` now reports whether each env tunable was honored, clamped, or ignored, and flags unknown `NB_*` vars (#336).**
+  The source tag only checked whether a var was *set*, so an unparseable value (silently replaced by the
+  default), an out-of-range value (silently clamped) and a typo like `NB_MAX_LINE` (never read) were all
+  invisible or mislabeled — `NB_MAX_LINES=abc` printed `maxLines=50 (env NB_MAX_LINES)`, as if `abc` were
+  in force. Each set numeric tunable now reports how its value was resolved: `honored`, `clamped` (with the
+  raw value, e.g. `(env NB_NEAR_DUP: clamped to 1 from 2)`), or `ignored` (`(env NB_MAX_LINES: ignored
+  "abc", not an integer; using default)`). `nb config --json` gains additive `status` and `rawValue` fields
+  on each numeric row (`source` and every existing key unchanged). Integer knobs must be a whole integer, so a
+  partially-numeric value (`1e3`, `12.9`) is `ignored` rather than silently truncated by `parseInt` to `1`/`12`.
+  Any `NB_*` var `nb` does not read is listed as `not read by nb` (with a nearest-name `did you mean` hint) in
+  both outputs, derived from the same variable registry `effectiveConfig` uses — informational only, never an
+  error, exit code stays `0`. The knobs read only by the tooling shipped under `examples/` are not flagged.
+  Output for a config with no problems is byte-identical to before. See
+  [FR-CONFIG-001](docs/requirements.md#fr-config-001).
 - **`nb stats` now surfaces crash/interrupt recovery, so silent mid-write crashes become observable (#309).**
   Two recovery paths each mean a previous `nb` died mid-mutation — the stale-lock steal (`withLock`)
   and the leftover-temp reap (`reapLeftoverTemps`) — yet both were entirely silent, so an operator

@@ -128,6 +128,7 @@ import {
   voteMany,
   releaseHeldLock,
   withLock,
+  resolveIntEnv,
 } from './notebook.js';
 import { runNbCli } from './cli.js';
 
@@ -5309,6 +5310,18 @@ describe('env-tunable clamps (boundary + garbage)', () => {
         expect(v).toBe(dflt);
         expect(Number.isNaN(v)).toBe(false);
       });
+
+      // parseInt accepts a numeric PREFIX and silently drops the rest: '1e3' → 1,
+      // '12.9' → 12, '50abc' → 50. Using such a value would be a silent rewrite
+      // (an operator asking for 1000 getting 1), so a partial parse must fall
+      // back to the DEFAULT, not be honored as-if (issue #336 round 2).
+      test.each(['1e3', '12.9', '50abc', '1,000', '0x10'])(
+        'a partially-numeric value (%s) falls back to the default, never a truncated parse',
+        (raw) => {
+          process.env[envVar] = raw;
+          expect(getter()).toBe(dflt);
+        },
+      );
     });
   });
 
@@ -5340,5 +5353,27 @@ describe('env-tunable clamps (boundary + garbage)', () => {
       process.env.NB_NEAR_DUP = '';
       expect(nearThreshold()).toBe(0);
     });
+  });
+
+  describe('resolveIntEnv status (issue #336)', () => {
+    // The status is what `nb config` reports; it must be honest about a
+    // REWRITTEN value, not merely a missing one. A whole integer is honored;
+    // leading/trailing whitespace is harmless; a partial parse is not honored.
+    test('a whole integer is honored; surrounding whitespace is tolerated', () => {
+      expect(resolveIntEnv('123', 50, 1, 5000)).toEqual({ value: 123, status: 'honored' });
+      expect(resolveIntEnv(' 42 ', 50, 1, 5000)).toEqual({ value: 42, status: 'honored' });
+    });
+
+    test('an out-of-range whole integer is clamped, never ignored', () => {
+      expect(resolveIntEnv('999999', 50, 1, 5000)).toEqual({ value: 5000, status: 'clamped' });
+      expect(resolveIntEnv('0', 50, 1, 5000)).toEqual({ value: 1, status: 'clamped' });
+    });
+
+    test.each(['1e3', '12.9', '50abc', '1,000', '0x10', 'abc', ''])(
+      'a value parseInt would truncate (%j) reads ignored with the default, never honored',
+      (raw) => {
+        expect(resolveIntEnv(raw, 50, 1, 5000)).toEqual({ value: 50, status: 'ignored' });
+      },
+    );
   });
 });

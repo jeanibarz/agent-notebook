@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS } from './cli.js';
 import { drainPendingRecovery, entryId, parseUsage, usageFile } from './notebook.js';
+import type { IntTunable, RateTunable } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
@@ -1840,11 +1841,12 @@ describe('runNbCli', () => {
       expect(r.out.trim().split('\n')).toHaveLength(1); // exactly one JSON object on stdout
       const obj = JSON.parse(r.out);
       // The 14 numeric rows keep their exact keys; issue #312 adds ONE new
-      // top-level `environment` key (a new section, not a changed row shape).
-      expect(Object.keys(obj).sort()).toEqual([...DEFAULTS.map(([n]) => n), 'environment'].sort());
-      expect(obj.maxLines).toEqual({ value: 50, source: 'default', env: 'NB_MAX_LINES' });
+      // top-level `environment` key (a new section, not a changed row shape) and
+      // issue #336 adds the informational `unrecognized` array. Nothing else.
+      expect(Object.keys(obj).sort()).toEqual([...DEFAULTS.map(([n]) => n), 'environment', 'unrecognized'].sort());
+      expect(obj.maxLines).toEqual({ value: 50, source: 'default', env: 'NB_MAX_LINES', status: null, rawValue: null });
       // The derived value has no env var of its own.
-      expect(obj.usageRingSlack).toEqual({ value: 312, source: 'derived', env: null });
+      expect(obj.usageRingSlack).toEqual({ value: 312, source: 'derived', env: null, status: null, rawValue: null });
       // Values are real numbers, not stringified — a supervisor can branch on them.
       expect(typeof obj.errRate.value).toBe('number');
       expect(obj.errRate.value).toBe(0.3);
@@ -1854,14 +1856,14 @@ describe('runNbCli', () => {
       process.env.NB_MAX_LINES = '123';
       expect((await run(['config'])).out).toMatch(/^maxLines=123\s+\(env NB_MAX_LINES\)$/m);
       const j = JSON.parse((await run(['config', '--json'])).out);
-      expect(j.maxLines).toEqual({ value: 123, source: 'env', env: 'NB_MAX_LINES' });
+      expect(j.maxLines).toEqual({ value: 123, source: 'env', env: 'NB_MAX_LINES', status: 'honored', rawValue: '123' });
     });
 
     test('an out-of-range env override prints the POST-CLAMP value, still source=env (DP-5)', async () => {
       process.env.NB_MAX_CHARS = '99999'; // above the 2000 ceiling → clamped
       const j = JSON.parse((await run(['config', '--json'])).out);
-      expect(j.maxChars).toEqual({ value: 2000, source: 'env', env: 'NB_MAX_CHARS' });
-      expect((await run(['config'])).out).toMatch(/^maxChars=2000\s+\(env NB_MAX_CHARS\)$/m);
+      expect(j.maxChars).toEqual({ value: 2000, source: 'env', env: 'NB_MAX_CHARS', status: 'clamped', rawValue: '99999' });
+      expect((await run(['config'])).out).toMatch(/^maxChars=2000\s+\(env NB_MAX_CHARS: clamped to 2000 from 99999\)$/m);
     });
 
     test('a NON-NUMERIC env clamps back to the default value yet still reads source=env (DP-5)', async () => {
@@ -1872,8 +1874,8 @@ describe('runNbCli', () => {
       // every other test but fail this one.
       process.env.NB_MAX_LINES = 'abc';
       const j = JSON.parse((await run(['config', '--json'])).out);
-      expect(j.maxLines).toEqual({ value: 50, source: 'env', env: 'NB_MAX_LINES' });
-      expect((await run(['config'])).out).toMatch(/^maxLines=50\s+\(env NB_MAX_LINES\)$/m);
+      expect(j.maxLines).toEqual({ value: 50, source: 'env', env: 'NB_MAX_LINES', status: 'ignored', rawValue: 'abc' });
+      expect((await run(['config'])).out).toMatch(/^maxLines=50\s+\(env NB_MAX_LINES: ignored "abc", not an integer; using default\)$/m);
     });
 
     test('a blank env var reads source=env, not default, matching the value the getter yields (DP-5)', async () => {
@@ -1883,14 +1885,14 @@ describe('runNbCli', () => {
       // misleading value/tag pair FR-CONFIG-001 forbids. source must read `env`.
       process.env.NB_ERR_RATE = '';
       const j = JSON.parse((await run(['config', '--json'])).out);
-      expect(j.errRate).toEqual({ value: 0, source: 'env', env: 'NB_ERR_RATE' });
+      expect(j.errRate).toEqual({ value: 0, source: 'env', env: 'NB_ERR_RATE', status: 'honored', rawValue: '' });
       expect((await run(['config'])).out).toMatch(/^errRate=0\s+\(env NB_ERR_RATE\)$/m);
     });
 
     test('config reuses the live getter, so a set stats threshold is surfaced (no drift)', async () => {
       process.env.NB_LOOP_N = '7';
       const j = JSON.parse((await run(['config', '--json'])).out);
-      expect(j.loopN).toEqual({ value: 7, source: 'env', env: 'NB_LOOP_N' });
+      expect(j.loopN).toEqual({ value: 7, source: 'env', env: 'NB_LOOP_N', status: 'honored', rawValue: '7' });
     });
 
     test('config mutates nothing — no shelf file is created or changed', async () => {
@@ -1910,6 +1912,227 @@ describe('runNbCli', () => {
       // (.nb-usage.log is the only side effect, shared by every read command.)
       expect(readFileSync(file, 'utf8')).toBe(before);
       expect(readdirSync(dir).filter((f) => f.endsWith('.md')).sort()).toEqual(filesBefore);
+    });
+
+    describe('per-variable status + unrecognized NB_* scan (issue #336)', () => {
+      // A fresh `NB_*` name that no shipping code reads, used to prove an
+      // unrecognized var is listed. Cleaned up so it can't leak into other tests.
+      const TYPO = 'NB_MAX_LINE';
+      afterEach(() => {
+        delete process.env[TYPO];
+      });
+
+      test('an unparseable value reads status=ignored with the raw value, annotated in both outputs', async () => {
+        process.env.NB_MAX_LINES = 'abc';
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.maxLines).toEqual({
+          value: 50, source: 'env', env: 'NB_MAX_LINES', status: 'ignored', rawValue: 'abc',
+        });
+        expect((await run(['config'])).out).toMatch(
+          /^maxLines=50\s+\(env NB_MAX_LINES: ignored "abc", not an integer; using default\)$/m,
+        );
+      });
+
+      test('an out-of-range value reads status=clamped with the raw value, annotated in both outputs', async () => {
+        process.env.NB_NEAR_DUP = '2'; // rate ceiling is 1
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.nearThreshold).toEqual({
+          value: 1, source: 'env', env: 'NB_NEAR_DUP', status: 'clamped', rawValue: '2',
+        });
+        expect((await run(['config'])).out).toMatch(
+          /^nearThreshold=1\s+\(env NB_NEAR_DUP: clamped to 1 from 2\)$/m,
+        );
+      });
+
+      test('a misspelled NB_* var is listed as not-read-by-nb with a nearest-name suggestion, both outputs', async () => {
+        process.env[TYPO] = '9';
+        const human = (await run(['config'])).out;
+        // Tagged "not read by nb" (other tooling may legitimately set NB_*), with
+        // the typo hint — padded to the historical tag width so the block keeps
+        // its shape.
+        expect(human).toMatch(
+          new RegExp(`^${TYPO}\\s+\\(not read by nb — did you mean NB_MAX_LINES\\?\\)\\s*$`, 'm'),
+        );
+        // Informational only: stderr clean, exit 0.
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.unrecognized).toContainEqual({ name: TYPO, suggestion: 'NB_MAX_LINES' });
+      });
+
+      test('an NB_* var with no close match is still listed, without a suggestion (issue #336)', async () => {
+        // The spec promises EVERY unread NB_* var is surfaced; a name far from
+        // any real knob (or one another tool owns) must not be dropped just
+        // because closestMatch found nothing — that is the invisible case the
+        // scan exists to expose.
+        const FAR = 'NB_FAKE_TUNE_XYZ';
+        process.env[FAR] = '1';
+        try {
+          const human = (await run(['config'])).out;
+          expect(human).toMatch(new RegExp(`^${FAR}\\s+\\(not read by nb\\)\\s*$`, 'm'));
+          const j = JSON.parse((await run(['config', '--json'])).out);
+          expect(j.unrecognized).toContainEqual({ name: FAR, suggestion: null });
+        } finally {
+          delete process.env[FAR];
+        }
+      });
+
+      test('a var read by the shipped example tooling is never flagged as unknown or mis-suggested', async () => {
+        // examples/ ships scripts that legitimately read these (guarded by
+        // src/env-docs.test.ts); a user who exports them while following the
+        // setup docs must not be told nb does not know them, and must not get a
+        // confident, wrong `did you mean NB_DIR?` for NB_BIN.
+        const SHIPPED = [
+          'NB_BIN',
+          'NB_RETRO_TTL_DAYS',
+          'NB_GIT_AUTOCOMMIT',
+          'NB_BACKUP_PUSH_TIMEOUT',
+          'NB_BACKUP_GIT_LOCK_WAIT',
+        ];
+        for (const v of SHIPPED) process.env[v] = 'x';
+        try {
+          const human = (await run(['config'])).out;
+          const j = JSON.parse((await run(['config', '--json'])).out);
+          for (const v of SHIPPED) {
+            expect(human).not.toContain(v);
+            expect(j.unrecognized.map((u: { name: string }) => u.name)).not.toContain(v);
+          }
+          // A real typo is still caught alongside them.
+          process.env[TYPO] = '9';
+          const j2 = JSON.parse((await run(['config', '--json'])).out);
+          expect(j2.unrecognized).toContainEqual({ name: TYPO, suggestion: 'NB_MAX_LINES' });
+        } finally {
+          for (const v of SHIPPED) delete process.env[v];
+        }
+      });
+
+      test('an honored in-range value has status=honored and no human status note', async () => {
+        process.env.NB_MAX_LINES = '123';
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.maxLines).toEqual({
+          value: 123, source: 'env', env: 'NB_MAX_LINES', status: 'honored', rawValue: '123',
+        });
+        // No clamped/ignored suffix — the honored line is the plain pre-#336 form.
+        expect((await run(['config'])).out).toMatch(/^maxLines=123\s+\(env NB_MAX_LINES\)$/m);
+      });
+
+      test('an unset tunable has status=rawValue=null (source default) and no status note', async () => {
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.maxLines).toEqual({
+          value: 50, source: 'default', env: 'NB_MAX_LINES', status: null, rawValue: null,
+        });
+        // The derived row also carries null status/rawValue (it has no env var).
+        expect(j.usageRingSlack.status).toBeNull();
+        expect(j.usageRingSlack.rawValue).toBeNull();
+      });
+
+      test('the registry stays in lockstep with every getter (same value for honored/clamped/ignored)', async () => {
+        // The registry duplicates each getter's default + clamp so `nb config`
+        // can report a status. This pins them together: for each tunable, set a
+        // representative honored, clamped-high, clamped-low and garbage value and
+        // assert the JSON's `value` matches the exported getter's value exactly.
+        // A drifted default, clamp bound or parse rule fails here rather than
+        // silently printing a value the hot path never uses (the #116 drift).
+        const { maxLines, maxChars, nearThreshold, usageRing, staleLockMs, lockGraceMs,
+          loopN, loopWindowSec, silentHours, errMin, errRate, coverageHi, recallMissHi } = await import('./notebook.js');
+        const cases: Array<[string, () => number, string, string[]]> = [
+          ['maxLines', maxLines, 'NB_MAX_LINES', ['3', '999999', '0', 'abc']],
+          ['maxChars', maxChars, 'NB_MAX_CHARS', ['50', '999999', '0', 'x']],
+          ['nearThreshold', nearThreshold, 'NB_NEAR_DUP', ['0.4', '9', '-3', 'no']],
+          ['usageRing', usageRing, 'NB_USAGE_RING', ['500', '9999999', '1', 'z']],
+          ['staleLockMs', staleLockMs, 'NB_STALE_LOCK_MS', ['5000', '9999999', '1', 'q']],
+          ['lockGraceMs', lockGraceMs, 'NB_LOCK_GRACE_MS', ['100', '9999999', '-1', 'q']],
+          ['loopN', loopN, 'NB_LOOP_N', ['5', '999999', '1', 'q']],
+          ['loopWindowSec', loopWindowSec, 'NB_LOOP_WINDOW_S', ['60', '9999999', '1', 'q']],
+          ['silentHours', silentHours, 'NB_SILENT_H', ['24', '9999999', '0', 'q']],
+          ['errMin', errMin, 'NB_ERR_MIN', ['3', '9999999', '0', 'q']],
+          ['errRate', errRate, 'NB_ERR_RATE', ['0.1', '9', '-1', 'q']],
+          ['coverageHi', coverageHi, 'NB_COVERAGE_HI', ['0.1', '9', '-1', 'q']],
+          ['recallMissHi', recallMissHi, 'NB_RECALL_MISS_HI', ['0.1', '9', '-1', 'q']],
+        ];
+        for (const [name, getter, envVar, raws] of cases) {
+          for (const raw of raws) {
+            process.env[envVar] = raw;
+            const j = JSON.parse((await run(['config', '--json'])).out);
+            expect(j[name].value, `${name} with ${envVar}=${raw}`).toBe(getter());
+            delete process.env[envVar];
+          }
+        }
+      });
+
+      test('a moved int bound is caught: probes at the live lo-1/lo/hi/hi+1, not fixed literals', async () => {
+        // The fixed-literal matrix above can miss a moved bound (a value that is
+        // out of range for both old and new ceilings clamps identically). Derive
+        // the probes from the tunable's OWN declared bounds so shifting a bound
+        // in notebook.ts is exercised the moment it moves — the regression guard
+        // for issue #336 review finding 1.
+        const nb = await import('./notebook.js');
+        const specs: Array<[string, () => number, IntTunable | RateTunable]> = [
+          ['maxLines', nb.maxLines, nb.MAX_LINES],
+          ['maxChars', nb.maxChars, nb.MAX_CHARS],
+          ['usageRing', nb.usageRing, nb.USAGE_RING],
+          ['staleLockMs', nb.staleLockMs, nb.STALE_LOCK_MS],
+          ['lockGraceMs', nb.lockGraceMs, nb.LOCK_GRACE_MS],
+          ['loopN', nb.loopN, nb.LOOP_N],
+          ['loopWindowSec', nb.loopWindowSec, nb.LOOP_WINDOW_S],
+          ['silentHours', nb.silentHours, nb.SILENT_H],
+          ['errMin', nb.errMin, nb.ERR_MIN],
+        ];
+        for (const [name, getter, t] of specs) {
+          const spec = t as IntTunable;
+          const probes = [spec.lo - 1, spec.lo, spec.hi, spec.hi + 1].map(String);
+          for (const raw of probes) {
+            process.env[spec.env] = raw;
+            const j = JSON.parse((await run(['config', '--json'])).out);
+            expect(j[name].value, `${name} with ${spec.env}=${raw}`).toBe(getter());
+            delete process.env[spec.env];
+          }
+        }
+      });
+
+      test('every documented NB_* tunable is recognized (never listed unknown)', async () => {
+        // The registry must cover every `NB_*` tunable the README documents — the
+        // one place the user-facing set is written down (and the home the #164
+        // env-docs guard already pins). Drive the assertion from the DOCUMENTED
+        // set (`documented → surfaced`), not the other way round: a new knob
+        // added to the README but forgotten in TUNABLE_REGISTRY is absent from
+        // `surfaced`, so a `surfaced → documented` loop would never inspect it
+        // and the omission it was written to catch would slip through.
+        const readme = readFileSync(join(REPO_ROOT, 'README.md'), 'utf8');
+        const documented = new Set(readme.match(/NB_[A-Z_]+/g) ?? []);
+        // Vars documented only because the shipped examples/ tooling reads them
+        // are legitimately not nb's own config (see SHIPPED_TOOL_ENV_VARS), so
+        // they are excluded from the tunable set this test requires to surface.
+        // `NB_MAX_LINE` is the deliberate typo the docs use to illustrate the
+        // unknown-var block, not a real knob.
+        const EXAMPLE_ONLY = new Set([
+          'NB_BIN',
+          'NB_RETRO_TTL_DAYS',
+          'NB_GIT_AUTOCOMMIT',
+          'NB_BACKUP_PUSH_TIMEOUT',
+          'NB_BACKUP_GIT_LOCK_WAIT',
+          'NB_MAX_LINE',
+        ]);
+        // The registry's live view is the `--json` output: every numeric row's
+        // `env` plus every `environment` key.
+        const j0 = JSON.parse((await run(['config', '--json'])).out);
+        const surfaced = new Set<string>([
+          ...Object.values(j0)
+            .filter((v): v is { env: string | null } => !!v && typeof v === 'object' && 'env' in v)
+            .map((v) => v.env)
+            .filter((e): e is string => e !== null),
+          ...Object.keys(j0.environment),
+        ]);
+        const names = new Set<string>(j0.unrecognized.map((u: { name: string }) => u.name));
+        // Every documented tunable must be surfaced by `nb config` and must not
+        // be reported unknown...
+        const missing = [...documented].filter((v) => !EXAMPLE_ONLY.has(v) && !surfaced.has(v)).sort();
+        expect(missing, `documented but not surfaced by nb config: ${missing.join(', ')}`).toEqual([]);
+        // ...and, the other direction, a surfaced var must be documented and
+        // never reported unknown.
+        for (const v of surfaced) {
+          expect(documented.has(v), `${v} is surfaced but missing from the README`).toBe(true);
+          expect(names.has(v), `${v} is read but reported unknown`).toBe(false);
+        }
+      });
     });
 
     // The three behavior-critical STRING env vars (issue #312). These are not in

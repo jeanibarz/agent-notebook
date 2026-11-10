@@ -21,12 +21,58 @@ import { createHash, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
+/**
+ * One int tunable's `NB_*` var, built-in default and clamp bound — declared
+ * ONCE here and consumed by BOTH the hot-path getter and `nb config`'s registry
+ * (issue #336). Keeping a single copy is what makes the #116/#131 "the printed
+ * value can never drift" property structural rather than a test that must
+ * happen to probe a moved bound.
+ */
+export interface IntTunable {
+  env: string;
+  dflt: number;
+  lo: number;
+  hi: number;
+}
+
+/** A rate tunable clamps to [0, 1]; only the default differs per knob. */
+export interface RateTunable {
+  env: string;
+  dflt: number;
+}
+
+export const MAX_LINES: IntTunable = { env: 'NB_MAX_LINES', dflt: 50, lo: 1, hi: 5000 };
+export const MAX_CHARS: IntTunable = { env: 'NB_MAX_CHARS', dflt: 200, lo: 20, hi: 2000 };
+export const NEAR_DUP: RateTunable = { env: 'NB_NEAR_DUP', dflt: 0.5 };
+export const USAGE_RING: IntTunable = { env: 'NB_USAGE_RING', dflt: 5000, lo: 100, hi: 100000 };
+export const STALE_LOCK_MS: IntTunable = { env: 'NB_STALE_LOCK_MS', dflt: 10_000, lo: 100, hi: 600_000 };
+export const LOCK_GRACE_MS: IntTunable = { env: 'NB_LOCK_GRACE_MS', dflt: 2_000, lo: 0, hi: 600_000 };
+export const LOOP_N: IntTunable = { env: 'NB_LOOP_N', dflt: 10, lo: 2, hi: 1000 };
+export const LOOP_WINDOW_S: IntTunable = { env: 'NB_LOOP_WINDOW_S', dflt: 120, lo: 5, hi: 86_400 };
+export const SILENT_H: IntTunable = { env: 'NB_SILENT_H', dflt: 48, lo: 1, hi: 24 * 365 };
+export const ERR_MIN: IntTunable = { env: 'NB_ERR_MIN', dflt: 5, lo: 1, hi: 10_000 };
+export const ERR_RATE: RateTunable = { env: 'NB_ERR_RATE', dflt: 0.3 };
+
+/** The coverage×surfacing readout thresholds (issue #81). A rate ≥ its HIGH cutoff reads as "HIGH" on that axis; both default to a deliberately blunt split, tunable via env. */
+export const DEFAULT_COVERAGE_HI = 0.5;
+export const DEFAULT_RECALL_MISS_HI = 0.2;
+export const COVERAGE_HI: RateTunable = { env: 'NB_COVERAGE_HI', dflt: DEFAULT_COVERAGE_HI };
+export const RECALL_MISS_HI: RateTunable = { env: 'NB_RECALL_MISS_HI', dflt: DEFAULT_RECALL_MISS_HI };
+
+/** Resolve an int tunable from env live — the SAME three numbers the getter uses, so the getter and `nb config` cannot drift. */
+export function resolveIntTunable(t: IntTunable): number {
+  return resolveIntEnv(process.env[t.env], t.dflt, t.lo, t.hi).value;
+}
+export function resolveRateTunable(t: RateTunable): number {
+  return resolveRateEnv(process.env[t.env], t.dflt).value;
+}
+
 /** Hard caps, read at call time so they can be tuned by env without a code change (and set per-test). */
 export function maxLines(): number {
-  return clampInt(process.env.NB_MAX_LINES, 50, 1, 5000);
+  return resolveIntTunable(MAX_LINES);
 }
 export function maxChars(): number {
-  return clampInt(process.env.NB_MAX_CHARS, 200, 20, 2000);
+  return resolveIntTunable(MAX_CHARS);
 }
 /**
  * Trigram-Jaccard similarity at/above which an *accepted* add also emits a
@@ -38,11 +84,11 @@ export function maxChars(): number {
  * labels the log already records.
  */
 export function nearThreshold(): number {
-  return clampRate(process.env.NB_NEAR_DUP, 0.5);
+  return resolveRateTunable(NEAR_DUP);
 }
 /** The usage log is itself a bounded ring (monitoring can't grow unbounded either). */
 export function usageRing(): number {
-  return clampInt(process.env.NB_USAGE_RING, 5000, 100, 100000);
+  return resolveIntTunable(USAGE_RING);
 }
 
 /**
@@ -73,11 +119,11 @@ export function usageRingSlack(): number {
  * so a slow-but-live holder is never robbed.
  */
 export function staleLockMs(): number {
-  return clampInt(process.env.NB_STALE_LOCK_MS, 10_000, 100, 600_000);
+  return resolveIntTunable(STALE_LOCK_MS);
 }
 /** Extra budget, past the stale threshold, to notice and steal an abandoned lock before giving up. */
 export function lockGraceMs(): number {
-  return clampInt(process.env.NB_LOCK_GRACE_MS, 2_000, 0, 600_000);
+  return resolveIntTunable(LOCK_GRACE_MS);
 }
 
 // `nb stats` anomaly/readout thresholds, read at call time and clamped exactly
@@ -89,48 +135,87 @@ export function lockGraceMs(): number {
 // (`…_S` → seconds, `…_H` → hours); `stats()` scales to ms at the call site.
 /** Loop anomaly: how many same-shelf+command+target calls inside the window trip it. */
 export function loopN(): number {
-  return clampInt(process.env.NB_LOOP_N, 10, 2, 1000);
+  return resolveIntTunable(LOOP_N);
 }
 /** Loop anomaly: the window, in seconds (`stats()` multiplies by 1000 to compare timestamps). */
 export function loopWindowSec(): number {
-  return clampInt(process.env.NB_LOOP_WINDOW_S, 120, 5, 86_400);
+  return resolveIntTunable(LOOP_WINDOW_S);
 }
 /** Went-silent anomaly: silence threshold, in hours (`stats()` multiplies by 3_600_000). */
 export function silentHours(): number {
-  return clampInt(process.env.NB_SILENT_H, 48, 1, 24 * 365);
+  return resolveIntTunable(SILENT_H);
 }
 /** High-error-rate anomaly: minimum calls before the failure fraction is judged. */
 export function errMin(): number {
-  return clampInt(process.env.NB_ERR_MIN, 5, 1, 10_000);
+  return resolveIntTunable(ERR_MIN);
 }
 /** High-error-rate anomaly: minimum failure fraction (0–1); a bad value falls back to the default, never NaN (which would disable detection). */
 export function errRate(): number {
-  return clampRate(process.env.NB_ERR_RATE, 0.3);
+  return resolveRateTunable(ERR_RATE);
 }
 /** Surfacing readout ([FR-STATS-004]): coverage ≥ this reads as novel-adds HIGH. */
 export function coverageHi(): number {
-  return clampRate(process.env.NB_COVERAGE_HI, DEFAULT_COVERAGE_HI);
+  return resolveRateTunable(COVERAGE_HI);
 }
 /** Surfacing readout ([FR-STATS-004]): recall-miss ≥ this reads as dedup-blocks HIGH. */
 export function recallMissHi(): number {
-  return clampRate(process.env.NB_RECALL_MISS_HI, DEFAULT_RECALL_MISS_HI);
+  return resolveRateTunable(RECALL_MISS_HI);
 }
 
-function clampInt(raw: string | undefined, dflt: number, lo: number, hi: number): number {
-  const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
-  if (!Number.isFinite(n)) return dflt;
-  return Math.min(hi, Math.max(lo, n));
+/**
+ * How a numeric env tunable's raw value was turned into the effective value `nb`
+ * runs with (issue #336). `default` — the var is unset, so the built-in default
+ * applies. `honored` — the var is set to a parseable in-range value and used
+ * as-is. `clamped` — the var is set to a parseable value outside the bound and
+ * `nb` silently used the nearest bound instead. `ignored` — the var is set but
+ * unparseable (e.g. `abc` or a partially-numeric `1e3`/`12.9`/`50abc`, which
+ * `parseInt` would truncate), so `nb` silently used the default.
+ *
+ * This is what lets `nb config` distinguish "the setting you exported is in
+ * force" from "it was rewritten" from "it was thrown away" — the whole point of
+ * an introspection command ([DP-5](#dp-5)).
+ */
+export type TunableStatus = 'default' | 'honored' | 'clamped' | 'ignored';
+
+/** A raw env value resolved against its default and bounds, plus how it was resolved. */
+export interface ResolvedInt {
+  value: number;
+  status: TunableStatus;
 }
 
-/** Clamp an env-supplied rate to [0, 1]; a missing/non-numeric value falls back to the default (never NaN, which would break the LOW/HIGH comparison). Mirrors the NB_ERR_RATE handling. */
-function clampRate(raw: string | undefined, dflt: number): number {
-  const n = raw === undefined ? NaN : Number(raw);
-  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : dflt;
+/**
+ * The status-aware form of an int clamp: resolve `raw` against `dflt`/`lo`/`hi` and
+ * report WHETHER the raw value was honored, clamped, ignored (unparseable) or
+ * absent (default). The getters that `nb config` reports call this; the plain
+ * `resolveIntTunable` above wraps it for the hot path.
+ */
+export function resolveIntEnv(raw: string | undefined, dflt: number, lo: number, hi: number): ResolvedInt {
+  if (raw === undefined) return { value: dflt, status: 'default' };
+  // Only a WHOLE integer is honored. `parseInt` accepts a numeric prefix and
+  // silently drops the rest (`1e3`→1, `12.9`→12, `50abc`→50), so a user who
+  // meant 1000 would get a cap of 1 — the "rewritten value reads as honored"
+  // failure #336 exists to eliminate. Treat a partial parse as unparseable.
+  const trimmed = raw.trim();
+  if (!/^[+-]?\d+$/.test(trimmed)) return { value: dflt, status: 'ignored' };
+  const n = Number.parseInt(trimmed, 10);
+  const value = Math.min(hi, Math.max(lo, n));
+  return { value, status: value === n ? 'honored' : 'clamped' };
 }
 
-/** The coverage×surfacing readout thresholds (issue #81). A rate ≥ its HIGH cutoff reads as "HIGH" on that axis; both default to a deliberately blunt split, tunable via env. */
-export const DEFAULT_COVERAGE_HI = 0.5;
-export const DEFAULT_RECALL_MISS_HI = 0.2;
+/**
+ * The status-aware form of a rate clamp: resolve a rate `raw` against `dflt` and
+ * the [0, 1] bounds, reporting how the raw value was resolved (see
+ * {@link TunableStatus}). An empty string is parsed by `Number('')` as `0`, so it
+ * is honored (clamped to the floor), not ignored — the divergence from
+ * `parseInt`-backed ints the clamp tests already pin.
+ */
+export function resolveRateEnv(raw: string | undefined, dflt: number): ResolvedInt {
+  if (raw === undefined) return { value: dflt, status: 'default' };
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return { value: dflt, status: 'ignored' };
+  const value = Math.min(1, Math.max(0, n));
+  return { value, status: value === n ? 'honored' : 'clamped' };
+}
 
 /** One notebook line. `score` is a running vote sum; `text` is a single ≤MAX_CHARS lesson. */
 export interface Entry {
