@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -291,6 +291,7 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
   });
 
   test('the key and id match what the package computes from the file (control/zero-width chars are deleted, not spaced)', () => {
+    try {
     const samples = [
       'Plain lesson',
       'MiXeD   case,  punctuation; and spacing!',
@@ -315,6 +316,10 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
       expect(d.id).toBe(shown.id);
       nb('vote', `parity${i}@one`, shown.id, '+1'); // the id the janitor prints is one nb accepts
     });
+    } catch (e) {
+      writeSync(1, 'DEBUG362ERR ' + String((e as Error).stack).replace(/\n/g, ' | ').slice(0, 1500) + '\n');
+      throw e;
+    }
   });
 
   test('a lesson with an invisible character still matches its plain twin (what nb itself would refuse as a duplicate)', () => {
