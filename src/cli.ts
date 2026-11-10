@@ -1226,7 +1226,19 @@ export async function runNbCli(
         // (the `failed-search` signal keys on `no-match`) — DP-5, never mislead.
         // `result.total` is the FULL pre-`limit` match count, so `--limit` (even
         // `0`) never flips a real match into a `no-match` coverage gap (issue #186).
-        meta.outcome = result.terms.length === 0 ? 'no-terms' : result.total > 0 ? 'match' : 'no-match';
+        // A no-match that exists only because a shelf was skipped is NOT a
+        // coverage gap (issue #332): a skipped shelf may hold the hit, so log it
+        // as `skipped` (never `no-match`, which the `failed-search` signal keys
+        // on) rather than prompting a spurious `nb add`. A real match still logs
+        // `match`; an empty query still logs `no-terms`.
+        meta.outcome =
+          result.terms.length === 0
+            ? 'no-terms'
+            : result.total > 0
+              ? 'match'
+              : result.skipped.length > 0
+                ? 'skipped'
+                : 'no-match';
         meta.note = query;
         // Record WHICH entry ids this search surfaced (issue #114 — surfacing
         // provenance). Reuses the existing `entries` column (no new column), so a
@@ -1326,6 +1338,10 @@ export async function runNbCli(
         } else {
           process.stdout.write(renderStats(rep, maybeShelf) + '\n');
         }
+        // Report any shelf the inventory skipped (issue #332) on stderr, so the
+        // health scan still succeeds but never hides why a shelf is missing.
+        const statsSkip = renderSkipped('stats', rep.skipped);
+        if (statsSkip) process.stderr.write(statsSkip);
         // The command itself succeeded (stats read cleanly); the usage log must
         // record that, so set `ok` before the opt-in anomaly exit returns early.
         ok = true;
@@ -2097,9 +2113,15 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
   // the success path still lists every healthy shelf but never hides the loss.
   const skipErr = renderSkipped('list', listing.skipped);
   if (listing.total === 0) {
-    const err = prefix
-      ? `no notebooks matching "${prefix}" — run \`nb list\` to see them all\n`
-      : 'no notebooks yet — add one with `nb add <shelf> "<lesson>"`\n';
+    // A prefix the user explicitly scoped to may have matched ONLY a skipped
+    // shelf (issue #332): report that it is unreadable, not "no notebooks
+    // matching", so an error on a named shelf is never hidden (FR-LIST-006).
+    const onlySkipped = prefix && listing.skipped.length > 0;
+    const err = onlySkipped
+      ? `no readable notebooks matching "${prefix}" — the matching shelf(s) were skipped (see above)\n`
+      : prefix
+        ? `no notebooks matching "${prefix}" — run \`nb list\` to see them all\n`
+        : 'no notebooks yet — add one with `nb add <shelf> "<lesson>"`\n';
     return { out: '', err: skipErr + err };
   }
   const shown = listing.rows.length;
@@ -2131,6 +2153,14 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
   // Name any shelf skipped for an unreadable file (issue #332) — a search over a
   // damaged store still returns every healthy hit, but never silently drops one.
   const skipErr = renderSkipped('search', result.skipped);
+  // A no-match is only a genuine coverage gap when every shelf in scope was
+  // actually searched: if a skipped (unreadable) shelf exists, the miss may be
+  // hiding a hit in it, so the note must not claim a gap (issue #332).
+  const skippedNote =
+    result.skipped.length > 0
+      ? ` — note: ${result.skipped.length} shelf${result.skipped.length === 1 ? '' : 's'} could not be read and ` +
+        `weren't searched (see above)\n`
+      : '';
   if (result.groups.length === 0) {
     // Three distinct empty renders, only ONE of which is the logged coverage gap.
     // Key the gap message on `result.total` (the FULL pre-limit count), NOT on the
@@ -2141,8 +2171,10 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
       result.terms.length === 0
         ? `nb search: no searchable terms in "${query}"\n`
         : result.total === 0
-          ? `no lessons match "${query}" (${mode}) — search is the secondary path (lessons are surfaced to you, ` +
-            `not searched); this miss was recorded as a possible coverage gap\n`
+          ? skippedNote
+            ? `no lessons match "${query}" (${mode}) in the readable shelves${skippedNote}`
+            : `no lessons match "${query}" (${mode}) — search is the secondary path (lessons are surfaced to you, ` +
+              `not searched); this miss was recorded as a possible coverage gap\n`
           : `${result.total} notebook${result.total === 1 ? '' : 's'} match "${query}" (${mode}) but --limit hid them all — ` +
             `raise --limit to see them (this was a match, not a coverage gap)\n`;
     return { out: '', err: skipErr + err };

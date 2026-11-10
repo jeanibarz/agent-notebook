@@ -2414,6 +2414,39 @@ describe('runNbCli', () => {
         expect(r.code).toBe(1);
         expect(r.err).toMatch(/EISDIR/);
       });
+
+      test('a prefix whose only match is the skipped shelf says so, not "no match"', async () => {
+        await run(['add', 'alpha', 'a lesson']);
+        mkdirSync(join(dir, 'weird.md'));
+        const r = await run(['list', 'weird']);
+        expect(r.code).toBe(0);
+        expect(r.err).toContain('skipped shelf "weird"');
+        expect(r.err).toContain('no readable notebooks matching "weird"');
+        expect(r.err).not.toContain('no notebooks matching "weird" — run');
+      });
+    });
+
+    describe('one unreadable shelf does not abort the stats inventory (issue #332)', () => {
+      test('stats exits 0, lists the healthy shelves, and reports the skipped shelf on stderr', async () => {
+        await run(['add', 'alpha', 'a lesson']);
+        mkdirSync(join(dir, 'weird.md'));
+        const r = await run(['stats']);
+        expect(r.code).toBe(0);
+        expect(r.out).toContain('alpha');
+        expect(r.out).not.toContain('weird');
+        expect(r.err).toContain('nb stats: skipped shelf "weird"');
+        expect(r.err).toContain('EISDIR');
+      });
+
+      test('--json stats carries the skipped field additively', async () => {
+        await run(['add', 'alpha', 'a lesson']);
+        const healthy = JSON.parse((await run(['stats', '--json'])).out);
+        expect(healthy.skipped).toEqual([]);
+        mkdirSync(join(dir, 'weird.md'));
+        const damaged = JSON.parse((await run(['stats', '--json'])).out);
+        expect(damaged.notebooks.map((n: { shelf: string }) => n.shelf)).toEqual(['alpha']);
+        expect(damaged.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
+      });
     });
 
     test('a zero-lesson, no-description notebook is hidden (phantom debris)', async () => {
@@ -3566,6 +3599,17 @@ describe('nb search — the demoted keyword fallback (issue #82)', () => {
     expect(r.out).toContain('beta');
     expect(r.err).toContain('skipped shelf "weird"');
     expect(r.err).toContain('EISDIR');
+  });
+
+  test('a skip-caused no-match is not logged as a coverage gap (issue #332)', async () => {
+    // A no-match that exists only because a shelf was skipped must not key the
+    // `failed-search → add` gap-sensor (which pairs on outcome `no-match`).
+    await run(['add', 'alpha', 'a lesson about lint']);
+    mkdirSync(join(dir, 'weird.md'));
+    await run(['search', 'nostringmatchesanywhere']);
+    const row = parseUsage(dir).filter((r) => r.command === 'search').at(-1)!;
+    expect(row.outcome).not.toBe('no-match');
+    expect(row.outcome).toBe('skipped');
   });
 
   test('--json search omits skipped on a healthy store and includes it otherwise (issue #332)', async () => {

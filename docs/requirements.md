@@ -544,17 +544,20 @@ phantom (reaped) from a deliberate trigger (kept) without adding a field to a le
 *Proven by:* `notebook.test.ts` → `describe('reaps an emptied, undescribed phantom shelf (issue #209)')`.
 
 <a id="fr-list-006"></a>
-**FR-LIST-006 (Should).** The two cross-shelf scans — `listNotebooks` ([FR-LIST-001](#fr-list-001))
-and `search` ([FR-SEARCH-001](#fr-search-001)) — SHALL keep working when a single shelf
-file is unreadable. A non-`ENOENT` read failure for one shelf (e.g. `EACCES` on a
+**FR-LIST-006 (Should).** The cross-shelf scans — `listNotebooks` ([FR-LIST-001](#fr-list-001)),
+`search` ([FR-SEARCH-001](#fr-search-001)), and the `stats` notebook inventory
+([FR-STATS-002](#fr-stats-002)) — SHALL keep working when a single shelf file is unreadable. A non-`ENOENT` read failure for one shelf (e.g. `EACCES` on a
 root-owned or `chmod`'d file after a `sudo nb`, `EISDIR` for a directory named
 `<shelf>.md`, `EIO`) SHALL skip **only** that shelf and SHALL NOT abort the command;
 every healthy shelf SHALL still be listed/searched and the command SHALL exit `0`.
-The skip SHALL be surfaced, never silent: `NotebookListing.skipped` and
-`SearchResult.skipped` SHALL carry `{shelf, code}` per skipped shelf (`code` the errno
-code), `nb list`/`nb search` SHALL print one stderr line naming the shelf and code, and
+The skip SHALL be surfaced, never silent: `NotebookListing.skipped`,
+`SearchResult.skipped` and `StatsReport.skipped` SHALL carry `{shelf, code}` per skipped
+shelf (`code` the errno code; only a throw carrying an errno is skipped — a codeless throw,
+e.g. a parser bug, still propagates so the field never invents a non-errno token), `nb
+list`/`nb search`/`nb stats` SHALL print one stderr line naming the shelf and code, and
 `--json` SHALL include the additive `skipped` field **only when non-empty** so healthy
-output stays byte-identical. A single-shelf command that names the bad shelf explicitly
+output stays byte-identical. A prefix or search scope whose only match is a skipped shelf
+SHALL report that the matching shelf was unreadable, not "no match". A single-shelf command that names the bad shelf explicitly
 (e.g. `nb show <bad-shelf>`) SHALL still fail loudly — the resilience applies only to
 scans, so an error for an explicitly requested shelf is never hidden.
 **Rationale:** One unreadable file (a stray directory, a permissions slip from a `sudo`
@@ -562,7 +565,7 @@ run) previously turned every accumulated lesson into "nb failed" for `nb list`,
 `nb search`, and the session-start index agents use to decide which shelves to open
 (#332). Degrading to "one shelf is unreadable, here it is" preserves the rest of the
 memory and keeps the failure actionable.
-*Proven by:* `notebook.test.ts` → `describe('one unreadable shelf does not abort list/search (issue #332)')`; `cli.test.ts` → the `list …` / `nb search …` "issue #332" cases.
+*Proven by:* `notebook.test.ts` → `describe('one unreadable shelf does not abort list/search (issue #332)')` and `describe('one unreadable shelf does not abort the stats inventory (issue #332)')`; `cli.test.ts` → the `list …` / `nb search …` / `nb stats …` "issue #332" cases.
 
 ### 4.10 CLI contract
 
@@ -1255,7 +1258,9 @@ it as before. `stats` SHALL then derive a **`failed-search`** `DiagnosticSignal`
 by an `accepted` `add` SHALL be flagged as a **coverage gap** the notebook did not hold,
 labelled by the agent's own query (one signal per session + added-entry; a blank session
 is skipped, and a terms-less query logs `no-terms`, never `no-match`, so it cannot be a
-false gap). Because the `search` row is logged under shelf `-` (it spans notebooks), the
+false gap; likewise a `no-match` that exists only because a shelf was skipped as
+unreadable ([FR-LIST-006](#fr-list-006)) logs `skipped`, never `no-match`, so a damaged store
+cannot masquerade as a coverage gap and prompt a spurious `add`). Because the `search` row is logged under shelf `-` (it spans notebooks), the
 signal is observable only in an **unscoped** `stats` report — `nb stats <shelf>` filters to
 one shelf and cannot pair the cross-notebook search with the add. **Rationale:** This is the
 `failed-search → add` gap-sensor — the coverage signal deferred from #72. A search that

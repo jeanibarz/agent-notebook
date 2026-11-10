@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync, readdirSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -17,13 +17,18 @@ const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 // throws. Everything delegates to the real fs; when `events` is null and
 // `failDirFsync` is false (the default, reset in afterEach) behavior is identical
 // to the unwrapped module, so every other test is unaffected.
-const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null, failReadOnceCode: null as string | null }));
+const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null, failReadOnceCode: null as string | null, failCodelessRead: false }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
     readFileSync: ((path: Parameters<typeof actual.readFileSync>[0], opts?: Parameters<typeof actual.readFileSync>[1]) => {
       fsHook.reads?.push(String(path)); // capture read paths (opt-in; null by default)
+      if (fsHook.failCodelessRead && String(path).endsWith('.md')) {
+        // Simulate a throw with NO errno `code` (a parser TypeError on malformed
+        // input, a programming bug) — not a filesystem read failure (issue #332).
+        throw new TypeError('simulated parser bug (no errno)');
+      }
       if (fsHook.failReadOnceCode !== null && String(path).endsWith('.md')) {
         // One-shot fault injection (issue #300): simulate the file vanishing / failing after existsSync.
         const code = fsHook.failReadOnceCode;
@@ -174,6 +179,7 @@ afterEach(() => {
   fsHook.reads = null; // leave the shared read hook off for tests that don't opt in
   fsHook.failLockMkdirCode = null; // clear lock-mkdir fault injection (issue #263) so it can never leak into another test
   fsHook.failReadOnceCode = null; // clear one-shot read fault injection (issue #300)
+  fsHook.failCodelessRead = false; // clear codeless-throw fault injection (issue #332)
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -2741,6 +2747,7 @@ describe('usage log + stats', () => {
         'perCommand',
         'schemaVersion',
         'signals',
+        'skipped',
         'surfacing',
         'totalCalls',
         'usageRing',
@@ -5088,9 +5095,59 @@ describe('one unreadable shelf does not abort list/search (issue #332)', () => {
     expect(search(dir, 'lint').skipped).toEqual([]);
   });
 
+  test('an unreadable-by-permission shelf (EACCES) is skipped with its real errno', async (ctx) => {
+    // The issue's motivating case is EACCES on a root-owned / chmod'd file after
+    // `sudo nb`, which EISDIR does not exercise. A root-owned file is still
+    // readable by root, so skip there where chmod cannot deny access.
+    if (process.getuid?.() === 0) ctx.skip();
+    await seedHealthy();
+    writeFileSync(join(dir, 'denied.md'), '1\tlesson about lint\n');
+    chmodSync(join(dir, 'denied.md'), 0o000);
+    try {
+      expect(listNotebooks(dir).skipped).toEqual([{ shelf: 'denied', code: 'EACCES' }]);
+      expect(search(dir, 'lint').skipped).toEqual([{ shelf: 'denied', code: 'EACCES' }]);
+      expect(stats(dir, { now: Date.now() }).skipped).toEqual([{ shelf: 'denied', code: 'EACCES' }]);
+    } finally {
+      chmodSync(join(dir, 'denied.md'), 0o600);
+    }
+  });
+
   test('show still fails loudly for the unreadable shelf (no silent hide)', async () => {
     mkdirSync(join(dir, 'weird.md'));
     expect(() => showJson(dir, 'weird')).toThrow(/EISDIR/);
+  });
+});
+
+describe('one unreadable shelf does not abort the stats inventory (issue #332)', () => {
+  // `stats` is the health scan an operator (and nb-janitor) runs to find out why
+  // memory is unhealthy — so it too must survive a damaged store, reporting the
+  // casualty instead of aborting the whole report (the issue's motivating case).
+  test('stats skips the unreadable shelf, keeps every healthy one, and reports it', async () => {
+    await addEntry(dir, 'alpha', 'a lesson about lint');
+    await addEntry(dir, 'beta', 'another lesson about lint');
+    mkdirSync(join(dir, 'weird.md'));
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.notebooks.map((n) => n.shelf)).toEqual(['alpha', 'beta']);
+    expect(rep.notebookTotals).toEqual({ roles: 2, shelves: 2, lines: 2, cap: maxLines() });
+    expect(rep.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
+  });
+
+  test('a healthy store reports no skipped shelves in stats (byte-identical path)', async () => {
+    await addEntry(dir, 'alpha', 'a lesson');
+    expect(stats(dir, { now: Date.now() }).skipped).toEqual([]);
+  });
+});
+
+describe('skipUnreadable only swallows real errno read failures (issue #332)', () => {
+  // Finding: guarding EVERY throw converts a parser/programming bug (no errno
+  // `code`) into a silent "shelf skipped, code EUNKNOWN" and a success exit — the
+  // opposite of the issue's "surface it, never silent". A codeless throw must
+  // propagate unchanged; only a throw carrying an errno becomes a skip.
+  test('a codeless throw propagates out of listNotebooks instead of being hidden', async () => {
+    await addEntry(dir, 'alpha', 'a lesson');
+    writeFileSync(join(dir, 'weird.md'), '1\tlesson\n');
+    fsHook.failCodelessRead = true;
+    expect(() => listNotebooks(dir)).toThrow(TypeError);
   });
 });
 

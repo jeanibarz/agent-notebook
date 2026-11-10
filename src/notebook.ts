@@ -1905,9 +1905,11 @@ export interface NotebookSummary {
  * A shelf that a cross-shelf scan (`listNotebooks` / `search`) could not read and
  * therefore skipped (issue #332). `code` is the errno code from the filesystem
  * (e.g. `EACCES`, `EISDIR`, `EIO`); `ENOENT` never appears because `readShelf`
- * already treats it as an empty shelf. Surfaced so one unreadable file cannot
- * silently vanish from the index: `nb list`/`nb search` report it on stderr and
- * in `--json`, while still succeeding for every healthy shelf.
+ * already treats it as an empty shelf. Only a throw carrying a real errno `code`
+ * is skipped — a codeless throw (a parser bug) still propagates, so this field
+ * never invents a non-errno token. Surfaced so one unreadable file cannot
+ * silently vanish from the index: `nb list`/`nb search`/`nb stats` report it on
+ * stderr and in `--json`, while still succeeding for every healthy shelf.
  */
 export interface SkippedShelf {
   /** The shelf whose `<shelf>.md` failed to read. */
@@ -1928,7 +1930,15 @@ function skipUnreadable<T>(shelf: string, fn: () => T): { value?: T; error?: Ski
   try {
     return { value: fn() };
   } catch (err) {
-    return { error: { shelf, code: (err as NodeJS.ErrnoException).code ?? 'EUNKNOWN' } };
+    // Only a filesystem read failure is a skippable shelf: the error carries an
+    // errno `code` (EACCES/EISDIR/EIO/…). Anything else — a parser TypeError on
+    // malformed input with no `code`, an out-of-memory, a programming bug — is a
+    // real defect, not a damaged file, so it must keep propagating rather than
+    // become a silent "shelf skipped" (the issue's intent is to surface a broken
+    // file, never to swallow a code bug).
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (typeof code !== 'string' || code === '') throw err;
+    return { error: { shelf, code } };
   }
 }
 
@@ -2849,6 +2859,15 @@ export interface StatsReport {
   notebooks: NotebookStat[];
   notebookTotals: NotebookTotals;
   /**
+   * Shelves the notebook inventory could not read and therefore omitted (issue
+   * #332) — the same `{shelf, code}` skip `nb list`/`nb search` report, so the
+   * operator's health scan survives one damaged file instead of aborting. Additive
+   * to the report (`notebooks`/`notebookTotals` count only the healthy shelves; the
+   * CLI prints one stderr line per entry); `STATS_SCHEMA_VERSION` does not bump. See
+   * `SkippedShelf`.
+   */
+  skipped: SkippedShelf[];
+  /**
    * Free diagnostic signals (issue #72): memory-quality observations derived
    * from the same windowed, shelf-scoped usage rows as `anomalies`, but about the
    * notebook (descriptions, cap pressure, mis-aimed lessons) rather than command
@@ -3505,12 +3524,21 @@ export function stats(
   // its line total can gate the engagement diagnosis below (issue #105).
   const cap = maxLines();
   const inventoryShelves = scope ? listShelves(dir).filter((r) => r === scope) : listShelves(dir);
-  const notebooks: NotebookStat[] = inventoryShelves.map((shelf) => ({
-    role: shelf,
-    shelf,
-    lines: readEntries(dir, shelf).length,
-    cap,
-  }));
+  // `stats` is the scan an operator runs to find out WHY memory is unhealthy, and
+  // the janitor drives it from the same directory — so it must survive a damaged
+  // store exactly like `list`/`search` (issue #332). Skip (and report) only the
+  // unreadable shelf so the healthy inventory still prints; a codeless throw still
+  // propagates (see `skipUnreadable`).
+  const skipped: SkippedShelf[] = [];
+  const notebooks: NotebookStat[] = [];
+  for (const shelf of inventoryShelves) {
+    const read = skipUnreadable(shelf, () => readShelf(dir, shelf));
+    if (read.error) {
+      skipped.push(read.error);
+      continue;
+    }
+    notebooks.push({ role: shelf, shelf, lines: read.value!.entries.length, cap });
+  }
   const notebookTotals: NotebookTotals = {
     roles: notebooks.length,
     shelves: notebooks.length,
@@ -3586,6 +3614,7 @@ export function stats(
     anomalies,
     notebooks,
     notebookTotals,
+    skipped,
     signals,
     surfacing,
     activity,
