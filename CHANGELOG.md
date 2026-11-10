@@ -10,6 +10,13 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb add` says when it creates a shelf, and names existing shelves with overlapping names (#354).**
+  `add` is the only mutation that may name a shelf that does not exist, and it printed the same
+  `added — 1 line` either way, so two sessions coining different descriptive names for one subject
+  went unwarned. When `add` creates a shelf it now prints one advisory line on stderr — the new
+  shelf, up to three existing shelves sharing at least two name words with it (split on `-` and
+  `.`, lexical only), and the `nb move` that would consolidate — and `--json` carries `created` and
+  `similarShelves`. Non-blocking: the lesson is stored and the exit code is unchanged.
 - **`nb config` prints the effective (post-clamp) `NB_*` tunables (FR-CONFIG-001 / #188).**
   Every knob is read at call time and *clamped* to its range, so the value `nb` actually runs
   under is not always the one you exported; there was no command that surfaced it, so when behavior

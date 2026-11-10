@@ -75,6 +75,25 @@ describe('runNbCli', () => {
     expect(show.out).toMatch(/^[0-9a-f]{6}\s+\[\+1\]\s+prefer execFileSync/m); // stable id + score
   });
 
+  test('add announces a created shelf on stderr and names overlapping shelves (issue #354)', async () => {
+    const first = await run(['add', 'flaky-ci-debugging', 'rerun with --verbose']);
+    expect(first.code).toBe(0);
+    expect(first.out).toBe('added — 1 line\n'); // stdout unchanged
+    expect(first.err).toBe('note: created new shelf "flaky-ci-debugging"\n'); // no overlap → no names
+    // Adding to an existing shelf says nothing.
+    expect((await run(['add', 'flaky-ci-debugging', 'second lesson'])).err).toBe('');
+    // Two shared words (ci, debugging) → named, with the consolidating nb move.
+    const second = await run(['add', 'ci-debugging-tips', 'pin the runner image']);
+    expect(second.code).toBe(0);
+    expect(second.err).toMatch(/created new shelf "ci-debugging-tips"; existing shelves with overlapping names: flaky-ci-debugging — .*nb move ci-debugging-tips flaky-ci-debugging [0-9a-f]{6}\n/);
+    // One shared word is not enough.
+    expect((await run(['add', 'ci-other', 'x lesson'])).err).toBe('note: created new shelf "ci-other"\n');
+    // JSON carries it too.
+    const j = JSON.parse((await run(['add', '--json', 'debugging.ci.notes', 'json lesson'])).out);
+    expect(j.created).toBe(true);
+    expect(j.similarShelves).toEqual(['ci-debugging-tips', 'flaky-ci-debugging']);
+  });
+
   test('add pluralises the line count: "1 line" on the first add, "2 lines" on the second (issue #142)', async () => {
     const first = await run(['add', 'patcher', 'alpha lesson']);
     expect(first.code).toBe(0);
@@ -1220,7 +1239,7 @@ describe('runNbCli', () => {
       const r = await run(['add', 'reviewer', '-'], 'run lint first\n');
       expect(r.code).toBe(0);
       expect(r.out).toBe('added — 1 line\n'); // the usual message, same as a quoted arg
-      expect(r.err).toBe('');
+      expect(r.err).toBe('note: created new shelf "reviewer"\n'); // only the new-shelf advisory (#354)
       const show = await run(['show', 'reviewer']);
       expect(show.out).toContain('run lint first'); // stored verbatim, trailing newline stripped
     });
@@ -1281,7 +1300,7 @@ describe('runNbCli', () => {
       const r = await run(['add', 'reviewer', '-', '--json'], 'piped with json\n');
       expect(r.code).toBe(0);
       expect(r.err).toBe('');
-      expect(JSON.parse(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1, id: entryId('piped with json') });
+      expect(JSON.parse(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1, created: true, id: entryId('piped with json') });
     });
   });
 
@@ -1299,7 +1318,7 @@ describe('runNbCli', () => {
       const r = await run(['add', 'patcher', 'prefer execFileSync', '--json']);
       expect(r.code).toBe(0);
       expect(r.err).toBe(''); // warnings/errors would be on stderr; there are none
-      expect(parseOnly(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1, id: entryId('prefer execFileSync') });
+      expect(parseOnly(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1, created: true, id: entryId('prefer execFileSync') });
     });
 
     test('add --json on a duplicate emits reason:"duplicate" and stays exit 0', async () => {
