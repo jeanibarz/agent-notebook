@@ -104,6 +104,7 @@ import {
   type IntTunable,
   type RateTunable,
   type SearchResult,
+  type SkippedShelf,
   type StatsReport,
   type UsageMeta,
 } from './notebook.js';
@@ -1225,7 +1226,19 @@ export async function runNbCli(
         // (the `failed-search` signal keys on `no-match`) — DP-5, never mislead.
         // `result.total` is the FULL pre-`limit` match count, so `--limit` (even
         // `0`) never flips a real match into a `no-match` coverage gap (issue #186).
-        meta.outcome = result.terms.length === 0 ? 'no-terms' : result.total > 0 ? 'match' : 'no-match';
+        // A no-match that exists only because a shelf was skipped is NOT a
+        // coverage gap (issue #332): a skipped shelf may hold the hit, so log it
+        // as `skipped` (never `no-match`, which the `failed-search` signal keys
+        // on) rather than prompting a spurious `nb add`. A real match still logs
+        // `match`; an empty query still logs `no-terms`.
+        meta.outcome =
+          result.terms.length === 0
+            ? 'no-terms'
+            : result.total > 0
+              ? 'match'
+              : result.skipped.length > 0
+                ? 'skipped'
+                : 'no-match';
         meta.note = query;
         // Record WHICH entry ids this search surfaced (issue #114 — surfacing
         // provenance). Reuses the existing `entries` column (no new column), so a
@@ -1239,7 +1252,15 @@ export async function runNbCli(
         // serendipity proxy that joins on it) stays independent of `--limit`.
         meta.entries = result.surfacedIds;
         if (json) {
-          process.stdout.write(JSON.stringify(result) + '\n');
+          // Keep healthy `--json` output byte-identical: the additive `skipped`
+          // field (issue #332) is emitted only when a shelf was actually skipped.
+          process.stdout.write(
+            JSON.stringify(
+              result.skipped.length > 0
+                ? result
+                : { terms: result.terms, groups: result.groups, total: result.total, surfacedIds: result.surfacedIds },
+            ) + '\n',
+          );
         } else {
           const { out, err } = renderSearch(query, any, result);
           if (out) process.stdout.write(out);
@@ -1317,6 +1338,10 @@ export async function runNbCli(
         } else {
           process.stdout.write(renderStats(rep, maybeShelf) + '\n');
         }
+        // Report any shelf the inventory skipped (issue #332) on stderr, so the
+        // health scan still succeeds but never hides why a shelf is missing.
+        const statsSkip = renderSkipped('stats', rep.skipped);
+        if (statsSkip) process.stderr.write(statsSkip);
         // The command itself succeeded (stats read cleanly); the usage log must
         // record that, so set `ok` before the opt-in anomaly exit returns early.
         ok = true;
@@ -1443,7 +1468,12 @@ export async function runNbCli(
         }
         const prefix = listArgs[1]; // optional positional name prefix (undefined → all)
         if (json) {
-          process.stdout.write(JSON.stringify(listNotebooks(dir, { prefix, limit })) + '\n');
+          // Keep healthy `--json` output byte-identical: the additive `skipped`
+          // field (issue #332) is emitted only when a shelf was actually skipped.
+          const listing = listNotebooks(dir, { prefix, limit });
+          process.stdout.write(
+            JSON.stringify(listing.skipped.length > 0 ? listing : { dir: listing.dir, total: listing.total, rows: listing.rows }) + '\n',
+          );
         } else {
           const { out, err } = renderList(dir, prefix, limit);
           if (out) process.stdout.write(out);
@@ -2079,11 +2109,20 @@ function truncateCol(text: string, width: number = DESC_COL_WIDTH): string {
  */
 function renderList(dir: string, prefix: string | undefined, limit: number): { out: string; err: string } {
   const listing = listNotebooks(dir, { prefix, limit });
+  // Report any shelf skipped for an unreadable file (issue #332) on stderr, so
+  // the success path still lists every healthy shelf but never hides the loss.
+  const skipErr = renderSkipped('list', listing.skipped);
   if (listing.total === 0) {
-    const err = prefix
-      ? `no notebooks matching "${prefix}" — run \`nb list\` to see them all\n`
-      : 'no notebooks yet — add one with `nb add <shelf> "<lesson>"`\n';
-    return { out: '', err };
+    // A prefix the user explicitly scoped to may have matched ONLY a skipped
+    // shelf (issue #332): report that it is unreadable, not "no notebooks
+    // matching", so an error on a named shelf is never hidden (FR-LIST-006).
+    const onlySkipped = prefix && listing.skipped.length > 0;
+    const err = onlySkipped
+      ? `no readable notebooks matching "${prefix}" — the matching shelf(s) were skipped (see above)\n`
+      : prefix
+        ? `no notebooks matching "${prefix}" — run \`nb list\` to see them all\n`
+        : 'no notebooks yet — add one with `nb add <shelf> "<lesson>"`\n';
+    return { out: '', err: skipErr + err };
   }
   const shown = listing.rows.length;
   const countClause = shown < listing.total ? `${shown} of ${listing.total}` : `${listing.total}`;
@@ -2096,7 +2135,7 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
     const descPart = trigger ? `  ${truncateCol(trigger)}${r.desc === null ? '  (auto)' : ''}` : '';
     lines.push(`  ${r.shelf.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`);
   }
-  return { out: lines.join('\n') + '\n', err: '' };
+  return { out: lines.join('\n') + '\n', err: skipErr };
 }
 
 /**
@@ -2111,6 +2150,17 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
  */
 function renderSearch(query: string, any: boolean, result: SearchResult): { out: string; err: string } {
   const mode = any ? 'OR' : 'AND';
+  // Name any shelf skipped for an unreadable file (issue #332) — a search over a
+  // damaged store still returns every healthy hit, but never silently drops one.
+  const skipErr = renderSkipped('search', result.skipped);
+  // A no-match is only a genuine coverage gap when every shelf in scope was
+  // actually searched: if a skipped (unreadable) shelf exists, the miss may be
+  // hiding a hit in it, so the note must not claim a gap (issue #332).
+  const skippedNote =
+    result.skipped.length > 0
+      ? ` — note: ${result.skipped.length} shelf${result.skipped.length === 1 ? '' : 's'} could not be read and ` +
+        `weren't searched (see above)\n`
+      : '';
   if (result.groups.length === 0) {
     // Three distinct empty renders, only ONE of which is the logged coverage gap.
     // Key the gap message on `result.total` (the FULL pre-limit count), NOT on the
@@ -2121,11 +2171,13 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
       result.terms.length === 0
         ? `nb search: no searchable terms in "${query}"\n`
         : result.total === 0
-          ? `no lessons match "${query}" (${mode}) — search is the secondary path (lessons are surfaced to you, ` +
-            `not searched); this miss was recorded as a possible coverage gap\n`
+          ? skippedNote
+            ? `no lessons match "${query}" (${mode}) in the readable shelves${skippedNote}`
+            : `no lessons match "${query}" (${mode}) — search is the secondary path (lessons are surfaced to you, ` +
+              `not searched); this miss was recorded as a possible coverage gap\n`
           : `${result.total} notebook${result.total === 1 ? '' : 's'} match "${query}" (${mode}) but --limit hid them all — ` +
             `raise --limit to see them (this was a match, not a coverage gap)\n`;
-    return { out: '', err };
+    return { out: '', err: skipErr + err };
   }
   const hitCount = result.groups.reduce((n, g) => n + g.hits.length, 0);
   const nbCount = result.groups.length;
@@ -2145,7 +2197,24 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
       lines.push(`    ${h.id}  [${fmt(h.score)}]  ${h.text}`);
     }
   }
-  return { out: lines.join('\n') + '\n', err: '' };
+  return { out: lines.join('\n') + '\n', err: skipErr };
+}
+
+/**
+ * One truthful stderr note per shelf a cross-shelf scan had to skip because its
+ * file was unreadable (issue #332). `nb list`/`nb search` still succeed for every
+ * healthy shelf; this names the casualty and its errno so the user can fix the
+ * file (chmod, remove the stray directory) without reading `nb` source. Empty
+ * string when nothing was skipped, so a healthy run's stderr stays byte-identical.
+ */
+function renderSkipped(cmd: string, skipped: SkippedShelf[]): string {
+  return skipped
+    .map(
+      (s) =>
+        `nb ${cmd}: skipped shelf "${s.shelf}" — could not read ${s.shelf}.md (${s.code}); ` +
+        `fix the file (permissions, or remove a directory named ${s.shelf}.md) to include it again\n`,
+    )
+    .join('');
 }
 
 function renderStats(rep: StatsReport, shelf: string | undefined): string {

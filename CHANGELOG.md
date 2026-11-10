@@ -10,6 +10,20 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Fixed
+- **One unreadable shelf no longer takes down `nb list`, `nb search` and the session-start index (#332).**
+  The cross-shelf scans read every `<shelf>.md` with no per-shelf error handling, so a single
+  non-`ENOENT` read failure — `EACCES` on a root-owned or `chmod`'d file left by a `sudo nb`, `EISDIR`
+  for a directory named `<shelf>.md`, `EIO` — aborted the whole command, turning every accumulated
+  lesson into "nb failed". `listNotebooks` and `search` now skip only the unreadable shelf, keep every
+  healthy one, and exit `0`; the skip is surfaced as a `{shelf, code}` entry in the additive
+  `NotebookListing.skipped` / `SearchResult.skipped` field (emitted in `--json` only when non-empty, so
+  healthy output is byte-identical) and as one stderr line naming the shelf and errno. The same resilience
+  covers the `nb stats` inventory (`StatsReport.skipped`), since a health scan of a damaged store is exactly
+  where aborting hurts. Only a real errno failure is skipped — a codeless throw (a parser bug) still
+  propagates rather than being mislabelled. A prefix/scope whose only match is the skipped shelf reports it
+  was unreadable (not "no match"), and a search miss caused only by a skipped shelf logs outcome `skipped`
+  instead of `no-match`, so it cannot masquerade as a coverage gap. Single-shelf commands
+  (`nb show <bad-shelf>`, …) still fail loudly. See [FR-LIST-006](docs/requirements.md#fr-list-006).
 - **`nb stats <shelf>` no longer lets a typo read as a real but silent shelf (#341).**
   `stats` takes a shelf operand but, unlike the mutations (which answer an unknown shelf with a
   did-you-mean, #200) and `show` (which distinguishes missing from empty, #166), never validated it —
