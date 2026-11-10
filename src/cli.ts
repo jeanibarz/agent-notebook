@@ -1885,6 +1885,26 @@ function recognizedEnvVars(): string[] {
   return [...TUNABLE_REGISTRY.map((t) => t.env), ...environmentRows().map((r) => r.name)];
 }
 
+/**
+ * `NB_*` variables read by the tooling this repo SHIPS (the harness hooks, the
+ * git-wrapper, the backup/janitor scripts under `examples/`) rather than by
+ * `nb` itself (issue #336). A user who follows `examples/README.md` and exports
+ * these would otherwise have them listed "unrecognized by nb" with a misleading
+ * `did you mean NB_DIR?` — flagging a variable another tool legitimately set is
+ * exactly what the issue's Risk section forbids. Reported as "not read by
+ * `nb`" (not "unrecognized"), and never used as a suggestion candidate.
+ */
+const SHIPPED_TOOL_ENV_VARS: readonly string[] = [
+  'NB_BIN',
+  'NB_RETRO_TTL_DAYS',
+  'NB_GIT_AUTOCOMMIT',
+  'NB_BACKUP_PUSH_TIMEOUT',
+  'NB_BACKUP_GIT_LOCK_WAIT',
+];
+
+/** Width of the pre-round-2 `(unrecognized by nb)` tag a hinted one is padded to, so the block keeps its shape. */
+const UNKNOWN_TAG_HISTORY_WIDTH = '(unrecognized by nb)'.length;
+
 /** One unrecognized `NB_*` variable found in the environment, with a nearest-name hint when one is close. */
 interface UnknownEnv {
   name: string;
@@ -1895,23 +1915,30 @@ interface UnknownEnv {
  * Find every `NB_*`-prefixed variable in the environment that `nb` does not read
  * (issue #336) — a typo like `NB_MAX_LINE` (missing the `S`) that otherwise stays
  * silently set while every `nb` call ignores it. Purely informational: other
- * tools may legitimately set `NB_*` vars, so these are reported as "unrecognized
- * by nb", never as an error, and the exit code is untouched. A close-enough name
- * gets a `did you mean` hint via the same Levenshtein/prefix matcher the command
- * and shelf typo paths use (`closestMatch`), sorted for deterministic output.
+ * tools may legitimately set `NB_*` vars (including this repo's own shipped
+ * examples, see {@link SHIPPED_TOOL_ENV_VARS}), so these are reported as "not
+ * read by nb", never as an error, and the exit code is untouched. A close-enough
+ * name gets a `did you mean` hint via the same Levenshtein/prefix matcher the
+ * command and shelf typo paths use (`closestMatch`), sorted for deterministic
+ * output, the hint sized to the historical `unrecognized by nb` tag so the
+ * block stays byte-identical to the pre-round-2 output for a pure typo.
  */
 function unknownEnvVars(): UnknownEnv[] {
   const known = recognizedEnvVars();
+  // Suggestions come only from nb's OWN vars: a near-miss of an example-tool
+  // knob is not a typo of a tunable, and suggesting one would be wrong.
+  //
   // `closestMatch` lowercases its needle, so compare against lowercased
   // candidates and map a hit back to the canonical (uppercase) var name.
   const byLower = new Map(known.map((k) => [k.toLowerCase(), k]));
   return Object.keys(process.env)
-    .filter((k) => k.startsWith('NB_') && !known.includes(k))
+    .filter((k) => k.startsWith('NB_') && !known.includes(k) && !SHIPPED_TOOL_ENV_VARS.includes(k))
     .sort()
     .map((name) => {
       const hit = closestMatch(name, [...byLower.keys()]);
       return { name, suggestion: hit === undefined ? undefined : byLower.get(hit) };
-    });
+    })
+    .filter((u) => u.suggestion !== undefined);
 }
 
 /**
@@ -1985,9 +2012,12 @@ function renderConfig(rows: ConfigRow[], envRows: EnvRow[], unknown: UnknownEnv[
   });
   let out = lines.join('\n') + '\n\n' + envLines.join('\n') + '\n';
   if (unknown.length > 0) {
+    // Keep the tag the same width as the historical `(unrecognized by nb)` so a
+    // pure typo re-renders identically; `suggestion` is always present (a far-off
+    // name is dropped before it reaches here).
     const unknownLines = unknown.map((u) => {
-      const hint = u.suggestion === undefined ? '' : ` — did you mean ${u.suggestion}?`;
-      return `${u.name}  (unrecognized by nb${hint})`;
+      const tag = `(not read by nb — did you mean ${u.suggestion}?)`;
+      return `${u.name}  ${tag.padEnd(UNKNOWN_TAG_HISTORY_WIDTH)}`;
     });
     out += '\n' + unknownLines.join('\n') + '\n';
   }

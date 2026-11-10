@@ -1943,15 +1943,47 @@ describe('runNbCli', () => {
         );
       });
 
-      test('a misspelled NB_* var is listed as unrecognized with a nearest-name suggestion, both outputs', async () => {
+      test('a misspelled NB_* var is listed as not-read-by-nb with a nearest-name suggestion, both outputs', async () => {
         process.env[TYPO] = '9';
         const human = (await run(['config'])).out;
+        // Tagged "not read by nb" (other tooling may legitimately set NB_*), with
+        // the typo hint — padded to the historical tag width so the block keeps
+        // its shape.
         expect(human).toMatch(
-          new RegExp(`^${TYPO}\\s+\\(unrecognized by nb — did you mean NB_MAX_LINES\\?\\)$`, 'm'),
+          new RegExp(`^${TYPO}\\s+\\(not read by nb — did you mean NB_MAX_LINES\\?\\)\\s*$`, 'm'),
         );
         // Informational only: stderr clean, exit 0.
         const j = JSON.parse((await run(['config', '--json'])).out);
         expect(j.unrecognized).toContainEqual({ name: TYPO, suggestion: 'NB_MAX_LINES' });
+      });
+
+      test('a var read by the shipped example tooling is never flagged as unknown or mis-suggested', async () => {
+        // examples/ ships scripts that legitimately read these (guarded by
+        // src/env-docs.test.ts); a user who exports them while following the
+        // setup docs must not be told nb does not know them, and must not get a
+        // confident, wrong `did you mean NB_DIR?` for NB_BIN.
+        const SHIPPED = [
+          'NB_BIN',
+          'NB_RETRO_TTL_DAYS',
+          'NB_GIT_AUTOCOMMIT',
+          'NB_BACKUP_PUSH_TIMEOUT',
+          'NB_BACKUP_GIT_LOCK_WAIT',
+        ];
+        for (const v of SHIPPED) process.env[v] = 'x';
+        try {
+          const human = (await run(['config'])).out;
+          const j = JSON.parse((await run(['config', '--json'])).out);
+          for (const v of SHIPPED) {
+            expect(human).not.toContain(v);
+            expect(j.unrecognized.map((u: { name: string }) => u.name)).not.toContain(v);
+          }
+          // A real typo is still caught alongside them.
+          process.env[TYPO] = '9';
+          const j2 = JSON.parse((await run(['config', '--json'])).out);
+          expect(j2.unrecognized).toContainEqual({ name: TYPO, suggestion: 'NB_MAX_LINES' });
+        } finally {
+          for (const v of SHIPPED) delete process.env[v];
+        }
       });
 
       test('an honored in-range value has status=honored and no human status note', async () => {
@@ -2008,19 +2040,31 @@ describe('runNbCli', () => {
         }
       });
 
-      test('every documented NB_* var is recognized (never listed unrecognized)', async () => {
-        // The registry must cover every `NB_*` var the README documents — the one
-        // place the user-facing set is written down (and the home the #164
-        // env-docs guard already pins). A new documented knob that is read but
-        // missing from the registry would then be reported "unrecognized", the
-        // exact misleading classification this issue fixes; this test fails first.
+      test('every documented NB_* tunable is recognized (never listed unknown)', async () => {
+        // The registry must cover every `NB_*` tunable the README documents — the
+        // one place the user-facing set is written down (and the home the #164
+        // env-docs guard already pins). Drive the assertion from the DOCUMENTED
+        // set (`documented → surfaced`), not the other way round: a new knob
+        // added to the README but forgotten in TUNABLE_REGISTRY is absent from
+        // `surfaced`, so a `surfaced → documented` loop would never inspect it
+        // and the omission it was written to catch would slip through.
         const readme = readFileSync(join(REPO_ROOT, 'README.md'), 'utf8');
         const documented = new Set(readme.match(/NB_[A-Z_]+/g) ?? []);
+        // Vars documented only because the shipped examples/ tooling reads them
+        // are legitimately not nb's own config (see SHIPPED_TOOL_ENV_VARS), so
+        // they are excluded from the tunable set this test requires to surface.
+        // `NB_MAX_LINE` is the deliberate typo the docs use to illustrate the
+        // unknown-var block, not a real knob.
+        const EXAMPLE_ONLY = new Set([
+          'NB_BIN',
+          'NB_RETRO_TTL_DAYS',
+          'NB_GIT_AUTOCOMMIT',
+          'NB_BACKUP_PUSH_TIMEOUT',
+          'NB_BACKUP_GIT_LOCK_WAIT',
+          'NB_MAX_LINE',
+        ]);
         // The registry's live view is the `--json` output: every numeric row's
-        // `env` plus every `environment` key. Any documented var NOT in that set
-        // would land in `unrecognized`; assert none of the *tunable* docs do (an
-        // example-script-only knob like NB_GIT_AUTOCOMMIT is legitimately not read
-        // by nb's config, so compare only the vars this command surfaces).
+        // `env` plus every `environment` key.
         const j0 = JSON.parse((await run(['config', '--json'])).out);
         const surfaced = new Set<string>([
           ...Object.values(j0)
@@ -2029,12 +2073,16 @@ describe('runNbCli', () => {
             .filter((e): e is string => e !== null),
           ...Object.keys(j0.environment),
         ]);
-        // Every surfaced var is documented (the inverse of the #164 guard, so the
-        // registry can't surface an undocumented var), and none is unrecognized.
         const names = new Set<string>(j0.unrecognized.map((u: { name: string }) => u.name));
+        // Every documented tunable must be surfaced by `nb config` and must not
+        // be reported unknown...
+        const missing = [...documented].filter((v) => !EXAMPLE_ONLY.has(v) && !surfaced.has(v)).sort();
+        expect(missing, `documented but not surfaced by nb config: ${missing.join(', ')}`).toEqual([]);
+        // ...and, the other direction, a surfaced var must be documented and
+        // never reported unknown.
         for (const v of surfaced) {
           expect(documented.has(v), `${v} is surfaced but missing from the README`).toBe(true);
-          expect(names.has(v), `${v} is read but reported unrecognized`).toBe(false);
+          expect(names.has(v), `${v} is read but reported unknown`).toBe(false);
         }
       });
     });

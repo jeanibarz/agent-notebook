@@ -69,9 +69,11 @@ versions are listed plainly.
   in force. Each set numeric tunable now reports how its value was resolved: `honored`, `clamped` (with the
   raw value, e.g. `(env NB_NEAR_DUP: clamped to 1 from 2)`), or `ignored` (`(env NB_MAX_LINES: ignored
   "abc", not an integer; using default)`). `nb config --json` gains additive `status` and `rawValue` fields
-  on each numeric row (`source` and every existing key unchanged). Any `NB_*` var `nb` does not read is listed
-  as `unrecognized` (with a nearest-name `did you mean` hint) in both outputs, derived from the same
-  variable registry `effectiveConfig` uses — informational only, never an error, exit code stays `0`.
+  on each numeric row (`source` and every existing key unchanged). Integer knobs must be a whole integer, so a
+  partially-numeric value (`1e3`, `12.9`) is `ignored` rather than silently truncated by `parseInt` to `1`/`12`.
+  Any `NB_*` var `nb` does not read is listed as `not read by nb` (with a nearest-name `did you mean` hint) in
+  both outputs, derived from the same variable registry `effectiveConfig` uses — informational only, never an
+  error, exit code stays `0`. The knobs read only by the tooling shipped under `examples/` are not flagged.
   Output for a config with no problems is byte-identical to before. See
   [FR-CONFIG-001](docs/requirements.md#fr-config-001).
 - **`nb stats` now surfaces crash/interrupt recovery, so silent mid-write crashes become observable (#309).**

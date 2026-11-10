@@ -122,7 +122,8 @@ export function recallMissHi(): number {
  * applies. `honored` — the var is set to a parseable in-range value and used
  * as-is. `clamped` — the var is set to a parseable value outside the bound and
  * `nb` silently used the nearest bound instead. `ignored` — the var is set but
- * unparseable (e.g. `abc`), so `nb` silently used the default.
+ * unparseable (e.g. `abc` or a partially-numeric `1e3`/`12.9`/`50abc`, which
+ * `parseInt` would truncate), so `nb` silently used the default.
  *
  * This is what lets `nb config` distinguish "the setting you exported is in
  * force" from "it was rewritten" from "it was thrown away" — the whole point of
@@ -144,8 +145,13 @@ export interface ResolvedInt {
  */
 export function resolveIntEnv(raw: string | undefined, dflt: number, lo: number, hi: number): ResolvedInt {
   if (raw === undefined) return { value: dflt, status: 'default' };
-  const n = Number.parseInt(raw, 10);
-  if (!Number.isFinite(n)) return { value: dflt, status: 'ignored' };
+  // Only a WHOLE integer is honored. `parseInt` accepts a numeric prefix and
+  // silently drops the rest (`1e3`→1, `12.9`→12, `50abc`→50), so a user who
+  // meant 1000 would get a cap of 1 — the "rewritten value reads as honored"
+  // failure #336 exists to eliminate. Treat a partial parse as unparseable.
+  const trimmed = raw.trim();
+  if (!/^[+-]?\d+$/.test(trimmed)) return { value: dflt, status: 'ignored' };
+  const n = Number.parseInt(trimmed, 10);
   const value = Math.min(hi, Math.max(lo, n));
   return { value, status: value === n ? 'honored' : 'clamped' };
 }
