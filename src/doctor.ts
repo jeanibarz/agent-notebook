@@ -70,6 +70,7 @@ export function doctor(dir: string): DoctorReport {
       raw = readFileSync(join(dir, `${shelf}.md`), 'utf-8');
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code ?? 'EIO';
+      if (code === 'ENOENT') continue; // unlinked after the listing (a racing `nb rm`), as readShelf (#300)
       findings.push({ code: 'unreadable', shelf, message: `cannot read ${shelf}.md (${code})` });
       continue;
     }
@@ -97,12 +98,13 @@ export function doctor(dir: string): DoctorReport {
       if (inMeta && isMetaLine(line)) return;
       inMeta = false;
       if (line.trim() === '') return;
-      lessons++;
-      if (!SCORED_LINE_RE.test(line)) {
-        findings.push({ code: 'bad-score', shelf, line: n, message: 'line has no valid `<score>\\t` prefix (loads as score 0)' });
-      }
       const tab = line.indexOf('\t');
       const text = sanitizeLesson(tab === -1 ? line : line.slice(tab + 1));
+      if (text === '') return; // readShelf drops an empty-text entry, so it is not a lesson
+      lessons++;
+      if (!SCORED_LINE_RE.test(line)) {
+        findings.push({ code: 'bad-score', shelf, line: n, message: 'line has no valid `<score>\\t` prefix (the score is read leniently or as 0)' });
+      }
       if (text.length > maxLen) {
         findings.push({ code: 'lesson-too-long', shelf, line: n, message: `lesson is ${text.length} chars; cap is ${maxLen}` });
       }
@@ -132,7 +134,16 @@ export function doctor(dir: string): DoctorReport {
   } catch {
     /* no directory yet: nothing else to check */
   }
-  for (const name of names.filter((n) => isLeftoverTemp(dir, n)).sort()) {
+  // doctor holds no lock, so a temp may belong to a live writer mid atomic-write;
+  // only one older than the stale-lock threshold is crash debris (same bound as the lock).
+  const isStale = (name: string): boolean => {
+    try {
+      return Date.now() - statSync(join(dir, name)).mtimeMs > staleLockMs();
+    } catch {
+      return false; // renamed or removed by its writer meanwhile
+    }
+  };
+  for (const name of names.filter((n) => isLeftoverTemp(dir, n) && isStale(n)).sort()) {
     findings.push({ code: 'leftover-temp', shelf: name, message: `${name} is a temp file left by a crashed write` });
   }
   try {

@@ -726,6 +726,19 @@ score then stalest first (see [FR-SHOW-003](#fr-show-003)).
 *Proven by:* `cli.test.ts` → `describe('nb completion (shell completion, issue #187)')`
 and `describe('nb stale — cull candidates (issue #240)')`.
 
+<a id="fr-cli-011"></a>
+**FR-CLI-011 (Should).** `nb doctor [--json] [--exit-code]` SHALL be a strictly read-only
+check of the notebooks directory: it SHALL take no lock and write no shelf. On a clean directory
+it prints a one-line OK summary and exits `0`. Each finding has a stable `code` — `conflict-marker`,
+`bad-score` (no valid `<score>\t` prefix), `control-char`, `lesson-too-long`, `shelf-over-cap`,
+`empty-file` (0 bytes), `case-collision`, `leftover-temp` (older than `NB_STALE_LOCK_MS`, so a live
+writer's temp is not reported), `stale-lock`, `unreadable` — a `shelf` and, for line-level
+findings, a 1-based `line`. `--json` emits `{schemaVersion, findings:[{code, shelf, line?, message}]}`
+(plus a `shelves` count); `--exit-code` exits `3` when any finding exists, otherwise the exit is `0`.
+The detectors are the ones the guards use (conflict markers, control characters, the temp
+predicate), so definitions cannot drift.
+*Proven by:* `cli.test.ts` → `describe('nb doctor (issue #338)')`.
+
 <a id="fr-config-001"></a>
 **FR-CONFIG-001 (Should).** `nb config` SHALL print every effective (post-clamp) tunable
 as `name=value`, one per line — `maxLines`, `maxChars`, `nearThreshold`, `usageRing`,

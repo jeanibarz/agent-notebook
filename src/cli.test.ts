@@ -4741,6 +4741,9 @@ describe('nb doctor (issue #338)', () => {
     writeFileSync(join(dir, '.nb-usage.log.456.tmp'), 'x');
     writeFileSync(join(dir, '.nb-usage.log'), '');
     writeFileSync(join(dir, '.x.md.tmp'), 'x');
+    writeFileSync(join(dir, 'live.md.789.tmp'), 'x'); // fresh: a live writer mid atomic-write
+    const old = new Date(Date.now() - 3_600_000);
+    for (const n of ['a.md.123.tmp', '.nb-usage.log.456.tmp', '.nb-usage.log', '.x.md.tmp']) utimesSync(join(dir, n), old, old);
     const { findings } = await codes();
     expect(findings.filter((f) => f.code === 'leftover-temp').map((f) => f.shelf)).toEqual([
       '.nb-usage.log.456.tmp',
@@ -4775,6 +4778,36 @@ describe('nb doctor (issue #338)', () => {
     await run(['doctor', '--exit-code']);
     expect({ m: statSync(file).mtimeMs, b: readFileSync(file, 'utf-8') }).toEqual(before);
     expect(existsSync(join(dir, '.nb.lock'))).toBe(false);
+  });
+
+  test('never takes the lock: with a fresh .nb.lock held it returns at once and leaves it in place', async () => {
+    shelf('a', '+1\tx\n');
+    mkdirSync(join(dir, '.nb.lock'));
+    const t0 = Date.now();
+    const r = await run(['doctor']);
+    expect(r.code).toBe(0);
+    expect(Date.now() - t0).toBeLessThan(1000); // a mutation would spin on the held lock
+    expect(existsSync(join(dir, '.nb.lock'))).toBe(true);
+  });
+
+  test('unreadable: a shelf that cannot be read is reported rather than aborting the scan', async () => {
+    shelf('ok', 'no tab\n');
+    mkdirSync(join(dir, 'd.md')); // reading a directory fails with EISDIR
+    const { findings } = await codes();
+    expect(findings.map((f) => f.code).sort()).toEqual(['bad-score', 'unreadable']);
+  });
+
+  test('an empty-text entry is not a lesson (not counted toward the cap, not flagged)', async () => {
+    process.env.NB_MAX_LINES = '1';
+    shelf('a', '+1\tone\n+1\t\n');
+    expect((await codes()).findings).toEqual([]);
+  });
+
+  test('a leniently-parsed score like `3x` is flagged without claiming it loads as 0', async () => {
+    shelf('a', '3x\tfoo\n');
+    const r = await run(['doctor']);
+    expect(r.out).toContain('bad-score  a:1');
+    expect(r.out).not.toContain('loads as score 0');
   });
 
   test('an unknown flag is refused (flag validation row exists)', async () => {
