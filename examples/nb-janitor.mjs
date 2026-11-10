@@ -5,13 +5,16 @@
 //   `nb stats` tells you how ONE notebook is doing right now. The janitor takes
 //   the long, cross-notebook view that stats cannot: it reads every notebook
 //   file, the usage log, and (if NB_DIR is a git repo) the commit history, and
-//   reports seven things, each with a concrete suggested `nb` command:
+//   reports eight things, each with a concrete suggested `nb` command:
 //
 //     1. Lessons lost to eviction   — shelves that evict lessons still scored above +1,
 //                                      or whose evicted lessons get added again.
 //                                      A full shelf alone is normal and not flagged.
 //     2. Near-duplicate SHELF names — likely typos / fragmentation (e.g.
 //                                      `build-and-test` vs `build-and-tests`) that split memory.
+//                                      Also "possible slug drift": the same base name under
+//                                      two `@slug`s where the shorter slug is the longer one
+//                                      with its leading part dropped (`x@app` / `x@acme-app`).
 //     3. Likely duplicate LESSONS   — paraphrase pairs the exact-match dedup let
 //                                      through; `nb merge` candidates. This is the
 //                                      "duplicate detection" gap, found offline.
@@ -29,6 +32,10 @@
 //     7. Undescribed shelves        — shelves with no `# desc:` trigger, ranked by
 //                                      browse-without-use so the noisiest get a trigger
 //                                      first (`nb describe`). Browse rank needs NB_SESSION.
+//     8. Exact duplicates across    — the same lesson (equal `dedupKey`, nb's own normal form)
+//        shelves                       held by two or more `@` shelves that share a base name
+//                                      (`orchestrator@a`, `orchestrator@b`): `nb move` one copy
+//                                      to the shared `<base>` shelf, `nb rm` the others.
 //
 // WHY A SEPARATE, OFFLINE TOOL
 //   The notebook core stays dumb, deterministic, and offline (requirements.md
@@ -50,6 +57,7 @@ import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 // ---- args -----------------------------------------------------------------
 const argv = process.argv.slice(2);
@@ -90,6 +98,34 @@ const USAGE_RING = (() => {
   return Number.isFinite(n) ? Math.min(100000, Math.max(100, n)) : 5000;
 })();
 
+// ---- nb's own exact-duplicate normal form ---------------------------------
+// Sections 2 and 8 compare lessons by `dedupKey`, the normal form `nb add|merge|move`
+// itself uses to refuse an exact duplicate, and name a lesson by `entryId`, the id
+// `nb show` prints. This script ships dependency-free and runs standalone, so it
+// cannot import them from the package: it mirrors `sanitizeLesson` + `dedupKey` +
+// `entryId` (src/notebook.ts), and src/nb-janitor.test.ts pins the mirror to the
+// package's own `nb show --json` `key`/`id` so the two cannot drift silently.
+// The control/zero-width set is DELETED first (as nb does on write), not turned
+// into a space the way the punctuation rule would, or a lesson holding one would
+// get a different key here than in nb.
+const CONTROL_CHARS_RE = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g;
+// A git merge-conflict marker line (nb refuses to rewrite a shelf holding one): its text
+// ("<<<<<<< HEAD", "=======") is not a lesson, so it never counts as a duplicate.
+const CONFLICT_MARKER_RE = /^(?:<<<<<<<|>>>>>>>)(?: |$)|^=======$/;
+function dedupKey(raw) {
+  return raw
+    .replace(CONTROL_CHARS_RE, '')
+    .replace(/[\t\r\n]+/g, ' ')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ') // punctuation → space, so "shell-safety" == "shell safety"
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+const lessonId = (raw) => createHash('sha1').update(dedupKey(raw)).digest('hex').slice(0, 6);
+// Plain code-point order: `localeCompare` depends on the host locale, and these
+// sections must print the same report for the same store everywhere.
+const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
 // ---- read the store (mirrors the package's file conventions) --------------
 function readNotebooks(dir) {
   let files = [];
@@ -115,7 +151,7 @@ function readNotebooks(dir) {
           const tab = l.indexOf('\t');
           const text = tab === -1 ? l : l.slice(tab + 1);
           const score = tab === -1 ? 0 : Number.parseInt(l.slice(0, tab), 10) || 0;
-          return { score, text: text.replace(/\s+/g, ' ').trim() };
+          return { score, text: text.replace(/\s+/g, ' ').trim(), marker: CONFLICT_MARKER_RE.test(l) };
         })
         .filter((e) => e.text !== '');
     } catch {
@@ -307,6 +343,66 @@ for (let i = 0; i < shelves.length; i++)
   }
 shelfDups.sort((x, y) => y.sim - x.sim);
 
+// 2b) slug drift: one base name under two `@slug`s, where the shorter slug is the
+//     longer one with its leading part(s) dropped (`x@app` / `x@acme-app`). Typical
+//     cause: one repo named by `<repo>` in one place and `<owner>-<repo>` in another,
+//     so its memory splits across two scopes that §2's same-scope rule cannot see.
+//     Rules, all deterministic and name-only (no lesson text, no similarity):
+//       • the base (part before the first `@`, as splitShelf and §5 split it) must be
+//         EQUAL (shelf names are exact in nb, so `X@a` and `x@a` are other shelves);
+//       • "leading part dropped" is anchored on `-` (`app` vs `acme-webapp` is not drift);
+//       • slugs are compared ignoring case; slugs equal ignoring case are a case
+//         collision (`nb doctor` reports it), not drift; a bare shelf has no slug.
+//     It is a hint, not proof: two different repos can share a short name.
+const shelfKeys = new Map(); // shelf → Map(dedupKey → { id, score, text }), best-scored copy per key
+for (const n of notebooks) {
+  const keys = new Map();
+  for (const e of n.lessons) {
+    if (e.marker) continue; // "<<<<<<< HEAD" / "=======" are merge debris, not lessons
+    const key = dedupKey(e.text);
+    if (key === '') continue; // punctuation-only: nothing to compare
+    const prior = keys.get(key);
+    if (!prior || e.score > prior.score) keys.set(key, { id: lessonId(e.text), score: e.score, text: e.text });
+  }
+  shelfKeys.set(n.shelf, keys);
+}
+const scopedByBase = new Map(); // base → [{ shelf, slug, lessons }] for `@` shelves only
+for (const n of notebooks) {
+  const { role, scope } = splitShelf(n.shelf);
+  if (scope === '') continue;
+  if (!scopedByBase.has(role)) scopedByBase.set(role, []);
+  scopedByBase.get(role).push({ shelf: n.shelf, slug: scope, lessons: n.lessons.length });
+}
+const sortedBases = [...scopedByBase.keys()].sort(byName);
+const isLeadingDrop = (shortSlug, longSlug) => {
+  const s = shortSlug.toLowerCase();
+  const l = longSlug.toLowerCase();
+  return s !== l && l.endsWith(`-${s}`);
+};
+const slugVariants = [];
+for (const base of sortedBases) {
+  const members = scopedByBase.get(base).sort((a, b) => byName(a.shelf, b.shelf));
+  for (const short of members)
+    for (const long of members) {
+      if (short === long || !isLeadingDrop(short.slug, long.slug)) continue;
+      const inLong = shelfKeys.get(long.shelf);
+      const alsoInBoth = [...shelfKeys.get(short.shelf)]
+        .filter(([key]) => inLong.has(key))
+        .map(([, v]) => v.id)
+        .sort(byName);
+      slugVariants.push({
+        base,
+        shortShelf: short.shelf,
+        longShelf: long.shelf,
+        shortSlug: short.slug,
+        longSlug: long.slug,
+        shortLessons: short.lessons,
+        longLessons: long.lessons,
+        inBoth: alsoInBoth,
+      });
+    }
+}
+
 // 3) likely duplicate lessons (within a shelf)
 const lessonDups = [];
 for (const nb of notebooks) {
@@ -489,6 +585,51 @@ const undescribedShelves = notebooks
   .sort((a, b) => b.browseWithoutUse - a.browseWithoutUse || a.shelf.localeCompare(b.shelf));
 const undescribed = { computed: undescribedComputed, shelves: undescribedShelves };
 
+// 8) exact duplicate lessons across `@` shelves that share a base name. "Exact" is
+//    nb's own rule (equal `dedupKey`: case, punctuation and spacing ignored), so there
+//    is no similarity guess and a lesson is never matched with its negation (fuzzy
+//    matching cannot promise that; see #286). Only `@` shelves take part: a bare shelf
+//    has no slug, so a copy of the lesson in it is not a project-specific duplicate.
+//    Suggested fix: `nb move` the highest-scored copy (ties: shelf name) to the shared
+//    shelf named by the bare `<base>`, then `nb rm` the others. Moving to a sibling
+//    would be refused by nb (its target already holds the lesson). If `<base>` already
+//    holds the lesson, only the `rm`s remain. (`duplicate` is a `nb merge` reason
+//    code, not an `rm` one, so the rm carries it as `--note`.)
+const crossShelfDups = [];
+for (const base of sortedBases) {
+  const members = scopedByBase.get(base);
+  if (members.length < 2) continue;
+  const holders = new Map(); // dedupKey → [{ shelf, id, score, text }]
+  for (const m of members)
+    for (const [key, v] of shelfKeys.get(m.shelf)) {
+      if (!holders.has(key)) holders.set(key, []);
+      holders.get(key).push({ shelf: m.shelf, ...v });
+    }
+  for (const [key, copies] of holders) {
+    if (copies.length < 2) continue;
+    copies.sort((a, b) => b.score - a.score || byName(a.shelf, b.shelf));
+    const keep = copies[0];
+    const sharedHolds = shelfKeys.get(base)?.has(key) ?? false;
+    const rmTargets = sharedHolds ? copies : copies.slice(1);
+    crossShelfDups.push({
+      base,
+      key,
+      id: keep.id,
+      text: keep.text,
+      shelves: copies.length,
+      copies: copies.map((c) => ({ shelf: c.shelf, score: c.score })),
+      keep: keep.shelf,
+      sharedShelf: base,
+      sharedHolds,
+      commands: [
+        ...(sharedHolds ? [] : [`nb move ${keep.shelf} ${base} ${keep.id}`]),
+        ...rmTargets.map((c) => `nb rm ${c.shelf} ${keep.id} --reason obsolete --note duplicate`),
+      ],
+    });
+  }
+}
+crossShelfDups.sort((a, b) => b.shelves - a.shelves || byName(a.base, b.base) || byName(a.key, b.key));
+
 const report = {
   dir: NB_DIR,
   notebooks: notebooks.length,
@@ -497,6 +638,7 @@ const report = {
   lostLessons,
   shelfDups,
   roleDups: shelfDups, // deprecated alias of shelfDups
+  slugVariants,
   lessonDups,
   volume,
   silentShelves,
@@ -504,6 +646,7 @@ const report = {
   coAccess,
   curation,
   undescribed,
+  crossShelfDups,
   usageRows: usage.length,
   usageWindow,
 };
@@ -537,12 +680,33 @@ else
   }
 
 H('2. Near-duplicate shelf names (fragmented memory)');
-if (shelfDups.length === 0) out.push('  ✅ no suspiciously similar shelf names.');
-else
+if (shelfDups.length === 0 && slugVariants.length === 0) out.push('  ✅ no suspiciously similar shelf names.');
+else {
   for (const d of shelfDups) {
     out.push(`  ⚠️  "${d.a}" ~ "${d.b}" (name similarity ${d.sim}) — likely the same shelf, split in two.`);
     out.push(`      → consolidate: re-add ${d.b}'s lessons under "${d.a}" (or vice-versa), then retire the orphan.`);
   }
+  for (const v of slugVariants.slice(0, COACCESS_MAX_ROWS)) {
+    out.push(
+      `  ⚠️  possible slug drift: "${v.shortShelf}" (${v.shortLessons} lesson(s)) and "${v.longShelf}" (${v.longLessons}) — ` +
+        `same base "${v.base}"; slug "${v.shortSlug}" is "${v.longSlug}" with its leading part dropped.`,
+    );
+    out.push(
+      `      → if both name one project, fold one into the other, a lesson at a time: ` +
+        `nb move ${v.shortShelf} ${v.longShelf} <id>  (ids: nb show ${v.shortShelf}; reverse the two names if the short slug is the one you keep). ` +
+        `Two unrelated projects can share a short name: if so, leave both.`,
+    );
+    if (v.inBoth.length > 0)
+      out.push(
+        `        ${v.inBoth.length} lesson(s) (${v.inBoth.join(', ')}) are already in both, so nb move refuses them: ` +
+          `nb rm ${v.shortShelf} <id> --reason obsolete --note duplicate.`,
+      );
+    if (v.shortLessons + v.longLessons > MAX_LINES)
+      out.push(`        together they exceed ${MAX_LINES} lines: a move into a full shelf evicts its lowest-scored lesson.`);
+  }
+  if (slugVariants.length > COACCESS_MAX_ROWS)
+    out.push(`  …(${slugVariants.length - COACCESS_MAX_ROWS} more slug variants — run with --json)`);
+}
 
 H(`3. Likely duplicate lessons (paraphrases, sim ≥ ${SIM})`);
 if (lessonDups.length === 0) out.push('  ✅ no paraphrase duplicates above threshold.');
@@ -642,6 +806,25 @@ else {
   }
   if (undescribedShelves.length > COACCESS_MAX_ROWS)
     out.push(`  …(${undescribedShelves.length - COACCESS_MAX_ROWS} more — run with --json)`);
+}
+
+H('8. Exact duplicate lessons across shelves that share a base name');
+if (crossShelfDups.length === 0) out.push('  ✅ no lesson appears in more than one `@` shelf of the same base name.');
+else {
+  for (const d of crossShelfDups.slice(0, COACCESS_MAX_ROWS)) {
+    out.push(
+      `  ⚠️  "${d.text}" appears in ${d.shelves} shelves: ` +
+        `${d.copies.map((c) => `${c.shelf} (${c.score >= 0 ? '+' : ''}${c.score})`).join(', ')}.`,
+    );
+    out.push(
+      d.sharedHolds
+        ? `      → "${d.sharedShelf}" already holds it, so keep that copy and drop the others:`
+        : `      → an exact match under nb's own duplicate rule (case, punctuation and spacing ignored). To keep one copy in the shared "${d.sharedShelf}" shelf (the highest-scored copy keeps its score), then drop the rest:`,
+    );
+    for (const c of d.commands) out.push(`        ${c}`);
+  }
+  if (crossShelfDups.length > COACCESS_MAX_ROWS)
+    out.push(`  …(${crossShelfDups.length - COACCESS_MAX_ROWS} more — run with --json)`);
 }
 
 out.push('');

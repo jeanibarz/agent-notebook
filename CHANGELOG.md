@@ -10,6 +10,14 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb-janitor` reports slug drift and exact duplicate lessons across `shelf@project` shelves (#362).**
+  Two new read-only signals in the example janitor (`examples/nb-janitor.mjs`; no change to any `nb`
+  command, its output or the shelf file format). Section 2 now also flags *possible slug drift*: one base
+  name under two slugs where the shorter is the longer with a leading part dropped (`code-review@app` and
+  `code-review@acme-app`), with the `nb move` that would fold them. A new section 8 lists a lesson that
+  two or more `@` shelves of the same base hold, by `nb`'s own exact-duplicate rule (the `dedupKey`), with
+  the highest-scored copy and the `nb move` / `nb rm` to keep one. Both appear in the human report and in
+  `--json` (`slugVariants`, `crossShelfDups`). See [FR-JANITOR-001](docs/requirements.md#fr-janitor-001).
 - **`nb doctor` reports the structural problems the other commands tolerate silently (#338).**
   A read-only scan (no lock, no writes) of the notebooks directory listing, per shelf and line, git
   merge-conflict markers, lines without a valid `<score>\t` prefix, control/bidi characters, lessons over

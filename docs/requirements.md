@@ -1321,6 +1321,45 @@ sanitized like every usage field so it cannot split the row ([FR-USAGE-002](#fr-
 *Proven by:* `notebook.test.ts` → `describe('failed-search → add gap signal (issue #82)')`
 and the `nb search` logging / end-to-end CLI tests.
 
+### 4.15 Offline janitor signals for `shelf@project` names (issue #362)
+
+These live in the shipped example `examples/nb-janitor.mjs`, a read-only script that
+runs around the package, never inside `nb` ([DP-6](#dp-6), [NG-001](#ng-001),
+[NG-004](#ng-004)): no `nb` command, `nb` output or shelf-file field changes.
+
+<a id="fr-janitor-001"></a>
+**FR-JANITOR-001 (Should).** `nb-janitor` SHALL report two name- and text-equality signals
+about shelves named `<base>@<slug>`, in both the human report and `--json`, read-only and
+byte-for-byte deterministic for the same store (shelves and groups ordered by plain
+code-point comparison, never by directory order or locale):
+(a) **possible slug drift**, in section 2 and as `slugVariants`: two `@` shelves with an
+*equal* base (the part before the first `@`) whose slugs differ and where the shorter slug
+is the longer one with one or more leading parts dropped, anchored on `-` (`app` vs
+`acme-app`, not `app` vs `acme-webapp`). Slugs are compared ignoring case, and slugs that
+are equal ignoring case are a case collision, not drift. Each entry lists the lessons held
+under both, and the report suggests `nb move <short-shelf> <long-shelf> <id>`;
+(b) **exact duplicate lessons across shelves**, in section 8 and as `crossShelfDups`: a
+lesson held by two or more `@` shelves that share a base, where "the same lesson" means an
+equal `dedupKey` (the normal form `nb` itself uses to refuse an exact duplicate, so no
+similarity guess and no lesson is matched with its negation). The report says "appears in N
+shelves", names the highest-scored copy (ties broken by shelf name), and suggests
+`nb move <that-shelf> <base> <id>` followed by `nb rm <other-shelf> <id> --reason obsolete --note duplicate`
+(`duplicate` is a `merge` reason code, not an `rm` one). If the bare `<base>` shelf already
+holds the lesson, only the `nb rm` lines are suggested, because `nb move` refuses a target
+that holds an equal lesson. Bare shelves (no `@`), bases that differ by case, git
+merge-conflict marker lines and lessons whose normal form is empty never form a group.
+The script mirrors `sanitizeLesson` + `dedupKey` + `entryId` (it ships dependency-free and
+cannot import them), so the same key and id are printed as `nb show --json` shows.
+**Rationale:** the `shelf@project` convention (AGENTS.md section 4) fragments a project's memory when
+one repo is named by two slugs, and hides a lesson that several project shelves repeat
+(a cue that it is not specific to one project). Section 2's same-scope rule and section 3's
+paraphrase similarity cannot see either. Both are hints, not proof: two repos can share a short
+name, and a duplicated lesson may be correct in each shelf.
+*Proven by:* `nb-janitor-layers.test.ts` → `describe('nb-janitor section 2 — possible slug drift (issue #362)')`
+and `describe('nb-janitor section 8 — exact duplicate lessons across shelves sharing a base (issue #362)')`
+(including the parity test against `nb show --json` and the test that runs the printed commands),
+and `describe('nb-janitor sections 2 & 8 — read-only and neutral (issue #362)')`.
+
 ---
 
 ## 5. Non-functional requirements
