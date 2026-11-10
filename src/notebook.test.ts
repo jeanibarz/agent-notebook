@@ -4727,8 +4727,8 @@ describe('search — the demoted keyword fallback (issue #82)', () => {
 
   test('an empty / whitespace query yields no terms and no groups (never throws)', async () => {
     await addEntry(dir, 'r', 'something');
-    expect(search(dir, '   ')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [] });
-    expect(search(dir, '')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [] });
+    expect(search(dir, '   ')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [], skipped: [] });
+    expect(search(dir, '')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [], skipped: [] });
   });
 
   test('no match returns an empty group list (the gap-sensor case)', async () => {
@@ -5052,6 +5052,45 @@ describe('single-pass shelf read — list/search/show read each file once (issue
     // No entries → the exact empty-notebook line the `show` command prints for an
     // existing-but-empty shelf.
     expect(renderEntries('empty-shelf', [])).toBe('(notebook for shelf "empty-shelf" is empty)');
+  });
+});
+
+describe('one unreadable shelf does not abort list/search (issue #332)', () => {
+  // A directory named `<shelf>.md` makes readFileSync throw EISDIR — the same
+  // shape a root-owned/chmod'd file (EACCES) or an EIO read produces, and the
+  // reproduction the issue cites. `show` must still fail loudly for it; the two
+  // cross-shelf scans must degrade to a reported skip and keep the healthy rows.
+  const seedHealthy = async (): Promise<void> => {
+    await addEntry(dir, 'alpha', 'a lesson about lint');
+    await addEntry(dir, 'beta', 'another lesson about lint');
+  };
+
+  test('listNotebooks skips an unreadable shelf, keeps the rest, and reports it', async () => {
+    await seedHealthy();
+    mkdirSync(join(dir, 'weird.md'));
+    const listing = listNotebooks(dir);
+    expect(listing.rows.map((r) => r.shelf)).toEqual(['alpha', 'beta']);
+    expect(listing.total).toBe(2);
+    expect(listing.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
+  });
+
+  test('search skips an unreadable shelf, keeps the rest, and reports it', async () => {
+    await seedHealthy();
+    mkdirSync(join(dir, 'weird.md'));
+    const result = search(dir, 'lint');
+    expect(result.groups.map((g) => g.shelf)).toEqual(['alpha', 'beta']);
+    expect(result.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
+  });
+
+  test('a healthy store reports no skipped shelves (byte-identical path)', async () => {
+    await seedHealthy();
+    expect(listNotebooks(dir).skipped).toEqual([]);
+    expect(search(dir, 'lint').skipped).toEqual([]);
+  });
+
+  test('show still fails loudly for the unreadable shelf (no silent hide)', async () => {
+    mkdirSync(join(dir, 'weird.md'));
+    expect(() => showJson(dir, 'weird')).toThrow(/EISDIR/);
   });
 });
 

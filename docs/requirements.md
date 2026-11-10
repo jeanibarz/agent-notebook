@@ -543,6 +543,27 @@ phantom (reaped) from a deliberate trigger (kept) without adding a field to a le
 ([NG-004](#ng-004)).
 *Proven by:* `notebook.test.ts` → `describe('reaps an emptied, undescribed phantom shelf (issue #209)')`.
 
+<a id="fr-list-006"></a>
+**FR-LIST-006 (Should).** The two cross-shelf scans — `listNotebooks` ([FR-LIST-001](#fr-list-001))
+and `search` ([FR-SEARCH-001](#fr-search-001)) — SHALL keep working when a single shelf
+file is unreadable. A non-`ENOENT` read failure for one shelf (e.g. `EACCES` on a
+root-owned or `chmod`'d file after a `sudo nb`, `EISDIR` for a directory named
+`<shelf>.md`, `EIO`) SHALL skip **only** that shelf and SHALL NOT abort the command;
+every healthy shelf SHALL still be listed/searched and the command SHALL exit `0`.
+The skip SHALL be surfaced, never silent: `NotebookListing.skipped` and
+`SearchResult.skipped` SHALL carry `{shelf, code}` per skipped shelf (`code` the errno
+code), `nb list`/`nb search` SHALL print one stderr line naming the shelf and code, and
+`--json` SHALL include the additive `skipped` field **only when non-empty** so healthy
+output stays byte-identical. A single-shelf command that names the bad shelf explicitly
+(e.g. `nb show <bad-shelf>`) SHALL still fail loudly — the resilience applies only to
+scans, so an error for an explicitly requested shelf is never hidden.
+**Rationale:** One unreadable file (a stray directory, a permissions slip from a `sudo`
+run) previously turned every accumulated lesson into "nb failed" for `nb list`,
+`nb search`, and the session-start index agents use to decide which shelves to open
+(#332). Degrading to "one shelf is unreadable, here it is" preserves the rest of the
+memory and keeps the failure actionable.
+*Proven by:* `notebook.test.ts` → `describe('one unreadable shelf does not abort list/search (issue #332)')`; `cli.test.ts` → the `list …` / `nb search …` "issue #332" cases.
+
 ### 4.10 CLI contract
 
 <a id="fr-cli-001"></a>

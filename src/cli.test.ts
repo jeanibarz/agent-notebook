@@ -2372,6 +2372,50 @@ describe('runNbCli', () => {
       expect(parsed.rows[0]).toEqual({ role: 'reviewer', shelf: 'reviewer', lessons: 1, desc: 'the trigger', auto: null });
     });
 
+    describe('one unreadable shelf does not abort list (issue #332)', () => {
+      // A directory named `<shelf>.md` reproduces an EISDIR read failure (the
+      // issue's own reproduction); EACCES from a root-owned/chmod'd file is the
+      // same class. `list` must still exit 0, show every healthy shelf, and
+      // report the casualty + errno on stderr, while `show` stays loud.
+      test('exits 0, lists the rest, and reports the skipped shelf on stderr', async () => {
+        await run(['add', 'alpha', 'a lesson']);
+        await run(['add', 'beta', 'b lesson']);
+        mkdirSync(join(dir, 'weird.md'));
+        const r = await run(['list']);
+        expect(r.code).toBe(0);
+        expect(r.out).toContain('alpha');
+        expect(r.out).toContain('beta');
+        expect(r.out).not.toContain('weird');
+        expect(r.err).toContain('skipped shelf "weird"');
+        expect(r.err).toContain('EISDIR');
+      });
+
+      test('--json stays byte-identical on a healthy store (no skipped field)', async () => {
+        await run(['add', 'reviewer', 'a lesson']);
+        const r = await run(['list', '--json']);
+        const parsed = JSON.parse(r.out);
+        expect(parsed).not.toHaveProperty('skipped');
+        expect(Object.keys(parsed)).toEqual(['dir', 'total', 'rows']);
+      });
+
+      test('--json surfaces the skipped shelf additively when one is unreadable', async () => {
+        await run(['add', 'alpha', 'a lesson']);
+        mkdirSync(join(dir, 'weird.md'));
+        const r = await run(['list', '--json']);
+        expect(r.code).toBe(0);
+        const parsed = JSON.parse(r.out);
+        expect(parsed.rows.map((x: { shelf: string }) => x.shelf)).toEqual(['alpha']);
+        expect(parsed.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
+      });
+
+      test('show of the unreadable shelf still fails loudly with a clear error', async () => {
+        mkdirSync(join(dir, 'weird.md'));
+        const r = await run(['show', 'weird']);
+        expect(r.code).toBe(1);
+        expect(r.err).toMatch(/EISDIR/);
+      });
+    });
+
     test('a zero-lesson, no-description notebook is hidden (phantom debris)', async () => {
       // `nb describe <shelf> ""` on a fresh shelf writes an empty file with no
       // metadata and no entries — nothing to discover. It must not appear.
@@ -3510,6 +3554,27 @@ describe('nb search — the demoted keyword fallback (issue #82)', () => {
     await run(['add', 'reviewer', 'a lesson about locks']);
     const r = await run(['search', 'locks']);
     expect(r.out.toLowerCase()).toContain('secondary');
+  });
+
+  test('an unreadable shelf is skipped and reported, not fatal (issue #332)', async () => {
+    await run(['add', 'alpha', 'a lesson about lint']);
+    await run(['add', 'beta', 'another lesson about lint']);
+    mkdirSync(join(dir, 'weird.md'));
+    const r = await run(['search', 'lint']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('alpha');
+    expect(r.out).toContain('beta');
+    expect(r.err).toContain('skipped shelf "weird"');
+    expect(r.err).toContain('EISDIR');
+  });
+
+  test('--json search omits skipped on a healthy store and includes it otherwise (issue #332)', async () => {
+    await run(['add', 'alpha', 'a lesson about lint']);
+    const healthy = JSON.parse((await run(['search', 'lint', '--json'])).out);
+    expect(healthy).not.toHaveProperty('skipped');
+    mkdirSync(join(dir, 'weird.md'));
+    const damaged = JSON.parse((await run(['search', 'lint', '--json'])).out);
+    expect(damaged.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
   });
 
   test('AND by default; --any switches to OR', async () => {

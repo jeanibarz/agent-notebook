@@ -1901,6 +1901,37 @@ export interface NotebookSummary {
   auto: string | null;
 }
 
+/**
+ * A shelf that a cross-shelf scan (`listNotebooks` / `search`) could not read and
+ * therefore skipped (issue #332). `code` is the errno code from the filesystem
+ * (e.g. `EACCES`, `EISDIR`, `EIO`); `ENOENT` never appears because `readShelf`
+ * already treats it as an empty shelf. Surfaced so one unreadable file cannot
+ * silently vanish from the index: `nb list`/`nb search` report it on stderr and
+ * in `--json`, while still succeeding for every healthy shelf.
+ */
+export interface SkippedShelf {
+  /** The shelf whose `<shelf>.md` failed to read. */
+  shelf: string;
+  /** The errno code of the read failure (`EACCES`, `EISDIR`, `EIO`, …). */
+  code: string;
+}
+
+/**
+ * Run `fn` for one shelf, returning `undefined` (and the errno code) instead of
+ * throwing when the read fails with anything but `ENOENT` (which `readShelf`
+ * already swallows as an empty shelf). Shared by the two cross-shelf scans so a
+ * single unreadable file degrades to a reported skip rather than aborting the
+ * whole index (issue #332). Single-shelf commands keep calling `readShelf`
+ * directly, so an explicitly named bad shelf still fails loudly.
+ */
+function skipUnreadable<T>(shelf: string, fn: () => T): { value?: T; error?: SkippedShelf } {
+  try {
+    return { value: fn() };
+  } catch (err) {
+    return { error: { shelf, code: (err as NodeJS.ErrnoException).code ?? 'EUNKNOWN' } };
+  }
+}
+
 export interface ListOptions {
   /** Keep only notebooks whose shelf name starts with this prefix (the `.` namespace convention, e.g. `review.`). An empty/absent prefix keeps all. */
   prefix?: string;
@@ -1914,6 +1945,13 @@ export interface NotebookListing {
   total: number;
   /** The rows actually returned: richest-first (by lesson count), ties by name, truncated to `limit`. */
   rows: NotebookSummary[];
+  /**
+   * Shelves whose file could not be read and were skipped (issue #332), so one
+   * unreadable `<shelf>.md` does not abort the whole index. Empty on a healthy
+   * store, so the field is absent from healthy output's spirit (always `[]` here,
+   * but the CLI omits it when empty).
+   */
+  skipped: SkippedShelf[];
 }
 
 /**
@@ -1932,23 +1970,32 @@ export interface NotebookListing {
  */
 export function listNotebooks(dir: string, opts: ListOptions = {}): NotebookListing {
   const prefix = opts.prefix ?? '';
+  const skipped: SkippedShelf[] = [];
   const matches = listShelves(dir)
     .filter((shelf) => shelf.startsWith(prefix))
-    .map((shelf): NotebookSummary => {
+    .map((shelf): NotebookSummary | null => {
       // One read per shelf for both the lesson count and the description (issue
       // #201): the index used to read each file twice (readEntries + getDescription).
-      const { metaLines, entries } = readShelf(dir, shelf);
+      // A non-ENOENT read failure skips just this shelf and is reported (issue
+      // #332) so one unreadable file cannot take down the whole index.
+      const read = skipUnreadable(shelf, () => readShelf(dir, shelf));
+      if (read.error) {
+        skipped.push(read.error);
+        return null;
+      }
+      const { metaLines, entries } = read.value!;
       const desc = stripControlCharsNullable(getMetaValue(metaLines, DESC_KEY));
       // Fall back to the top-scored lesson only when there is no explicit
       // description; `ordered` is score-desc with an insertion-order tie-break.
       const auto = desc === null && entries.length > 0 ? stripControlChars(ordered(entries)[0].e.text) : null;
       return { role: shelf, shelf, lessons: entries.length, desc, auto };
     })
+    .filter((n): n is NotebookSummary => n !== null)
     .filter((n) => n.lessons > 0 || n.desc !== null);
   matches.sort((a, b) => b.lessons - a.lessons || a.shelf.localeCompare(b.shelf));
   const { limit } = opts;
   const rows = limit != null ? matches.slice(0, Math.max(0, limit)) : matches;
-  return { dir, total: matches.length, rows };
+  return { dir, total: matches.length, rows, skipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -2011,10 +2058,16 @@ export interface SearchResult {
   /**
    * Every entry id surfaced across the FULL pre-`limit` result, best-first —
    * the #114 surfacing provenance the usage log records. Kept on the full
-   * result so the serendipity proxy stays independent of the display `limit`
-   * and keeps its documented conservative (one-sided) bias (issue #186).
-   */
+    * result so the serendipity proxy stays independent of the display `limit`
+    * and keeps its documented conservative (one-sided) bias (issue #186).
+    */
   surfacedIds: string[];
+  /**
+   * Shelves whose file could not be read and were skipped (issue #332), so one
+   * unreadable `<shelf>.md` does not abort the whole search. Empty on a healthy
+   * store.
+   */
+  skipped: SkippedShelf[];
 }
 
 /**
@@ -2036,7 +2089,7 @@ export interface SearchResult {
  */
 export function search(dir: string, query: string, opts: SearchOptions = {}): SearchResult {
   const terms = query.toLowerCase().split(/\s+/).filter((t) => t !== '');
-  if (terms.length === 0) return { terms: [], groups: [], total: 0, surfacedIds: [] };
+  if (terms.length === 0) return { terms: [], groups: [], total: 0, surfacedIds: [], skipped: [] };
   const prefix = opts.prefix ?? '';
   const needAll = !opts.any;
   const isHit = (matched: number): boolean => (needAll ? matched === terms.length : matched >= 1);
@@ -2046,10 +2099,18 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
   };
 
   const groups: SearchGroup[] = [];
+  const skipped: SkippedShelf[] = [];
   for (const shelf of listShelves(dir).filter((r) => r.startsWith(prefix))) {
     // One read per shelf for both entries and description (issue #201): the
     // keyword scan used to read each file twice (readEntries + getDescription).
-    const { metaLines, entries } = readShelf(dir, shelf);
+    // A non-ENOENT read failure skips just this shelf and is reported (issue
+    // #332) so one unreadable file cannot take down the whole search.
+    const read = skipUnreadable(shelf, () => readShelf(dir, shelf));
+    if (read.error) {
+      skipped.push(read.error);
+      continue;
+    }
+    const { metaLines, entries } = read.value!;
     const desc = stripControlCharsNullable(getMetaValue(metaLines, DESC_KEY));
     // Tag each hit with its file-order index so equal (matched, score) hits keep a
     // stable, insertion-order sequence ([DP-3]); the index is dropped from output.
@@ -2085,7 +2146,7 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
   const total = groups.length;
   const surfacedIds = groups.flatMap((g) => g.hits.map((h) => h.id));
   const bounded = opts.limit != null ? groups.slice(0, Math.max(0, opts.limit)) : groups;
-  return { terms, groups: bounded, total, surfacedIds };
+  return { terms, groups: bounded, total, surfacedIds, skipped };
 }
 
 // ---------------------------------------------------------------------------

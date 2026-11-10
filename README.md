@@ -552,8 +552,9 @@ listShelves(dir); // string[] — shelves that already have a notebook, sorted (
 // description, with a top-lesson `auto` fallback). Phantom empty notebooks are
 // hidden; `total` counts every match so a caller can render "shown of total".
 listNotebooks(dir, { prefix: 'review.', limit: 50 });
-// → { dir, total, rows: [{ shelf, role, lessons, desc, auto }, ...] }
-// (`role` is a deprecated copy of `shelf`, kept so existing callers keep working.)
+// → { dir, total, rows: [{ shelf, role, lessons, desc, auto }, ...], skipped: [{ shelf, code }] }
+// (`role` is a deprecated copy of `shelf`, kept so existing callers keep working;
+// `skipped` lists shelves whose file could not be read — `[]` on a healthy store.)
 
 // move relocates one entry to another shelf WITH ITS SCORE INTACT — the
 // score-preserving consolidation that add+rm cannot express (add always starts a
