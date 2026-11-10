@@ -3731,7 +3731,7 @@ export function stats(
       cap,
       adds,
       addsPerDay: Math.round(addsPerDay * 100) / 100,
-      retentionDays: lineCount >= cap && adds > 0 ? Math.round((cap / addsPerDay) * 10) / 10 : null,
+      retentionDays: lineCount >= cap && adds > 0 ? Math.max(0.1, Math.round((cap / addsPerDay) * 10) / 10) : null, // floor 0.1d: never a misleading 0
     });
   }
   const notebookTotals: NotebookTotals = {
