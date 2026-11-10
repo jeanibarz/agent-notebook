@@ -964,6 +964,19 @@ export async function runNbCli(
                 `consolidate with: nb merge ${shelf} ${r.nearId} ${r.id} "<combined>"\n`,
             );
           }
+          // Non-blocking new-shelf advisory (issue #354): the one outcome of
+          // `add` the agent is not otherwise told about. stderr, so stdout stays
+          // pipe-clean; the exit code is unchanged.
+          if (r.created) {
+            const sim = r.similarShelves ?? [];
+            process.stderr.write(
+              `note: created new shelf "${shelf}"` +
+                (sim.length > 0
+                  ? `; existing shelves with overlapping names: ${sim.join(', ')} — if it is the same subject, consolidate with: nb move ${shelf} ${sim[0]} ${r.id}`
+                  : '') +
+                '\n',
+            );
+          }
         }
         break;
       }

@@ -1232,8 +1232,34 @@ export interface AddResult {
   nearId?: string;
   /** The text of the `nearId` entry, so the caller can show it in the advisory. */
   nearText?: string;
+  /** For an *accepted* add: true when this add created the shelf (it did not exist before). Absent otherwise. */
+  created?: true;
+  /** When `created`: up to 3 existing shelves sharing at least two name words with the new one (non-blocking advisory; absent when none). */
+  similarShelves?: string[];
   /** For merge: the ids of the two source entries consumed into the merged one. */
   sources?: [string, string];
+}
+
+/** Lowercased name words of a shelf, split on `-` and `.` (the namespace separator). */
+function nameWords(shelf: string): Set<string> {
+  return new Set(shelf.toLowerCase().split(/[-.]/).filter((w) => w !== ''));
+}
+
+/**
+ * Existing shelves that share at least two name words with `shelf` — a purely
+ * lexical check (no similarity engine), most shared words first, then name
+ * order, capped at `cap`. Catches two sessions coining different descriptive
+ * names for the same subject, which edit distance does not.
+ */
+export function overlappingShelves(dir: string, shelf: string, cap = 3): string[] {
+  const mine = nameWords(shelf);
+  return listShelves(dir)
+    .filter((o) => o !== shelf)
+    .map((o) => ({ o, n: [...nameWords(o)].filter((w) => mine.has(w)).length }))
+    .filter((x) => x.n >= 2)
+    .sort((a, b) => b.n - a.n || (a.o < b.o ? -1 : a.o > b.o ? 1 : 0))
+    .slice(0, cap)
+    .map((x) => x.o);
 }
 
 export function addEntry(dir: string, shelf: string, lesson: string): Promise<AddResult> {
@@ -1284,6 +1310,10 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     }
     const newEntry: Entry = { score: 1, text };
     entries.push(newEntry); // newcomer lands at the fresh end — storage is recency order
+    // Creating a shelf is the one outcome of `add` the agent is not otherwise
+    // told about (issue #354). Decide before the write, which creates the file.
+    const created = !notebookExists(dir, shelf);
+    const similar = created ? overlappingShelves(dir, shelf) : [];
     // Newcomer is protected: a full notebook admits it, ages its stalest line,
     // and evicts the lowest-scored one (never the newcomer). See enforceCap.
     const { kept, evicted, decayed } = enforceCap(entries, 1);
@@ -1297,6 +1327,8 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
       size: kept.length,
       id,
       ...(near ? { nearId: entryId(near.text), nearText: near.text } : {}),
+      ...(created ? { created: true as const } : {}),
+      ...(similar.length > 0 ? { similarShelves: similar } : {}),
     };
   });
 }
