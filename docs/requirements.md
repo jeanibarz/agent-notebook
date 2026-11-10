@@ -600,7 +600,7 @@ shelves; `--json` emits a lone object for one shelf, an array for several),
 `merge`, `split <shelf> <id|query> "<a>" "<b>"`,
 `rm`, `move <from> <to> <id|query>`, `describe <shelf> ["<text>"|-]`,
 `search <query> [prefix] [--any] [--limit <N>]`,
-`stats [<shelf>] [--since <N{d,h,m}>] [--json] [--exit-code]`, `path [<shelf>] [--usage] [--json]`, `config [--json]`,
+`stats [<shelf>] [--since <N{d,h,m}>] [--json] [--exit-code]`, `doctor [--json] [--exit-code]`, `path [<shelf>] [--usage] [--json]`, `config [--json]`,
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`),
 `completion <bash|zsh>` ([FR-CLI-010](#fr-cli-010)), `--help`, `--version`. Every command
 dispatched by `src/cli.ts` SHALL be named in this paragraph (guarded by `cli.test.ts` →

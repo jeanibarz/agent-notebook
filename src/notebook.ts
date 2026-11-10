@@ -899,6 +899,20 @@ export function stealStale(lock: string, observed: string | null, staleMs = stal
 const SHELF_TMP_RE = /\.md\.(?:\d+\.)?tmp$/;
 
 /**
+ * True when `name` (a top-level entry of `dir`) is an atomic-write temp that a
+ * crashed `nb` left behind: a shelf temp (SHELF_TMP_RE) or a usage-log temp
+ * `<usage-log-basename>.*.tmp`. The single definition shared by the reaper and
+ * `nb doctor` (issue #338), so the two can never disagree about what is debris.
+ * `.nb-usage.log.` carries the dot that precedes the per-pid segment, so the live
+ * log and its `.count` sidecar never match.
+ */
+export function isLeftoverTemp(dir: string, name: string): boolean {
+  const isShelfTemp = !name.startsWith('.') && SHELF_TMP_RE.test(name);
+  const usageTmpPrefix = `${basename(usageFile(dir))}.`;
+  return isShelfTemp || (name.startsWith(usageTmpPrefix) && name.endsWith('.tmp'));
+}
+
+/**
  * Reap orphaned temp files left behind by a crashed writer. This writer leaves
  * two temp conventions in the notebooks dir, each from an interrupted atomic
  * write-then-rename; if the process dies before the rename, the temp lingers
@@ -945,14 +959,9 @@ export function reapLeftoverTemps(dir: string): number {
   } catch {
     return 0; // dir unreadable — nothing to reap
   }
-  // `.nb-usage.log.` — the live log's basename plus the dot that precedes the
-  // per-pid segment, so the live log and its `.count` sidecar never match.
-  const usageTmpPrefix = `${basename(usageFile(dir))}.`;
   let reaped = 0;
   for (const name of names) {
-    const isShelfTemp = !name.startsWith('.') && SHELF_TMP_RE.test(name);
-    const isUsageTemp = name.startsWith(usageTmpPrefix) && name.endsWith('.tmp');
-    if (!isShelfTemp && !isUsageTemp) continue;
+    if (!isLeftoverTemp(dir, name)) continue;
     try {
       unlinkSync(join(dir, name));
       reaped++; // count only a temp we actually removed (issue #309)

@@ -17,6 +17,7 @@
 //   nb describe <shelf> -                   read the one-line description from stdin (multi-line refused)
 //   nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
 //   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport; --exit-code = exit 3 when anomalies present)
+//   nb doctor [--json] [--exit-code]        read-only structural check of the notebooks dir (conflict markers, bad lines, control chars, case collisions, over-cap, 0-byte, temps, stale lock; --exit-code = exit 3 when any found)
 //   nb path   [<shelf> | --usage] [--json]   print the notebooks dir, a shelf's file path, or the usage-log path (--json = {dir, shelf, path} object)
 //   nb config [--json]                      print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json = object keyed by name, string vars under `environment`)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
@@ -110,6 +111,7 @@ import {
   type StatsReport,
   type UsageMeta,
 } from './notebook.js';
+import { doctor, renderDoctor } from './doctor.js';
 
 /**
  * Default row cap for `nb list` when `--limit` is not given. The index is meant
@@ -156,6 +158,7 @@ usage:
   nb describe <shelf> -                    read the description from stdin (one line; multi-line is refused)
   nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback — scan all notebooks (surfacing is the primary path)
   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
+  nb doctor [--json] [--exit-code]         read-only check of the notebooks dir for structural problems (conflict markers, lines without a score, control chars, case-colliding shelves, over-cap, 0-byte files, leftover temps, stale lock); --exit-code exits 3 if any are found
   nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's resolved file path (--json emits a {dir, shelf, path} object)
   nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
   nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under \`environment\`)
@@ -336,7 +339,7 @@ function parseDelta(arg: string): number {
  */
 export const KNOWN_COMMANDS = [
   'show', 'stale', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
-  'search', 'stats', 'path', 'config', 'completion', 'list', 'ls', 'shelves', 'roles',
+  'search', 'stats', 'doctor', 'path', 'config', 'completion', 'list', 'ls', 'shelves', 'roles',
   'help', 'version',
 ] as const;
 
@@ -612,6 +615,7 @@ export const KNOWN_FLAGS: Record<string, readonly string[]> = {
   describe: ['--reason', '--note'],
   search: ['--any', '--limit'],
   stats: ['--exit-code', '--since'],
+  doctor: ['--exit-code'],
   path: ['--usage'],
   config: [],
   list: ['--limit'],
@@ -1379,6 +1383,18 @@ export async function runNbCli(
         // record that, so set `ok` before the opt-in anomaly exit returns early.
         ok = true;
         if (wantExitCode && rep.anomalies.length > 0) return 3;
+        break;
+      }
+      case 'doctor': {
+        // Strictly read-only (issue #338): no lock, no shelf write; the shared
+        // `finally` still appends its one standard usage row (shelf column `-`).
+        // Like `stats --exit-code`, the gate is opt-in: without the flag the
+        // command exits 0 even with findings.
+        const rep = doctor(dir);
+        if (json) process.stdout.write(JSON.stringify({ schemaVersion: rep.schemaVersion, findings: rep.findings }) + '\n');
+        else process.stdout.write(renderDoctor(rep) + '\n');
+        ok = true;
+        if (flagArgs.slice(1).includes('--exit-code') && rep.findings.length > 0) return 3;
         break;
       }
       case 'path': {

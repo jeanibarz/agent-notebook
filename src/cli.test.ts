@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -4657,5 +4657,128 @@ describe('a git merge-conflicted shelf warns on reads and refuses mutations (iss
     const r = await run(['add', 'g', 'new one']);
     expect(r.code).toBe(1);
     expect(parseUsage(dir).at(-1)!.errorClass).toBe('corrupt');
+  });
+});
+
+describe('nb doctor (issue #338)', () => {
+  const shelf = (name: string, body: string) => writeFileSync(join(dir, `${name}.md`), body, 'utf-8');
+  const codes = async (extra: string[] = []) => {
+    const r = await run(['doctor', '--json', ...extra]);
+    return { r, findings: JSON.parse(r.out).findings as Array<{ code: string; shelf: string; line?: number }> };
+  };
+
+  test('a clean directory prints a one-line OK summary and exits 0, even with --exit-code', async () => {
+    await run(['add', 'alpha', 'a lesson']);
+    const r = await run(['doctor', '--exit-code']);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('nb doctor: OK — 1 shelves checked, no problems found\n');
+  });
+
+  test('an empty/absent directory is OK', async () => {
+    const r = await run(['doctor']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('OK');
+  });
+
+  test('--json on a clean directory emits {schemaVersion, findings: []}', async () => {
+    await run(['add', 'alpha', 'a lesson']);
+    const r = await run(['doctor', '--json']);
+    expect(JSON.parse(r.out)).toEqual({ schemaVersion: 1, findings: [] });
+  });
+
+  test('conflict marker: reported once with its line; a mid-line ======= is not a marker', async () => {
+    shelf('a', '# desc: d\n+1\tfine ======= ok\n<<<<<<< HEAD\n+1\tx\n=======\n+1\ty\n>>>>>>> other\n');
+    const { findings } = await codes();
+    expect(findings.filter((f) => f.code === 'conflict-marker')).toEqual([
+      expect.objectContaining({ shelf: 'a', line: 3 }),
+    ]);
+  });
+
+  test('bad-score: tab-less and non-numeric-score lines are flagged; meta, blank lines and +N/-N/N are not', async () => {
+    shelf('a', '# desc: d\n+2\tgood\n-1\tgood too\n0\tzero\n\nno tab here\nabc\tbad score\n');
+    const { findings } = await codes();
+    expect(findings.filter((f) => f.code === 'bad-score').map((f) => f.line)).toEqual([6, 7]);
+  });
+
+  test('control-char: an escape or bidi override is flagged with its line', async () => {
+    shelf('a', '+1\tclean\n+1\tbad \u001b[31mred\n+1\tbidi ‮ text\n');
+    const { findings } = await codes();
+    expect(findings.filter((f) => f.code === 'control-char').map((f) => f.line)).toEqual([2, 3]);
+  });
+
+  test('lesson-too-long: only a lesson over NB_MAX_CHARS is flagged', async () => {
+    process.env.NB_MAX_CHARS = '20';
+    shelf('a', `+1\t${'x'.repeat(20)}\n+1\t${'y'.repeat(21)}\n`);
+    const { findings } = await codes();
+    expect(findings.filter((f) => f.code === 'lesson-too-long').map((f) => f.line)).toEqual([2]);
+  });
+
+  test('shelf-over-cap: only a shelf with more lessons than NB_MAX_LINES is flagged', async () => {
+    process.env.NB_MAX_LINES = '2';
+    shelf('full', '+1\ta\n+1\tb\n');
+    shelf('over', '+1\ta\n+1\tb\n+1\tc\n');
+    const { findings } = await codes();
+    expect(findings.filter((f) => f.code === 'shelf-over-cap').map((f) => f.shelf)).toEqual(['over']);
+  });
+
+  test('empty-file: a 0-byte shelf is flagged and produces no other finding for it', async () => {
+    shelf('hollow', '');
+    const { findings } = await codes();
+    expect(findings).toEqual([expect.objectContaining({ code: 'empty-file', shelf: 'hollow' })]);
+  });
+
+  test('case-collision: both shelves are named (skipped where the filesystem aliases case)', async () => {
+    shelf('Foo', '+1\ta\n');
+    shelf('foo', '+1\tb\n');
+    if (readdirSync(dir).filter((n) => n.endsWith('.md')).length < 2) return; // case-insensitive FS
+    const { findings } = await codes();
+    expect(findings.filter((f) => f.code === 'case-collision').map((f) => f.shelf).sort()).toEqual(['Foo', 'foo']);
+  });
+
+  test('leftover-temp: shelf and usage-log temps are flagged; the live usage log and a dotfile are not', async () => {
+    shelf('a', '+1\tx\n');
+    writeFileSync(join(dir, 'a.md.123.tmp'), 'x');
+    writeFileSync(join(dir, '.nb-usage.log.456.tmp'), 'x');
+    writeFileSync(join(dir, '.nb-usage.log'), '');
+    writeFileSync(join(dir, '.x.md.tmp'), 'x');
+    const { findings } = await codes();
+    expect(findings.filter((f) => f.code === 'leftover-temp').map((f) => f.shelf)).toEqual([
+      '.nb-usage.log.456.tmp',
+      'a.md.123.tmp',
+    ]);
+  });
+
+  test('stale-lock: an old .nb.lock is flagged, a fresh one is not', async () => {
+    mkdirSync(join(dir, '.nb.lock'));
+    expect((await codes()).findings.map((f) => f.code)).not.toContain('stale-lock');
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(join(dir, '.nb.lock'), old, old);
+    expect((await codes()).findings.map((f) => f.code)).toContain('stale-lock');
+  });
+
+  test('--exit-code exits 3 on a finding; without it the exit is 0; --json keeps stdout pure', async () => {
+    shelf('a', 'no tab\n');
+    expect((await run(['doctor'])).code).toBe(0);
+    const r = await run(['doctor', '--json', '--exit-code']);
+    expect(r.code).toBe(3);
+    expect(JSON.parse(r.out).findings).toHaveLength(1);
+    const h = await run(['doctor', '--exit-code']);
+    expect(h.out).toContain('bad-score  a:1');
+  });
+
+  test('is read-only: shelf bytes and mtimes are unchanged and the lock is never created', async () => {
+    shelf('a', '<<<<<<< x\nno tab\n');
+    const file = join(dir, 'a.md');
+    const old = new Date(Date.now() - 86_400_000);
+    utimesSync(file, old, old);
+    const before = { m: statSync(file).mtimeMs, b: readFileSync(file, 'utf-8') };
+    await run(['doctor', '--exit-code']);
+    expect({ m: statSync(file).mtimeMs, b: readFileSync(file, 'utf-8') }).toEqual(before);
+    expect(existsSync(join(dir, '.nb.lock'))).toBe(false);
+  });
+
+  test('an unknown flag is refused (flag validation row exists)', async () => {
+    const r = await run(['doctor', '--exitcode']);
+    expect(r.code).not.toBe(0);
   });
 });
