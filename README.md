@@ -334,6 +334,7 @@ agent-notebook notebooks — 2 matching "review." in /home/you/.agent-notebook/n
 - **No new storage.** A namespaced shelf is still one flat `<shelf>.md` file — `review.tests.md`, `review.correctness.md` — never a directory. `.` is already a legal shelf character, so there is nothing to enable.
 - **`@` is separate.** It stays reserved for the existing `shelf@project` scoping and composes with a namespace (`review.tests@your-repo`).
 - **`README` is reserved.** A `README.md` in the notebooks dir (common when the dir is a git repo that backs up your notebooks) is *not* a notebook — it is never listed, searched, counted, or writable as a shelf (case-insensitive). Name a real notebook something else (`readme-notes` is fine).
+- **Case-variants of an existing shelf are refused.** Creating `foo` when `Foo` exists exits 1 naming `Foo` — they are one file on macOS/Windows, which breaks a git-synced notebook. Existing shelves and colliding pairs are left alone.
 
 See [FR-NAMESPACE-001](docs/requirements.md#fr-namespace-001).
 

@@ -312,6 +312,29 @@ export function notebooksDir(): string {
     : join(homedir(), '.agent-notebook', 'notebooks');
 }
 
+/**
+ * Refuse to CREATE a shelf whose name differs only by case from an existing one
+ * (issue #337). `Foo.md` and `foo.md` coexist on Linux but are one file on the
+ * default macOS/Windows filesystems, so a git-synced notebook would collide on
+ * checkout, or a write to `foo` would land in `Foo`. Only creation is guarded:
+ * an exact-name match (the shelf already exists) and any name with no
+ * case-variant behave as before, and already-colliding pairs are left alone.
+ * Uses the directory listing rather than `existsSync`, so it also fires on a
+ * case-insensitive host where `foo.md` would otherwise "exist" by aliasing.
+ */
+function assertNoCaseVariant(dir: string, shelf: string): void {
+  const shelves = listShelves(dir);
+  if (shelves.includes(shelf)) return;
+  const lower = shelf.toLowerCase();
+  const variant = shelves.find((o) => o.toLowerCase() === lower);
+  if (variant === undefined) return;
+  throw new NbError(
+    'bad_args',
+    `shelf ${JSON.stringify(shelf)} differs only by case from the existing shelf ${JSON.stringify(variant)} — ` +
+      `they would collide on a case-insensitive filesystem (macOS/Windows); did you mean \`${variant}\`?`,
+  );
+}
+
 function shelfFile(dir: string, shelf: string): string {
   assertSafeShelf(shelf);
   return join(dir, `${shelf}.md`);
@@ -1270,6 +1293,8 @@ export function overlappingShelves(dir: string, shelf: string, cap = 3): string[
 export function addEntry(dir: string, shelf: string, lesson: string): Promise<AddResult> {
   return withLock(dir, () => {
     const text = sanitizeLesson(lesson);
+    assertSafeShelf(shelf);
+    assertNoCaseVariant(dir, shelf);
     // One scan for entries AND the metadata block, passed through to writeEntries
     // below so the mutation reads the shelf once, not twice (issue #251).
     const { metaLines, entries, conflict } = readShelf(dir, shelf);
@@ -1688,6 +1713,7 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
     const idx = selectIndex(source, selector);
     const moving = source[idx];
     const id = entryId(moving.text);
+    assertNoCaseVariant(dir, toShelf);
     const targetRead = readShelf(dir, toShelf);
     assertNotConflicted(toShelf, targetRead.conflict);
     const target = targetRead.entries;
@@ -1790,6 +1816,8 @@ export function setDescription(dir: string, shelf: string, text: string): Promis
       // Reject rather than truncate, exactly as add/merge/split do.
       throw new NbError('too_long', `description is ${clean.length} chars; max is ${maxChars()} — shorten it`);
     }
+    assertSafeShelf(shelf);
+    assertNoCaseVariant(dir, shelf);
     const { metaLines, entries, conflict } = readShelf(dir, shelf);
     assertNotConflicted(shelf, conflict);
     const meta = setMetaValue(metaLines, DESC_KEY, clean);

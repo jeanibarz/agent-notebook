@@ -5676,3 +5676,41 @@ describe('git merge-conflict markers are detected, never rewritten (issue #333)'
     expect(stats(dir, { now: Date.now() }).conflicts).toEqual([]);
   });
 });
+
+describe('case-variant shelf guard (#337)', () => {
+  test('add refuses a new shelf differing only by case, names the existing one, creates no file', async () => {
+    await addEntry(dir, 'Foo', 'first');
+    await expect(addEntry(dir, 'foo', 'second')).rejects.toThrow(/differs only by case.*"Foo".*`Foo`/);
+    expect(readdirSync(dir).filter((n) => n.endsWith('.md'))).toEqual(['Foo.md']);
+  });
+
+  test('add to the exact existing name, and to a name with no case-variant, is unchanged', async () => {
+    await addEntry(dir, 'Foo', 'first');
+    expect((await addEntry(dir, 'Foo', 'second')).added).toBe(true);
+    expect((await addEntry(dir, 'bar', 'third')).added).toBe(true);
+    expect(readEntries(dir, 'Foo')).toHaveLength(2);
+  });
+
+  test('an existing colliding pair is left alone: both names stay writable', async () => {
+    writeFileSync(join(dir, 'Foo.md'), '1\told\n');
+    writeFileSync(join(dir, 'foo.md'), '1\tolder\n');
+    if (readdirSync(dir).filter((n) => n.endsWith('.md')).length < 2) return; // case-insensitive host
+    expect((await addEntry(dir, 'foo', 'more')).added).toBe(true);
+    expect((await addEntry(dir, 'Foo', 'more')).added).toBe(true);
+  });
+
+  test('move into a new case-variant target is refused and writes nothing; into the exact name works', async () => {
+    await addEntry(dir, 'Target', 'keep');
+    await addEntry(dir, 'src', 'lesson one');
+    await expect(move(dir, 'src', 'target', 'lesson one')).rejects.toThrow(/differs only by case.*"Target"/);
+    expect(readEntries(dir, 'src')).toHaveLength(1);
+    expect(readEntries(dir, 'Target')).toHaveLength(1);
+    expect((await move(dir, 'src', 'Target', 'lesson one')).reason).toBe('moved');
+  });
+
+  test('describe refuses to create a case-variant shelf', async () => {
+    await addEntry(dir, 'Foo', 'first');
+    await expect(setDescription(dir, 'FOO', 'x')).rejects.toThrow(/differs only by case/);
+    expect(readdirSync(dir).filter((n) => n.endsWith('.md'))).toEqual(['Foo.md']);
+  });
+});
