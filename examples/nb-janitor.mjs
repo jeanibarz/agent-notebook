@@ -103,7 +103,7 @@ const USAGE_RING = (() => {
 // itself uses to refuse an exact duplicate, and name a lesson by `entryId`, the id
 // `nb show` prints. This script ships dependency-free and runs standalone, so it
 // cannot import them from the package: it mirrors `sanitizeLesson` + `dedupKey` +
-// `entryId` (src/notebook.ts), and src/nb-janitor.test.ts pins the mirror to the
+// `entryId` (src/notebook.ts), and src/nb-janitor-layers.test.ts pins the mirror to the
 // package's own `nb show --json` `key`/`id` so the two cannot drift silently.
 // The control/zero-width set is DELETED first (as nb does on write), not turned
 // into a space the way the punctuation rule would, or a lesson holding one would
@@ -151,7 +151,10 @@ function readNotebooks(dir) {
           const tab = l.indexOf('\t');
           const text = tab === -1 ? l : l.slice(tab + 1);
           const score = tab === -1 ? 0 : Number.parseInt(l.slice(0, tab), 10) || 0;
-          return { score, text: text.replace(/\s+/g, ' ').trim(), marker: CONFLICT_MARKER_RE.test(l) };
+          // Delete nb's control/zero-width set BEFORE collapsing whitespace, as nb's sanitizeLesson does:
+          // `\s` itself matches U+FEFF, so collapsing first would turn it into a space and give the
+          // lesson a different dedupKey/id here than in nb.
+          return { score, text: text.replace(CONTROL_CHARS_RE, '').replace(/\s+/g, ' ').trim(), marker: CONFLICT_MARKER_RE.test(l) };
         })
         .filter((e) => e.text !== '');
     } catch {

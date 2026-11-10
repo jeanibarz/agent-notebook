@@ -294,7 +294,8 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
     const samples = [
       'Plain lesson',
       'MiXeD   case,  punctuation; and spacing!',
-      'zero​width and bell\u0007 chars',
+      'zero\u200Bwidth and bell\u0007 chars',
+      'bom\uFEFFinside (U+FEFF is whitespace to JS regexes but deleted by nb)',
       'tab\tinside the text',
       'naïve café — non-ASCII becomes a space',
       '  leading and trailing  ',
@@ -313,6 +314,15 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
       expect(d.id).toBe(shown.id);
       nb('vote', `parity${i}@one`, shown.id, '+1'); // the id the janitor prints is one nb accepts
     });
+  });
+
+  test('a lesson with an invisible character still matches its plain twin (what nb itself would refuse as a duplicate)', () => {
+    shelf('o@a', [[2, 'foo\uFEFFbar baz']]);
+    shelf('o@b', [[1, 'foobar baz']]);
+    const groups = json().crossShelfDups;
+    expect(groups.length).toBe(1);
+    const [d] = groups;
+    for (const cmd of d.commands) nb(...cmd.split(' ').slice(1)); // the id it prints is one nb resolves
   });
 
   test('is deterministic: the same store prints the same bytes whatever order the files were created in', () => {
