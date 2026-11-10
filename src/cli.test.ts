@@ -3149,7 +3149,8 @@ describe('nb move (score-preserving cross-shelf move, issue #103)', () => {
     // the score survived the move — `show` on the target prints [+2], not the +1 add floor
     const show = await run(['show', 'broad']);
     expect(show.out).toMatch(/\[\+2\]\s+use execFileSync with array args/);
-    expect((await run(['show', 'thin'])).out).toContain('is empty');
+    // the undescribed source emptied by the move is reaped (issue #355), not left as a 0-byte file
+    expect((await run(['show', 'thin'])).err).toContain('no notebook for shelf "thin"');
   });
 
   test('--json emits a MoveResult with the preserved score', async () => {
