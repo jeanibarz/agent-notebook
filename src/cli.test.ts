@@ -1280,8 +1280,8 @@ describe('runNbCli', () => {
     expect(out).toContain('notebooks: 2 shelves, 3 lines (cap 2/shelf)');
     // Whole-row, line-anchored assertions (^…$ on one line) so a regex can never
     // match across rows or treat 1/2 as a prefix of 1/20.
-    expect(out.some((l) => /^patcher\s+2\/2\s+FULL$/.test(l))).toBe(true);
-    expect(out.some((l) => /^scout\s+1\/2$/.test(l))).toBe(true); // below cap: no marker
+    expect(out.some((l) => /^patcher\s+2\/2\s+FULL\s+2 adds \(0\.29\/day\), ~7d retention$/.test(l))).toBe(true);
+    expect(out.some((l) => /^scout\s+1\/2\s+1 add \(0\.14\/day\)$/.test(l))).toBe(true); // below cap: no marker
   });
 
   test('stats table says "notebooks: none" when no shelf has a notebook', async () => {
@@ -1298,7 +1298,7 @@ describe('runNbCli', () => {
     expect(s.code).toBe(0);
     const out = s.out.split('\n').map((l) => l.trim());
     expect(out).toContain('notebooks: 1 shelf, 1 lines (cap 50/shelf)'); // singular "shelf"
-    expect(out.some((l) => /^patcher\s+1\/50$/.test(l))).toBe(true);
+    expect(out.some((l) => /^patcher\s+1\/50\s+1 add \(0\.14\/day\)$/.test(l))).toBe(true);
     expect(out.some((l) => /^scout\b/.test(l))).toBe(false); // the other shelf is not listed
   });
 
@@ -1315,7 +1315,7 @@ describe('runNbCli', () => {
     expect(Array.isArray(report.perCommand)).toBe(true);
     expect(Array.isArray(report.anomalies)).toBe(true);
     // new inventory fields
-    expect(report.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 2, cap: 5 }]);
+    expect(report.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 2, cap: 5, adds: 2, addsPerDay: 0.29, retentionDays: null }]);
     expect(report.notebookTotals).toEqual({ roles: 1, shelves: 1, lines: 2, cap: 5 });
     expect(Array.isArray(report.signals)).toBe(true); // diagnostic signals (issue #72), additive
   });
@@ -1803,7 +1803,7 @@ describe('runNbCli', () => {
     const TUNABLES = [
       'NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_NEAR_DUP', 'NB_USAGE_RING',
       'NB_STALE_LOCK_MS', 'NB_LOCK_GRACE_MS', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S',
-      'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ERR_RATE', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI',
+      'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ADD_BURST_N', 'NB_ERR_RATE', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI',
     ];
     const savedTunables: Record<string, string | undefined> = {};
     beforeEach(() => {
@@ -1826,7 +1826,7 @@ describe('runNbCli', () => {
       ['maxLines', '50'], ['maxChars', '200'], ['nearThreshold', '0.5'],
       ['usageRing', '5000'], ['usageRingSlack', '312'], ['staleLockMs', '10000'],
       ['lockGraceMs', '2000'], ['loopN', '10'], ['loopWindowSec', '120'],
-      ['silentHours', '48'], ['errMin', '5'], ['errRate', '0.3'],
+      ['silentHours', '48'], ['errMin', '5'], ['addBurstN', '15'], ['errRate', '0.3'],
       ['coverageHi', '0.5'], ['recallMissHi', '0.2'],
     ];
 
@@ -1859,7 +1859,7 @@ describe('runNbCli', () => {
       expect(r.code).toBe(0);
       expect(r.out.trim().split('\n')).toHaveLength(1); // exactly one JSON object on stdout
       const obj = JSON.parse(r.out);
-      // The 14 numeric rows keep their exact keys; issue #312 adds ONE new
+      // The 15 numeric rows keep their exact keys; issue #312 adds ONE new
       // top-level `environment` key (a new section, not a changed row shape) and
       // issue #336 adds the informational `unrecognized` array. Nothing else.
       expect(Object.keys(obj).sort()).toEqual([...DEFAULTS.map(([n]) => n), 'environment', 'unrecognized'].sort());
@@ -2051,7 +2051,7 @@ describe('runNbCli', () => {
         // A drifted default, clamp bound or parse rule fails here rather than
         // silently printing a value the hot path never uses (the #116 drift).
         const { maxLines, maxChars, nearThreshold, usageRing, staleLockMs, lockGraceMs,
-          loopN, loopWindowSec, silentHours, errMin, errRate, coverageHi, recallMissHi } = await import('./notebook.js');
+          loopN, loopWindowSec, silentHours, errMin, addBurstN, errRate, coverageHi, recallMissHi } = await import('./notebook.js');
         const cases: Array<[string, () => number, string, string[]]> = [
           ['maxLines', maxLines, 'NB_MAX_LINES', ['3', '999999', '0', 'abc']],
           ['maxChars', maxChars, 'NB_MAX_CHARS', ['50', '999999', '0', 'x']],
@@ -2063,6 +2063,7 @@ describe('runNbCli', () => {
           ['loopWindowSec', loopWindowSec, 'NB_LOOP_WINDOW_S', ['60', '9999999', '1', 'q']],
           ['silentHours', silentHours, 'NB_SILENT_H', ['24', '9999999', '0', 'q']],
           ['errMin', errMin, 'NB_ERR_MIN', ['3', '9999999', '0', 'q']],
+          ['addBurstN', addBurstN, 'NB_ADD_BURST_N', ['3', '9999999', '0', 'q']],
           ['errRate', errRate, 'NB_ERR_RATE', ['0.1', '9', '-1', 'q']],
           ['coverageHi', coverageHi, 'NB_COVERAGE_HI', ['0.1', '9', '-1', 'q']],
           ['recallMissHi', recallMissHi, 'NB_RECALL_MISS_HI', ['0.1', '9', '-1', 'q']],
@@ -2094,6 +2095,7 @@ describe('runNbCli', () => {
           ['loopWindowSec', nb.loopWindowSec, nb.LOOP_WINDOW_S],
           ['silentHours', nb.silentHours, nb.SILENT_H],
           ['errMin', nb.errMin, nb.ERR_MIN],
+          ['addBurstN', nb.addBurstN, nb.ADD_BURST_N],
         ];
         for (const [name, getter, t] of specs) {
           const spec = t as IntTunable;

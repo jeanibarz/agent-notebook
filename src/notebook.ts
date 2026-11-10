@@ -51,6 +51,7 @@ export const LOOP_N: IntTunable = { env: 'NB_LOOP_N', dflt: 10, lo: 2, hi: 1000 
 export const LOOP_WINDOW_S: IntTunable = { env: 'NB_LOOP_WINDOW_S', dflt: 120, lo: 5, hi: 86_400 };
 export const SILENT_H: IntTunable = { env: 'NB_SILENT_H', dflt: 48, lo: 1, hi: 24 * 365 };
 export const ERR_MIN: IntTunable = { env: 'NB_ERR_MIN', dflt: 5, lo: 1, hi: 10_000 };
+export const ADD_BURST_N: IntTunable = { env: 'NB_ADD_BURST_N', dflt: 15, lo: 1, hi: 100_000 };
 export const ERR_RATE: RateTunable = { env: 'NB_ERR_RATE', dflt: 0.3 };
 
 /** The coverage×surfacing readout thresholds (issue #81). A rate ≥ its HIGH cutoff reads as "HIGH" on that axis; both default to a deliberately blunt split, tunable via env. */
@@ -148,6 +149,10 @@ export function silentHours(): number {
 /** High-error-rate anomaly: minimum calls before the failure fraction is judged. */
 export function errMin(): number {
   return resolveIntTunable(ERR_MIN);
+}
+/** `add-burst` signal (issue #353): a session with MORE than this many accepted adds to one shelf is flagged. */
+export function addBurstN(): number {
+  return resolveIntTunable(ADD_BURST_N);
 }
 /** High-error-rate anomaly: minimum failure fraction (0–1); a bad value falls back to the default, never NaN (which would disable detection). */
 export function errRate(): number {
@@ -2790,16 +2795,20 @@ export interface Anomaly {
  *     `search` row is logged under shelf `-` (it spans notebooks), so this signal is
  *     observable only in an UNSCOPED `stats` report — `stats({shelf})` filters to one
  *     shelf and cannot pair the cross-notebook search with the add.
+ *   - `add-burst` (issue #353): one session accepted more than `NB_ADD_BURST_N` adds
+ *     into one shelf. On a full shelf each add evicts a line, so a burst shortens the
+ *     retention window of everything already there; the first remedy is fewer adds
+ *     per session, not a bigger cap or another shelf.
  */
 export interface DiagnosticSignal {
-  kind: 'browse-without-use' | 'eviction-while-still-voted' | 'vote-reversal' | 'failed-search';
+  kind: 'browse-without-use' | 'eviction-while-still-voted' | 'vote-reversal' | 'failed-search' | 'add-burst';
   /** @deprecated use shelf */
   role: string;
   /** The shelf the signal concerns. */
   shelf: string;
   /** Human-readable one-line explanation. */
   detail: string;
-  /** `browse-without-use`: the session the notebook was browsed in. */
+  /** `browse-without-use` / `failed-search` / `add-burst`: the session the signal concerns. */
   session?: string;
   /** `eviction-while-still-voted` / `vote-reversal`: the entry id involved. */
   entry?: string;
@@ -2818,6 +2827,17 @@ export interface NotebookStat {
   shelf: string;
   lines: number;
   cap: number;
+  /** Accepted `add` rows for this shelf inside the stats window (issue #353), read from the usage log. */
+  adds: number;
+  /** `adds` per day of the window (`adds ÷ window days`). Not adjusted for a shelf younger than the window. */
+  addsPerDay: number;
+  /**
+   * Estimated retention window of a FULL shelf, in days: `cap ÷ addsPerDay` — each
+   * add to a full shelf evicts one line, so an untouched lesson lasts about `cap`
+   * adds whatever its score. `null` when the shelf is below its cap or took no
+   * adds in the window (no rate to divide by) — never a misleading 0 or Infinity.
+   */
+  retentionDays: number | null;
 }
 
 export interface NotebookTotals {
@@ -3555,12 +3575,38 @@ export function stats(
     }
   }
 
+  // (E) add-burst (issue #353): a session accepted MORE than `NB_ADD_BURST_N` adds
+  //     into one shelf. Counts the `accepted` add rows the usage log already holds,
+  //     per (session, shelf) — the unit that shortens THAT shelf's retention window.
+  //     Needs a session (a blank one cannot be grouped, as in (A)/(D)).
+  {
+    const burstN = addBurstN();
+    const perSessionShelf = new Map<string, number>(); // session \u0000 shelf → accepted adds
+    for (const r of recent) {
+      if (r.command !== 'add' || r.outcome !== 'accepted' || r.session === '') continue;
+      const k = `${r.session}\u0000${r.role}`;
+      perSessionShelf.set(k, (perSessionShelf.get(k) ?? 0) + 1);
+    }
+    for (const [k, n] of perSessionShelf) {
+      if (n <= burstN) continue;
+      const [session, shelf] = k.split('\u0000');
+      signals.push({
+        kind: 'add-burst',
+        role: shelf,
+        shelf,
+        session,
+        detail: `${n} accepted adds in one session (threshold ${burstN}) — on a full shelf each add evicts a line, so a burst shortens how long the other lessons survive; add fewer, better lessons per session`,
+      });
+    }
+  }
+
   // Deterministic order so renderers and tests see a stable sequence.
   const sigOrder: Record<DiagnosticSignal['kind'], number> = {
     'browse-without-use': 0,
     'eviction-while-still-voted': 1,
     'vote-reversal': 2,
     'failed-search': 3,
+    'add-burst': 4,
   };
   signals.sort(
     (a, b) =>
@@ -3662,6 +3708,12 @@ export function stats(
   const skipped: SkippedShelf[] = [];
   const conflicts: ConflictShelf[] = [];
   const notebooks: NotebookStat[] = [];
+  // Accepted adds per shelf over the window (issue #353) — the pace the cap acts at.
+  const acceptedAdds = new Map<string, number>();
+  for (const r of recent) {
+    if (r.command === 'add' && r.outcome === 'accepted') acceptedAdds.set(r.role, (acceptedAdds.get(r.role) ?? 0) + 1);
+  }
+  const windowDays = windowMs / 86_400_000;
   for (const shelf of inventoryShelves) {
     const read = skipUnreadable(shelf, () => readShelf(dir, shelf));
     if (read.error) {
@@ -3669,7 +3721,18 @@ export function stats(
       continue;
     }
     if (read.value!.conflict !== null) conflicts.push({ shelf, marker: read.value!.conflict });
-    notebooks.push({ role: shelf, shelf, lines: read.value!.entries.length, cap });
+    const lineCount = read.value!.entries.length;
+    const adds = acceptedAdds.get(shelf) ?? 0;
+    const addsPerDay = adds / windowDays;
+    notebooks.push({
+      role: shelf,
+      shelf,
+      lines: lineCount,
+      cap,
+      adds,
+      addsPerDay: Math.round(addsPerDay * 100) / 100,
+      retentionDays: lineCount >= cap && adds > 0 ? Math.max(0.1, Math.round((cap / addsPerDay) * 10) / 10) : null, // floor 0.1d: never a misleading 0
+    });
   }
   const notebookTotals: NotebookTotals = {
     roles: notebooks.length,
