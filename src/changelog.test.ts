@@ -30,6 +30,37 @@ describe('CHANGELOG.md', () => {
     }
   });
 
+  test('has a released heading for the current package.json version', () => {
+    // Issue #276: the checks above pin `[Unreleased]` and the literal historical
+    // 0.1.x headings, but nothing tied the version the package actually ships
+    // under to a *released* CHANGELOG section. A version bump that forgot to cut
+    // the section — leaving the notes under `[Unreleased]`, or absent — passed
+    // the whole suite and rode straight into a release (release.yml runs the
+    // tests), the exact drift the CHANGELOG exists to prevent.
+    const version: string = JSON.parse(
+      readFileSync(join(root, 'package.json'), 'utf-8'),
+    ).version;
+    // Escape every regex metacharacter, not just `.`, so a version carrying
+    // build metadata (e.g. `1.0.0+build`) can't smuggle a quantifier into the
+    // pattern and mis-match.
+    const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // A released section carries the concrete version number — bracketed (and
+    // linked) once tagged, or plain beforehand: `## [0.7.0]` or `## 0.7.0`. The
+    // trailing boundary anchors the end of the version so a prefix can't pass:
+    // without it `0.7.0` would also be satisfied by a future `## [0.7.01]`
+    // heading even if 0.7.0 itself were missing (mirrors the 0.1.x guard above).
+    const releasedHeading = new RegExp(`^##\\s*\\[?${escaped}\\]?(?:\\s|$)`, 'm');
+    expect(
+      changelog(),
+      `CHANGELOG.md has no released heading for package.json version ${version} — cut its notes out of [Unreleased] before releasing`,
+    ).toMatch(releasedHeading);
+    // The matcher must be specific to the version: the `## [Unreleased]` stub
+    // must never satisfy it, or notes left under Unreleased would count as
+    // released — the exact drift this test exists to catch. This bites if the
+    // matcher is ever loosened to accept any heading.
+    expect('## [Unreleased]').not.toMatch(releasedHeading);
+  });
+
   test('is referenced by the README', () => {
     expect(readFileSync(join(root, 'README.md'), 'utf-8')).toContain('CHANGELOG.md');
   });

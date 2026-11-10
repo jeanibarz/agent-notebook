@@ -17,16 +17,62 @@
 // a call is a millisecond and offline.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, rmdirSync, unlinkSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
+/**
+ * One int tunable's `NB_*` var, built-in default and clamp bound — declared
+ * ONCE here and consumed by BOTH the hot-path getter and `nb config`'s registry
+ * (issue #336). Keeping a single copy is what makes the #116/#131 "the printed
+ * value can never drift" property structural rather than a test that must
+ * happen to probe a moved bound.
+ */
+export interface IntTunable {
+  env: string;
+  dflt: number;
+  lo: number;
+  hi: number;
+}
+
+/** A rate tunable clamps to [0, 1]; only the default differs per knob. */
+export interface RateTunable {
+  env: string;
+  dflt: number;
+}
+
+export const MAX_LINES: IntTunable = { env: 'NB_MAX_LINES', dflt: 50, lo: 1, hi: 5000 };
+export const MAX_CHARS: IntTunable = { env: 'NB_MAX_CHARS', dflt: 200, lo: 20, hi: 2000 };
+export const NEAR_DUP: RateTunable = { env: 'NB_NEAR_DUP', dflt: 0.5 };
+export const USAGE_RING: IntTunable = { env: 'NB_USAGE_RING', dflt: 5000, lo: 100, hi: 100000 };
+export const STALE_LOCK_MS: IntTunable = { env: 'NB_STALE_LOCK_MS', dflt: 10_000, lo: 100, hi: 600_000 };
+export const LOCK_GRACE_MS: IntTunable = { env: 'NB_LOCK_GRACE_MS', dflt: 2_000, lo: 0, hi: 600_000 };
+export const LOOP_N: IntTunable = { env: 'NB_LOOP_N', dflt: 10, lo: 2, hi: 1000 };
+export const LOOP_WINDOW_S: IntTunable = { env: 'NB_LOOP_WINDOW_S', dflt: 120, lo: 5, hi: 86_400 };
+export const SILENT_H: IntTunable = { env: 'NB_SILENT_H', dflt: 48, lo: 1, hi: 24 * 365 };
+export const ERR_MIN: IntTunable = { env: 'NB_ERR_MIN', dflt: 5, lo: 1, hi: 10_000 };
+export const ERR_RATE: RateTunable = { env: 'NB_ERR_RATE', dflt: 0.3 };
+
+/** The coverage×surfacing readout thresholds (issue #81). A rate ≥ its HIGH cutoff reads as "HIGH" on that axis; both default to a deliberately blunt split, tunable via env. */
+export const DEFAULT_COVERAGE_HI = 0.5;
+export const DEFAULT_RECALL_MISS_HI = 0.2;
+export const COVERAGE_HI: RateTunable = { env: 'NB_COVERAGE_HI', dflt: DEFAULT_COVERAGE_HI };
+export const RECALL_MISS_HI: RateTunable = { env: 'NB_RECALL_MISS_HI', dflt: DEFAULT_RECALL_MISS_HI };
+
+/** Resolve an int tunable from env live — the SAME three numbers the getter uses, so the getter and `nb config` cannot drift. */
+export function resolveIntTunable(t: IntTunable): number {
+  return resolveIntEnv(process.env[t.env], t.dflt, t.lo, t.hi).value;
+}
+export function resolveRateTunable(t: RateTunable): number {
+  return resolveRateEnv(process.env[t.env], t.dflt).value;
+}
+
 /** Hard caps, read at call time so they can be tuned by env without a code change (and set per-test). */
 export function maxLines(): number {
-  return clampInt(process.env.NB_MAX_LINES, 50, 1, 5000);
+  return resolveIntTunable(MAX_LINES);
 }
 export function maxChars(): number {
-  return clampInt(process.env.NB_MAX_CHARS, 200, 20, 2000);
+  return resolveIntTunable(MAX_CHARS);
 }
 /**
  * Trigram-Jaccard similarity at/above which an *accepted* add also emits a
@@ -38,11 +84,11 @@ export function maxChars(): number {
  * labels the log already records.
  */
 export function nearThreshold(): number {
-  return clampRate(process.env.NB_NEAR_DUP, 0.5);
+  return resolveRateTunable(NEAR_DUP);
 }
 /** The usage log is itself a bounded ring (monitoring can't grow unbounded either). */
 export function usageRing(): number {
-  return clampInt(process.env.NB_USAGE_RING, 5000, 100, 100000);
+  return resolveIntTunable(USAGE_RING);
 }
 
 /**
@@ -73,11 +119,11 @@ export function usageRingSlack(): number {
  * so a slow-but-live holder is never robbed.
  */
 export function staleLockMs(): number {
-  return clampInt(process.env.NB_STALE_LOCK_MS, 10_000, 100, 600_000);
+  return resolveIntTunable(STALE_LOCK_MS);
 }
 /** Extra budget, past the stale threshold, to notice and steal an abandoned lock before giving up. */
 export function lockGraceMs(): number {
-  return clampInt(process.env.NB_LOCK_GRACE_MS, 2_000, 0, 600_000);
+  return resolveIntTunable(LOCK_GRACE_MS);
 }
 
 // `nb stats` anomaly/readout thresholds, read at call time and clamped exactly
@@ -89,48 +135,87 @@ export function lockGraceMs(): number {
 // (`…_S` → seconds, `…_H` → hours); `stats()` scales to ms at the call site.
 /** Loop anomaly: how many same-shelf+command+target calls inside the window trip it. */
 export function loopN(): number {
-  return clampInt(process.env.NB_LOOP_N, 10, 2, 1000);
+  return resolveIntTunable(LOOP_N);
 }
 /** Loop anomaly: the window, in seconds (`stats()` multiplies by 1000 to compare timestamps). */
 export function loopWindowSec(): number {
-  return clampInt(process.env.NB_LOOP_WINDOW_S, 120, 5, 86_400);
+  return resolveIntTunable(LOOP_WINDOW_S);
 }
 /** Went-silent anomaly: silence threshold, in hours (`stats()` multiplies by 3_600_000). */
 export function silentHours(): number {
-  return clampInt(process.env.NB_SILENT_H, 48, 1, 24 * 365);
+  return resolveIntTunable(SILENT_H);
 }
 /** High-error-rate anomaly: minimum calls before the failure fraction is judged. */
 export function errMin(): number {
-  return clampInt(process.env.NB_ERR_MIN, 5, 1, 10_000);
+  return resolveIntTunable(ERR_MIN);
 }
 /** High-error-rate anomaly: minimum failure fraction (0–1); a bad value falls back to the default, never NaN (which would disable detection). */
 export function errRate(): number {
-  return clampRate(process.env.NB_ERR_RATE, 0.3);
+  return resolveRateTunable(ERR_RATE);
 }
 /** Surfacing readout ([FR-STATS-004]): coverage ≥ this reads as novel-adds HIGH. */
 export function coverageHi(): number {
-  return clampRate(process.env.NB_COVERAGE_HI, DEFAULT_COVERAGE_HI);
+  return resolveRateTunable(COVERAGE_HI);
 }
 /** Surfacing readout ([FR-STATS-004]): recall-miss ≥ this reads as dedup-blocks HIGH. */
 export function recallMissHi(): number {
-  return clampRate(process.env.NB_RECALL_MISS_HI, DEFAULT_RECALL_MISS_HI);
+  return resolveRateTunable(RECALL_MISS_HI);
 }
 
-function clampInt(raw: string | undefined, dflt: number, lo: number, hi: number): number {
-  const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
-  if (!Number.isFinite(n)) return dflt;
-  return Math.min(hi, Math.max(lo, n));
+/**
+ * How a numeric env tunable's raw value was turned into the effective value `nb`
+ * runs with (issue #336). `default` — the var is unset, so the built-in default
+ * applies. `honored` — the var is set to a parseable in-range value and used
+ * as-is. `clamped` — the var is set to a parseable value outside the bound and
+ * `nb` silently used the nearest bound instead. `ignored` — the var is set but
+ * unparseable (e.g. `abc` or a partially-numeric `1e3`/`12.9`/`50abc`, which
+ * `parseInt` would truncate), so `nb` silently used the default.
+ *
+ * This is what lets `nb config` distinguish "the setting you exported is in
+ * force" from "it was rewritten" from "it was thrown away" — the whole point of
+ * an introspection command ([DP-5](#dp-5)).
+ */
+export type TunableStatus = 'default' | 'honored' | 'clamped' | 'ignored';
+
+/** A raw env value resolved against its default and bounds, plus how it was resolved. */
+export interface ResolvedInt {
+  value: number;
+  status: TunableStatus;
 }
 
-/** Clamp an env-supplied rate to [0, 1]; a missing/non-numeric value falls back to the default (never NaN, which would break the LOW/HIGH comparison). Mirrors the NB_ERR_RATE handling. */
-function clampRate(raw: string | undefined, dflt: number): number {
-  const n = raw === undefined ? NaN : Number(raw);
-  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : dflt;
+/**
+ * The status-aware form of an int clamp: resolve `raw` against `dflt`/`lo`/`hi` and
+ * report WHETHER the raw value was honored, clamped, ignored (unparseable) or
+ * absent (default). The getters that `nb config` reports call this; the plain
+ * `resolveIntTunable` above wraps it for the hot path.
+ */
+export function resolveIntEnv(raw: string | undefined, dflt: number, lo: number, hi: number): ResolvedInt {
+  if (raw === undefined) return { value: dflt, status: 'default' };
+  // Only a WHOLE integer is honored. `parseInt` accepts a numeric prefix and
+  // silently drops the rest (`1e3`→1, `12.9`→12, `50abc`→50), so a user who
+  // meant 1000 would get a cap of 1 — the "rewritten value reads as honored"
+  // failure #336 exists to eliminate. Treat a partial parse as unparseable.
+  const trimmed = raw.trim();
+  if (!/^[+-]?\d+$/.test(trimmed)) return { value: dflt, status: 'ignored' };
+  const n = Number.parseInt(trimmed, 10);
+  const value = Math.min(hi, Math.max(lo, n));
+  return { value, status: value === n ? 'honored' : 'clamped' };
 }
 
-/** The coverage×surfacing readout thresholds (issue #81). A rate ≥ its HIGH cutoff reads as "HIGH" on that axis; both default to a deliberately blunt split, tunable via env. */
-export const DEFAULT_COVERAGE_HI = 0.5;
-export const DEFAULT_RECALL_MISS_HI = 0.2;
+/**
+ * The status-aware form of a rate clamp: resolve a rate `raw` against `dflt` and
+ * the [0, 1] bounds, reporting how the raw value was resolved (see
+ * {@link TunableStatus}). An empty string is parsed by `Number('')` as `0`, so it
+ * is honored (clamped to the floor), not ignored — the divergence from
+ * `parseInt`-backed ints the clamp tests already pin.
+ */
+export function resolveRateEnv(raw: string | undefined, dflt: number): ResolvedInt {
+  if (raw === undefined) return { value: dflt, status: 'default' };
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return { value: dflt, status: 'ignored' };
+  const value = Math.min(1, Math.max(0, n));
+  return { value, status: value === n ? 'honored' : 'clamped' };
+}
 
 /** One notebook line. `score` is a running vote sum; `text` is a single ≤MAX_CHARS lesson. */
 export interface Entry {
@@ -200,10 +285,25 @@ export function assertSafeShelf(shelf: string): void {
 /** @deprecated use assertSafeShelf — same function, kept so existing callers keep working. */
 export const assertSafeRole = assertSafeShelf;
 
-/** The notebooks directory. `NB_DIR` overrides; default `~/.agent-notebook/notebooks`. */
+/**
+ * Expand a leading `~` (optionally followed by `/`, or `\` on Windows) to the
+ * home directory. Deliberately narrow (issue #334): only `~` and `~/…` (and
+ * `~\…` on Windows) expand — `~user/…` is left untouched, as is any value with
+ * no leading `~`. A process env supplied by `settings.json`, systemd or cron
+ * never passes through a shell, so `NB_DIR=~/x` would otherwise create a
+ * literal `~` directory under the current working directory.
+ */
+export function expandHomeDir(value: string): string {
+  if (value === '~') return homedir();
+  if (value.startsWith('~/')) return join(homedir(), value.slice(2));
+  if (process.platform === 'win32' && value.startsWith('~\\')) return join(homedir(), value.slice(2));
+  return value;
+}
+
+/** The notebooks directory. `NB_DIR` overrides (with a leading `~` expanded); default `~/.agent-notebook/notebooks`. */
 export function notebooksDir(): string {
   return process.env.NB_DIR && process.env.NB_DIR.trim() !== ''
-    ? process.env.NB_DIR
+    ? expandHomeDir(process.env.NB_DIR)
     : join(homedir(), '.agent-notebook', 'notebooks');
 }
 
@@ -238,8 +338,8 @@ export function usageFile(dir: string): string {
  *
  * It is a tiny dotfile next to the log — not a `*.md` shelf (`listShelves`/stats
  * skip dotfiles) and, lacking a `.tmp` suffix, not matched by either reap
- * convention (shelf `*.md.tmp` or usage-log `.nb-usage.log.*.tmp`), so it is
- * never surfaced or deleted.
+ * convention (shelf `*.md[.<pid>].tmp` or usage-log `.nb-usage.log.*.tmp`), so it
+ * is never surfaced or deleted.
  */
 function usageCountFile(dir: string): string {
   return join(dir, '.nb-usage.log.count');
@@ -281,13 +381,61 @@ function writeUsageState(dir: string, rows: number, bytes: number): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * The characters that must never reach a terminal or an agent's context: C0
+ * controls other than the whitespace ones (tab, LF, VT, FF, CR — the `\s` pass turns
+ * those into a space, so a form feed still separates words) including ESC, NUL
+ * and BEL; DEL; C1 controls (U+0080–U+009F, from which a raw ESC byte can be
+ * re-formed); bidi embedding/override/isolate marks (U+202A–202E, U+2066–2069)
+ * that make a line read differently from what it contains; and invisible
+ * zero-width characters (U+200B, U+2060, U+FEFF) that defeat the exact-duplicate
+ * check. U+200D (ZWJ) and the variation selectors are deliberately KEPT so emoji
+ * ZWJ sequences survive (issue #335).
+ */
+const CONTROL_CHARS_RE = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g;
+
+/**
+ * Drop the terminal-manipulating / invisible characters ({@link CONTROL_CHARS_RE})
+ * without otherwise touching the text. Applied on write (via {@link sanitizeLesson})
+ * AND on every render path, so a shelf file stored before this rule existed can
+ * never emit a raw escape either.
+ */
+export function stripControlChars(raw: string): string {
+  return raw.replace(CONTROL_CHARS_RE, '');
+}
+
+/** {@link stripControlChars} that passes `null` through — for the optional description value. */
+function stripControlCharsNullable(raw: string | null): string | null {
+  return raw === null ? null : stripControlChars(raw);
+}
+
+/**
  * Flatten a lesson to a single whitespace-collapsed line with no tab (our field
- * separator). Does NOT truncate: the caller enforces the length cap by rejecting
- * an over-long write (addEntry/merge), so the agent can retry with a shorter
- * *complete* lesson instead of silently storing a cut-off, possibly useless one.
+ * separator), dropping control/invisible/bidi characters ({@link stripControlChars}).
+ * Does NOT truncate: the caller enforces the length cap by rejecting an over-long
+ * write (addEntry/merge), so the agent can retry with a shorter *complete* lesson
+ * instead of silently storing a cut-off, possibly useless one.
  */
 export function sanitizeLesson(raw: string): string {
-  return raw.replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return stripControlChars(raw)
+    .replace(/[\t\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Recognize a git merge-conflict marker line (issue #333): a line-start `<<<<<<<`
+ * or `>>>>>>>` followed by a space or the end of the line, or a bare `=======`
+ * (nothing else on it). Anchored, so a lesson that merely contains `=======`
+ * mid-line, or the ordinary hand-edited tab-less line, is not a marker. A shelf
+ * that holds one came from an unresolved `git merge`/`pull` on a git-versioned
+ * notebook, and rewriting it would bake the markers in as lessons — so reads
+ * warn and mutations refuse instead.
+ */
+const CONFLICT_MARKER_RE = /^(?:<<<<<<<|>>>>>>>)(?: |$)|^=======$/;
+
+/** True when `line` is a git merge-conflict marker (see {@link CONFLICT_MARKER_RE}). */
+export function isConflictMarker(line: string): boolean {
+  return CONFLICT_MARKER_RE.test(line);
 }
 
 function parseLine(line: string): Entry | null {
@@ -375,14 +523,7 @@ export function isMetaLine(line: string): boolean {
  * (forward-compatible), rewriting only the key it actually changes.
  */
 export function readMetaLines(dir: string, shelf: string): string[] {
-  const file = shelfFile(dir, shelf);
-  if (!existsSync(file)) return [];
-  const out: string[] = [];
-  for (const line of readFileSync(file, 'utf-8').split('\n')) {
-    if (META_RE.test(line)) out.push(line);
-    else break; // first entry (or blank) ends the leading metadata block
-  }
-  return out;
+  return readShelf(dir, shelf).metaLines;
 }
 
 /** The value of metadata `key` within a set of raw metadata lines, or `null` if absent. */
@@ -422,7 +563,156 @@ export function setMetaValue(lines: string[], key: string, value: string): strin
 // locking (tiny mkdir spinlock — single-host, serial CLI calls, rare contention)
 // ---------------------------------------------------------------------------
 
-async function withLock<T>(dir: string, fn: () => T): Promise<T> {
+// The `.nb.lock` directory this process currently owns, or null when it owns
+// none. Set only once THIS process's atomic `mkdirSync(lock)` wins the create
+// (below) — never for a stale lock we steal, and never for a fresh lock we are
+// still spinning on — so it is a true ownership flag a SIGINT/SIGTERM handler can
+// consult (via `releaseHeldLock`) to reap only a lock we actually own.
+//
+// A single slot suffices because withLock is never nested and never runs
+// concurrently with itself: its critical section is synchronous (no `await`
+// between acquire and release) and every caller awaits one mutation at a time, so
+// at most one lock is owned at any instant. withLock's `finally` still releases
+// its OWN `lock` path directly rather than through this flag, so the normal
+// release never depends on the flag's value — even a hypothetical future nested
+// withLock on a different dir could not strand the outer lock. The flag is only a
+// hint for the signal handler, never the sole release path. (issue #247)
+let heldLock: string | null = null;
+// Owner token of `heldLock` (issue #331): `<pid>.<random nonce>`, written to
+// `<lock>/owner` right after the mkdir wins. Release and steal compare it, so a
+// holder that outlived the stale threshold can never free the thief's live lock.
+let heldToken: string | null = null;
+
+const OWNER_FILE = 'owner';
+const REAP_DIR = 'reap';
+
+/** The owner token recorded in a lock dir, or null if none (legacy/crash-before-write/vanished). */
+function readOwner(lock: string): string | null {
+  try {
+    return readFileSync(join(lock, OWNER_FILE), 'utf-8').trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Empty and remove a lock dir. Throws if the dir is already gone. */
+function removeLockDir(lock: string): void {
+  try { unlinkSync(join(lock, OWNER_FILE)); } catch { /* legacy lock has none */ }
+  try { rmdirSync(join(lock, REAP_DIR)); } catch { /* no stealer mid-flight */ }
+  rmdirSync(lock);
+}
+
+/**
+ * Remove `lock` only if it still carries OUR token; a stolen lock is left to its
+ * thief. `token === null` means our owner-file write failed (e.g. ENOSPC), so
+ * ownership cannot be proven — fall back to the pre-#331 unconditional release
+ * rather than strand the lock. The check-and-remove runs under the lock's `reap`
+ * mutex (the same one stealers take), so a stealer cannot interleave between our
+ * token check and our rmdir; if a stealer holds it, we were judged stale and the
+ * stealer finishes the job.
+ */
+function releaseOwned(lock: string, token: string | null): void {
+  if (token === null) {
+    try { removeLockDir(lock); } catch { /* already gone */ }
+    return;
+  }
+  const reap = join(lock, REAP_DIR);
+  let haveMutex = false;
+  // A stealer holds `reap` only for microseconds, so retry briefly rather than
+  // leak a live lock when it backs off (it leaves the lock for us to release).
+  for (let i = 0; i < 20 && !haveMutex; i++) {
+    try {
+      mkdirSync(reap);
+      haveMutex = true;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      // ENOENT: lock already gone. Anything but EEXIST (ENOSPC/EDQUOT/EACCES…)
+      // means `reap` cannot be created at all: release without the mutex rather
+      // than strand the lock (as the pre-#331 unconditional rmdir would not).
+      if (code === 'ENOENT') return;
+      if (code !== 'EEXIST') break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+  try {
+    if (readOwner(lock) !== token) {
+      if (haveMutex) { try { rmdirSync(reap); } catch { /* gone */ } }
+      return;
+    }
+    removeLockDir(lock);
+  } catch {
+    if (haveMutex) { try { rmdirSync(reap); } catch { /* gone */ } }
+  }
+}
+
+/**
+ * Release the `.nb.lock` this process owns, if any, and clear the ownership flag.
+ * A no-op when this process owns no lock, so the SIGINT/SIGTERM handler that calls
+ * it (see cli.ts) can never remove another live `nb`'s lock nor a fresh lock we are
+ * only spinning on. The flag is cleared before the `rmdir`, so it is idempotent and
+ * safe to call more than once.
+ *
+ * This is the signal handler's release path. withLock's own `finally` releases its
+ * lock directly; this helper exists only so an interrupt can promptly reap a lock
+ * the process still owns instead of leaving it for the next caller's ~12s
+ * stale-steal (issue #247).
+ */
+export function releaseHeldLock(): void {
+  const lock = heldLock;
+  const token = heldToken;
+  if (lock === null) return;
+  heldLock = null; // clear first so a second call is a no-op
+  heldToken = null;
+  releaseOwned(lock, token);
+}
+
+// ---------------------------------------------------------------------------
+// Crash-recovery accounting (issue #309)
+// ---------------------------------------------------------------------------
+// Two recovery paths each mean a previous `nb` died mid-mutation: withLock's
+// stale-lock steal (a crash WHILE holding the lock) and reapLeftoverTemps'
+// leftover-temp reap (a crash mid atomic-write). Both were entirely silent — no
+// log, no counter, no `stats` signal — so an operator running `nb` from agent
+// hooks could not answer "are my agents crashing mid-write and losing updates?".
+//
+// We make recovery observable WITHOUT changing the recovery actions: a tiny
+// module-level tally counts the two events, and the next `logUsage` in THIS
+// process drains the tally onto the usage row it is about to write. A mutation
+// always logs exactly one usage row (from the CLI's `finally`, AFTER its
+// withLock has resolved — same single-threaded process, so the tally is counted
+// before it is drained), so the count rides an existing monitoring row: no extra
+// row, no new pseudo-command, and `perCommand`/`totalCalls`/`activity` stay about
+// real commands. `stats` then sums the column across the window into a
+// deployment-wide crash-recovery readout. The accounting is best-effort end to
+// end: the tally never throws, and a dropped count loses at most one monitoring
+// observation — never a lesson and never the recovery itself.
+let pendingRecovery: { lockSteals: number; tempReaps: number } = { lockSteals: 0, tempReaps: 0 };
+
+/**
+ * Tally a crash-recovery event for this process's next usage row (issue #309):
+ * a stale lock stolen (`lock-steal`) or `n` leftover temps reaped (`temp-reap`).
+ * Best-effort — never throws, and a non-positive count is ignored. Exported so a
+ * test can prime the tally the same way the recovery paths do.
+ */
+export function noteRecovery(kind: 'lock-steal' | 'temp-reap', n = 1): void {
+  if (!(n > 0)) return;
+  if (kind === 'lock-steal') pendingRecovery.lockSteals += n;
+  else pendingRecovery.tempReaps += n;
+}
+
+/**
+ * Read-and-reset the pending crash-recovery tally. `logUsage` calls this exactly
+ * once per row, so each recovery event is attributed to exactly one row and never
+ * double-counted. Exported for tests, which also call it to reset the module
+ * tally between cases.
+ */
+export function drainPendingRecovery(): { lockSteals: number; tempReaps: number } {
+  const drained = pendingRecovery;
+  pendingRecovery = { lockSteals: 0, tempReaps: 0 };
+  return drained;
+}
+
+export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
   mkdirSync(dir, { recursive: true });
   const lock = join(dir, '.nb.lock');
   const staleMs = staleLockMs();
@@ -432,17 +722,59 @@ async function withLock<T>(dir: string, fn: () => T): Promise<T> {
   // instead of giving up first (the fixed 2s-vs-10s mismatch, issue #133).
   const budgetMs = staleMs + lockGraceMs();
   const deadline = Date.now() + budgetMs;
+  const token = `${process.pid}.${randomBytes(8).toString('hex')}`;
+  let ownToken: string | null = token;
   for (;;) {
     try {
       mkdirSync(lock); // atomic: succeeds only if it did not exist
+      heldLock = lock; // we now own this lock (the signal handler may reap it)
+      try {
+        writeFileSync(join(lock, OWNER_FILE), token, 'utf-8');
+        heldToken = token;
+      } catch (werr) {
+        if ((werr as NodeJS.ErrnoException)?.code === 'ENOENT') {
+          // The lock dir was removed under us (a racing stealer): we do NOT hold
+          // the lock. Do not run fn or release anything — re-acquire.
+          heldLock = null;
+          heldToken = null;
+          continue;
+        }
+        heldToken = null; // cannot prove ownership; release falls back to unconditional
+      }
+      ownToken = heldToken;
       break;
-    } catch {
+    } catch (err) {
+      // EEXIST is the ONLY code that means "the lock is genuinely held": the
+      // `.nb.lock` dir already exists, so another nb process owns it and the
+      // stale-steal / wait-and-retry path below is the right response. Any other
+      // code means the lock dir itself cannot be created — EACCES/EPERM on a
+      // permission-denied store, EROFS on a read-only mount, ENOSPC on a full
+      // disk, ENOENT on a vanished NB_DIR. Busy-waiting the whole acquire budget
+      // (staleMs + grace, ~10s+) would only delay an inevitable failure and then
+      // report a misleading 'notebook is locked' when no other process exists.
+      // Fail fast with the real cause instead (issue #263).
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'EEXIST') {
+        throw new Error(
+          `cannot acquire notebook lock at ${lock}: notebook directory is not writable (${code ?? String(err)})`,
+          { cause: err },
+        );
+      }
       // Stale-lock recovery: a crashed nb process can leave .nb.lock behind.
       // Steal it once its holder has been silent longer than the stale threshold.
       try {
+        // Read the token BEFORE the mtime: a stale mtime that follows a token read
+        // can only belong to that same lock generation (a replacement lock is
+        // fresh), so the (token, stale) pair is consistent (issue #331).
+        const observed = readOwner(lock);
         if (Date.now() - statSync(lock).mtimeMs > staleMs) {
-          rmdirSync(lock);
-          continue;
+          if (stealStale(lock, observed, staleMs)) {
+            // A stale lock we just stole is evidence its holder crashed while
+            // holding it — tally the steal (issue #309), only after a confirmed
+            // removal so a lost race never counts a phantom steal.
+            noteRecovery('lock-steal');
+            continue;
+          }
         }
       } catch {
         /* lock vanished between mkdir and stat — just retry */
@@ -454,25 +786,99 @@ async function withLock<T>(dir: string, fn: () => T): Promise<T> {
     }
   }
   try {
-    reapLeftoverTemps(dir);
+    // Reaping a crash-left temp is the second sign a prior nb died mid-write —
+    // tally the count so recovery is observable (issue #309). reapLeftoverTemps
+    // reports how many it removed; noteRecovery ignores a zero.
+    noteRecovery('temp-reap', reapLeftoverTemps(dir));
     return fn();
   } finally {
-    try {
-      rmdirSync(lock);
-    } catch {
-      /* best-effort release */
+    // Release THIS invocation's own lock directly and unconditionally, and clear
+    // the ownership flag if it still names this lock. Removing `lock` itself
+    // (rather than whatever `heldLock` points at) keeps the normal path correct
+    // regardless of the flag: a signal handler that already reaped and nulled it,
+    // or a hypothetical future nested withLock, cannot strand this lock.
+    if (heldLock === lock) {
+      heldLock = null;
+      heldToken = null;
     }
+    // Ownership-checked (issue #331): if we outlived the stale threshold and a
+    // thief took the lock, its token differs and we leave its live lock alone.
+    releaseOwned(lock, ownToken);
   }
 }
+
+/**
+ * Steal a stale lock without racing other stealers (issue #331). Stealers
+ * serialize on a `reap` subdirectory INSIDE the lock dir, so the mutex belongs to
+ * one lock generation: if the lock was already stolen and recreated, the mutex
+ * we win is the new holder's, and the re-check under it (same owner token, mtime
+ * still stale) fails, so we back off instead of removing a live lock. Returns
+ * true only when this call removed the stale lock.
+ */
+export function stealStale(lock: string, observed: string | null, staleMs = staleLockMs()): boolean {
+  const reap = join(lock, REAP_DIR);
+  try {
+    mkdirSync(reap);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'EEXIST') {
+      // `reap` cannot be created (ENOSPC/EDQUOT/EACCES, or the lock vanished):
+      // do not wedge — fall back to a token-checked removal without the mutex.
+      try {
+        if (readOwner(lock) !== observed) return false;
+        removeLockDir(lock);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    // Another stealer/releaser is mid-flight — unless it died holding `reap`,
+    // which would wedge the lock forever. An aged `reap` is crash debris: clear it.
+    try {
+      if (Date.now() - statSync(reap).mtimeMs > staleMs) rmdirSync(reap);
+    } catch { /* gone or raced — retry */ }
+    return false;
+  }
+  try {
+    // The lock-dir mtime cannot be re-checked here (creating `reap` just bumped
+    // it). A token-bearing lock is re-proven stale via its owner file's mtime,
+    // which `reap` does not touch; the unique token pins the generation. A
+    // token-less lock (legacy / just-created) can only be confirmed token-less.
+    let stale = true;
+    if (observed !== null) {
+      try {
+        stale = Date.now() - statSync(join(lock, OWNER_FILE)).mtimeMs > staleMs;
+      } catch {
+        stale = false;
+      }
+    }
+    if (readOwner(lock) !== observed || !stale) {
+      try { rmdirSync(reap); } catch { /* lock gone */ }
+      return false;
+    }
+    removeLockDir(lock);
+    return true;
+  } catch {
+    try { rmdirSync(reap); } catch { /* already gone */ }
+    return false;
+  }
+}
+
+// A shelf's atomic-write temp: the legacy shared `<shelf>.md.tmp` (pre-#270) or
+// the per-process `<shelf>.md.<pid>.tmp` (issue #270). `<pid>` is always numeric
+// (process.pid), so the optional `\d+\.` segment matches the per-process name
+// without widening the sweep to arbitrary `.md.<anything>.tmp` debris.
+const SHELF_TMP_RE = /\.md\.(?:\d+\.)?tmp$/;
 
 /**
  * Reap orphaned temp files left behind by a crashed writer. This writer leaves
  * two temp conventions in the notebooks dir, each from an interrupted atomic
  * write-then-rename; if the process dies before the rename, the temp lingers
  * forever (nothing else removes it), cluttering directory listings, backups, and
- * a git-tracked notebooks dir:
- *   - `<shelf>.md.tmp` from a durable notebook write (writeFileDurable), renamed
- *     over `<shelf>.md`;
+ * a git-tracked notebooks dir (SHELF_TMP_RE matches a shelf temp of either form):
+ *   - `<shelf>.md.<pid>.tmp` from a durable notebook write (writeFileDurable,
+ *     per-process since issue #270; the legacy `<shelf>.md.tmp` from a pre-#270
+ *     writer is still swept for upgrade safety), renamed over `<shelf>.md`;
  *   - `.nb-usage.log.<pid>.tmp` from a usage-log compaction (issue #163), renamed
  *     over `.nb-usage.log`.
  * We sweep both here under the just-acquired mkdir lock, which serializes every
@@ -486,8 +892,9 @@ async function withLock<T>(dir: string, fn: () => T): Promise<T> {
  * case we actually care about is the common one: a crashed writer's leftover temp
  * that nothing else removes.
  * Scope is deliberately narrow to this writer's own conventions:
- *   - shelf temps: only `*.md.tmp`, and never a dotfile — a shelf name never
- *     starts with `.` (assertSafeShelf), so a `.x.md.tmp` is not ours to remove;
+ *   - shelf temps: only `<shelf>.md.tmp` or `<shelf>.md.<pid>.tmp` (SHELF_TMP_RE),
+ *     and never a dotfile — a shelf name never starts with `.` (assertSafeShelf),
+ *     so a `.x.md.tmp` is not ours to remove;
  *   - usage-log temps: only names of the exact form `<basename>.*.tmp` where
  *     `<basename>` is the usage log's (`.nb-usage.log`) — so never the live log
  *     itself, never its `.nb-usage.log.count` sidecar (no `.tmp` suffix), never
@@ -495,27 +902,37 @@ async function withLock<T>(dir: string, fn: () => T): Promise<T> {
  *   - only the top level of `dir` (readdirSync is not recursive).
  * Best-effort: any failure (a racing unlink, a permission error) is swallowed so
  * a stale temp can never block a real mutation.
+ *
+ * Returns the number of temps actually removed, so the caller can surface it as a
+ * crash-recovery signal (issue #309) — a nonzero reap is evidence a prior writer
+ * died mid atomic-write. The count is best-effort: the rare benign case this
+ * function's own contract notes (reaping a live writer's usage-log temp a moment
+ * before its rename) is counted too, which can at most over-report by that one
+ * bounded event — acceptable for a monitoring hint, and never affecting a lesson.
  */
-export function reapLeftoverTemps(dir: string): void {
+export function reapLeftoverTemps(dir: string): number {
   let names: string[];
   try {
     names = readdirSync(dir);
   } catch {
-    return; // dir unreadable — nothing to reap
+    return 0; // dir unreadable — nothing to reap
   }
   // `.nb-usage.log.` — the live log's basename plus the dot that precedes the
   // per-pid segment, so the live log and its `.count` sidecar never match.
   const usageTmpPrefix = `${basename(usageFile(dir))}.`;
+  let reaped = 0;
   for (const name of names) {
-    const isShelfTemp = !name.startsWith('.') && name.endsWith('.md.tmp');
+    const isShelfTemp = !name.startsWith('.') && SHELF_TMP_RE.test(name);
     const isUsageTemp = name.startsWith(usageTmpPrefix) && name.endsWith('.tmp');
     if (!isShelfTemp && !isUsageTemp) continue;
     try {
       unlinkSync(join(dir, name));
+      reaped++; // count only a temp we actually removed (issue #309)
     } catch {
       /* already gone or not removable — reaping is best-effort */
     }
   }
+  return reaped;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -539,41 +956,127 @@ export function notebookExists(dir: string, shelf: string): boolean {
 }
 
 export function readEntries(dir: string, shelf: string): Entry[] {
+  return readShelf(dir, shelf).entries;
+}
+
+/** A shelf's full contents from a single disk read: its leading metadata block and its entries. */
+export interface ShelfContents {
+  /** The leading `# key: value` block, verbatim — identical to {@link readMetaLines}. */
+  metaLines: string[];
+  /** The parsed entries after the metadata block — identical to {@link readEntries}. */
+  entries: Entry[];
+  /**
+   * The first git merge-conflict marker line found in the file, or `null` for a
+   * clean shelf (issue #333). Read commands warn and mutation commands refuse
+   * when it is set — the file is the output of an unresolved `git merge`, and
+   * rewriting it would persist the markers as real lessons.
+   */
+  conflict: string | null;
+}
+
+/**
+ * Read a shelf file ONCE and return both its leading metadata block and its
+ * entries, split in a single scan. `readEntries` and `readMetaLines` each open
+ * and parse `<shelf>.md` on their own, so a caller that needs both — the
+ * discovery hot path `listNotebooks`, `search`, `showJson`, and the `show`
+ * command — otherwise reads and parses the same file twice per shelf (issue
+ * #201, against the "a call is a millisecond" promise). This collapses that to
+ * one `readFileSync` + one scan with byte-identical semantics: the leading run
+ * of `# key:` lines is the metadata (exactly {@link readMetaLines}'s
+ * leading-block-only rule), and from the first non-metadata line every line
+ * parses as an entry (exactly {@link readEntries}), so a mid-file `# key:` line
+ * stays a tolerated score-0 lesson ([FR-MODEL-003]). A missing file yields empty
+ * metadata and entries, never an error.
+ */
+export function readShelf(dir: string, shelf: string): ShelfContents {
   const file = shelfFile(dir, shelf);
-  if (!existsSync(file)) return [];
-  const out: Entry[] = [];
-  // Skip the leading `# key: value` metadata block (notebook descriptions etc.):
-  // those lines are notebook-level context, not lessons, so they must not become
-  // score-0 entries. The block ends at the first non-metadata line; from there,
-  // every line parses as an entry exactly as before (a mid-file `# key:` line
-  // stays a tolerated bare lesson — see readMetaLines / FR-MODEL-003).
+  if (!existsSync(file)) return { metaLines: [], entries: [], conflict: null };
+  const metaLines: string[] = [];
+  const entries: Entry[] = [];
+  let conflict: string | null = null;
+  // One scan splits the file: the leading run of `# key:` lines is metadata, and
+  // the first non-metadata line flips `inMeta` so every remaining line parses as
+  // an entry — matching readMetaLines (leading block) and readEntries (the rest).
+  // Split on `\r?\n` so a CRLF-normalized file (Windows core.autocrlf=true, or any
+  // CRLF hand-edit of a git-versioned notebook) parses identically to an LF one:
+  // without stripping the trailing `\r`, `# desc: x\r` fails the `$`-anchored
+  // META_RE and the description silently becomes a score-0 lesson (issue #273).
+  // Strip one leading UTF-8 BOM (U+FEFF) first: a BOM-adding editor makes the first
+  // line `\uFEFF# desc: x`, which fails the `^#` META_RE and would demote the
+  // description to a junk score-0 lesson (issue #299).
   let inMeta = true;
-  for (const line of readFileSync(file, 'utf-8').split('\n')) {
-    if (inMeta && META_RE.test(line)) continue;
+  // Reads are lock-free, so a concurrent `nb rm` can unlink a phantom (empty,
+  // undescribed) shelf between the existsSync above and this read. Treat that
+  // ENOENT as the same "missing shelf → empty" contract; other errors propagate
+  // (issue #300).
+  let raw: string;
+  try {
+    raw = readFileSync(file, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { metaLines: [], entries: [], conflict: null };
+    throw err;
+  }
+  for (const line of (raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw).split(/\r?\n/)) {
+    // A merge-conflict marker is not a lesson (issue #333): record the first one
+    // so callers can warn/refuse, but still parse the line below so show/list
+    // output stays what a read would have produced before the guard.
+    if (conflict === null && isConflictMarker(line)) conflict = line;
+    if (inMeta && META_RE.test(line)) {
+      metaLines.push(line);
+      continue;
+    }
     inMeta = false;
     const e = parseLine(line);
-    if (e && e.text !== '') out.push(e);
+    if (e && e.text !== '') entries.push(e);
   }
-  return out;
+  return { metaLines, entries, conflict };
 }
 
 /**
  * Write a notebook, preserving its leading metadata block. `metaLines` lets a
- * caller that is itself changing the metadata (e.g. `setDescription`) pass the
- * new block; every other mutation omits it, so the existing block is re-read
- * from disk under the lock and re-emitted unchanged — which is how the
- * description round-trips through `add`/`vote`/`merge`/`split`/`rm`. The metadata
- * leads the file; the entries follow in recency order — least-recently-touched
- * first, a touch moving its entry to the end ([DP-3]). A file with
- * metadata but no entries is still written (its block survives an emptied
- * notebook), and only a notebook with neither becomes the empty string.
+ * caller pass the block through instead of having it re-read here: a caller that
+ * is itself changing the metadata (e.g. `setDescription`) passes the new block,
+ * and every single-shelf mutation (`add`/`vote`/`merge`/`split`/`rm`) passes the
+ * block it already read via `readShelf`, so the mutation reads the shelf once
+ * rather than twice (issue #251). A caller that omits it (e.g. `move`, which
+ * writes two shelves) falls back to re-reading the existing block from disk under
+ * the lock and re-emitting it unchanged. Either way the description round-trips
+ * byte-for-byte. The metadata leads the file; the entries follow in recency order
+ * — least-recently-touched first, a touch moving its entry to the end ([DP-3]). A
+ * file with metadata but no entries is still written (its block survives an
+ * emptied notebook), and only a notebook with neither becomes the empty string.
  */
 function writeEntries(dir: string, shelf: string, entries: Entry[], metaLines?: string[]): void {
   const file = shelfFile(dir, shelf);
   const meta = metaLines ?? readMetaLines(dir, shelf);
   const lines = [...meta, ...entries.map(formatLine)];
+  if (lines.length === 0) {
+    // Phantom reap (issues #209, #355): no lesson and no metadata would persist
+    // as a 0-byte `<shelf>.md` — debris `listNotebooks` HIDES ([FR-LIST-004]) but
+    // nothing ever removes, so it lingers in the dir, backups, and git history.
+    // Unlink instead, centrally, so every mutation that can empty a shelf
+    // (`rm`, `move`, `describe <shelf> ""`) reaps it. Callers hold the lock, so no
+    // concurrent writer's in-flight temp is at risk. A shelf that keeps a
+    // `# desc:` line never gets here. If the unlink fails for a reason other than
+    // "already absent", fall through and write the empty file as before.
+    try {
+      unlinkSync(file);
+      return;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    }
+  }
   const body = lines.join('\n');
-  const tmp = `${file}.tmp`;
+  // Per-process-unique temp path (issue #270). withLock serializes writers on a
+  // healthy host, but its single-host mkdir spinlock can declare a slow holder
+  // STALE and let a second process steal the lock while the first is still alive
+  // (a network-FS fsync stall, heavy load, or a lowered NB_STALE_LOCK_MS). With a
+  // fixed `${file}.tmp` the two overlapping writers would open, truncate, and
+  // write the SAME temp, interleaving bytes before either rename — corrupting the
+  // notebook. The pid keeps each writer's temp distinct, so the atomic rename
+  // degrades a stolen-lock overlap to a lost update (last rename wins), never a
+  // torn file. reapLeftoverTemps sweeps both this and the legacy name.
+  const tmp = `${file}.${process.pid}.tmp`;
   writeFileDurable(file, tmp, lines.length ? body + '\n' : '');
 }
 
@@ -701,10 +1204,26 @@ function enforceCap(entries: Entry[], protectedCount: number): CapResult {
 export interface AddResult {
   added: boolean;
   reason: 'added' | 'duplicate' | 'empty' | 'too-long';
+  /**
+   * The first (stalest) entry the cap removed, or `null` when nothing was
+   * evicted. Kept for the common single-eviction display path; for the FULL set
+   * (a cap decrease can evict many at once — issue #306) read `evictedAll`.
+   */
   evicted: Entry | null;
+  /**
+   * EVERY entry this operation evicted, in storage order (stalest first). Holds
+   * one entry in the ordinary over-cap add, but many when `NB_MAX_LINES` was
+   * lowered below a full shelf's size so the next add trims it all the way down.
+   * Empty when nothing was evicted. `evicted` is `evictedAll[0] ?? null`.
+   */
+  evictedAll: Entry[];
+  /** The stalest survivor the aging step docked −1 (already mutated, so `score` is the POST-dock value), or `null` when no cap overflow occurred. */
+  decayed: Entry | null;
   size: number;
   /** For 'too-long': the length of the submitted lesson, so the caller can report it. */
   length?: number;
+  /** For 'too-long': how many characters the lesson is over `maxChars` (`length - maxChars`, always ≥ 1), so the caller can tell the agent exactly how much to trim instead of guessing (issue #239). */
+  overflow?: number;
   /** Stable id this result concerns: the added/merged entry, or the submitted lesson on a duplicate/rejection. Absent for 'empty'. Lets the usage log record which entry a call touched. */
   id?: string;
   /** For 'duplicate': the id of the existing entry that blocked the add (the colliding entry). */
@@ -746,18 +1265,24 @@ export function overlappingShelves(dir: string, shelf: string, cap = 3): string[
 export function addEntry(dir: string, shelf: string, lesson: string): Promise<AddResult> {
   return withLock(dir, () => {
     const text = sanitizeLesson(lesson);
-    const entries = readEntries(dir, shelf);
-    if (text === '') return { added: false, reason: 'empty', evicted: null, size: entries.length };
+    // One scan for entries AND the metadata block, passed through to writeEntries
+    // below so the mutation reads the shelf once, not twice (issue #251).
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
+    if (text === '') return { added: false, reason: 'empty', evicted: null, evictedAll: [], decayed: null, size: entries.length };
     const id = entryId(text);
-    if (text.length > maxChars()) {
+    const cap = maxChars();
+    if (text.length > cap) {
       // Reject rather than truncate: a cut-off lesson is often useless, so the
-      // agent should retry with a shorter *complete* one.
-      return { added: false, reason: 'too-long', evicted: null, size: entries.length, length: text.length, id };
+      // agent should retry with a shorter *complete* one. Report the overflow
+      // (`length - cap`) so the retry trims exactly that much rather than
+      // guessing how far over it was (issue #239).
+      return { added: false, reason: 'too-long', evicted: null, evictedAll: [], decayed: null, size: entries.length, length: text.length, overflow: text.length - cap, id };
     }
     const key = dedupKey(text);
     const collider = entries.find((e) => dedupKey(e.text) === key);
     if (collider) {
-      return { added: false, reason: 'duplicate', evicted: null, size: entries.length, id, collidedId: entryId(collider.text) };
+      return { added: false, reason: 'duplicate', evicted: null, evictedAll: [], decayed: null, size: entries.length, id, collidedId: entryId(collider.text) };
     }
     // Not an exact-normal-form duplicate (which would have hard-blocked above),
     // but it may still closely *resemble* an existing entry — a paraphrase the
@@ -791,12 +1316,14 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     const similar = created ? overlappingShelves(dir, shelf) : [];
     // Newcomer is protected: a full notebook admits it, ages its stalest line,
     // and evicts the lowest-scored one (never the newcomer). See enforceCap.
-    const { kept, evicted } = enforceCap(entries, 1);
-    writeEntries(dir, shelf, kept);
+    const { kept, evicted, decayed } = enforceCap(entries, 1);
+    writeEntries(dir, shelf, kept, metaLines);
     return {
       added: true,
       reason: 'added',
       evicted: evicted[0] ?? null,
+      evictedAll: evicted,
+      decayed,
       size: kept.length,
       id,
       ...(near ? { nearId: entryId(near.text), nearText: near.text } : {}),
@@ -876,24 +1403,112 @@ export interface VoteResult {
 export function vote(dir: string, shelf: string, selector: string, delta: number): Promise<VoteResult> {
   return withLock(dir, () => {
     if (delta !== 1 && delta !== -1) throw new NbError('bad_args', 'vote delta must be +1 or -1');
-    const entries = readEntries(dir, shelf);
+    // One scan for entries AND the metadata block, passed through to writeEntries
+    // below so the mutation reads the shelf once, not twice (issue #251).
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
     if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     entries[idx].score += delta;
     // A vote is a touch: move the entry to the fresh END so storage stays in
     // recency order (least-recently-touched first). Both signs count — a
-    // downvote is engagement too; the low score, not the position, is what makes
-    // a lesson an eviction target, so moving it to fresh never shields it.
+    // downvote is engagement too. Score is the PRIMARY eviction key, so a low
+    // score is what makes a lesson a target; position is only the TIEBREAK, and
+    // ties (rows at the +1/0 floor) are common — on a score tie the fresher line
+    // survives, so a downvoted-then-touched line IS shielded relative to an
+    // equally-scored staler one.
     const [touched] = entries.splice(idx, 1);
     entries.push(touched);
-    writeEntries(dir, shelf, entries);
+    writeEntries(dir, shelf, entries, metaLines);
     return { text: touched.text, score: touched.score };
+  });
+}
+
+/** One selector's outcome in a `voteMany` batch (best-effort: one failure never aborts the rest). */
+export interface VoteManyItem {
+  /** The selector as submitted (so the caller can pair a failure back to its input). */
+  selector: string;
+  /** The entry's stable id when the vote landed; absent on a failed selector. */
+  id?: string;
+  /** The entry's full text when the vote landed; absent on a failed selector. */
+  text?: string;
+  /** The entry's score AFTER the vote; absent on a failed selector. */
+  score?: number;
+  /** The failure message when this selector did not resolve to exactly one entry; absent on success. */
+  error?: string;
+}
+
+/**
+ * Apply ONE delta to SEVERAL entries of a shelf under a single lock and a single
+ * write — the batch form of `vote`, for an end-of-session retro that promotes or
+ * demotes a handful of lessons at once (N calls → 1). Best-effort: each selector
+ * is resolved independently against the pre-vote array, and a selector that
+ * matches zero or several entries is recorded as a failed item WITHOUT aborting
+ * the others — so one stale id never loses the whole sweep. Nothing is written
+ * if no selector resolved. All selectors are resolved BEFORE any score changes,
+ * so the indices never shift mid-batch; the touched entries are then moved to the
+ * fresh end in submission order, preserving the recency ordering `vote` keeps.
+ * A selector repeated in the same call resolves to the same entry and so votes it
+ * more than once (the caller asked for that); callers that want idempotence
+ * de-duplicate before calling.
+ */
+export function voteMany(dir: string, shelf: string, selectors: string[], delta: number): Promise<VoteManyItem[]> {
+  return withLock(dir, () => {
+    if (delta !== 1 && delta !== -1) throw new NbError('bad_args', 'vote delta must be +1 or -1');
+    if (selectors.length === 0) throw new NbError('bad_args', 'vote needs at least one id');
+    // One scan for entries AND the metadata block, passed through to writeEntries
+    // below so the mutation reads the shelf once, not twice (issue #251).
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
+    if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
+    const results: VoteManyItem[] = [];
+    // Resolve every selector against the ORIGINAL array first (indices are only
+    // stable before we start moving touched entries to the end). A resolution
+    // failure is captured as an item, not thrown, so the rest of the batch runs.
+    const hits: { idx: number; selector: string }[] = [];
+    for (const selector of selectors) {
+      try {
+        hits.push({ idx: selectIndex(entries, selector), selector });
+      } catch (err) {
+        results.push({ selector, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    if (hits.length === 0) {
+      // Every selector failed — write nothing and let the caller report each
+      // failure (the CLI exits non-zero because no vote landed).
+      return results;
+    }
+    // Apply the deltas by index (no mutation of positions yet), then reorder the
+    // touched entries to the fresh end in first-touch order — the same recency
+    // invariant `vote` maintains, extended to a batch. A selector repeated in the
+    // batch votes its entry again (score moves per occurrence) but the row is
+    // moved to the end ONCE, so the file never gains a duplicate line.
+    for (const { idx } of hits) entries[idx].score += delta;
+    const seen = new Set<number>();
+    const touchedOrder: number[] = [];
+    for (const { idx } of hits) {
+      if (!seen.has(idx)) {
+        seen.add(idx);
+        touchedOrder.push(idx);
+      }
+    }
+    const rest = entries.filter((_, i) => !seen.has(i));
+    const reordered = [...rest, ...touchedOrder.map((i) => entries[i])];
+    writeEntries(dir, shelf, reordered, metaLines);
+    for (const { idx, selector } of hits) {
+      const e = entries[idx];
+      results.push({ selector, id: entryId(e.text), text: e.text, score: e.score });
+    }
+    return results;
   });
 }
 
 export function merge(dir: string, shelf: string, selA: string, selB: string, mergedLesson: string): Promise<AddResult> {
   return withLock(dir, () => {
-    const entries = readEntries(dir, shelf);
+    // One scan for entries AND the metadata block, passed through to writeEntries
+    // below so the mutation reads the shelf once, not twice (issue #251).
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
     const ia = selectIndex(entries, selA);
     const ib = selectIndex(entries, selB);
     if (ia === ib) throw new NbError('bad_args', 'merge needs two different entries');
@@ -913,9 +1528,9 @@ export function merge(dir: string, shelf: string, selA: string, selB: string, me
     // merge consolidates (2 → 1) so it never grows past the cap; enforceCap is a
     // harmless no-op here unless the cap was lowered, in which case the merged
     // lesson is protected like any newcomer.
-    const { kept, evicted } = enforceCap(deduped, 1);
-    writeEntries(dir, shelf, kept);
-    return { added: true, reason: 'added', evicted: evicted[0] ?? null, size: kept.length, id: entryId(text), sources };
+    const { kept, evicted, decayed } = enforceCap(deduped, 1);
+    writeEntries(dir, shelf, kept, metaLines);
+    return { added: true, reason: 'added', evicted: evicted[0] ?? null, evictedAll: evicted, decayed, size: kept.length, id: entryId(text), sources };
   });
 }
 
@@ -926,6 +1541,12 @@ export interface SplitResult {
   source: string;
   /** Stable ids of the two entries the split produced, in A,B order. */
   ids: [string, string];
+  /** The first (stalest) entry the split's growth (1 → 2) pushed out to stay under cap, or `null`. For the FULL set after a cap decrease, read `evictedAll` (issue #306). */
+  evicted: Entry | null;
+  /** EVERY entry the split evicted, in storage order (stalest first); one in the ordinary case, many when `NB_MAX_LINES` was lowered below the shelf's size. Empty when none. `evicted` is `evictedAll[0] ?? null`. */
+  evictedAll: Entry[];
+  /** The stalest survivor the aging step docked −1 (post-dock score), or `null`. */
+  decayed: Entry | null;
 }
 
 /**
@@ -944,7 +1565,10 @@ export function split(
   lessonB: string,
 ): Promise<SplitResult> {
   return withLock(dir, () => {
-    const entries = readEntries(dir, shelf);
+    // One scan for entries AND the metadata block, passed through to writeEntries
+    // below so the mutation reads the shelf once, not twice (issue #251).
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
     if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     const original = entries[idx];
@@ -980,19 +1604,23 @@ export function split(
     remaining.push({ score, text: textA }, { score, text: textB }); // both halves fresh → fresh end
     // split grows by one (1 → 2); if that overflows a full notebook both halves
     // are protected (admitted) and the stalest OTHER line ages/evicts.
-    const { kept } = enforceCap(remaining, 2);
-    writeEntries(dir, shelf, kept);
-    return { size: kept.length, source: entryId(original.text), ids: [entryId(textA), entryId(textB)] };
+    const { kept, evicted, decayed } = enforceCap(remaining, 2);
+    writeEntries(dir, shelf, kept, metaLines);
+    return { size: kept.length, source: entryId(original.text), ids: [entryId(textA), entryId(textB)], evicted: evicted[0] ?? null, evictedAll: evicted, decayed };
   });
 }
 
 export function remove(dir: string, shelf: string, selector: string): Promise<VoteResult> {
   return withLock(dir, () => {
-    const entries = readEntries(dir, shelf);
+    // Read entries AND the metadata block in one scan: the reap below must tell a
+    // described-but-empty notebook (kept) from a true phantom (reaped), issue #209.
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
     if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     const [gone] = entries.splice(idx, 1);
-    writeEntries(dir, shelf, entries);
+    // An emptied UNDESCRIBED shelf is reaped by writeEntries (issues #209, #355).
+    writeEntries(dir, shelf, entries, metaLines);
     return { text: gone.text, score: gone.score };
   });
 }
@@ -1010,8 +1638,12 @@ export interface MoveResult {
   fromSize: number;
   /** Target shelf's entry count after the move (unchanged on `duplicate`). */
   toSize: number;
-  /** A lower-scored target entry the insert pushed out to stay under cap, or `null`. */
+  /** The first (stalest) target entry the insert pushed out to stay under cap, or `null`. For the FULL set after a cap decrease, read `evictedAll` (issue #306). */
   evicted: Entry | null;
+  /** EVERY entry the move evicted from the target, in storage order (stalest first); one in the ordinary case, many when `NB_MAX_LINES` was lowered below the target's size. Empty when none. `evicted` is `evictedAll[0] ?? null`. */
+  evictedAll: Entry[];
+  /** The stalest target entry the aging step docked −1 (post-dock score), or `null`. */
+  decayed: Entry | null;
   /** For `duplicate`: the id of the existing target entry that blocked the move. */
   collidedId?: string;
 }
@@ -1044,12 +1676,16 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
     if (fromShelf === toShelf) {
       throw new NbError('bad_args', `move needs two different shelves (source and target are both "${fromShelf}")`);
     }
-    const source = readEntries(dir, fromShelf);
+    const sourceRead = readShelf(dir, fromShelf);
+    assertNotConflicted(fromShelf, sourceRead.conflict);
+    const source = sourceRead.entries;
     if (source.length === 0) throw new NbError('no_match', `notebook for shelf "${fromShelf}" is empty`);
     const idx = selectIndex(source, selector);
     const moving = source[idx];
     const id = entryId(moving.text);
-    const target = readEntries(dir, toShelf);
+    const targetRead = readShelf(dir, toShelf);
+    assertNotConflicted(toShelf, targetRead.conflict);
+    const target = targetRead.entries;
     const key = dedupKey(moving.text);
     const collider = target.find((e) => dedupKey(e.text) === key);
     if (collider) {
@@ -1064,6 +1700,8 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
         fromSize: source.length,
         toSize: target.length,
         evicted: null,
+        evictedAll: [],
+        decayed: null,
         collidedId: entryId(collider.text),
       };
     }
@@ -1071,7 +1709,7 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
     // target then ages/evicts its stalest OTHER line, never this one (see enforceCap).
     const moved: Entry = { score: moving.score, text: moving.text };
     target.push(moved);
-    const { kept, evicted } = enforceCap(target, 1);
+    const { kept, evicted, decayed } = enforceCap(target, 1);
     // Write the TARGET first (lesson now persisted there), then drop it from the
     // source. An interruption between the two leaves a duplicate, never a loss.
     writeEntries(dir, toShelf, kept);
@@ -1085,12 +1723,32 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
       fromSize: remaining.length,
       toSize: kept.length,
       evicted: evicted[0] ?? null,
+      evictedAll: evicted,
+      decayed,
     };
   });
 }
 
 /** The `desc` metadata key: a notebook's optional one-line description/trigger. */
 export const DESC_KEY = 'desc';
+
+/**
+ * The handled refusal a MUTATION raises when its shelf holds a git merge-conflict
+ * marker (issue #333). The shelf read as-is for a read command, but rewriting it
+ * (add/vote/merge/split/rm/move/describe) would persist the marker lines as real
+ * lessons and erase the signal that a merge still needs resolving — so the write
+ * is refused, the file is left byte-identical, and the message names the shelf and
+ * the first offending line so the caller can run `git merge` / fix the file first.
+ * Classified `corrupt` in the usage log so `nb stats` can surface it.
+ */
+function assertNotConflicted(shelf: string, conflict: string | null): void {
+  if (conflict === null) return;
+  throw new NbError(
+    'corrupt',
+    `notebook for shelf "${shelf}" contains a git merge-conflict marker (${JSON.stringify(conflict)}) — ` +
+      `resolve the merge conflict in ${shelf}.md first; refusing to rewrite it`,
+  );
+}
 
 export interface DescribeResult {
   /** @deprecated use shelf */
@@ -1127,8 +1785,9 @@ export function setDescription(dir: string, shelf: string, text: string): Promis
       // Reject rather than truncate, exactly as add/merge/split do.
       throw new NbError('too_long', `description is ${clean.length} chars; max is ${maxChars()} — shorten it`);
     }
-    const entries = readEntries(dir, shelf);
-    const meta = setMetaValue(readMetaLines(dir, shelf), DESC_KEY, clean);
+    const { metaLines, entries, conflict } = readShelf(dir, shelf);
+    assertNotConflicted(shelf, conflict);
+    const meta = setMetaValue(metaLines, DESC_KEY, clean);
     writeEntries(dir, shelf, entries, meta);
     return { role: shelf, shelf, desc: clean === '' ? null : clean, set: true };
   });
@@ -1139,6 +1798,17 @@ export interface ShowEntry {
   id: string;
   score: number;
   text: string;
+  /**
+   * The `dedupKey` normal form of `text` (issue #286) — the one value a consumer
+   * cannot reproduce without reimplementing nb's normalization. Two entries with
+   * an EQUAL `key` are exact duplicates the caller can drop itself, so a harness
+   * composing context from several shelves can strip exact cross-shelf dupes
+   * without a round-trip into nb. Equality-only on purpose: it is never a
+   * similarity, ranking, or near-dup signal ([NG-001]). Distinct from `id`, which
+   * is a hash of the same normal form — `key` is the readable form the caller
+   * compares on; two entries share a `key` iff they share an `id`.
+   */
+  key: string;
 }
 
 /**
@@ -1172,24 +1842,111 @@ export interface ShowResult {
  * empty one (issue #166), both of which have `entries: []`.
  */
 export function showJson(dir: string, shelf: string): ShowResult {
-  const ord = ordered(readEntries(dir, shelf));
+  // One read for both entries and description (issue #201): the structured show
+  // used to read the shelf twice (readEntries + getDescription→readMetaLines).
+  const { metaLines, entries } = readShelf(dir, shelf);
+  const ord = ordered(entries);
   return {
     role: shelf,
     shelf,
-    description: getDescription(dir, shelf),
-    entries: ord.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text })),
+    description: stripControlCharsNullable(getMetaValue(metaLines, DESC_KEY)),
+    entries: ord.map((x) => ({
+      id: entryId(x.e.text),
+      score: x.e.score,
+      text: stripControlChars(x.e.text),
+      key: dedupKey(x.e.text),
+    })),
+    exists: notebookExists(dir, shelf),
+  };
+}
+
+/**
+ * Batch form of {@link showJson} for `nb show <a> <b> <c> --json` (issue #286):
+ * one {@link ShowResult} per shelf, in the given order, produced in a single
+ * process so a caller composes its own context from several shelves in one
+ * consistent snapshot instead of spawning nb N times. A named shelf with no file
+ * yields `exists: false` (never a silent empty), and each entry carries its
+ * `key` so the caller drops *exact* cross-shelf duplicates itself. nb does NO
+ * cross-shelf dedup, ordering, scope precedence, or budgeting here — those are
+ * caller policy ([NG-007]); a repeated shelf in `shelves` is read (and returned)
+ * once per occurrence, verbatim.
+ */
+export function showJsonMany(dir: string, shelves: string[]): ShowResult[] {
+  return shelves.map((shelf) => showJson(dir, shelf));
+}
+
+/** One cull candidate in a {@link StaleResult}: its stable id, current score, and lesson text. */
+export interface StaleEntry {
+  id: string;
+  score: number;
+  text: string;
+}
+
+/**
+ * The structured form of `nb stale`: the shelf, its total lesson count (before
+ * `limit`, so a caller can render "N of M"), the cull candidates most-disposable
+ * first, and the `exists` flag that tells a never-created shelf from an existing
+ * empty one (issue #166), both of which have `entries: []`.
+ */
+export interface StaleResult {
+  shelf: string;
+  /** Total lessons on the shelf BEFORE `limit` — so a caller can say "showing N of total". */
+  total: number;
+  /** Cull candidates, most-disposable first: lowest score, ties → stalest (lowest file index). Truncated to `limit`. */
+  entries: StaleEntry[];
+  /** Whether the shelf file exists on disk (issue #166), so `exists: false` + `entries: []` is a missing shelf, not an empty one. */
+  exists: boolean;
+}
+
+/**
+ * Rank a shelf's lessons by eviction priority — the order {@link enforceCap}
+ * would drop them in when a notebook overflows: **lowest score first, ties
+ * broken by stalest** (lowest file index = least-recently-touched). It mirrors
+ * `enforceCap` step 2's comparator minus the newcomer protection, because every
+ * lesson is a candidate here, and is strictly read-only: it never changes a
+ * score or removes anything.
+ *
+ * Its job is to revive the dormant curation loop (issue #240, spun off from the
+ * #223 audit's F3/F4): eviction only ever acts at the 50-line cap, so on a
+ * sub-cap shelf nothing is ever culled and a wrong `+1` lesson persists forever.
+ * `nb stale` surfaces the same ranking on ANY shelf so the retrospective can
+ * downvote or `rm` the weakest lessons by id. `limit` caps the list (most
+ * disposable first); `undefined` returns all. A missing/empty shelf yields an
+ * empty `entries` array, never an error.
+ */
+export function staleCandidates(dir: string, shelf: string, limit?: number): StaleResult {
+  const entries = readEntries(dir, shelf);
+  const ranked = entries
+    .map((e, idx) => ({ e, idx }))
+    .sort((a, b) => a.e.score - b.e.score || a.idx - b.idx);
+  const capped = limit === undefined ? ranked : ranked.slice(0, Math.max(0, limit));
+  return {
+    shelf,
+    total: entries.length,
+    entries: capped.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: stripControlChars(x.e.text) })),
     exists: notebookExists(dir, shelf),
   };
 }
 
 /** Render a notebook for injection / `show`: a stable id + score, highest score first (most useful on top). */
 export function render(dir: string, shelf: string): string {
-  const ord = ordered(readEntries(dir, shelf));
+  return renderEntries(shelf, readEntries(dir, shelf));
+}
+
+/**
+ * Render a shelf's already-read entries — the single-read core of {@link render}.
+ * `render` reads the file itself; a caller that already holds the entries (the
+ * `show` command, which reads the shelf once via {@link readShelf}) calls this
+ * directly so it does not re-read the file (issue #201). Output is byte-identical
+ * to the old inline rendering, including the "(… is empty)" line for no entries.
+ */
+export function renderEntries(shelf: string, entries: Entry[]): string {
+  const ord = ordered(entries);
   if (ord.length === 0) return `(notebook for shelf "${shelf}" is empty)`;
   return ord
     .map((x) => {
       const s = x.e.score >= 0 ? `+${x.e.score}` : `${x.e.score}`;
-      return `${entryId(x.e.text)}  [${s}]  ${x.e.text}`;
+      return `${entryId(x.e.text)}  [${s}]  ${stripControlChars(x.e.text)}`;
     })
     .join('\n');
 }
@@ -1234,6 +1991,62 @@ export interface NotebookSummary {
   auto: string | null;
 }
 
+/**
+ * A shelf that a cross-shelf scan (`listNotebooks` / `search`) could not read and
+ * therefore skipped (issue #332). `code` is the errno code from the filesystem
+ * (e.g. `EACCES`, `EISDIR`, `EIO`); `ENOENT` never appears because `readShelf`
+ * already treats it as an empty shelf. Only a throw carrying a real errno `code`
+ * is skipped — a codeless throw (a parser bug) still propagates, so this field
+ * never invents a non-errno token. Surfaced so one unreadable file cannot
+ * silently vanish from the index: `nb list`/`nb search`/`nb stats` report it on
+ * stderr and in `--json`, while still succeeding for every healthy shelf.
+ */
+export interface SkippedShelf {
+  /** The shelf whose `<shelf>.md` failed to read. */
+  shelf: string;
+  /** The errno code of the read failure (`EACCES`, `EISDIR`, `EIO`, …). */
+  code: string;
+}
+
+/**
+ * A shelf whose file holds an unresolved git merge-conflict marker (issue #333).
+ * A read command still reads it exactly as before (so `show`/`list`/`search`/
+ * `stale` output is unchanged and `--json` stays valid) but names it in one
+ * stderr warning; a mutation refuses instead of rewriting the markers in as real
+ * lessons. `marker` is the first offending line, so the caller can say WHICH line
+ * (and thus which side of a merge) needs resolving.
+ */
+export interface ConflictShelf {
+  /** The shelf whose `<shelf>.md` holds a conflict marker. */
+  shelf: string;
+  /** The first merge-conflict marker line found in the file. */
+  marker: string;
+}
+
+/**
+ * Run `fn` for one shelf, returning `undefined` (and the errno code) instead of
+ * throwing when the read fails with anything but `ENOENT` (which `readShelf`
+ * already swallows as an empty shelf). Shared by the two cross-shelf scans so a
+ * single unreadable file degrades to a reported skip rather than aborting the
+ * whole index (issue #332). Single-shelf commands keep calling `readShelf`
+ * directly, so an explicitly named bad shelf still fails loudly.
+ */
+function skipUnreadable<T>(shelf: string, fn: () => T): { value?: T; error?: SkippedShelf } {
+  try {
+    return { value: fn() };
+  } catch (err) {
+    // Only a filesystem read failure is a skippable shelf: the error carries an
+    // errno `code` (EACCES/EISDIR/EIO/…). Anything else — a parser TypeError on
+    // malformed input with no `code`, an out-of-memory, a programming bug — is a
+    // real defect, not a damaged file, so it must keep propagating rather than
+    // become a silent "shelf skipped" (the issue's intent is to surface a broken
+    // file, never to swallow a code bug).
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (typeof code !== 'string' || code === '') throw err;
+    return { error: { shelf, code } };
+  }
+}
+
 export interface ListOptions {
   /** Keep only notebooks whose shelf name starts with this prefix (the `.` namespace convention, e.g. `review.`). An empty/absent prefix keeps all. */
   prefix?: string;
@@ -1247,6 +2060,20 @@ export interface NotebookListing {
   total: number;
   /** The rows actually returned: richest-first (by lesson count), ties by name, truncated to `limit`. */
   rows: NotebookSummary[];
+  /**
+   * Shelves whose file could not be read and were skipped (issue #332), so one
+   * unreadable `<shelf>.md` does not abort the whole index. Empty on a healthy
+   * store, so the field is absent from healthy output's spirit (always `[]` here,
+   * but the CLI omits it when empty).
+   */
+  skipped: SkippedShelf[];
+  /**
+   * Shelves whose file holds a git merge-conflict marker (issue #333), so the
+   * index row is still shown (the lessons read as before) but the CLI warns on
+   * stderr that the shelf must be resolved. Empty on a healthy store, so the
+   * `--json` field is emitted only when non-empty (healthy output is unchanged).
+   */
+  conflicts: ConflictShelf[];
 }
 
 /**
@@ -1265,21 +2092,34 @@ export interface NotebookListing {
  */
 export function listNotebooks(dir: string, opts: ListOptions = {}): NotebookListing {
   const prefix = opts.prefix ?? '';
+  const skipped: SkippedShelf[] = [];
+  const conflicts: ConflictShelf[] = [];
   const matches = listShelves(dir)
     .filter((shelf) => shelf.startsWith(prefix))
-    .map((shelf): NotebookSummary => {
-      const entries = readEntries(dir, shelf);
-      const desc = getDescription(dir, shelf);
+    .map((shelf): NotebookSummary | null => {
+      // One read per shelf for both the lesson count and the description (issue
+      // #201): the index used to read each file twice (readEntries + getDescription).
+      // A non-ENOENT read failure skips just this shelf and is reported (issue
+      // #332) so one unreadable file cannot take down the whole index.
+      const read = skipUnreadable(shelf, () => readShelf(dir, shelf));
+      if (read.error) {
+        skipped.push(read.error);
+        return null;
+      }
+      const { metaLines, entries, conflict } = read.value!;
+      if (conflict !== null) conflicts.push({ shelf, marker: conflict });
+      const desc = stripControlCharsNullable(getMetaValue(metaLines, DESC_KEY));
       // Fall back to the top-scored lesson only when there is no explicit
       // description; `ordered` is score-desc with an insertion-order tie-break.
-      const auto = desc === null && entries.length > 0 ? ordered(entries)[0].e.text : null;
+      const auto = desc === null && entries.length > 0 ? stripControlChars(ordered(entries)[0].e.text) : null;
       return { role: shelf, shelf, lessons: entries.length, desc, auto };
     })
+    .filter((n): n is NotebookSummary => n !== null)
     .filter((n) => n.lessons > 0 || n.desc !== null);
   matches.sort((a, b) => b.lessons - a.lessons || a.shelf.localeCompare(b.shelf));
   const { limit } = opts;
   const rows = limit != null ? matches.slice(0, Math.max(0, limit)) : matches;
-  return { dir, total: matches.length, rows };
+  return { dir, total: matches.length, rows, skipped, conflicts };
 }
 
 // ---------------------------------------------------------------------------
@@ -1342,10 +2182,22 @@ export interface SearchResult {
   /**
    * Every entry id surfaced across the FULL pre-`limit` result, best-first —
    * the #114 surfacing provenance the usage log records. Kept on the full
-   * result so the serendipity proxy stays independent of the display `limit`
-   * and keeps its documented conservative (one-sided) bias (issue #186).
-   */
+    * result so the serendipity proxy stays independent of the display `limit`
+    * and keeps its documented conservative (one-sided) bias (issue #186).
+    */
   surfacedIds: string[];
+  /**
+   * Shelves whose file could not be read and were skipped (issue #332), so one
+   * unreadable `<shelf>.md` does not abort the whole search. Empty on a healthy
+   * store.
+   */
+  skipped: SkippedShelf[];
+  /**
+   * Shelves in scope whose file holds a git merge-conflict marker (issue #333);
+   * their lessons are still searched (a read is never refused) but the CLI warns
+   * on stderr. Empty on a healthy store.
+   */
+  conflicts: ConflictShelf[];
 }
 
 /**
@@ -1367,7 +2219,7 @@ export interface SearchResult {
  */
 export function search(dir: string, query: string, opts: SearchOptions = {}): SearchResult {
   const terms = query.toLowerCase().split(/\s+/).filter((t) => t !== '');
-  if (terms.length === 0) return { terms: [], groups: [], total: 0, surfacedIds: [] };
+  if (terms.length === 0) return { terms: [], groups: [], total: 0, surfacedIds: [], skipped: [], conflicts: [] };
   const prefix = opts.prefix ?? '';
   const needAll = !opts.any;
   const isHit = (matched: number): boolean => (needAll ? matched === terms.length : matched >= 1);
@@ -1377,9 +2229,21 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
   };
 
   const groups: SearchGroup[] = [];
+  const skipped: SkippedShelf[] = [];
+  const conflicts: ConflictShelf[] = [];
   for (const shelf of listShelves(dir).filter((r) => r.startsWith(prefix))) {
-    const entries = readEntries(dir, shelf);
-    const desc = getDescription(dir, shelf);
+    // One read per shelf for both entries and description (issue #201): the
+    // keyword scan used to read each file twice (readEntries + getDescription).
+    // A non-ENOENT read failure skips just this shelf and is reported (issue
+    // #332) so one unreadable file cannot take down the whole search.
+    const read = skipUnreadable(shelf, () => readShelf(dir, shelf));
+    if (read.error) {
+      skipped.push(read.error);
+      continue;
+    }
+    const { metaLines, entries, conflict } = read.value!;
+    if (conflict !== null) conflicts.push({ shelf, marker: conflict });
+    const desc = stripControlCharsNullable(getMetaValue(metaLines, DESC_KEY));
     // Tag each hit with its file-order index so equal (matched, score) hits keep a
     // stable, insertion-order sequence ([DP-3]); the index is dropped from output.
     const tagged = entries
@@ -1393,7 +2257,7 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
       shelf,
       desc,
       descMatched,
-      hits: tagged.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: x.e.text, matched: x.matched })),
+      hits: tagged.map((x) => ({ id: entryId(x.e.text), score: x.e.score, text: stripControlChars(x.e.text), matched: x.matched })),
     });
   }
 
@@ -1414,7 +2278,7 @@ export function search(dir: string, query: string, opts: SearchOptions = {}): Se
   const total = groups.length;
   const surfacedIds = groups.flatMap((g) => g.hits.map((h) => h.id));
   const bounded = opts.limit != null ? groups.slice(0, Math.max(0, opts.limit)) : groups;
-  return { terms, groups: bounded, total, surfacedIds };
+  return { terms, groups: bounded, total, surfacedIds, skipped, conflicts };
 }
 
 // ---------------------------------------------------------------------------
@@ -1438,6 +2302,7 @@ export const ERROR_CLASSES = [
   'no_match', // a selector matched no entry (and no notebook/shelf to act on)
   'multiline_refused', // `add … -` was piped more than one line
   'bad_args', // a missing/malformed argument or flag, or an invalid shelf name
+  'corrupt', // a mutation refused because the shelf holds a git merge-conflict marker (issue #333)
   'unknown_subcommand', // an unknown `nb` command (agents guessing names)
   'other', // anything not (yet) classified — the escape hatch
 ] as const;
@@ -1494,6 +2359,12 @@ export interface UsageRow {
   note: string;
   /** Terse error-class token (`ERROR_CLASSES`) when the call exited non-zero; `''` on success and on pre-#176 rows. */
   errorClass: string;
+  /** For a write that aged a line (issue #293): `<id>:<postDockScore>` of the stalest survivor docked −1 by the cap's anti-immortality step; `''` otherwise and on pre-#293 rows. */
+  decayed: string;
+  /** Crash recovery performed during this call (issue #309): `<lockSteals>:<tempReaps>` — stale locks stolen and leftover temps reaped while acquiring the lock, each count a sign a prior nb died mid-write; `''` when none (the common case) and on pre-#309 rows. */
+  recovered: string;
+  /** Batch-vote partial selector misses (issue #310): the count of ids that did NOT resolve in a ≥1-landed batch `vote`. That call exits 0 (`ok=true`) so its misses never reach the err-rate table; recording the count here lets `nb stats` fold them into the vote error-cause readout instead of laundering "voting on ids that no longer exist" out of it. `0` when none (the common case) and on pre-#310 rows. Trailing column. */
+  misses: number;
 }
 
 /**
@@ -1524,6 +2395,16 @@ export interface UsageMeta {
    * blank. A fixed enum value (`ErrorClass`), never free text.
    */
   errorClass?: ErrorClass;
+  /** `<id>:<postDockScore>` of the line the cap's aging step docked −1. */
+  decayed?: string;
+  /**
+   * Batch-vote partial selector-miss count to record (issue #310): set only by
+   * the CLI's ≥1-landed batch-`vote` path when some ids were stale. A
+   * non-negative integer; absent or `0` → the column is blank. Deliberately
+   * NOT `errorClass` — a ≥1-landed batch still exits 0, so this is a success-row
+   * signal, not an error class.
+   */
+  misses?: number;
 }
 
 /**
@@ -1593,12 +2474,97 @@ function sanitizeUsageField(raw: string): string {
  * trailing ellipsis that stays within the cap. A sub-cap note is returned
  * byte-identical. Reuses `maxChars()` (the lesson/description cap) so one knob
  * bounds every per-item length; after this the log is bounded by
- * ring-count x per-row cap.
+ * ring-count x per-row cap. Also applied to the equally caller-influenced
+ * `session` column (issue #202), so no single free-text field can bloat a row.
  */
 function capNote(note: string): string {
   const cap = maxChars();
   if (note.length <= cap) return note;
   return note.slice(0, cap - 1) + '…';
+}
+
+/**
+ * Cap the usage-log `entries` id-list column so one broad row cannot blow the
+ * ring's byte budget. Every other usage column is a single id, a short enum
+ * token, or the already-capped `--note` (#128/#202), but a `search match` row
+ * records the FULL pre-`limit` `surfacedIds` — every hit across every matching
+ * notebook — so a one-term `search` over many near-full shelves writes an
+ * unbounded list, and the ring's row-COUNT bound (`usageRing`) no longer bounds
+ * its BYTES (issue #264, completing the per-field caps of #128/#202). Applied to
+ * every command's `entries` (a large batch `vote` can overflow it too), so one
+ * knob (`maxChars()`) bounds every per-row field and the whole log stays bounded
+ * by ring-count × per-row cap. Like `capNote` this TRUNCATES rather than rejects,
+ * keeping `logUsage`'s never-throw contract; a within-cap list is returned
+ * byte-identical (joined exactly as before), so the common case and old on-disk
+ * rows are unchanged.
+ *
+ * We keep as many WHOLE ids from the front as fit — never a mangled half-id a
+ * reader could mistake for a real entry. Unlike `capNote`, truncation is
+ * deliberately SILENT: `note` is read back as one free-text string, but
+ * `entries` is split on `,` and ITERATED per id by the diagnostic consumers
+ * (vote-reversal, loop detection, serendipity in `stats`/`diagnoseSignals`), so
+ * any trailing sentinel token would leak in as a phantom entry id and, on a
+ * capped batch vote, forge a cross-session `vote-reversal` for that phantom. The
+ * byte bound is what the ring budget needs; the dropped tail ids only weaken the
+ * best-effort pull/co-access signals (already lossy proxies — ring churn drops
+ * the same evidence), never correctness.
+ */
+function capEntries(ids: string[]): string {
+  const cap = maxChars();
+  const joined = ids.join(',');
+  if (joined.length <= cap) return joined;
+  const kept: string[] = [];
+  let len = 0;
+  for (const id of ids) {
+    const extra = (kept.length === 0 ? 0 : 1) + id.length; // comma separator + id
+    if (len + extra > cap) break;
+    kept.push(id);
+    len += extra;
+  }
+  return kept.join(',');
+}
+
+/**
+ * Encode the entries an operation evicted into the usage log's `evicted`
+ * column: a comma-separated list of `<id>:<finalScore>` pairs, one per evicted
+ * entry, in storage order (stalest first). A single eviction — the ordinary
+ * over-cap add — yields exactly `<id>:<finalScore>`, byte-identical to the
+ * pre-#306 format, so old rows, the `eviction-while-still-voted` diagnostic's
+ * per-pair parse, and the common case are unchanged. A cap DECREASE can evict
+ * many at once (e.g. `NB_MAX_LINES` 50→10 on a full shelf ⇒ 41 evictions);
+ * recording only the first under-reported that loss and blinded the still-voted
+ * signal to its scale (issue #306).
+ *
+ * Bounded by `maxChars()` — the same per-row byte budget `capNote`/`capEntries`
+ * enforce — so a mass eviction cannot blow the usage ring's budget. When the
+ * full list overflows, it keeps as many WHOLE pairs from the front as fit and
+ * appends a trailing `+<dropped>` marker, so the TOTAL evicted count stays
+ * recoverable (listed pairs + dropped) even under truncation. Unlike the shared
+ * `entries` column (iterated by several diagnostics, so `capEntries` must
+ * truncate SILENTLY lest a sentinel read back as a phantom id), this column has
+ * a single consumer — the eviction-while-still-voted signal — which skips the
+ * `+<dropped>` token, so the count-preserving marker is safe here.
+ */
+export function formatEvictedUsage(evicted: Entry[]): string {
+  if (evicted.length === 0) return '';
+  const budget = maxChars();
+  const pairs = evicted.map((e) => `${entryId(e.text)}:${e.score}`);
+  const full = pairs.join(',');
+  if (full.length <= budget) return full;
+  // Overflow: list whole pairs from the front while a `+<dropped>` marker for
+  // the remainder still fits, then emit that marker so the count is never lost.
+  const listed: string[] = [];
+  for (let i = 0; i < pairs.length; i++) {
+    const dropped = pairs.length - (i + 1);
+    const candidate = [...listed, pairs[i]].join(',');
+    const withMarker = dropped > 0 ? `${candidate},+${dropped}` : candidate;
+    if (withMarker.length > budget) break;
+    listed.push(pairs[i]);
+  }
+  const dropped = pairs.length - listed.length;
+  if (dropped === 0) return listed.join(','); // defensive: full didn't fit, so unreachable
+  const prefix = listed.length ? `${listed.join(',')},` : '';
+  return `${prefix}+${dropped}`;
 }
 
 export function logUsage(
@@ -1620,8 +2586,15 @@ export function logUsage(
     // round-trips as blank (backward-compatible — see parseUsage). `errorClass`
     // is the newest column and goes LAST (issue #176), so a pre-#176 row — which
     // ends at `note` — reads it as blank rather than mis-aligning any prior field.
-    const session = sanitizeUsageField(meta.session ?? process.env.NB_SESSION ?? '');
-    const entries = (meta.entries ?? []).map(sanitizeUsageField).join(',');
+    // `session` (from NB_SESSION, which a harness sets) is caller-influenced
+    // free text, exactly like `note` — not a short fixed token — so it is capped
+    // to the same per-field length (issue #202). #128 capped only `note`, calling
+    // it "the one unbounded free-text field", but a long NB_SESSION is appended to
+    // EVERY row, so without this the ring's row-count bound no longer bounds its
+    // bytes. Truncated (never rejected) so `logUsage` keeps its never-throw
+    // contract, with the same trailing-ellipsis convention as the note.
+    const session = capNote(sanitizeUsageField(meta.session ?? process.env.NB_SESSION ?? ''));
+    const entries = capEntries((meta.entries ?? []).map(sanitizeUsageField));
     const outcome = sanitizeUsageField(meta.outcome ?? '');
     const collided = sanitizeUsageField(meta.collided ?? '');
     const evicted = sanitizeUsageField(meta.evicted ?? '');
@@ -1630,9 +2603,26 @@ export function logUsage(
     // A fixed enum token (never user text), but sanitize anyway for uniformity so
     // no column can ever be split — it is a no-op on a well-formed enum value.
     const errorClass = sanitizeUsageField(meta.errorClass ?? '');
+    const decayed = sanitizeUsageField(meta.decayed ?? '');
+    // Crash-recovery column (issue #309): drain the tally that withLock's
+    // stale-lock steal and reapLeftoverTemps' temp reap filled during this same
+    // process's mutation, and record it as `<lockSteals>:<tempReaps>` — blank in
+    // the common no-recovery case, so an old reader and old rows are unchanged.
+    // Drained exactly once here (read-and-reset), so each event is counted on one
+    // row; the two counts are machine-generated integers, so no sanitize is
+    // needed (no caller text can reach this column).
+    const rec = drainPendingRecovery();
+    const recovered = rec.lockSteals > 0 || rec.tempReaps > 0 ? `${rec.lockSteals}:${rec.tempReaps}` : '';
+    // Batch-vote partial misses (issue #310): the count of stale ids skipped by a
+    // ≥1-landed batch `vote`. That call exits 0 (`ok=true`) so its misses never
+    // reach the err-rate table; recording them lets `nb stats` fold them into the
+    // vote error-cause readout. A machine-generated non-negative integer (no
+    // caller text, so no sanitize), blank in the common no-miss case so an old
+    // reader and old rows are unchanged.
+    const misses = meta.misses && meta.misses > 0 ? String(Math.round(meta.misses)) : '';
     const line =
       `${new Date().toISOString()}\t${sanitizeUsageField(shelf)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
-      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}`;
+      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}\t${decayed}\t${recovered}\t${misses}`;
     const ring = usageRing();
     const compactAt = ring + usageRingSlack();
 
@@ -1706,11 +2696,13 @@ export function parseUsage(dir: string): UsageRow[] {
   for (const line of readFileSync(file, 'utf-8').split('\n')) {
     if (line.trim() === '') continue;
     // Positional parse, tolerant of old five-column rows: the richer columns
-    // (session…errorClass) are undefined on a pre-upgrade row and default to
+    // (session…recovered) are undefined on a pre-upgrade row and default to
     // blank/empty, so a ring written before this change still reads cleanly.
-    // `errorClass` (issue #176) is the trailing column: a pre-#176 row ends at
-    // `note`, so it is undefined here and defaults to `''`.
-    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note, errorClass] =
+    // `misses` (issue #310) is the current trailing column, appended after
+    // `recovered` (#309), itself after `decayed` (#293); a row from before any of
+    // them ends earlier, so the missing trailing columns are undefined here and
+    // default to `''`/`0`.
+    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note, errorClass, decayed, recovered, misses] =
       line.split('\t');
     if (!ts || !command) continue;
     rows.push({
@@ -1727,6 +2719,13 @@ export function parseUsage(dir: string): UsageRow[] {
       reason: reason ?? '',
       note: note ?? '',
       errorClass: errorClass ?? '',
+      decayed: decayed ?? '',
+      recovered: recovered ?? '',
+      // Blank/absent (pre-#310 rows and the common no-miss case) → 0. Clamped to
+      // ≥0 so a corrupt/hand-edited negative cell can never subtract from the
+      // vote miss-count aggregation (it is only ever written as a non-negative
+      // count).
+      misses: Math.max(0, Number.parseInt(misses ?? '', 10) || 0),
     });
   }
   return rows;
@@ -1740,6 +2739,24 @@ export interface CommandStat {
   p50ms: number;
   p95ms: number;
   lastUsed: string;
+}
+
+/**
+ * Per-command error-cause readout (issue #223). The per-command table shows each
+ * command's error *rate*; this names the *cause* so the two most actionable rates
+ * — `add` over-the-cap rejections and `vote` selector-resolution failures — are
+ * surfaced in the header instead of being buried behind the high-error-rate
+ * anomaly threshold. Each `cause` is an `errorClass` token (issue #176) when the
+ * row recorded one; a row that predates that column falls back to its `outcome`
+ * (so `add`'s `too-long` still shows on a pre-#176 log) and otherwise reads
+ * `unclassified` — a hint to upgrade `nb` so error classes get recorded.
+ */
+export interface ErrorCause {
+  command: string;
+  /** Total miss events for this command in the window (the breakdown's denominator): error rows plus, for `vote`, the batch partial selector misses (issue #310) that each exit 0 yet skip a stale id. */
+  errors: number;
+  /** Dominant-first cause → share of this command's errors, as an integer percent. */
+  breakdown: { cause: string; pct: number }[];
 }
 
 export interface Anomaly {
@@ -1946,6 +2963,15 @@ export interface StatsReport {
   windowStart: string;
   totalCalls: number;
   perCommand: CommandStat[];
+  /**
+   * Per-command error-cause breakdown (issue #223), dominant-first and only for
+   * commands that had ≥1 error in the window. Additive to the report — every
+   * field above is unchanged. It names the lever behind each command's `err%`
+   * (e.g. `add`: `too_long`, `vote`: `no_match`/`ambiguous_selector`) so the two
+   * headline rates are not buried behind the high-error-rate anomaly threshold.
+   * See `ErrorCause`.
+   */
+  errorCauses: ErrorCause[];
   anomalies: Anomaly[];
   /**
    * Notebook inventory (issue #40): per-shelf line counts and the `maxLines()`
@@ -1955,6 +2981,22 @@ export interface StatsReport {
    */
   notebooks: NotebookStat[];
   notebookTotals: NotebookTotals;
+  /**
+   * Shelves the notebook inventory could not read and therefore omitted (issue
+   * #332) — the same `{shelf, code}` skip `nb list`/`nb search` report, so the
+   * operator's health scan survives one damaged file instead of aborting. Additive
+   * to the report (`notebooks`/`notebookTotals` count only the healthy shelves; the
+   * CLI prints one stderr line per entry); `STATS_SCHEMA_VERSION` does not bump. See
+   * `SkippedShelf`.
+   */
+  skipped: SkippedShelf[];
+  /**
+   * Shelves whose notebook file holds a git merge-conflict marker (issue #333),
+   * the inventory analogue of `skipped`: the shelf is still counted (its lessons
+   * read as stored) but the CLI warns on stderr that it must be resolved. Additive
+   * to the report; `STATS_SCHEMA_VERSION` does not bump. Empty on a healthy store.
+   */
+  conflicts: ConflictShelf[];
   /**
    * Free diagnostic signals (issue #72): memory-quality observations derived
    * from the same windowed, shelf-scoped usage rows as `anomalies`, but about the
@@ -1979,6 +3021,35 @@ export interface StatsReport {
    * above is unchanged. See `activityByDay` / `sparkline` and RFC 0106.
    */
   activity: number[];
+  /**
+   * Usage-ring occupancy (issue #206): how full the monitoring log itself is —
+   * `rows` is the total row count on disk, `cap` is `usageRing()`. Unlike
+   * `totalCalls` (which is windowed and shelf-scoped), this is TOTAL occupancy
+   * across the whole ring, so an operator can see the log is near its
+   * compaction point (and therefore about to drop the oldest history on the next
+   * trim) — the analogue, for the log, of the `notebooks` inventory's cap
+   * pressure (issue #40). Read from the `parseUsage` the report already does, so
+   * it costs no extra ring read. Additive — every field above is unchanged, and
+   * `STATS_SCHEMA_VERSION` does not bump (#172 additive-field policy).
+   */
+  usageRing: { rows: number; cap: number };
+  /**
+   * Crash-recovery readout (issue #309): how many times, in the window, a `nb`
+   * mutation found and cleaned up evidence that a PREVIOUS `nb` died mid-write —
+   * `lockSteals` is stale `.nb.lock`s stolen (a crash while holding the lock) and
+   * `tempReaps` is leftover `*.md.<pid>.tmp` / `.nb-usage.log.<pid>.tmp` files
+   * reaped (a crash mid atomic-write). Both were silent before this issue, so an
+   * operator could not tell whether agents were crashing mid-mutation and losing
+   * updates; a nonzero count is exactly that evidence. Summed from the usage ring's
+   * `recovered` column, so it costs no extra read and adds no field to a lesson
+   * ([NG-004]). Like `usageRing` this is **deployment-wide** — the lock and the
+   * temp debris are shared across every shelf — so it is NOT narrowed by a
+   * `[<shelf>]` scope, only by the window. A clean deployment reports `{ 0, 0 }`,
+   * shown (not omitted) so "measured, healthy" is never confused with "not
+   * measured" ([DP-5]). Additive — every field above is unchanged, and
+   * `STATS_SCHEMA_VERSION` does not bump (#172 additive-field policy).
+   */
+  crashRecovery: { lockSteals: number; tempReaps: number };
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -2208,6 +3279,45 @@ export function stats(
     arr.push(r);
     byCmd.set(r.command, arr);
   }
+  // Per-command error-cause breakdown (issue #223): name the lever behind each
+  // command's err% so `add` over-cap rejections and `vote` selector misses are
+  // surfaced in the header, not only when the high-error-rate anomaly fires. A
+  // row's cause is its `errorClass` (issue #176); a pre-#176 row falls back to
+  // `outcome` for the one outcome that is an error (`too-long` → `too_long`), so
+  // `add`'s dominant cause reads correctly even on an older log; anything else is
+  // `unclassified`.
+  // A couple of stray errors (e.g. a one-off unknown-subcommand guess) is noise,
+  // not a rate; only a handful is a pattern worth naming. This keeps the readout
+  // to the commands that actually have an err% worth diagnosing (add, vote).
+  const ERROR_CAUSE_MIN = 3;
+  const errorCause = (r: UsageRow): string =>
+    r.errorClass || (r.outcome === 'too-long' ? 'too_long' : 'unclassified');
+  const errorCauses: ErrorCause[] = [...byCmd.entries()]
+    .map(([command, rows]): ErrorCause => {
+      const errRows = rows.filter((r) => !r.ok);
+      const counts = new Map<string, number>();
+      for (const r of errRows) counts.set(errorCause(r), (counts.get(errorCause(r)) ?? 0) + 1);
+      // Fold in batch-vote partial misses (issue #310): a ≥1-landed batch `vote`
+      // exits 0 (`ok=true`), so it is NOT an error row, yet each stale id it
+      // skipped is a genuine selector miss the err-rate table can't see. Count
+      // each as a `no_match` cause — the same class a wholly-failed vote stamps —
+      // so the vote selector-miss readout is no longer blind to them. `misses` is
+      // only ever recorded on vote rows, so this is a no-op for every other
+      // command. The per-command error *rate* (perCommand) is untouched: it keeps
+      // counting error ROWS, so a batch that limped to exit 0 stays a success
+      // there — only this cause readout surfaces the laundered misses.
+      let partialMisses = 0;
+      for (const r of rows) partialMisses += r.misses;
+      if (partialMisses > 0) counts.set('no_match', (counts.get('no_match') ?? 0) + partialMisses);
+      const errors = errRows.length + partialMisses;
+      const breakdown = [...counts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([cause, n]) => ({ cause, pct: Math.round((n / errors) * 100) }));
+      return { command, errors, breakdown };
+    })
+    .filter((e) => e.errors >= ERROR_CAUSE_MIN)
+    .sort((a, b) => b.errors - a.errors || a.command.localeCompare(b.command));
+
   const perCommand: CommandStat[] = [...byCmd.entries()]
     .map(([command, rows]) => {
       const lat = rows.map((r) => r.ms).sort((a, b) => a - b);
@@ -2339,27 +3449,35 @@ export function stats(
     }
   }
 
-  // (B) eviction-while-still-voted: an `add` evicted an entry (its `evicted`
-  //     column is `<id>:<score>`) whose final score was still above the +1
-  //     a new lesson starts at → a lesson agents voted up, and that had not aged
-  //     or been voted back down, was lost. Evicting an entry at +1 or below is the
-  //     cap doing its job.
+  // (B) eviction-while-still-voted: an `add` evicted one or more entries (its
+  //     `evicted` column is a comma-separated list of `<id>:<score>` pairs —
+  //     usually one, but a cap decrease can evict many at once, issue #306)
+  //     whose final score was still above the +1 a new lesson starts at → a
+  //     lesson agents voted up, and that had not aged or been voted back down,
+  //     was lost. Every such pair is counted, so a mass eviction surfaces each
+  //     still-voted loss, not just the first. Evicting an entry at +1 or below is
+  //     the cap doing its job. A trailing `+<dropped>` token (the overflow marker
+  //     `formatEvictedUsage` appends when the list is too long to record in full)
+  //     carries no per-entry score, so it is skipped here.
   {
     const seen = new Set<string>(); // dedup repeat evictions of the same shelf+id
     for (const r of recent) {
       if (r.command !== 'add' || r.evicted === '') continue;
-      const [evictedId, scoreRaw] = r.evicted.split(':');
-      if (!evictedId || !(Number(scoreRaw) > 1)) continue;
-      const k = `${r.role}\u0000${evictedId}`;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      signals.push({
-        kind: 'eviction-while-still-voted',
-        role: r.role,
-        shelf: r.role,
-        entry: evictedId,
-        detail: `entry ${evictedId} was evicted by the cap with score ${r.evicted.split(':')[1]} — if this repeats, the cap may be too tight for shelf "${r.role}"`,
-      });
+      for (const pair of r.evicted.split(',')) {
+        if (pair.startsWith('+')) continue; // `+<dropped>` overflow marker — count only, no per-entry score
+        const [evictedId, scoreRaw] = pair.split(':');
+        if (!evictedId || !(Number(scoreRaw) > 1)) continue;
+        const k = `${r.role}\u0000${evictedId}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        signals.push({
+          kind: 'eviction-while-still-voted',
+          role: r.role,
+          shelf: r.role,
+          entry: evictedId,
+          detail: `entry ${evictedId} was evicted by the cap with score ${scoreRaw} — if this repeats, the cap may be too tight for shelf "${r.role}"`,
+        });
+      }
     }
   }
 
@@ -2536,12 +3654,23 @@ export function stats(
   // its line total can gate the engagement diagnosis below (issue #105).
   const cap = maxLines();
   const inventoryShelves = scope ? listShelves(dir).filter((r) => r === scope) : listShelves(dir);
-  const notebooks: NotebookStat[] = inventoryShelves.map((shelf) => ({
-    role: shelf,
-    shelf,
-    lines: readEntries(dir, shelf).length,
-    cap,
-  }));
+  // `stats` is the scan an operator runs to find out WHY memory is unhealthy, and
+  // the janitor drives it from the same directory — so it must survive a damaged
+  // store exactly like `list`/`search` (issue #332). Skip (and report) only the
+  // unreadable shelf so the healthy inventory still prints; a codeless throw still
+  // propagates (see `skipUnreadable`).
+  const skipped: SkippedShelf[] = [];
+  const conflicts: ConflictShelf[] = [];
+  const notebooks: NotebookStat[] = [];
+  for (const shelf of inventoryShelves) {
+    const read = skipUnreadable(shelf, () => readShelf(dir, shelf));
+    if (read.error) {
+      skipped.push(read.error);
+      continue;
+    }
+    if (read.value!.conflict !== null) conflicts.push({ shelf, marker: read.value!.conflict });
+    notebooks.push({ role: shelf, shelf, lines: read.value!.entries.length, cap });
+  }
   const notebookTotals: NotebookTotals = {
     roles: notebooks.length,
     shelves: notebooks.length,
@@ -2589,6 +3718,23 @@ export function stats(
     windowMs,
   );
 
+  // Crash-recovery readout (issue #309): sum the per-row `recovered` column —
+  // `<lockSteals>:<tempReaps>`, blank when none — across the DEPLOYMENT-WIDE
+  // windowed rows (`recentAll`, not the shelf-scoped `recent`). A stolen stale
+  // lock and a reaped leftover temp are dir-global recovery events: the `.nb.lock`
+  // and the `*.tmp` debris are shared by every shelf, and the operator's "are my
+  // agents crashing mid-write?" question is a deployment question, not a per-shelf
+  // one — so this mirrors `usageRing` in staying unscoped (only the window
+  // applies). A blank/old/malformed column parses as 0 and is skipped.
+  let crashLockSteals = 0;
+  let crashTempReaps = 0;
+  for (const r of recentAll) {
+    if (!r.recovered) continue;
+    const [s, t] = r.recovered.split(':');
+    crashLockSteals += Number.parseInt(s ?? '', 10) || 0;
+    crashTempReaps += Number.parseInt(t ?? '', 10) || 0;
+  }
+
   return {
     schemaVersion: STATS_SCHEMA_VERSION,
     window,
@@ -2596,11 +3742,23 @@ export function stats(
     windowStart: new Date(now - windowMs).toISOString(),
     totalCalls: recent.length,
     perCommand,
+    errorCauses,
     anomalies,
     notebooks,
     notebookTotals,
+    skipped,
+    conflicts,
     signals,
     surfacing,
     activity,
+    // Total ring occupancy (issue #206): the full on-disk row count, NOT the
+    // windowed `recent`/`totalCalls`, so it reads as "how full is the log" rather
+    // than "how busy was the window". Reuses the `parsed` array already read — no
+    // second ring scan (the #206 risk note).
+    usageRing: { rows: parsed.length, cap: usageRing() },
+    // Crash-recovery readout (issue #309): deployment-wide, window-scoped counts
+    // of the two silent recovery events, so "are agents crashing mid-write?" is
+    // answerable from `nb stats`. Shown even at {0,0} (healthy) — see the field doc.
+    crashRecovery: { lockSteals: crashLockSteals, tempReaps: crashTempReaps },
   };
 }

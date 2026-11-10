@@ -4,10 +4,10 @@
 // offline file edit.
 //
 // Commands:
-//   nb show   <shelf> [--json]              print the notebook (--json → structured {shelf,description,entries})
+//   nb show   <shelf>... [--json]           print the notebook(s) (--json → structured {shelf,description,entries}; one shelf → object, many → array, each entry has a `key`)
 //   nb add    <shelf> "<lesson>"            dedup-skip, score +1, write, trim (lowest-score out)
 //   nb add    <shelf> -                     read the one-line lesson from stdin (multi-line refused)
-//   nb vote   <shelf> <id|query> +1|-1      adjust an entry's score
+//   nb vote   <shelf> <id|query> +1|-1      adjust an entry's score (id-list <id1,id2,…> votes several at once)
 //   nb merge  <shelf> <idA> <idB> "<merged>"  consolidate two entries into one
 //   nb split  <shelf> <id|query> "<a>" "<b>"   cut one overloaded entry into two
 //   nb rm     <shelf> <id|query>            delete an entry judged useless
@@ -18,14 +18,15 @@
 //   nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback: scan all notebooks (surfacing is primary)
 //   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code]  usage analytics + anomaly & diagnostic-signal flags (--json = raw StatsReport; --exit-code = exit 3 when anomalies present)
 //   nb path   [<shelf> | --usage] [--json]   print the notebooks dir, a shelf's file path, or the usage-log path (--json = {dir, shelf, path} object)
-//   nb config [--json]                      print the effective (post-clamp) NB_* tunables as name=value (--json = object keyed by name)
+//   nb config [--json]                      print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json = object keyed by name, string vars under `environment`)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
 //   nb ls / nb shelves / nb roles          aliases of `nb list` (`roles` is deprecated)
 //   nb completion <bash|zsh>               print a static shell-completion script to source
 //   nb --help                              this help
 //
-// Every call appends one line to the usage ring so `nb stats` can surface
-// loop / went-silent / high-error-rate anomalies.
+// Every call — including `nb --help` and `nb --version` — appends one line to
+// the usage ring so `nb stats` can surface loop / went-silent / high-error-rate
+// anomalies (and so a harness that only ever runs `--help` is still visible).
 
 import { realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -37,45 +38,74 @@ import {
   asciiMode,
   assertSafeShelf,
   classifyError,
+  COVERAGE_HI,
   coverageHi,
+  DESC_KEY,
   entryId,
+  ERR_MIN,
+  ERR_RATE,
   errMin,
   errRate,
+  formatEvictedUsage,
   getDescription,
+  getMetaValue,
   isValidWindow,
   listNotebooks,
+  listShelves,
+  LOCK_GRACE_MS,
   lockGraceMs,
   logUsage,
+  LOOP_N,
+  LOOP_WINDOW_S,
   loopN,
   loopWindowSec,
+  MAX_CHARS,
+  MAX_LINES,
   maxChars,
   maxLines,
   merge,
   move,
   NbError,
+  NEAR_DUP,
   nearThreshold,
   normalizeReason,
   notebookExists,
   notebooksDir,
   parseWindowMs,
+  RECALL_MISS_HI,
   recallMissHi,
+  readShelf,
+  releaseHeldLock,
   remove,
-  render,
+  renderEntries,
+  resolveIntEnv,
+  resolveRateEnv,
   search,
   setDescription,
   showJson,
-  silentHours,
+  showJsonMany,
+  staleCandidates,
   sparkGlyphs,
   sparkline,
   split,
+  SILENT_H,
+  silentHours,
+  STALE_LOCK_MS,
   staleLockMs,
   stats,
+  stripControlChars,
+  USAGE_RING,
   usageFile,
   usageRing,
   usageRingSlack,
   vote,
+  voteMany,
+  type ConflictShelf,
   type EngagementDiagnosis,
+  type IntTunable,
+  type RateTunable,
   type SearchResult,
+  type SkippedShelf,
   type StatsReport,
   type UsageMeta,
 } from './notebook.js';
@@ -98,15 +128,25 @@ const LIST_DEFAULT_LIMIT = 50;
  */
 const SEARCH_DEFAULT_LIMIT = 50;
 
+/**
+ * Default number of cull candidates `nb stale` lists when `--limit` is not
+ * given. The retrospective only needs the weakest handful to review, not the
+ * whole shelf, so this stays small; `--limit N` widens it (and `--json` returns
+ * exactly what `--limit` selects).
+ */
+const STALE_DEFAULT_LIMIT = 10;
+
 const HELP = `nb — the Agent Notebook (bounded, voted memory, grouped in shelves)
 
 For developers who run AI agents and want them to carry a few durable lessons across runs.
 
 usage:
-  nb show   <shelf> [--json]               print the notebook (highest-scored first; --json emits {shelf,description,entries})
+  nb show   <shelf>... [--json]            print one or more notebooks (highest-scored first; --json emits {shelf,description,entries} — a lone object for one shelf, an array for several; each entry carries a dedup key)
+  nb stale  <shelf> [--limit N] [--json]   list cull candidates to downvote/rm, most disposable first (lowest score, then stalest; default ${STALE_DEFAULT_LIMIT})
   nb add    <shelf> "<lesson>"             add a lesson (exact dup skipped; a near-dup still adds but warns; rejected if too long, never truncated)
   nb add    <shelf> -                      read the lesson from stdin (one line; multi-line is refused)
   nb vote   <shelf> <id|query> +1|-1       upvote/downvote an entry you used
+  nb vote   <shelf> <id1,id2,…> +1|-1      batch: vote several ids at once with one delta (one lock, one write)
   nb merge  <shelf> <idA> <idB> "<merged>" consolidate two entries into one
   nb split  <shelf> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
   nb rm     <shelf> <id|query>             delete an entry
@@ -117,7 +157,7 @@ usage:
   nb stats  [<shelf>] [--since 7d] [--json] [--exit-code] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
   nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's resolved file path (--json emits a {dir, shelf, path} object)
   nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
-  nb config [--json]                       print the effective (post-clamp) NB_* tunables as name=value (--json emits an object keyed by tunable name)
+  nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under \`environment\`)
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
   nb shelves [prefix] [--limit N]         alias of \`nb list\`
@@ -132,12 +172,25 @@ notes:
   - add/vote/rm/merge/move accept --json (after the subcommand): stdout is one JSON
     result object and nothing else; warnings/errors stay on stderr. Exit codes are
     unchanged (a too-long add still exits 1, a duplicate still exits 0).
+  - \`--\` ends option parsing: every token after it is a literal operand, so a
+    lesson/description/query that is itself flag-shaped is passed verbatim —
+    \`nb add glossary -- --json\` stores the line \`--json\` (a bare trailing \`--\`
+    is NOT a terminator, so \`nb vote <shelf> <id> --\` still means downvote).
   - \`nb move <from> <to> <id|query>\` relocates one entry to another shelf WITH ITS
     SCORE INTACT — the score-preserving consolidation \`add\`+\`rm\` cannot do (\`add\`
     resets to +1). It refuses, writing nothing, if source and target are the same
     shelf, the selector is absent/ambiguous, or the target already holds a
     near-duplicate; the moved entry is admitted like a newcomer, so a full target
     ages/evicts its stalest OTHER line, never the lesson you moved.
+  - \`nb vote <shelf> <id1,id2,…> +1|-1\` votes SEVERAL entries with one delta in a
+    single call — the end-of-session retro promoting/demoting a handful of lessons
+    at once (N calls → 1, under one lock and one write). It is BATCH only when the
+    operand is a comma-separated list of ≥2 BARE HEX ids (the ids \`nb show\` prints);
+    a single token, or any comma-part that is not a bare hex id, stays one
+    (possibly text) selector, so \`nb vote s "build, then test" +1\` is unchanged.
+    Best-effort: each id is resolved independently, an unresolved one (stale or
+    ambiguous) is reported on stderr WITHOUT aborting the rest, and the call exits
+    non-zero only if NONE landed. \`--json\` emits the per-id result array.
   - \`nb add <shelf> -\` reads the lesson from stdin (one line, so a supervising agent
     can pipe it in without shell-quoting). It reads exactly one line: a trailing
     newline is stripped and multi-line input is REFUSED (exit 1), never flattened —
@@ -235,9 +288,14 @@ notes:
   - \`nb config\` prints every effective (post-clamp) tunable as \`name=value\`, each read from the live
     getter the hot path uses, so you never re-derive it by hand from the env var, its default and its
     clamp. Each line is tagged with its source: \`(default)\` (the var is unset), \`(env NB_*)\` (the var is
-    set — the printed value is still the post-clamp effective value, so an out-of-range or non-numeric
-    value is clamped/ignored and may differ from what you exported), or \`(derived …)\`. \`--json\` emits one
-    object keyed by tunable name, each \`{ value, source, env }\`. Read-only — it mutates nothing, and is
+    set), or \`(derived …)\`. A set value that was rewritten or thrown away is annotated: it is still the
+    post-clamp effective value, but the tag names \`clamped\`/\`ignored\` (with the raw value) so it never reads
+    as if honored. A trailing section then prints the three behavior-critical STRING env vars — \`NB_DIR\`
+    (storage), \`NB_SESSION\` (the id the usage/engagement diagnostics group by), and \`NB_ASCII\` (rendering
+    mode) — each tagged \`(env)\`/\`(default)\`. Any \`NB_*\` var nb does not read is listed as \`unrecognized\`
+    (with a did-you-mean hint when one is close); informational only. \`--json\` emits one object keyed by tunable name, each
+    \`{ value, source, env, status, rawValue }\`, plus an \`environment\` key holding the string vars
+    (\`{ value, source }\` each) and an \`unrecognized\` array. Read-only — it mutates nothing, and is
     scoped to CONFIGURATION (the knobs), distinct from \`nb stats\` (usage, anomalies, engagement).
   - \`nb completion <bash|zsh>\` prints a static, dependency-free completion script to stdout.
     Source it with \`eval "$(nb completion bash)"\` (or the zsh form) to tab-complete the command set
@@ -274,7 +332,7 @@ function parseDelta(arg: string): number {
  * silently dropping out of the did-you-mean suggestions (issue #171).
  */
 export const KNOWN_COMMANDS = [
-  'show', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
+  'show', 'stale', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
   'search', 'stats', 'path', 'config', 'completion', 'list', 'ls', 'shelves', 'roles',
   'help', 'version',
 ] as const;
@@ -287,7 +345,7 @@ export const KNOWN_COMMANDS = [
  * are deliberately excluded: completing shelf names there would mislead.
  */
 const SHELF_FIRST_COMMANDS = [
-  'show', 'add', 'vote', 'merge', 'split', 'rm', 'describe', 'stats', 'path',
+  'show', 'stale', 'add', 'vote', 'merge', 'split', 'rm', 'describe', 'stats', 'path',
 ] as const;
 
 /**
@@ -438,44 +496,168 @@ function editDistance(a: string, b: string): number {
 }
 
 /**
+ * Nearest candidate to an unknown input, or `undefined` when nothing is close
+ * enough to suggest confidently. Two cheap, zero-dependency signals: a small
+ * Levenshtein distance (≤ 2, and strictly under the input length so a 1–2 char
+ * stub can't match half the set), or `input` being a prefix of a candidate
+ * (≥ 3 chars, catching abbreviations like `desc` → `describe` that edit distance
+ * alone would miss). The Levenshtein match wins when both fire; a far-off input
+ * matches neither and yields no suggestion. Ties resolve to the EARLIER
+ * candidate (strict `<`), so a caller that wants a canonical form preferred over
+ * an alias lists it first. Shared by `closestCommand` (over commands, issue
+ * #171) and `closestShelf` (over existing shelf names, issue #200).
+ */
+function closestMatch(input: string, candidates: readonly string[]): string | undefined {
+  const needle = input.trim().toLowerCase();
+  if (needle === '') return undefined;
+  // An exact candidate is not a typo to recover from (and never reaches the
+  // recovery path anyway) — never "suggest" the input back to itself.
+  if (candidates.includes(needle)) return undefined;
+
+  let best: string | undefined;
+  let bestDist = Infinity;
+  for (const cand of candidates) {
+    const d = editDistance(needle, cand);
+    if (d < bestDist) {
+      bestDist = d;
+      best = cand;
+    }
+  }
+  // A close typo: within a small edit budget AND not so short that the distance
+  // swamps the input (keeps `x`/`ab` from matching an unrelated 2-letter name).
+  if (best !== undefined && bestDist <= 2 && bestDist < needle.length) return best;
+
+  // Otherwise an abbreviation: `input` is a prefix of a candidate (first match
+  // wins under the caller's ordering), e.g. `desc` → `describe`.
+  if (needle.length >= 3) {
+    const prefixHit = candidates.find((cand) => cand.startsWith(needle));
+    if (prefixHit) return prefixHit;
+  }
+  return undefined;
+}
+
+/**
  * Nearest known command to an unknown input, or `undefined` when nothing is
- * close enough to suggest confidently (issue #171). Two cheap, zero-dependency
- * signals: a small Levenshtein distance (≤ 2, and strictly under the input
- * length so a 1–2 char stub can't match half the table), or `input` being a
- * prefix of a command (≥ 3 chars, catching abbreviations like `desc` →
- * `describe` that edit distance alone would miss). The Levenshtein match wins
- * when both fire; a far-off input matches neither and yields no suggestion.
+ * close enough to suggest confidently (issue #171). See `closestMatch`.
  */
 export function closestCommand(
   input: string,
   commands: readonly string[] = KNOWN_COMMANDS,
 ): string | undefined {
-  const needle = input.trim().toLowerCase();
-  if (needle === '') return undefined;
-  // An exact command is not a typo to recover from (and never reaches the
-  // unknown-command path anyway) — never "suggest" the input back to itself.
-  if (commands.includes(needle)) return undefined;
+  return closestMatch(input, commands);
+}
 
-  let best: string | undefined;
-  let bestDist = Infinity;
-  for (const cmd of commands) {
-    const d = editDistance(needle, cmd);
-    if (d < bestDist) {
-      bestDist = d;
-      best = cmd;
+/**
+ * Nearest existing shelf to a mistyped one, or `undefined` when none is close
+ * (issue #200). The shelf sibling of `closestCommand`: a mutation that names a
+ * shelf which was never created is almost always a typo, so — exactly as an
+ * unknown command points at the nearest real command — we point at the nearest
+ * real shelf. Purely advisory: it never auto-corrects. Callers pass the live
+ * shelf set, `listShelves(dir)` (already sorted, so ties resolve alphabetically).
+ */
+export function closestShelf(input: string, shelves: readonly string[]): string | undefined {
+  return closestMatch(input, shelves);
+}
+
+/**
+ * Guard a mutation (`vote`/`split`/`rm`/`move`) that names a shelf: if the shelf
+ * was never created, the op cannot run, but letting the core selector/empty
+ * throw call it an *empty* notebook mislabels a typo — and so sends an agent to
+ * seed a brand-new lesson onto the wrong (nonexistent) shelf, silently
+ * fragmenting memory across typo shelves (issue #200). Mirror `show`'s
+ * exists-vs-empty split (issue #166): say `no notebook for shelf "X"` and,
+ * unlike the generic empty-state error, point at the nearest existing shelf when
+ * one is close (did-you-mean). A shelf whose file exists but holds no lessons is
+ * NOT intercepted here — it still reaches the core "is empty" throw, so the #166
+ * distinction is preserved. Advisory only; keeps the `no_match` class (exit 1).
+ * An unsafe shelf name still throws `bad_args` first (via `notebookExists` →
+ * `shelfFile` → `assertSafeShelf`), exactly as the core call would.
+ */
+function requireExistingShelf(dir: string, shelf: string): void {
+  if (notebookExists(dir, shelf)) return;
+  const near = closestShelf(shelf, listShelves(dir));
+  const hint = near
+    ? ` — did you mean "${near}"? (run \`nb list\` to see existing shelves)`
+    : ' — run `nb list` to see existing shelves';
+  throw new NbError('no_match', `no notebook for shelf "${shelf}"${hint}`);
+}
+
+/**
+ * The long options each command accepts, so a typo'd or misplaced flag is
+ * REFUSED loudly instead of silently ignored or absorbed as a positional (issue
+ * #267). Before this, `nb stats --exitcode` (a typo of `--exit-code`) ran
+ * WITHOUT the health gate and still exited 0 — so `nb stats --exitcode || alert`
+ * silently stopped firing, the #129 use case defeated by one missing hyphen.
+ *
+ * `--json` is accepted everywhere (it is parsed globally for every command), so
+ * it is folded in by `assertKnownFlags` rather than repeated in each row. A row
+ * is required for every dispatched command except `help`/`version` (which return
+ * before the switch); a drift guard in cli.test.ts fails loudly if a
+ * `KNOWN_COMMANDS` entry is missing one, so a new command cannot quietly opt out
+ * of flag validation. An unknown COMMAND has no row and is left to the dispatch
+ * default (exit 2) — never masked by a flag error here.
+ */
+export const KNOWN_FLAGS: Record<string, readonly string[]> = {
+  show: [],
+  stale: ['--limit'],
+  add: ['--reason', '--note'],
+  vote: [],
+  merge: ['--reason', '--note'],
+  split: ['--reason', '--note'],
+  rm: ['--reason', '--note'],
+  move: ['--reason', '--note'],
+  describe: ['--reason', '--note'],
+  search: ['--any', '--limit'],
+  stats: ['--exit-code', '--since'],
+  path: ['--usage'],
+  config: [],
+  list: ['--limit'],
+  ls: ['--limit'],
+  shelves: ['--limit'],
+  roles: ['--limit'],
+  completion: [],
+};
+
+/**
+ * The flags that take a following value token. Listed so `assertKnownFlags`
+ * consumes that token and never re-examines it — a value may itself be
+ * flag-shaped (e.g. `--note --exitcode`, recording a note that is literally
+ * `--exitcode`), and treating it as an option would be a false rejection. (A
+ * literal `--json` value is the exception: the global `--json` strip runs first,
+ * so passing it as a value needs the `--` terminator instead — issue #277.)
+ */
+const VALUE_FLAGS = new Set(['--reason', '--note', '--limit', '--since']);
+
+/**
+ * Refuse an unknown or misplaced long option rather than silently swallowing it
+ * (issue #267). Scans only `head` — the region BEFORE a `--` terminator —
+ * because every token after `--` is a deliberate literal operand (issue #277)
+ * and must never be read as a flag. A bare `--` within `head` is likewise a
+ * literal operand (e.g. `vote`'s trailing-`--` downvote alias), not a flag.
+ * Value-taking flags consume their following token (see `VALUE_FLAGS`). On an
+ * unknown flag, throws `bad_args` — the FR-CLI-002 "handled operation error"
+ * path (exit 1, message on stderr; a structured `{ok:false,…}` on stdout under
+ * `--json`) — with a nearest-option hint (reusing `closestCommand`) when one is
+ * close, so `--exitcode` points at `--exit-code` in one line.
+ */
+function assertKnownFlags(cmd: string, head: string[]): void {
+  const known = KNOWN_FLAGS[cmd];
+  if (!known) return; // unknown command → handled by the dispatch default (exit 2)
+  const accepted = new Set<string>(known);
+  accepted.add('--json'); // parsed globally for every command (see `json` below)
+  for (let i = 1; i < head.length; i++) {
+    const tok = head[i];
+    // A literal operand or positional (incl. a bare `--`, and short tokens like
+    // the `-` stdin sentinel or a `-1` vote delta): never a long option.
+    if (tok === '--' || !tok.startsWith('--')) continue;
+    if (accepted.has(tok)) {
+      if (VALUE_FLAGS.has(tok)) i++; // skip its value token (may be flag-shaped)
+      continue;
     }
+    const near = closestCommand(tok, [...accepted]);
+    const hint = near ? ` Did you mean \`${near}\`?` : '';
+    throw new NbError('bad_args', `unknown option "${tok}" for \`nb ${cmd}\`.${hint}`);
   }
-  // A close typo: within a small edit budget AND not so short that the distance
-  // swamps the input (keeps `x`/`ab` from matching an unrelated 2-letter alias).
-  if (best !== undefined && bestDist <= 2 && bestDist < needle.length) return best;
-
-  // Otherwise an abbreviation: `input` is a prefix of a command (first match
-  // wins under the canonical-first ordering), e.g. `desc` → `describe`.
-  if (needle.length >= 3) {
-    const prefixHit = commands.find((cmd) => cmd.startsWith(needle));
-    if (prefixHit) return prefixHit;
-  }
-  return undefined;
 }
 
 export async function runNbCli(
@@ -483,12 +665,29 @@ export async function runNbCli(
   readStdin: () => Promise<string> = readStdinDefault,
 ): Promise<number> {
   const cmd = (argv[0] ?? '').trim();
+  // `help` and `version` return before the main switch and its shared
+  // `finally { logUsage(...) }`, so they would otherwise append NO usage row —
+  // breaking the header invariant that every call appends one line, and hiding
+  // the classic not-wired symptom (a harness that only ever runs `nb --help`,
+  // never a real command, would leave no trace in `nb stats`). Emit a lightweight
+  // row here so both the invariant and that diagnostic hold. The logged command
+  // is canonicalised to `help`/`version` so every alias (`-h`, no-args, `-v`, …)
+  // aggregates under one name in stats. `logUsage` is best-effort (it swallows
+  // its own write failures), so logging never requires a writable NB_DIR and
+  // never breaks `nb --help`/`--version` on a read-only system. `notebooksDir()`
+  // is resolved inline here (not hoisted above these branches) so the `const dir
+  // = notebooksDir()` below still marks the end of the pre-switch region the #131
+  // HELP-drift guard scans.
   if (cmd === '' || cmd === '--help' || cmd === '-h' || cmd === 'help') {
+    const t0 = Date.now();
     process.stdout.write(HELP + '\n');
+    logUsage(notebooksDir(), '-', 'help', true, Date.now() - t0);
     return 0;
   }
   if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
+    const t0 = Date.now();
     process.stdout.write(`nb (agent-notebook) ${pkgVersion()}\n`);
+    logUsage(notebooksDir(), '-', 'version', true, Date.now() - t0);
     return 0;
   }
 
@@ -501,15 +700,34 @@ export async function runNbCli(
   // empty and `logUsage` writes blanks. `session` is filled by `logUsage` from
   // `NB_SESSION`, so it is not set here.
   const meta: UsageMeta = {};
+  // `--` is an end-of-options terminator (issue #277): every token after the
+  // first `--` is a literal operand, never a flag. Without it, the unconditional
+  // `--json` strip below removed a `--json` token *anywhere* in argv — including
+  // an operand the user plainly typed, e.g. `nb add flags "--json"` (recording a
+  // glossary line that is literally `--json`) — and `add` then threw a baffling
+  // `missing <lesson>` for the lesson they typed (a DP-5 'never mislead'
+  // violation). With the terminator a flag-shaped operand is passed explicitly:
+  // `nb add flags -- --json`. The terminator and the operands after it are also
+  // shielded from the `--reason`/`--note` extraction below.
+  //
+  // A *trailing* `--` (nothing after it) is NOT a terminator: it escapes nothing,
+  // and `vote`'s `--` downvote alias (parseDelta) relies on a bare trailing `--`
+  // staying a literal operand. So only a `--` with at least one token after it
+  // ends options; `operands` holds the shielded literals, appended after flag
+  // parsing so positional indices are unchanged.
+  const termIdx = argv.findIndex((a, i) => a === '--' && i < argv.length - 1);
+  const head = termIdx === -1 ? argv : argv.slice(0, termIdx);
+  const operands = termIdx === -1 ? [] : argv.slice(termIdx + 1);
   // `--json` on a mutation (add/vote/rm/merge) emits the library's structured
   // result object on stdout and nothing else, so a supervisor can branch on
   // `reason`/`score` without regex-parsing the English line. `show` also honors
   // it (emitting a ShowResult); `stats` reads it from its own arg slice; `path`
   // emits a `{dir, shelf, path}` object (issue #185). Strip it before positional
   // parsing (like `stats`, it is a flag, not a shelf/lesson); `shelves` ignores
-  // it. Exit codes are unchanged (a too-long add still exits 1).
-  const json = argv.includes('--json');
-  let args = json ? argv.filter((a) => a !== '--json') : argv;
+  // it. Only `head` (pre-`--`) is scanned, so a literal `--json` operand after
+  // the terminator is kept. Exit codes are unchanged (a too-long add still exits 1).
+  const json = head.includes('--json');
+  let args = json ? head.filter((a) => a !== '--json') : head;
   // `--reason <code>` / `--note "<text>"` attach an optional, never-required
   // reason to a mutating op, logged (never stored in the notebook). Every
   // mutating op consumes them — `merge` (duplicate · other), `rm` (wrong ·
@@ -523,38 +741,154 @@ export async function runNbCli(
   let reasonArg: string | undefined;
   let noteArg: string | undefined;
   try {
+    // Refuse a typo'd/misplaced flag (e.g. `nb stats --exitcode`) before any
+    // parsing consumes it, so it can never degrade silently (issue #267). Scans
+    // `head` only — operands after a `--` terminator stay literals (issue #277).
+    assertKnownFlags(cmd, head);
     if (cmd === 'add' || cmd === 'merge' || cmd === 'rm' || cmd === 'split' || cmd === 'describe' || cmd === 'move') {
       // Inside the try so a malformed flag (e.g. `--reason` with no value)
       // becomes a handled exit-1 error, not an uncaught rejection.
       ({ value: reasonArg, rest: args } = extractOption(args, '--reason'));
       ({ value: noteArg, rest: args } = extractOption(args, '--note'));
     }
+    // `flagArgs` is the flag-eligible region: the command plus the pre-`--`
+    // positionals, with the global `--json`/`--reason`/`--note` already removed.
+    // The per-command flag parsers below (`--limit`, `--any` on the read
+    // commands) run on THIS slice and re-append `operands` afterwards, so a
+    // flag-shaped token after `--` (e.g. `nb search -- --limit`) is read as a
+    // positional, never consumed as a flag — the same shielding the global parse
+    // above gets by running on `head` (issue #277).
+    const flagArgs = args;
+    // Append the post-`--` literal operands now, after the global flags have been
+    // parsed out of `head`, so a flag-shaped operand reaches its positional slot
+    // untouched. A no-op when no `--` terminator was present (`operands` is
+    // empty), keeping every existing path byte-for-byte unchanged.
+    args = args.concat(operands);
     switch (cmd) {
       case 'show': {
-        // Resolve the shelf from the --json-stripped args so `nb show <shelf> --json`
-        // and `nb show --json <shelf>` both work and the flag is never taken as the shelf.
-        shelf = need(args[1], 'shelf');
+        // Resolve EVERY shelf positional from the --json-stripped args so
+        // `nb show <a> <b> <c>` reads them all in one process (batch read, issue
+        // #286) instead of silently dropping all but the first, and so
+        // `nb show --json <shelf>` still works (the flag is never a shelf). `need`
+        // still rejects a bare `nb show` with no shelf.
+        const shelves = args.slice(1);
+        need(shelves[0], 'shelf');
+        shelf = shelves[0]; // usage-log field: the first shelf (single-shelf behavior unchanged)
         if (json) {
-          // `--json` emits the structured ShowResult ({ shelf, description, entries })
-          // and nothing else, so an agent reads each entry's id/score/text without
-          // regex-parsing the human output. Same ordering as `render()`.
-          process.stdout.write(JSON.stringify(showJson(dir, shelf)) + '\n');
-        } else {
-          // Print the one-line description (if any) as a header above the lessons,
-          // so a reader sees what the notebook is *for* before its contents.
-          const desc = getDescription(dir, shelf);
-          if (desc) process.stdout.write(`# desc: ${desc}\n`);
-          // A shelf that was never created (e.g. a typo) must not read as a real
-          // empty notebook — that would mislead (DP-5, issue #166). Say "no
-          // notebook" on stderr, matching the empty-state convention `list` and
-          // `describe` use, and reserve render()'s "(... is empty)" on stdout for
-          // a shelf whose file exists but holds no lessons. Not found is not an
-          // error, so exit stays 0 (like `describe`'s read path).
-          if (!notebookExists(dir, shelf)) {
-            process.stderr.write(`no notebook for shelf "${shelf}" — run \`nb list\` to see existing shelves\n`);
-          } else {
-            process.stdout.write(render(dir, shelf) + '\n');
+          // One shelf → a lone ShowResult object ({ shelf, description, entries })
+          // so an agent reads each entry's id/score/text/key without regex-parsing
+          // the human output (backward-compatible with issue #87). Two or more →
+          // a per-shelf ShowResult[] in one consistent snapshot (issue #286), each
+          // entry carrying its `key` so the caller drops exact cross-shelf dupes
+          // itself; nb does no cross-shelf dedup or ordering here. Same per-shelf
+          // ordering as `render()`.
+          // Warn on stderr about a conflicted shelf (issue #333); the JSON on
+          // stdout is unchanged and still valid.
+          for (const s of shelves) {
+            const { conflict } = readShelf(dir, s);
+            if (conflict !== null) process.stderr.write(renderConflict('show', s, conflict));
           }
+          const out = shelves.length === 1 ? showJson(dir, shelves[0]) : showJsonMany(dir, shelves);
+          process.stdout.write(JSON.stringify(out) + '\n');
+        } else {
+          // Human mode renders each shelf block in order, blank-line separated for
+          // a batch, so `nb show a b` never silently drops `b`. A single shelf is
+          // byte-for-byte identical to before.
+          shelves.forEach((s, i) => {
+            if (i > 0) process.stdout.write('\n');
+            // One read for both the description header and the rendered lessons
+            // (issue #201): this branch used to read the shelf twice
+            // (getDescription then render→readEntries).
+            const { metaLines, entries, conflict } = readShelf(dir, s);
+            // Warn (stderr only) that the shelf needs a merge resolved (issue
+            // #333) — the lessons below still render exactly as stored, stdout
+            // unchanged, but the reader is told the file is not clean.
+            if (conflict !== null) process.stderr.write(renderConflict('show', s, conflict));
+            // Print the one-line description (if any) as a header above the lessons,
+            // so a reader sees what the notebook is *for* before its contents.
+            const descRaw = getMetaValue(metaLines, DESC_KEY);
+            const desc = descRaw === null ? null : stripControlChars(descRaw);
+            if (desc) process.stdout.write(`# desc: ${desc}\n`);
+            // A shelf that was never created (e.g. a typo) must not read as a real
+            // empty notebook — that would mislead (DP-5, issue #166). Say "no
+            // notebook" on stderr, matching the empty-state convention `list` and
+            // `describe` use, and reserve render()'s "(... is empty)" on stdout for
+            // a shelf whose file exists but holds no lessons. Not found is not an
+            // error, so exit stays 0 (like `describe`'s read path).
+            if (!notebookExists(dir, s)) {
+              process.stderr.write(`no notebook for shelf "${s}" — run \`nb list\` to see existing shelves\n`);
+            } else {
+              process.stdout.write(renderEntries(s, entries) + '\n');
+              // Copy-paste vote hint (issue #223): the usage audit found ~1 in 5
+              // votes failing on a fuzzy TEXT selector while the id was printed
+              // right there. Echo a ready-to-run command with the shelf already
+              // filled, so the reflect step votes by id (the stable token above)
+              // — and can batch several — instead of by ambiguous substring. It is
+              // a `#` comment line (never a lesson, never written to the file) and
+              // is suppressed under `--json`, which stays a lone ShowResult object.
+              // Only shown when there is something to vote on.
+              if (entries.length > 0) {
+                process.stdout.write(
+                  `# vote by id: nb vote ${s} <id> +1|-1  ·  several at once: nb vote ${s} <id1,id2,…> +1\n`,
+                );
+              }
+            }
+          });
+        }
+        break;
+      }
+      case 'stale': {
+        // Read-only curation aid (issue #240, #223-F3): list the lessons
+        // eviction would drop first — lowest score, ties → stalest — so the
+        // retrospective can downvote/`rm` the weakest by id. It never writes.
+        // Pull out `--limit N` BEFORE positionals (forgiving parse, identical to
+        // `search`/`list`): an unparseable value warns on stderr and falls back
+        // to the default rather than rejecting, keeping stdout/JSON clean. Parse
+        // from the pre-`--` region and re-append `operands` so a flag-shaped
+        // operand after `--` is not consumed as the flag (issue #277).
+        const { value: limitRaw, rest: staleRest } = extractOption(flagArgs, '--limit');
+        const staleArgs = staleRest.concat(operands);
+        let limit = STALE_DEFAULT_LIMIT;
+        if (limitRaw !== undefined) {
+          if (/^\d+$/.test(limitRaw.trim())) {
+            limit = Number.parseInt(limitRaw, 10);
+          } else {
+            warnDefaultedFlag(
+              json,
+              `nb ${cmd}: unrecognized --limit '${limitRaw}' (use a non-negative integer); showing ${STALE_DEFAULT_LIMIT}\n`,
+              { command: cmd, flag: '--limit', value: limitRaw, usedDefault: STALE_DEFAULT_LIMIT },
+            );
+          }
+        }
+        shelf = need(staleArgs[1], 'shelf');
+        const staleConflict = readShelf(dir, shelf).conflict;
+        if (staleConflict !== null) process.stderr.write(renderConflict('stale', shelf, staleConflict));
+        const result = staleCandidates(dir, shelf, limit);
+        if (json) {
+          // Lone StaleResult object on stdout (same contract as `show --json`).
+          process.stdout.write(JSON.stringify(result) + '\n');
+        } else if (!result.exists) {
+          // A never-created shelf must not read as a real empty notebook (DP-5,
+          // issue #166) — mirror `show`'s stderr message; not found is exit 0.
+          process.stderr.write(`no notebook for shelf "${shelf}" — run \`nb list\` to see existing shelves\n`);
+        } else if (result.total === 0) {
+          process.stdout.write(`(notebook for shelf "${shelf}" has no lessons to cull)\n`);
+        } else {
+          process.stdout.write(
+            `# stale: cull candidates on "${shelf}" — most disposable first (lowest score, then stalest)\n`,
+          );
+          for (const e of result.entries) {
+            const s = e.score >= 0 ? `+${e.score}` : `${e.score}`;
+            process.stdout.write(`${e.id}  [${s}]  ${e.text}\n`);
+          }
+          // Actionable footer: a ready-to-run downvote/rm with the shelf filled,
+          // so the reflect step acts by id (printed above) instead of a fuzzy
+          // text selector. Says "N of M" so a truncated list is never mistaken
+          // for the whole shelf. A `#` comment line (never a lesson); suppressed
+          // under `--json`, which stays a lone StaleResult object.
+          process.stdout.write(
+            `# showing ${result.entries.length} of ${result.total} · cull by id: nb vote ${shelf} <id> -1  ·  nb rm ${shelf} <id> --reason obsolete\n`,
+          );
         }
         break;
       }
@@ -587,7 +921,10 @@ export async function runNbCli(
         // (outcome=accepted ∧ collided≠'') is the measurable near-duplicate /
         // paraphrase-miss signal, distinct from a hard `dedup-blocked`.
         else if (r.nearId) meta.collided = r.nearId;
-        if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
+        // Record EVERY evicted entry (a cap decrease can evict many at once —
+        // issue #306), not just the first, so the usage log never undercounts.
+        if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
+        if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
         // `add` has no seeded enum yet (free text only): a `--note` records
         // free text, and a stray `--reason` buckets to `other` so its vocabulary
         // can emerge from mined notes. Set BEFORE the output branch below, which
@@ -604,10 +941,18 @@ export async function runNbCli(
           if (r.reason === 'too-long') return 1;
         } else if (r.reason === 'duplicate') process.stdout.write(`skipped (exact duplicate already present) — ${plural(r.size, 'line')}\n`);
         else if (r.reason === 'empty') process.stdout.write('skipped (empty lesson)\n');
-        else if (r.reason === 'too-long') throw new Error(`lesson too long (${r.length} chars > ${maxChars()} max). Rewrite it shorter as ONE complete line and retry — it was NOT truncated or stored.`);
+        else if (r.reason === 'too-long') throw new Error(`lesson too long: ${r.length} chars, ${r.overflow} over the ${maxChars()} limit — trim at least ${r.overflow} and retry as ONE complete line; it was NOT truncated or stored.`);
         else {
           process.stdout.write(`added — ${plural(r.size, 'line')}`);
-          if (r.evicted) process.stdout.write(` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text})`);
+          if (r.evicted) {
+            // A cap decrease trims the shelf all the way down in one call, so
+            // report the extra evictions rather than hiding them (issue #306).
+            const more = r.evictedAll.length - 1;
+            process.stdout.write(
+              ` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text}${more > 0 ? ` +${plural(more, 'more line')}` : ''})`,
+            );
+          }
+          if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
           process.stdout.write('\n');
           // Non-blocking near-duplicate advisory: the lesson WAS stored (stdout
           // above), and this hint goes to stderr so stdout stays pipe-clean. It
@@ -639,6 +984,56 @@ export async function runNbCli(
         shelf = need(args[1], 'shelf');
         const selector = need(args[2], 'id|query');
         const delta = parseDelta(need(args[3], '+1|-1'));
+        requireExistingShelf(dir, shelf);
+        // Batch form: a comma-separated list of ≥2 BARE HEX ids votes them all
+        // with one delta, one lock, one write — the end-of-session retro
+        // promoting several lessons at once (N calls → 1). It is id-only on
+        // purpose: a single token, or any comma-part that is not a bare hex id,
+        // stays a single (possibly text) selector, so `nb vote s "build, then
+        // test" +1` still resolves as one substring and the old behavior is
+        // untouched.
+        const ids = parseVoteIdList(selector);
+        if (ids) {
+          const sign = delta > 0 ? '+1' : '-1';
+          const results = await voteMany(dir, shelf, ids, delta);
+          const landed = results.filter((r) => r.id !== undefined);
+          const failed = results.filter((r) => r.error !== undefined);
+          if (json) {
+            process.stdout.write(JSON.stringify(results) + '\n');
+          } else {
+            for (const r of landed) process.stdout.write(`${sign} → [${fmt(r.score as number)}] ${r.text}\n`);
+            // Failures go to stderr so stdout stays a clean list of the votes
+            // that landed; the first line of each selector's error is enough.
+            for (const r of failed) {
+              process.stderr.write(`✗ ${r.selector}: ${(r.error as string).split('\n')[0]}\n`);
+            }
+          }
+          if (landed.length === 0) {
+            // Nothing landed — surface it as an error (non-zero, logged as err)
+            // like a single failed vote, so a wholly-wrong batch is not silent.
+            // CRUCIAL: leave meta.outcome/entries BLANK here. `stats()` keys vote
+            // engagement on `outcome` alone (not the ok flag), so stamping
+            // 'up'/'down' on a row where no vote landed would mark the session
+            // "engaged", count a phantom upvote, and suppress the zero-engagement
+            // diagnosis — exactly the single-vote failure path's blank-outcome
+            // behavior must be matched. So outcome/entries are set only below.
+            meta.errorClass = 'no_match';
+            return 1;
+          }
+          // At least one vote landed → best-effort success (exit 0). Record the
+          // touched ids and outcome ONLY now (a no-match above logs neither), so
+          // the usage row mirrors the single-vote success path.
+          meta.entries = landed.map((r) => r.id as string);
+          meta.outcome = delta > 0 ? 'up' : 'down';
+          // A ≥1-landed batch still exits 0, but any stale ids it skipped are real
+          // selector misses the err-rate table (keyed on ok=false) can't see.
+          // Record the count so `nb stats` folds them into the vote error-cause
+          // readout instead of laundering them out (issue #310). It is a dedicated
+          // miss counter, NOT errorClass, so the partial success keeps exit 0.
+          if (failed.length > 0) meta.misses = failed.length;
+          // Any per-id failures were already reported on stderr above.
+          break;
+        }
         const r = await vote(dir, shelf, selector, delta);
         meta.entries = [entryId(r.text)];
         meta.outcome = delta > 0 ? 'up' : 'down';
@@ -654,6 +1049,10 @@ export async function runNbCli(
         const r = await merge(dir, shelf, a, b, merged);
         meta.entries = [...(r.sources ?? []), ...(r.id ? [r.id] : [])];
         meta.outcome = 'merged';
+        // Record EVERY evicted entry (a cap decrease can evict many at once —
+        // issue #306), not just the first, so the usage log never undercounts.
+        if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
+        if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
         // Reason lives in the usage log only (merge enum: duplicate · other).
         {
           const { reason, note } = normalizeReason('merge', reasonArg, noteArg);
@@ -661,7 +1060,19 @@ export async function runNbCli(
           if (note) meta.note = note;
         }
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
-        else process.stdout.write(`merged two entries into one — ${r.size} lines\n`);
+        else {
+          process.stdout.write(`merged two entries into one — ${r.size} lines`);
+          if (r.evicted) {
+            // A cap decrease trims the shelf all the way down in one call, so
+            // report the extra evictions rather than hiding them (issue #306).
+            const more = r.evictedAll.length - 1;
+            process.stdout.write(
+              ` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text}${more > 0 ? ` +${plural(more, 'more line')}` : ''})`,
+            );
+          }
+          if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
+          process.stdout.write('\n');
+        }
         break;
       }
       case 'split': {
@@ -669,21 +1080,39 @@ export async function runNbCli(
         const selector = need(args[2], 'id|query');
         const lessonA = need(args[3], 'lessonA');
         const lessonB = need(args[4], 'lessonB');
+        requireExistingShelf(dir, shelf);
         const r = await split(dir, shelf, selector, lessonA, lessonB);
         const { reason, note } = normalizeReason('split', reasonArg, noteArg);
         // Log the source + both produced ids, the outcome, and the reason/note —
         // the reason lives in the usage log only, never in the notebook.
         meta.entries = [r.source, ...r.ids];
         meta.outcome = 'split';
+        // Record EVERY evicted entry (a cap decrease can evict many at once —
+        // issue #306), not just the first, so the usage log never undercounts.
+        if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
+        if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
         if (reason) meta.reason = reason;
         if (note) meta.note = note;
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
-        else process.stdout.write(`split one entry into two — ${r.size} lines\n`);
+        else {
+          process.stdout.write(`split one entry into two — ${r.size} lines`);
+          if (r.evicted) {
+            // A cap decrease trims the shelf all the way down in one call, so
+            // report the extra evictions rather than hiding them (issue #306).
+            const more = r.evictedAll.length - 1;
+            process.stdout.write(
+              ` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text}${more > 0 ? ` +${plural(more, 'more line')}` : ''})`,
+            );
+          }
+          if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
+          process.stdout.write('\n');
+        }
         break;
       }
       case 'rm': {
         shelf = need(args[1], 'shelf');
         const selector = need(args[2], 'id|query');
+        requireExistingShelf(dir, shelf);
         const r = await remove(dir, shelf, selector);
         meta.entries = [entryId(r.text)];
         meta.outcome = 'removed';
@@ -705,11 +1134,18 @@ export async function runNbCli(
         // leaves); the moved id is in `meta.entries`, so a reader sees which
         // lesson relocated even though the op spans two shelves.
         shelf = from;
+        // Only the SOURCE is guarded: `move` auto-creates the target like `add`,
+        // so a never-created target is intentional, but a never-created source is
+        // the same typo the core would mislabel "is empty" (issue #200).
+        requireExistingShelf(dir, from);
         const r = await move(dir, from, to, selector);
         meta.entries = [r.id];
         meta.outcome = r.reason === 'moved' ? 'moved' : 'move-blocked';
         if (r.collidedId) meta.collided = r.collidedId;
-        if (r.evicted) meta.evicted = `${entryId(r.evicted.text)}:${r.evicted.score}`;
+        // Record EVERY evicted entry (a cap decrease can evict many at once —
+        // issue #306), not just the first, so the usage log never undercounts.
+        if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
+        if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
         // Reason lives in the usage log only (move enum: consolidate · other).
         {
           const { reason, note } = normalizeReason('move', reasonArg, noteArg);
@@ -726,8 +1162,12 @@ export async function runNbCli(
             `moved [${fmt(r.score)}] ${r.text} — "${from}" now ${r.fromSize}, "${to}" now ${r.toSize} lines`,
           );
           if (r.evicted) {
-            process.stdout.write(` (evicted lowest-scored from "${to}": [${fmt(r.evicted.score)}] ${r.evicted.text})`);
+            const more = r.evictedAll.length - 1;
+            process.stdout.write(
+              ` (evicted lowest-scored from "${to}": [${fmt(r.evicted.score)}] ${r.evicted.text}${more > 0 ? ` +${plural(more, 'more line')}` : ''})`,
+            );
           }
+          if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest in "${to}" −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
           process.stdout.write('\n');
         }
         break;
@@ -765,7 +1205,8 @@ export async function runNbCli(
           else if (r.desc === null) process.stdout.write(`description cleared for shelf "${shelf}"\n`);
           else process.stdout.write(`description set for shelf "${shelf}": ${r.desc}\n`);
         } else {
-          const desc = getDescription(dir, shelf);
+          const descRaw = getDescription(dir, shelf);
+          const desc = descRaw === null ? null : stripControlChars(descRaw);
           if (json) process.stdout.write(JSON.stringify({ role: shelf, shelf, desc, set: false }) + '\n');
           else if (desc) process.stdout.write(desc + '\n');
           else process.stderr.write(`no description set for shelf "${shelf}" — set one with \`nb describe ${shelf} "<text>"\`\n`);
@@ -774,23 +1215,28 @@ export async function runNbCli(
       }
       case 'search': {
         // The demoted keyword fallback (issue #82). Spans notebooks, so the usage-log shelf column
-        // stays `-` (like `list`). `--json` is already stripped from `args`; pull
-        // out the boolean `--any` (OR instead of AND), leaving the query at
-        // args[1] and an optional positional name prefix at args[2].
-        const any = args.includes('--any');
-        const withoutAny = any ? args.filter((a) => a !== '--any') : args;
+        // stays `-` (like `list`). `--json` is already stripped; pull out the
+        // boolean `--any` (OR instead of AND), leaving the query at args[1] and an
+        // optional positional name prefix at args[2]. Parse flags from `flagArgs`
+        // (the pre-`--` region) and re-append `operands`, so a query/prefix that is
+        // literally `--any`/`--limit` after `--` stays a positional (issue #277).
+        const any = flagArgs.includes('--any');
+        const withoutAny = any ? flagArgs.filter((a) => a !== '--any') : flagArgs;
         // Pull out `--limit N` BEFORE reading positionals, so its value token is
         // never mistaken for the name prefix. Forgiving parse, identical to
         // `list`: an unparseable value warns on stderr (stdout/JSON stays clean)
         // and falls back to the default rather than rejecting.
-        const { value: limitRaw, rest: searchArgs } = extractOption(withoutAny, '--limit');
+        const { value: limitRaw, rest } = extractOption(withoutAny, '--limit');
+        const searchArgs = rest.concat(operands);
         let limit = SEARCH_DEFAULT_LIMIT;
         if (limitRaw !== undefined) {
           if (/^\d+$/.test(limitRaw.trim())) {
             limit = Number.parseInt(limitRaw, 10);
           } else {
-            process.stderr.write(
+            warnDefaultedFlag(
+              json,
               `nb ${cmd}: unrecognized --limit '${limitRaw}' (use a non-negative integer); showing ${SEARCH_DEFAULT_LIMIT}\n`,
+              { command: cmd, flag: '--limit', value: limitRaw, usedDefault: SEARCH_DEFAULT_LIMIT },
             );
           }
         }
@@ -806,7 +1252,19 @@ export async function runNbCli(
         // (the `failed-search` signal keys on `no-match`) — DP-5, never mislead.
         // `result.total` is the FULL pre-`limit` match count, so `--limit` (even
         // `0`) never flips a real match into a `no-match` coverage gap (issue #186).
-        meta.outcome = result.terms.length === 0 ? 'no-terms' : result.total > 0 ? 'match' : 'no-match';
+        // A no-match that exists only because a shelf was skipped is NOT a
+        // coverage gap (issue #332): a skipped shelf may hold the hit, so log it
+        // as `skipped` (never `no-match`, which the `failed-search` signal keys
+        // on) rather than prompting a spurious `nb add`. A real match still logs
+        // `match`; an empty query still logs `no-terms`.
+        meta.outcome =
+          result.terms.length === 0
+            ? 'no-terms'
+            : result.total > 0
+              ? 'match'
+              : result.skipped.length > 0
+                ? 'skipped'
+                : 'no-match';
         meta.note = query;
         // Record WHICH entry ids this search surfaced (issue #114 — surfacing
         // provenance). Reuses the existing `entries` column (no new column), so a
@@ -820,7 +1278,17 @@ export async function runNbCli(
         // serendipity proxy that joins on it) stays independent of `--limit`.
         meta.entries = result.surfacedIds;
         if (json) {
-          process.stdout.write(JSON.stringify(result) + '\n');
+          // Keep healthy `--json` output byte-identical: the additive `skipped`
+          // field (issue #332) is emitted only when a shelf was actually skipped.
+          process.stdout.write(
+            JSON.stringify(
+              result.skipped.length > 0 || result.conflicts.length > 0
+                ? result
+                : { terms: result.terms, groups: result.groups, total: result.total, surfacedIds: result.surfacedIds },
+            ) + '\n',
+          );
+          // Same stderr warning as the text path (issue #333); stdout stays JSON.
+          process.stderr.write(renderConflicts('search', result.conflicts));
         } else {
           const { out, err } = renderSearch(query, any, result);
           if (out) process.stdout.write(out);
@@ -829,7 +1297,10 @@ export async function runNbCli(
         break;
       }
       case 'stats': {
-        const rest = argv.slice(1);
+        // Flags come from the `--`-aware `flagArgs` (global `--json` already
+        // stripped), so tokens after the terminator are never read as flags
+        // (issue #302). Post-`--` operands stay eligible as the shelf positional.
+        const rest = flagArgs.slice(1);
         // Opt-in health gate (#129): with --exit-code, a window holding >=1
         // anomaly exits non-zero (3 — distinct from 1=handled error /
         // 2=unknown command) so `nb stats --exit-code >/dev/null || alert` is a
@@ -845,25 +1316,62 @@ export async function runNbCli(
         // Warn (naming the accepted format and window used), then proceed with
         // the default rather than reject — the least-surprising, forgiving path.
         if (sinceIdx >= 0 && !isValidWindow(sinceVal)) {
-          process.stderr.write(
+          warnDefaultedFlag(
+            json,
             `nb stats: unrecognized --since '${sinceVal ?? ''}' (use Nd/Nh/Nm); showing 7d\n`,
+            { command: 'stats', flag: '--since', value: sinceVal ?? '', usedDefault: '7d' },
           );
         }
         const windowMs = sinceIdx >= 0 ? parseWindowMs(sinceVal) : undefined;
-        const maybeShelf = rest.find((a, i) => !a.startsWith('--') && (sinceIdx < 0 || i !== sinceIdx + 1));
+        const maybeShelf =
+          rest.find((a, i) => !a.startsWith('--') && (sinceIdx < 0 || i !== sinceIdx + 1)) ??
+          operands.find((a) => !a.startsWith('--'));
         shelf = maybeShelf ?? '-';
         // Compute the report once: both the --json dump and the human render
         // consume it, and the --exit-code gate reads its anomaly count.
         const rep = stats(dir, { shelf: maybeShelf, windowMs });
+        // A shelf operand that names a shelf never created is almost always a
+        // typo, yet `stats` (unlike the mutations, #200, and `show`, #166) never
+        // validated it — a misspelling produced a plausible, empty report that
+        // reads exactly like a real shelf gone silent, a wrong conclusion in a
+        // command whose job is to surface unused shelves (issue #341). Keep the
+        // exit code and stdout byte-identical (this is advisory only) and print
+        // one stderr note. "No rows for this shelf" must ignore the rows `stats`
+        // itself logs (the shared `finally` records every call under the operand
+        // as its shelf), or the note would fire only on the first run and a
+        // repeat of the same typo would go quiet. So count only non-`stats`
+        // commands: a retired shelf with real history (add/vote/...) has such rows
+        // and is never flagged.
+        // An unsafe shelf name makes `notebookExists` throw; skip the note so the
+        // advisory check can't turn a tolerated bad operand into a new error.
+        if (maybeShelf && !rep.perCommand.some((c) => c.command !== 'stats' && c.calls > 0)) {
+          let exists = true;
+          try {
+            exists = notebookExists(dir, maybeShelf);
+          } catch {
+            // unsafe shelf name — leave stats' existing forgiving behavior alone
+          }
+          if (!exists) {
+            const near = closestShelf(maybeShelf, listShelves(dir));
+            const hint = near ? ` — did you mean "${near}"?` : '';
+            process.stderr.write(`nb stats: no shelf named "${maybeShelf}"${hint}\n`);
+          }
+        }
         // `--json` emits the raw StatsReport (stable, machine-readable) so a
         // supervising agent can act on a loop/went-silent/high-error-rate
         // anomaly without regex-parsing the human table. The --since warning
         // above stays on stderr, keeping stdout pure JSON.
-        if (rest.includes('--json')) {
+        if (json) {
           process.stdout.write(JSON.stringify(rep) + '\n');
         } else {
           process.stdout.write(renderStats(rep, maybeShelf) + '\n');
         }
+        // Report any shelf the inventory skipped (issue #332) on stderr, so the
+        // health scan still succeeds but never hides why a shelf is missing.
+        const statsSkip = renderSkipped('stats', rep.skipped);
+        if (statsSkip) process.stderr.write(statsSkip);
+        // Warn about any shelf holding a merge conflict (issue #333), same rule.
+        process.stderr.write(renderConflicts('stats', rep.conflicts));
         // The command itself succeeded (stats read cleanly); the usage log must
         // record that, so set `ok` before the opt-in anomaly exit returns early.
         ok = true;
@@ -917,21 +1425,41 @@ export async function runNbCli(
         // Read-only introspection (issue #188): print every effective, post-clamp
         // tunable as `name=value`, each read from the SAME live getter the hot
         // path uses, so an operator never has to re-derive a value by hand from
-        // the env var + its default + its clamp. Scoped to CONFIGURATION (the
-        // knobs), deliberately distinct from `nb stats` (usage/anomalies/
-        // engagement). The shared `finally` appends its one usage row; the shelf
-        // column stays `-` because the command reads global config, not a shelf.
+        // the env var + its default + its clamp. Then a string env section (issue
+        // #312) surfaces the three behavior-critical NB_* vars — NB_DIR,
+        // NB_SESSION, NB_ASCII — that the numeric table structurally can't hold
+        // but that most often explain a misbehaving deployment. Scoped to
+        // CONFIGURATION (the knobs), deliberately distinct from `nb stats`
+        // (usage/anomalies/engagement). The shared `finally` appends its one usage
+        // row; the shelf column stays `-` because the command reads global config,
+        // not a shelf.
         const rows = effectiveConfig();
+        const envRows = environmentRows();
+        const unknown = unknownEnvVars();
         if (json) {
           // One object keyed by tunable name; each carries the effective value,
           // its source (env/default/derived), and the env var that overrides it,
           // so a supervisor can branch on the live value without regex-parsing
           // the human lines. The value is always the post-clamp effective value.
-          const obj: Record<string, { value: number; source: ConfigSource; env: string | null }> = {};
-          for (const r of rows) obj[r.name] = { value: r.value, source: configSource(r.env), env: r.env };
-          process.stdout.write(JSON.stringify(obj) + '\n');
+          // Issue #336 adds two ADDITIVE fields: `status` (honored/clamped/
+          // ignored/how the env value was resolved — `null` when the var is unset)
+          // and `rawValue` (the raw env string, `null` when unset), so a consumer
+          // can tell an in-force override from one that was rewritten or dropped.
+          const obj: Record<string, { value: number; source: ConfigSource; env: string | null; status: ConfigStatus | null; rawValue: string | null }> = {};
+          for (const r of rows) {
+            obj[r.name] = { value: r.value, source: configSource(r.env), env: r.env, status: r.status, rawValue: r.rawValue };
+          }
+          // The string env vars live under a dedicated `environment` key, keyed by
+          // the var name, so the 14 numeric rows keep their exact shape and keys —
+          // the --json contract stays backward-compatible (a NEW section, not a
+          // changed type on an existing row; issue #312). Issue #336 adds a second
+          // new top-level `unrecognized` array (informational only) alongside it.
+          const environment: Record<string, { value: string; source: ConfigSource }> = {};
+          for (const r of envRows) environment[r.name] = { value: r.value, source: configSource(r.name) };
+          const unrecognized = unknown.map((u) => ({ name: u.name, suggestion: u.suggestion ?? null }));
+          process.stdout.write(JSON.stringify({ ...obj, environment, unrecognized }) + '\n');
         } else {
-          const { out } = renderConfig(rows);
+          const { out } = renderConfig(rows, envRows, unknown);
           process.stdout.write(out);
         }
         break;
@@ -947,9 +1475,12 @@ export async function runNbCli(
         // richer format the kookr `nb` shim already bolted on). Read-only — it
         // still appends one usage row via the shared `finally`; the logged shelf stays `-`
         // because the command spans notebooks rather than acting on one.
-        // `--json` is already stripped from `args`; pull out `--limit`, leaving
-        // an optional positional name prefix as args[1].
-        const { value: limitRaw, rest: listArgs } = extractOption(args, '--limit');
+        // `--json` is already stripped; pull out `--limit` from the pre-`--`
+        // region and re-append `operands`, leaving an optional positional name
+        // prefix as args[1] (a literal `--limit` prefix after `--` is not consumed
+        // as the flag — issue #277).
+        const { value: limitRaw, rest: listRest } = extractOption(flagArgs, '--limit');
+        const listArgs = listRest.concat(operands);
         let limit = LIST_DEFAULT_LIMIT;
         if (limitRaw !== undefined) {
           // Forgiving like `stats --since`: an unparseable --limit warns on
@@ -958,14 +1489,26 @@ export async function runNbCli(
           if (/^\d+$/.test(limitRaw.trim())) {
             limit = Number.parseInt(limitRaw, 10);
           } else {
-            process.stderr.write(
+            warnDefaultedFlag(
+              json,
               `nb ${cmd}: unrecognized --limit '${limitRaw}' (use a non-negative integer); showing ${LIST_DEFAULT_LIMIT}\n`,
+              { command: cmd, flag: '--limit', value: limitRaw, usedDefault: LIST_DEFAULT_LIMIT },
             );
           }
         }
         const prefix = listArgs[1]; // optional positional name prefix (undefined → all)
         if (json) {
-          process.stdout.write(JSON.stringify(listNotebooks(dir, { prefix, limit })) + '\n');
+          // Keep healthy `--json` output byte-identical: the additive `skipped`
+          // field (issue #332) is emitted only when a shelf was actually skipped.
+          const listing = listNotebooks(dir, { prefix, limit });
+          process.stdout.write(
+            JSON.stringify(
+              listing.skipped.length > 0 || listing.conflicts.length > 0
+                ? listing
+                : { dir: listing.dir, total: listing.total, rows: listing.rows },
+            ) + '\n',
+          );
+          process.stderr.write(renderConflicts('list', listing.conflicts));
         } else {
           const { out, err } = renderList(dir, prefix, limit);
           if (out) process.stdout.write(out);
@@ -994,7 +1537,19 @@ export async function runNbCli(
         // (e.g. `nb upvote`, `nb +1`). Record it so `nb stats` can tell these
         // apart from genuine misuse of a real command (issue #176).
         meta.errorClass = 'unknown_subcommand';
-        process.stderr.write(`nb: unknown command "${cmd}". ${hint}Try \`nb --help\`.\n`);
+        // Same structured-error contract as the throw path (issue #266): under
+        // --json a supervisor gets a parseable `{ok:false, error:{class,…}}` on
+        // stdout keyed on `unknown_subcommand`, instead of the previously-empty
+        // stdout. The stderr line is byte-for-byte unchanged — note its bare `nb:`
+        // prefix (there is no real command to name) — and exit stays 2 (distinct
+        // from the 1 the handled-error catch returns).
+        const message = `unknown command "${cmd}". ${hint}Try \`nb --help\`.`;
+        if (json) {
+          process.stdout.write(
+            JSON.stringify({ ok: false, command: cmd, error: { class: 'unknown_subcommand', message } }) + '\n',
+          );
+        }
+        process.stderr.write(`nb: ${message}\n`);
         return 2;
       }
     }
@@ -1004,9 +1559,30 @@ export async function runNbCli(
     // Record the error class for the usage log unless a non-throwing failure
     // path above already set one (e.g. a too-long add). `classifyError` reads the
     // class off an `NbError` and falls back to `other` for anything else — never
-    // parsing the message (issue #176).
-    meta.errorClass ??= classifyError(e);
-    process.stderr.write(`nb ${cmd}: ${e instanceof Error ? e.message : String(e)}\n`);
+    // parsing the message (issue #176). Resolve it into a local so the --json
+    // error object below reports the SAME bounded class the usage log records
+    // (`??=` is preserved as `?? …` then assigned back — behaviour is identical).
+    const errorClass = meta.errorClass ?? classifyError(e);
+    meta.errorClass = errorClass;
+    const message = e instanceof Error ? e.message : String(e);
+    // Complete the --json machine contract (issue #266). A throwing command
+    // (bad_args / no_match / ambiguous_selector / EACCES / …) used to put the
+    // English sentence on stderr and write NOTHING to stdout — so the one
+    // consumer --json was built for (issue #41: branch on a structured field,
+    // never regex-parse the prose line) was thrown back to parsing prose exactly
+    // on the failure paths where structured data matters most. Emit a structured
+    // error object on stdout — the same machine channel the success and too-long
+    // results already use — discriminated by `ok:false` + an `error` object, and
+    // keyed on the bounded `errorClass` (never the drift-prone message text) so a
+    // supervisor branches on `error.class`. The English line still goes to stderr
+    // UNCHANGED, so human output and every existing stderr test stay byte-for-byte
+    // identical; only the previously-empty stdout gains content. Exit stays 1.
+    if (json) {
+      process.stdout.write(
+        JSON.stringify({ ok: false, command: cmd, error: { class: errorClass, message } }) + '\n',
+      );
+    }
+    process.stderr.write(`nb ${cmd}: ${message}\n`);
     return 1;
   } finally {
     // The `stats` read of the usage log happens above; logging it afterwards is fine.
@@ -1020,6 +1596,26 @@ function need(v: string | undefined, name: string): string {
 }
 
 /**
+ * Decide whether a `vote` selector is a BATCH of ids or a single selector.
+ * Returns the trimmed id list only when the argument is a comma-separated run of
+ * ≥2 bare hex tokens (the shape `nb show` prints, e.g. `3f9a2c,8bd7fe,ee5c9e`);
+ * otherwise `null`, so one token OR any non-hex comma-part (a text substring that
+ * happens to contain a comma) falls through to the unchanged single-selector
+ * path. Id-only on purpose: batch voting by fuzzy text would reintroduce exactly
+ * the ambiguity the id selector exists to avoid.
+ */
+function parseVoteIdList(selector: string): string[] | null {
+  if (!selector.includes(',')) return null;
+  const parts = selector
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '');
+  if (parts.length < 2) return null;
+  if (!parts.every((p) => /^[0-9a-f]+$/i.test(p))) return null;
+  return parts;
+}
+
+/**
  * Pull a `--flag <value>` pair out of an argv slice, returning the value (if the
  * flag was present) and the remaining args with the pair removed. A flag at the
  * very end with no following token throws, so a missing value is a loud error
@@ -1030,6 +1626,45 @@ function extractOption(args: string[], flag: string): { value?: string; rest: st
   if (i === -1) return { rest: args };
   if (i + 1 >= args.length) throw new NbError('bad_args', `${flag} needs a value`);
   return { value: args[i + 1], rest: args.slice(0, i).concat(args.slice(i + 2)) };
+}
+
+/**
+ * Report that a flag value was unrecognized, so the command silently fell back to
+ * a default (issue #266 — the defaulted-flag half of the --json machine
+ * contract). The human prose line is ALWAYS written to stderr, byte-for-byte as
+ * before. Under `--json` a one-line JSON object is written to stderr *as well*,
+ * so a supervisor branching on structured output learns — without regex-parsing
+ * the prose — that the value it passed was ignored and which default took its
+ * place (`class: 'defaulted_flag'`, the flag, the offending value, the default).
+ *
+ * It stays on stderr (never stdout) on purpose: these commands' `--json` stdout
+ * is a single bare result object (StatsReport, search result, StaleResult, the
+ * notebook index) whose shape is the documented contract, and a defaulted flag is
+ * a warning, not a result — folding it into stdout would corrupt that stream and
+ * break every consumer that parses the bare object. stderr is already where the
+ * prose warning goes; this makes that same channel machine-readable. Exit codes
+ * are unchanged (a defaulted flag is forgiving, not an error). DP-5: a mistyped
+ * flag must never silently mislead — now the machine consumer is told too.
+ */
+function warnDefaultedFlag(
+  json: boolean,
+  prose: string,
+  w: { command: string; flag: string; value: string; usedDefault: string | number },
+): void {
+  process.stderr.write(prose);
+  if (json) {
+    process.stderr.write(
+      JSON.stringify({
+        warning: {
+          class: 'defaulted_flag',
+          command: w.command,
+          flag: w.flag,
+          value: w.value,
+          usedDefault: w.usedDefault,
+        },
+      }) + '\n',
+    );
+  }
 }
 
 // Reduce piped stdin to the single lesson line it must be. One trailing line
@@ -1064,11 +1699,62 @@ async function readStdinDefault(): Promise<string> {
         "e.g. `printf '%s\\n' 'run lint first' | nb add reviewer -`",
     );
   }
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString('utf-8');
+  return readBoundedStream(process.stdin);
 }
 /* c8 ignore stop */
+
+/**
+ * Byte budget for the piped `-` read (issue #304): a lesson is one line of at
+ * most `maxChars()` chars, i.e. at most 4 bytes/char in UTF-8; the 8x multiple
+ * leaves generous room for a trailing newline and CRLF without letting a
+ * runaway pipe buffer more than a few KB. Floor of 4096 keeps a tiny
+ * `NB_MAX_CHARS` from rejecting a legitimate line.
+ */
+function stdinByteBudget(): number {
+  return Math.max(4096, maxChars() * 8);
+}
+
+/**
+ * Drain a stream incrementally, never holding more than the byte budget. Stops
+ * reading as soon as the input is already a multi-line rejection (a line break
+ * with more content after it, judged exactly as `readOneLine` will), and throws
+ * `too_long` the moment the budget is exceeded — so a huge pipe or a single
+ * enormous newline-less line fails fast instead of being buffered into memory.
+ * Exported for tests; the caller still passes the result through `readOneLine`.
+ */
+export async function readBoundedStream(
+  stream: AsyncIterable<Buffer | string>,
+  maxBytes: number = stdinByteBudget(),
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of stream) {
+    const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf-8') : chunk;
+    bytes += buf.length;
+    if (bytes > maxBytes) {
+      throw new NbError(
+        'too_long',
+        `stdin input exceeds the ${maxBytes}-byte limit for a one-line lesson — it was NOT read in full or stored. ` +
+          'Pipe exactly one short line.',
+      );
+    }
+    chunks.push(buf);
+    // Multi-line already (a break that is not just the trailing terminator):
+    // readOneLine will refuse it, so stop consuming the stream now.
+    if (/[\r\n]/.test(Buffer.concat(chunks).toString('utf-8').replace(/\r\n$|\r$|\n$/, ''))) break;
+  }
+  return Buffer.concat(chunks).toString('utf-8');
+}
+
+/**
+ * Whether an aging dock is worth printing (issue #293). `decayed.score` is the
+ * POST-dock score, so the pre-dock score was `score + 1`; we print only when that
+ * was above the +1 floor (a line that still carried vote capital). A routine
+ * +1 → 0 dock on an already-unproven line stays silent (it is still logged).
+ */
+function agedVisibly(decayed: { score: number } | null): decayed is { score: number; text: string } {
+  return decayed !== null && decayed.score > 0;
+}
 
 function fmt(score: number): string {
   return score >= 0 ? `+${score}` : `${score}`;
@@ -1126,39 +1812,216 @@ const READOUT_GLOSS: Record<'healthy' | 'surfacing-failure' | 'coverage-building
 /** Where a tunable's effective value came from: a set env var, the built-in default, or a derived value with no own env var. */
 type ConfigSource = 'env' | 'default' | 'derived';
 
+/**
+ * How a set numeric env var was resolved (issue #336): used as given, silently
+ * clamped to a bound, or silently ignored (unparseable, default used). Absent
+ * for the derived row and for a default (the var is unset). This is the
+ * information `source` alone cannot carry — `source: 'env'` says "you set it",
+ * while `status: 'ignored'` says "and `nb` threw it away".
+ */
+type ConfigStatus = 'honored' | 'clamped' | 'ignored';
+
 /** One `nb config` row: the tunable's config name, the value its live getter resolves to RIGHT NOW, and the env var that overrides it (null for a derived value). */
 interface ConfigRow {
   name: string;
   value: number;
   env: string | null;
+  /** How the env value was resolved; `null` for the derived row or when the var is unset. */
+  status: ConfigStatus | null;
+  /** The raw env string when the var is set (so the human line can quote it), else `null`. */
+  rawValue: string | null;
+  /** The parse family, for the `ignored` wording ("not an integer" vs "not a number"). */
+  kind: 'int' | 'rate';
 }
 
 /**
- * The effective, post-clamp tunables `nb config` reports (issue #188). Every
- * value comes from the SAME exported getter the hot path uses, so a printed
- * value can never drift from the value `nb` actually runs under — the honest way
- * to surface a post-clamp value without re-reading the env (and re-copying every
- * default + clamp) here, which is exactly the #116-class drift the #131 guard
- * exists to prevent. `usageRingSlack` is DERIVED from `usageRing` and has no env
- * var of its own (env `null`).
+ * One numeric tunable in the shared registry: its config name, the `NB_*` var
+ * that overrides it, its built-in default, and a resolver that reproduces its
+ * getter's clamp exactly. Each resolver returns the SAME number the exported
+ * getter returns — and ALSO reports whether that number came from an honored,
+ * clamped or ignored raw value ([issue #336]). The `cli.test.ts` config test
+ * cross-checks every resolver's value against the exported getter, so a drift in
+ * either direction (a changed default, a changed clamp) fails loudly.
+ *
+ * The registry is the single source of the recognised-variable set: both
+ * `effectiveConfig` and the unknown-`NB_*` scan derive from it, so a variable
+ * cannot be reported but unknown, or read but unreported.
+ */
+interface TunableSpec {
+  name: string;
+  env: string;
+  kind: 'int' | 'rate';
+  resolve: () => { value: number; status: 'default' | ConfigStatus };
+}
+
+/**
+ * Resolve an int tunable from `NB_<env>` read live. A thin wrapper over
+ * `resolveIntEnv` so the registry stays declarative while still reading
+ * `process.env` at call time, exactly like the hot-path getters.
+ */
+function intTunable(name: string, t: IntTunable): TunableSpec {
+  return { name, env: t.env, kind: 'int', resolve: () => resolveIntEnv(process.env[t.env], t.dflt, t.lo, t.hi) };
+}
+
+/** Resolve a rate tunable (bounds [0, 1]) from its `NB_*` var read live. */
+function rateTunable(name: string, t: RateTunable): TunableSpec {
+  return { name, env: t.env, kind: 'rate', resolve: () => resolveRateEnv(process.env[t.env], t.dflt) };
+}
+
+/**
+ * The source of truth for the numeric tunables `nb config` reports (issue #188),
+ * made status-aware in issue #336. Each default and bound mirrors its hot-path
+ * getter in `notebook.ts`; the config test asserts the resolved value equals the
+ * exported getter for a matrix of raw values, so the two can never drift.
+ * `usageRingSlack` is DERIVED from `usageRing` and has no env var of its own, so
+ * it is not a registry entry — it is rendered separately.
+ */
+const TUNABLE_REGISTRY: readonly TunableSpec[] = [
+  intTunable('maxLines', MAX_LINES),
+  intTunable('maxChars', MAX_CHARS),
+  rateTunable('nearThreshold', NEAR_DUP),
+  intTunable('usageRing', USAGE_RING),
+  intTunable('staleLockMs', STALE_LOCK_MS),
+  intTunable('lockGraceMs', LOCK_GRACE_MS),
+  intTunable('loopN', LOOP_N),
+  intTunable('loopWindowSec', LOOP_WINDOW_S),
+  intTunable('silentHours', SILENT_H),
+  intTunable('errMin', ERR_MIN),
+  rateTunable('errRate', ERR_RATE),
+  rateTunable('coverageHi', COVERAGE_HI),
+  rateTunable('recallMissHi', RECALL_MISS_HI),
+];
+
+/**
+ * The effective, post-clamp tunables `nb config` reports (issue #188): the
+ * registry rows, each resolved live and annotated with its `status`/`rawValue`
+ * (issue #336), plus the DERIVED `usageRingSlack` row (no env var of its own),
+ * spliced into its historical position so a clean render stays byte-identical.
+ * Every value is the number the hot-path getter returns, so a printed value can
+ * never drift from the value `nb` actually runs under — the #116-class drift the
+ * #131 guard exists to prevent.
  */
 function effectiveConfig(): ConfigRow[] {
+  const rows: ConfigRow[] = TUNABLE_REGISTRY.map((t) => {
+    const { value, status } = t.resolve();
+    const raw = process.env[t.env];
+    return {
+      name: t.name,
+      value,
+      env: t.env,
+      status: status === 'default' ? null : status,
+      rawValue: raw ?? null,
+      kind: t.kind,
+    };
+  });
+  // Keep the DERIVED row in its historical position (after `usageRing`, before
+  // `staleLockMs`) so a clean render stays byte-identical to the pre-#336 output.
+  rows.splice(4, 0, { name: 'usageRingSlack', value: usageRingSlack(), env: null, status: null, rawValue: null, kind: 'int' });
+  return rows;
+}
+
+/**
+ * One behavior-critical STRING env var `nb config` surfaces alongside the
+ * numeric clamps (issue #312). `name` is the env var itself — it doubles as the
+ * display label and the `--json` key, so there is no separate `env` field to
+ * drift from it.
+ */
+interface EnvRow {
+  name: string;
+  value: string;
+}
+
+/**
+ * The three string env vars that most often explain a misbehaving deployment
+ * (issue #312): `NB_DIR` (where notebooks live), `NB_SESSION` (the id the
+ * usage/engagement diagnostics group by — its unset state is the usual cause of
+ * `nb stats` reporting "no engaged sessions"), and `NB_ASCII` (the rendering
+ * mode). `effectiveConfig` reports only the numeric clamps, so these were
+ * structurally invisible to the very command `nb`'s own help points an operator
+ * at. Each value is read from the SAME resolver the hot path uses — `notebooksDir`
+ * for storage, the effective `NB_SESSION` for the session id, `asciiMode` for the
+ * post-locale rendering mode — so a printed value can never drift from what `nb`
+ * actually runs under, exactly as the numeric rows don't. Source is classified by
+ * `configSource`'s `!== undefined` rule: a var set to blank still reads `(env)`
+ * (e.g. `NB_DIR=` reads `(env)` while its value falls back to the default dir),
+ * mirroring the numeric DP-5 contract.
+ */
+function environmentRows(): EnvRow[] {
   return [
-    { name: 'maxLines', value: maxLines(), env: 'NB_MAX_LINES' },
-    { name: 'maxChars', value: maxChars(), env: 'NB_MAX_CHARS' },
-    { name: 'nearThreshold', value: nearThreshold(), env: 'NB_NEAR_DUP' },
-    { name: 'usageRing', value: usageRing(), env: 'NB_USAGE_RING' },
-    { name: 'usageRingSlack', value: usageRingSlack(), env: null },
-    { name: 'staleLockMs', value: staleLockMs(), env: 'NB_STALE_LOCK_MS' },
-    { name: 'lockGraceMs', value: lockGraceMs(), env: 'NB_LOCK_GRACE_MS' },
-    { name: 'loopN', value: loopN(), env: 'NB_LOOP_N' },
-    { name: 'loopWindowSec', value: loopWindowSec(), env: 'NB_LOOP_WINDOW_S' },
-    { name: 'silentHours', value: silentHours(), env: 'NB_SILENT_H' },
-    { name: 'errMin', value: errMin(), env: 'NB_ERR_MIN' },
-    { name: 'errRate', value: errRate(), env: 'NB_ERR_RATE' },
-    { name: 'coverageHi', value: coverageHi(), env: 'NB_COVERAGE_HI' },
-    { name: 'recallMissHi', value: recallMissHi(), env: 'NB_RECALL_MISS_HI' },
+    { name: 'NB_DIR', value: notebooksDir() },
+    { name: 'NB_SESSION', value: process.env.NB_SESSION ?? '' },
+    { name: 'NB_ASCII', value: asciiMode() ? 'on' : 'off' },
   ];
+}
+
+/**
+ * Every `NB_*` variable name `nb` actually reads — the registry's numeric vars
+ * plus the three string vars — as a set. This is the reference list the unknown
+ * scan checks against, derived from the SAME registry `effectiveConfig` uses so
+ * the two cannot drift (a var that is read can never be reported "unrecognized",
+ * and a new tunable is automatically recognised; issue #336).
+ */
+function recognizedEnvVars(): string[] {
+  return [...TUNABLE_REGISTRY.map((t) => t.env), ...environmentRows().map((r) => r.name)];
+}
+
+/**
+ * `NB_*` variables read by the tooling this repo SHIPS (the harness hooks, the
+ * git-wrapper, the backup/janitor scripts under `examples/`) rather than by
+ * `nb` itself (issue #336). A user who follows `examples/README.md` and exports
+ * these would otherwise have them listed "unrecognized by nb" with a misleading
+ * `did you mean NB_DIR?` — flagging a variable another tool legitimately set is
+ * exactly what the issue's Risk section forbids. Reported as "not read by
+ * `nb`" (not "unrecognized"), and never used as a suggestion candidate.
+ */
+const SHIPPED_TOOL_ENV_VARS: readonly string[] = [
+  'NB_BIN',
+  'NB_RETRO_TTL_DAYS',
+  'NB_GIT_AUTOCOMMIT',
+  'NB_BACKUP_PUSH_TIMEOUT',
+  'NB_BACKUP_GIT_LOCK_WAIT',
+];
+
+/** Width of the pre-round-2 `(unrecognized by nb)` tag a hinted one is padded to, so the block keeps its shape. */
+const UNKNOWN_TAG_HISTORY_WIDTH = '(unrecognized by nb)'.length;
+
+/** One unrecognized `NB_*` variable found in the environment, with a nearest-name hint when one is close. */
+interface UnknownEnv {
+  name: string;
+  suggestion: string | undefined;
+}
+
+/**
+ * Find every `NB_*`-prefixed variable in the environment that `nb` does not read
+ * (issue #336) — a typo like `NB_MAX_LINE` (missing the `S`) that otherwise stays
+ * silently set while every `nb` call ignores it. Purely informational: other
+ * tools may legitimately set `NB_*` vars (including this repo's own shipped
+ * examples, see {@link SHIPPED_TOOL_ENV_VARS}), so these are reported as "not
+ * read by nb", never as an error, and the exit code is untouched. A close-enough
+ * name gets a `did you mean` hint via the same Levenshtein/prefix matcher the
+ * command and shelf typo paths use (`closestMatch`), sorted for deterministic
+ * output, the hint sized to the historical `unrecognized by nb` tag so the
+ * block stays byte-identical to the pre-round-2 output for a pure typo. A name
+ * with NO close match is still listed — the promise is to surface every `NB_*`
+ * var nb does not read, and a far-off typo (or a var some other tool owns) is
+ * exactly the case the operator cannot discover otherwise; it just carries no
+ * hint.
+ */
+function unknownEnvVars(): UnknownEnv[] {
+  const known = recognizedEnvVars();
+  // Suggestions come only from nb's OWN vars: a near-miss of an example-tool
+  // knob is not a typo of a tunable, and suggesting one would be wrong.
+  //
+  // `closestMatch` lowercases its needle, so compare against lowercased
+  // candidates and map a hit back to the canonical (uppercase) var name.
+  const byLower = new Map(known.map((k) => [k.toLowerCase(), k]));
+  return Object.keys(process.env)
+    .filter((k) => k.startsWith('NB_') && !known.includes(k) && !SHIPPED_TOOL_ENV_VARS.includes(k))
+    .sort()
+    .map((name) => {
+      const hit = closestMatch(name, [...byLower.keys()]);
+      return { name, suggestion: hit === undefined ? undefined : byLower.get(hit) };
+    });
 }
 
 /**
@@ -1182,19 +2045,68 @@ function configSource(env: string | null): ConfigSource {
 }
 
 /**
- * Render `nb config` for the human path. One `name=value` line per tunable, the
- * `name=value` column left-padded so the source tags line up. The tag names the
- * source: `(default)`, `(env NB_*)`, or `(derived from usageRing)`. Returns
- * `{ out }` (stdout only) — there is no error/empty state, the table is fixed.
+ * The parenthetical a human `nb config` numeric line carries after its source
+ * tag, explaining a non-honored env value (issue #336):
+ *   - `honored` → nothing (the value you set is in force; byte-identical to the
+ *     pre-#336 output);
+ *   - `clamped` → `: clamped to <value> from <raw>` (you asked for something out
+ *     of range and got the bound instead);
+ *   - `ignored` → `: ignored "<raw>", not an integer; using default` (unparseable,
+ *     so `nb` quietly used the default — the misleading case this fixes).
+ * Rates vs ints only differ in the wording ("not a number" vs "not an integer").
  */
-function renderConfig(rows: ConfigRow[]): { out: string } {
+function statusNote(row: ConfigRow, kind: 'int' | 'rate'): string {
+  if (row.status === 'clamped') return `: clamped to ${row.value} from ${row.rawValue}`;
+  if (row.status === 'ignored') {
+    return `: ignored "${row.rawValue}", not ${kind === 'rate' ? 'a number' : 'an integer'}; using default`;
+  }
+  return '';
+}
+
+/**
+ * Render `nb config` for the human path. One `name=value` line per numeric
+ * tunable, the `name=value` column left-padded so the source tags line up. The
+ * tag names the source: `(default)`, `(env NB_*)`, or `(derived from usageRing)`.
+ * A clamped or ignored env value appends a status note inside the tag (issue
+ * #336) so a value that was rewritten or thrown away can never read as honored.
+ * A blank line then separates a `NB_*=value` block for the string env vars
+ * (issue #312), tagged `(env)`/`(default)` — the var name is already the row
+ * label, so the tag need not repeat it. A final block lists unrecognized `NB_*`
+ * vars (issue #336) when any exist. With no problems the output is byte-identical
+ * to the pre-#336 renderer. Returns `{ out }` (stdout only) — there is no
+ * error/empty state, the table is fixed.
+ */
+function renderConfig(rows: ConfigRow[], envRows: EnvRow[], unknown: UnknownEnv[]): { out: string } {
   const pairW = rows.reduce((w, r) => Math.max(w, `${r.name}=${r.value}`.length), 0);
   const lines = rows.map((r) => {
     const src = configSource(r.env);
-    const tag = src === 'env' ? `(env ${r.env})` : src === 'derived' ? '(derived from usageRing)' : '(default)';
+    const base = src === 'env' ? `(env ${r.env})` : src === 'derived' ? '(derived from usageRing)' : '(default)';
+    if (src !== 'env' || r.status === null) {
+      return `${`${r.name}=${r.value}`.padEnd(pairW)}  ${base}`;
+    }
+    const note = statusNote(r, r.kind);
+    const tag = note === '' ? base : `(env ${r.env}${note})`;
     return `${`${r.name}=${r.value}`.padEnd(pairW)}  ${tag}`;
   });
-  return { out: lines.join('\n') + '\n' };
+  const envPairW = envRows.reduce((w, r) => Math.max(w, `${r.name}=${r.value}`.length), 0);
+  const envLines = envRows.map((r) => {
+    const tag = configSource(r.name) === 'env' ? '(env)' : '(default)';
+    return `${`${r.name}=${r.value}`.padEnd(envPairW)}  ${tag}`;
+  });
+  let out = lines.join('\n') + '\n\n' + envLines.join('\n') + '\n';
+  if (unknown.length > 0) {
+    // Keep the tag the same width as the historical `(unrecognized by nb)` so a
+    // pure typo re-renders identically. A var with NO close match is still shown
+    // (just without a hint) — every `NB_*` nb does not read must surface.
+    const unknownLines = unknown.map((u) => {
+      const tag = u.suggestion === undefined
+        ? '(not read by nb)'
+        : `(not read by nb — did you mean ${u.suggestion}?)`;
+      return `${u.name}  ${tag.padEnd(UNKNOWN_TAG_HISTORY_WIDTH)}`;
+    });
+    out += '\n' + unknownLines.join('\n') + '\n';
+  }
+  return { out };
 }
 
 /**
@@ -1232,11 +2144,20 @@ function truncateCol(text: string, width: number = DESC_COL_WIDTH): string {
  */
 function renderList(dir: string, prefix: string | undefined, limit: number): { out: string; err: string } {
   const listing = listNotebooks(dir, { prefix, limit });
+  // Report any shelf skipped for an unreadable file (issue #332) on stderr, so
+  // the success path still lists every healthy shelf but never hides the loss.
+  const skipErr = renderSkipped('list', listing.skipped) + renderConflicts('list', listing.conflicts);
   if (listing.total === 0) {
-    const err = prefix
-      ? `no notebooks matching "${prefix}" — run \`nb list\` to see them all\n`
-      : 'no notebooks yet — add one with `nb add <shelf> "<lesson>"`\n';
-    return { out: '', err };
+    // A prefix the user explicitly scoped to may have matched ONLY a skipped
+    // shelf (issue #332): report that it is unreadable, not "no notebooks
+    // matching", so an error on a named shelf is never hidden (FR-LIST-006).
+    const onlySkipped = prefix && listing.skipped.length > 0;
+    const err = onlySkipped
+      ? `no readable notebooks matching "${prefix}" — the matching shelf(s) were skipped (see above)\n`
+      : prefix
+        ? `no notebooks matching "${prefix}" — run \`nb list\` to see them all\n`
+        : 'no notebooks yet — add one with `nb add <shelf> "<lesson>"`\n';
+    return { out: '', err: skipErr + err };
   }
   const shown = listing.rows.length;
   const countClause = shown < listing.total ? `${shown} of ${listing.total}` : `${listing.total}`;
@@ -1249,7 +2170,7 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
     const descPart = trigger ? `  ${truncateCol(trigger)}${r.desc === null ? '  (auto)' : ''}` : '';
     lines.push(`  ${r.shelf.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`);
   }
-  return { out: lines.join('\n') + '\n', err: '' };
+  return { out: lines.join('\n') + '\n', err: skipErr };
 }
 
 /**
@@ -1264,6 +2185,17 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
  */
 function renderSearch(query: string, any: boolean, result: SearchResult): { out: string; err: string } {
   const mode = any ? 'OR' : 'AND';
+  // Name any shelf skipped for an unreadable file (issue #332) — a search over a
+  // damaged store still returns every healthy hit, but never silently drops one.
+  const skipErr = renderSkipped('search', result.skipped) + renderConflicts('search', result.conflicts);
+  // A no-match is only a genuine coverage gap when every shelf in scope was
+  // actually searched: if a skipped (unreadable) shelf exists, the miss may be
+  // hiding a hit in it, so the note must not claim a gap (issue #332).
+  const skippedNote =
+    result.skipped.length > 0
+      ? ` — note: ${result.skipped.length} shelf${result.skipped.length === 1 ? '' : 's'} could not be read and ` +
+        `weren't searched (see above)\n`
+      : '';
   if (result.groups.length === 0) {
     // Three distinct empty renders, only ONE of which is the logged coverage gap.
     // Key the gap message on `result.total` (the FULL pre-limit count), NOT on the
@@ -1274,11 +2206,13 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
       result.terms.length === 0
         ? `nb search: no searchable terms in "${query}"\n`
         : result.total === 0
-          ? `no lessons match "${query}" (${mode}) — search is the secondary path (lessons are surfaced to you, ` +
-            `not searched); this miss was recorded as a possible coverage gap\n`
+          ? skippedNote
+            ? `no lessons match "${query}" (${mode}) in the readable shelves${skippedNote}`
+            : `no lessons match "${query}" (${mode}) — search is the secondary path (lessons are surfaced to you, ` +
+              `not searched); this miss was recorded as a possible coverage gap\n`
           : `${result.total} notebook${result.total === 1 ? '' : 's'} match "${query}" (${mode}) but --limit hid them all — ` +
             `raise --limit to see them (this was a match, not a coverage gap)\n`;
-    return { out: '', err };
+    return { out: '', err: skipErr + err };
   }
   const hitCount = result.groups.reduce((n, g) => n + g.hits.length, 0);
   const nbCount = result.groups.length;
@@ -1298,7 +2232,46 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
       lines.push(`    ${h.id}  [${fmt(h.score)}]  ${h.text}`);
     }
   }
-  return { out: lines.join('\n') + '\n', err: '' };
+  return { out: lines.join('\n') + '\n', err: skipErr };
+}
+
+/**
+ * One truthful stderr note per shelf a cross-shelf scan had to skip because its
+ * file was unreadable (issue #332). `nb list`/`nb search` still succeed for every
+ * healthy shelf; this names the casualty and its errno so the user can fix the
+ * file (chmod, remove the stray directory) without reading `nb` source. Empty
+ * string when nothing was skipped, so a healthy run's stderr stays byte-identical.
+ */
+function renderSkipped(cmd: string, skipped: SkippedShelf[]): string {
+  return skipped
+    .map(
+      (s) =>
+        `nb ${cmd}: skipped shelf "${s.shelf}" — could not read ${s.shelf}.md (${s.code}); ` +
+        `fix the file (permissions, or remove a directory named ${s.shelf}.md) to include it again\n`,
+    )
+    .join('');
+}
+
+/**
+ * One stderr line warning that a READ found a git merge-conflict marker in a
+ * shelf (issue #333). Reads are never refused — the lessons print as stored — but
+ * a mutation will refuse until the conflict is resolved, so the reader is told
+ * which shelf (and which line) needs `git merge` / a manual fix. stdout and the
+ * `--json` result stay untouched and valid.
+ */
+function renderConflict(cmd: string, shelf: string, marker: string): string {
+  return (
+    `nb ${cmd}: warning: shelf "${shelf}" contains a git merge-conflict marker (${JSON.stringify(marker)}); ` +
+    `resolve the conflict in ${shelf}.md before mutating it — writes are refused until then\n`
+  );
+}
+
+/**
+ * The stderr lines for every conflicted shelf a scan saw (issue #333), by the
+ * same additive, only-when-non-empty rule as `renderSkipped`.
+ */
+function renderConflicts(cmd: string, conflicts: ConflictShelf[]): string {
+  return conflicts.map((c) => renderConflict(cmd, c.shelf, c.marker)).join('');
 }
 
 function renderStats(rep: StatsReport, shelf: string | undefined): string {
@@ -1320,6 +2293,23 @@ function renderStats(rep: StatsReport, shelf: string | undefined): string {
           `${(c.p50ms + 'ms').padStart(5)}  ${(c.p95ms + 'ms').padStart(5)}  ${c.lastUsed.slice(0, 19)}`,
       );
     }
+  }
+  // Error causes (issue #223): name the lever behind each command's err% so the
+  // two most actionable rates — `add` over-cap rejections and `vote` selector
+  // misses — are in the header, not buried behind the high-error-rate anomaly
+  // threshold. Only printed when something errored this window. A dominant
+  // `unclassified` share means the log predates the errorClass column (#176) —
+  // upgrade `nb` so causes get recorded.
+  if (rep.errorCauses.length > 0) {
+    lines.push('  error causes:');
+    let anyUnclassified = false;
+    for (const e of rep.errorCauses) {
+      for (const b of e.breakdown) if (b.cause === 'unclassified') anyUnclassified = true;
+      const parts = e.breakdown.map((b) => `${b.cause} ${b.pct}%`).join(', ');
+      lines.push(`    ${e.command.padEnd(8)} ${parts}  (${e.errors} err)`);
+    }
+    if (anyUnclassified)
+      lines.push('    (unclassified = log predates error-class recording — upgrade nb to split these by cause)');
   }
   if (rep.anomalies.length > 0) {
     lines.push('  anomalies:');
@@ -1383,6 +2373,25 @@ function renderStats(rep: StatsReport, shelf: string | undefined): string {
       lines.push(`    ${n.shelf.padEnd(20)}  ${String(n.lines).padStart(4)}/${n.cap}${full}`);
     }
   }
+  // Usage-ring occupancy (issue #206): the log's own fill vs its cap, so "why did
+  // my window lose older data" is answerable at a glance — the analogue, for the
+  // monitoring log, of the per-shelf cap pressure just above. Total occupancy
+  // (not the windowed call count), flagged FULL when it has reached the cap.
+  const ring = rep.usageRing;
+  const ringFull = ring.rows >= ring.cap ? '  FULL' : '';
+  lines.push(`  usage ring: ${ring.rows}/${ring.cap} rows${ringFull}`);
+  // Crash-recovery readout (issue #309): the two previously-silent signs a prior
+  // nb died mid-write — stale locks stolen and leftover temps reaped — summed over
+  // the window. Deployment-wide (like the usage ring), so it is not shelf-scoped.
+  // Shown even at zero (the healthy normal) so its absence can't be mistaken for
+  // "not measured"; a nonzero count tells an operator agents are crashing
+  // mid-mutation. A trailing marker calls out any nonzero count at a glance.
+  const cr = rep.crashRecovery;
+  const crMark = cr.lockSteals > 0 || cr.tempReaps > 0 ? '  ⚠ crashes recovered' : '';
+  lines.push(
+    `  crash recovery: ${cr.lockSteals} stale lock${cr.lockSteals === 1 ? '' : 's'} stolen, ` +
+      `${cr.tempReaps} leftover temp${cr.tempReaps === 1 ? '' : 's'} reaped (window)${crMark}`,
+  );
   return lines.join('\n');
 }
 
@@ -1411,6 +2420,83 @@ export function settleCliExit(result: Promise<number>): Promise<void> {
   );
 }
 
+// Guard `stdout`/`stderr` against broken-pipe (`EPIPE`) errors. When a reader
+// closes the pipe early — `nb show <shelf> | head -1`, `… | grep -q foo`, or
+// quitting a pager before it drains — a write to the now-closed pipe emits an
+// async `error` event on the stream. Node installs no default listener for it,
+// so without this it surfaces as an uncaught `Error: write EPIPE` with a stack
+// trace on stderr and an abnormal (non-zero) exit — noisy for interactive use
+// and liable to trip scripts and hooks that pipe `nb` output (issue #246).
+//
+// The handler exits cleanly on `EPIPE`: the reader we were writing to is gone,
+// so there is nothing left to say and nothing to flush. It uses `process.exit()`
+// with no argument — which honors any already-set `process.exitCode` — rather
+// than a hard `exit(0)`: a broken pipe during normal output leaves `exitCode`
+// unset and so exits 0 (the benign case), but `settleCliExit`'s fatal path sets
+// `exitCode = 1` *before* its stderr write, so an EPIPE on *that* write still
+// exits 1 and a crash can never leak out as success (DP-5). Any *other* stream
+// error is re-thrown so a genuine write failure still surfaces loudly and is
+// never silently swallowed. `.then(onFulfilled, onRejected)` in `settleCliExit`
+// catches a `runNbCli` *rejection* but not an async `error` event on the stdout
+// stream, so that guard and this one are complementary.
+//
+// `streams`/`onEpipe` are injectable so the EPIPE-vs-other branch is unit
+// testable without tearing down the test runner's real stdout.
+export function installPipeGuards(
+  streams: ReadonlyArray<NodeJS.EventEmitter> = [process.stdout, process.stderr],
+  onEpipe: () => void = () => process.exit(),
+): void {
+  const onError = (err: NodeJS.ErrnoException): void => {
+    if (err.code === 'EPIPE') {
+      onEpipe();
+      return;
+    }
+    throw err;
+  };
+  for (const stream of streams) stream.on('error', onError);
+}
+
+// Install SIGINT/SIGTERM handlers so an interrupt during a mutation does not
+// strand the `.nb.lock`. Without a handler these signals have a default "terminate
+// now" disposition: one delivered while a mutation holds the mkdir lock kills the
+// process before withLock's `finally` can run, stranding `.nb.lock` so the NEXT nb
+// call blocks up to staleLockMs + lockGraceMs (~12s by default) before it can steal
+// it — an avoidable stall on a tool whose whole promise is "a call is a
+// millisecond" (issue #247).
+//
+// The load-bearing fix is the disposition change itself: installing ANY handler
+// turns the signal into a deferred JS callback, so the synchronous critical section
+// of an in-flight mutation (withLock's `fn` + its `finally`) runs to completion and
+// releases the lock normally before we exit. The explicit `releaseHeldLock()` is
+// defensive cover for the case of still owning a lock when the handler runs (e.g.
+// were a mutation ever to hold the lock across an `await`); it removes ONLY a lock
+// THIS process owns — never another live `nb`'s, never a fresh lock we are merely
+// spinning on — and is a harmless no-op otherwise.
+//
+// After releasing, exit with the conventional 128+signo code (130 for SIGINT, 143
+// for SIGTERM) so shells and callers see a normal signal-terminated status. Normal,
+// un-signalled exits are untouched: the handler fires only on an actual signal.
+//
+// `release`/`onExit`/`target`/`signals` are injectable so the wiring is unit
+// testable without delivering real signals to the test runner. `onExit` receives
+// the computed exit *code* (128 + signo), not the raw signal number.
+export function installSignalLockRelease(
+  release: () => void = releaseHeldLock,
+  onExit: (code: number) => void = (code) => process.exit(code),
+  target: NodeJS.EventEmitter = process,
+  signals: ReadonlyArray<readonly [NodeJS.Signals, number]> = [
+    ['SIGINT', 2],
+    ['SIGTERM', 15],
+  ],
+): void {
+  for (const [name, signo] of signals) {
+    target.on(name, () => {
+      release();
+      onExit(128 + signo);
+    });
+  }
+}
+
 /* c8 ignore start */
 // `process.argv[1]` is the invoked path (e.g. an npm bin symlink such as
 // node_modules/.bin/nb); `import.meta.url` resolves through that symlink to
@@ -1427,6 +2513,8 @@ function isMainModule(): boolean {
 }
 
 if (isMainModule()) {
+  installPipeGuards();
+  installSignalLockRelease();
   void settleCliExit(runNbCli(process.argv.slice(2)));
 }
 /* c8 ignore stop */

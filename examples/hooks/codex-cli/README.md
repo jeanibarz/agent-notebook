@@ -32,6 +32,10 @@ cp ../../nb-git-wrapper.mjs ~/.local/bin/nb && chmod +x ~/.local/bin/nb
 (cd "$(nb path)" && git init)          # make NB_DIR a repo once
 ```
 
+On its first commit the wrapper seeds a default `.gitignore` (only if one is
+absent — your own file is never touched), so the churning usage log, lock, and
+other transient runtime files stay out of history.
+
 Then schedule [`nb-backup.sh`](../../nb-backup.sh) to publish daily (see the
 [harness guide](../../../docs/harness-setup.md#backup)).
 

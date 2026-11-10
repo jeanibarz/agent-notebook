@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync, readdirSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -17,13 +17,24 @@ const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 // throws. Everything delegates to the real fs; when `events` is null and
 // `failDirFsync` is false (the default, reset in afterEach) behavior is identical
 // to the unwrapped module, so every other test is unaffected.
-const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null }));
+const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null, failReadOnceCode: null as string | null, failCodelessRead: false }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
     readFileSync: ((path: Parameters<typeof actual.readFileSync>[0], opts?: Parameters<typeof actual.readFileSync>[1]) => {
       fsHook.reads?.push(String(path)); // capture read paths (opt-in; null by default)
+      if (fsHook.failCodelessRead && String(path).endsWith('.md')) {
+        // Simulate a throw with NO errno `code` (a parser TypeError on malformed
+        // input, a programming bug) — not a filesystem read failure (issue #332).
+        throw new TypeError('simulated parser bug (no errno)');
+      }
+      if (fsHook.failReadOnceCode !== null && String(path).endsWith('.md')) {
+        // One-shot fault injection (issue #300): simulate the file vanishing / failing after existsSync.
+        const code = fsHook.failReadOnceCode;
+        fsHook.failReadOnceCode = null;
+        throw Object.assign(new Error(`${code}: injected read failure for ${path}`), { code });
+      }
       return actual.readFileSync(path, opts as never);
     }) as typeof actual.readFileSync,
     fsyncSync: (fd: number) => {
@@ -45,6 +56,19 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       return actual.renameSync(from, to);
     }) as typeof actual.renameSync,
+    mkdirSync: ((path: Parameters<typeof actual.mkdirSync>[0], opts?: Parameters<typeof actual.mkdirSync>[1]) => {
+      // Opt-in fault injection for withLock's acquire path (issue #263): make the
+      // `mkdirSync(.nb.lock)` that acquires the lock throw a specific errno code
+      // (EACCES/EROFS/ENOSPC/…), simulating an unwritable NB_DIR. Scoped to the
+      // lock dir only so the recursive `mkdirSync(dir, { recursive: true })` that
+      // precedes it still creates the store.
+      if (fsHook.failLockMkdirCode !== null && String(path).endsWith('.nb.lock')) {
+        const err = new Error(`${fsHook.failLockMkdirCode}: injected mkdir failure for ${path}`) as NodeJS.ErrnoException;
+        err.code = fsHook.failLockMkdirCode;
+        throw err;
+      }
+      return actual.mkdirSync(path, opts as never);
+    }) as typeof actual.mkdirSync,
   };
 });
 
@@ -57,10 +81,12 @@ import {
   dedupKey,
   diagnoseEngagement,
   entryId,
+  formatEvictedUsage,
   similarity,
   getDescription,
   getMetaValue,
   isMetaLine,
+  isConflictMarker,
   isValidWindow,
   listNotebooks,
   listRoles,
@@ -77,17 +103,24 @@ import {
   notebookExists,
   parseUsage,
   parseWindowMs,
+  noteRecovery,
+  drainPendingRecovery,
+  stealStale,
   readEntries,
   reapLeftoverTemps,
   readMetaLines,
+  readShelf,
   remove,
   render,
+  renderEntries,
   sanitizeLesson,
   asciiMode,
   search,
   setDescription,
   setMetaValue,
   showJson,
+  showJsonMany,
+  staleCandidates,
   sparkGlyphs,
   sparkline,
   split,
@@ -95,21 +128,59 @@ import {
   STATS_SCHEMA_VERSION,
   usageRing,
   usageRingSlack,
+  expandHomeDir,
+  notebooksDir,
   vote,
+  voteMany,
+  releaseHeldLock,
+  withLock,
+  resolveIntEnv,
 } from './notebook.js';
+import { runNbCli } from './cli.js';
 
 let dir: string;
 const SAVED = { ...process.env };
+// Every NB_* env var this suite reads or sets. Hoisted to one list so the
+// clean-baseline `beforeEach` and the restore-to-parent `afterEach` can never
+// drift apart (issue #230).
+const MANAGED_ENV = [
+  'NB_MAX_LINES',
+  'NB_MAX_CHARS',
+  'NB_USAGE_RING',
+  'NB_NEAR_DUP',
+  'NB_LOOP_N',
+  'NB_LOOP_WINDOW_S',
+  'NB_SILENT_H',
+  'NB_ERR_MIN',
+  'NB_ERR_RATE',
+  'NB_SESSION',
+  'NB_COVERAGE_HI',
+  'NB_RECALL_MISS_HI',
+  'NB_STALE_LOCK_MS',
+  'NB_LOCK_GRACE_MS',
+] as const;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'agent-notebook-'));
+  // Establish a clean baseline: clear every managed NB_* var so an ambient
+  // value the host exported (most often NB_SESSION — agents and CI-adjacent
+  // tooling set it) cannot leak into a test that assumes it is unset. A test
+  // that needs a variable set already sets it explicitly (issue #230).
+  for (const k of MANAGED_ENV) delete process.env[k];
+  // The crash-recovery tally (issue #309) is process-global module state, not
+  // env: reset it so a steal/reap in one test (counted via withLock but not yet
+  // drained by a logUsage) can never leak its count into a later test's row.
+  drainPendingRecovery();
 });
 afterEach(() => {
-  for (const k of ['NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_USAGE_RING', 'NB_NEAR_DUP', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SILENT_H', 'NB_ERR_MIN', 'NB_ERR_RATE', 'NB_SESSION', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI', 'NB_STALE_LOCK_MS', 'NB_LOCK_GRACE_MS']) {
+  for (const k of MANAGED_ENV) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
   fsHook.reads = null; // leave the shared read hook off for tests that don't opt in
+  fsHook.failLockMkdirCode = null; // clear lock-mkdir fault injection (issue #263) so it can never leak into another test
+  fsHook.failReadOnceCode = null; // clear one-shot read fault injection (issue #300)
+  fsHook.failCodelessRead = false; // clear codeless-throw fault injection (issue #332)
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -139,6 +210,73 @@ describe('add / read / render', () => {
 
   test('empty notebook renders a friendly message', () => {
     expect(render(dir, 'nobody')).toContain('is empty');
+  });
+});
+
+describe('voteMany (batch vote)', () => {
+  test('applies one delta to several ids and persists all score changes', async () => {
+    await addEntry(dir, 'v', 'alpha');
+    await addEntry(dir, 'v', 'bravo');
+    await addEntry(dir, 'v', 'charlie');
+    const res = await voteMany(dir, 'v', [entryId('alpha'), entryId('charlie')], 1);
+    expect(res.map((r) => r.id)).toEqual([entryId('alpha'), entryId('charlie')]);
+    expect(res.every((r) => r.error === undefined)).toBe(true);
+    const byText = Object.fromEntries(readEntries(dir, 'v').map((e) => [e.text, e.score]));
+    expect(byText).toEqual({ alpha: 2, bravo: 1, charlie: 2 });
+  });
+
+  test('best-effort: an unresolved id is reported but never aborts the rest', async () => {
+    await addEntry(dir, 'v', 'alpha');
+    await addEntry(dir, 'v', 'bravo');
+    const res = await voteMany(dir, 'v', [entryId('alpha'), 'ffffff', entryId('bravo')], 1);
+    const landed = res.filter((r) => r.id !== undefined);
+    const failed = res.filter((r) => r.error !== undefined);
+    expect(landed.map((r) => r.id)).toEqual([entryId('alpha'), entryId('bravo')]);
+    expect(failed).toHaveLength(1);
+    expect(failed[0].selector).toBe('ffffff');
+    const byText = Object.fromEntries(readEntries(dir, 'v').map((e) => [e.text, e.score]));
+    expect(byText).toEqual({ alpha: 2, bravo: 2 });
+  });
+
+  test('when no id resolves, nothing is written and every item carries an error', async () => {
+    await addEntry(dir, 'v', 'alpha');
+    const res = await voteMany(dir, 'v', ['ffffff', 'eeeeee'], 1);
+    expect(res.every((r) => r.error !== undefined && r.id === undefined)).toBe(true);
+    expect(readEntries(dir, 'v')).toEqual([{ score: 1, text: 'alpha' }]);
+  });
+
+  test('a repeated id votes twice but the file keeps exactly one row for it', async () => {
+    await addEntry(dir, 'v', 'alpha');
+    const res = await voteMany(dir, 'v', [entryId('alpha'), entryId('alpha')], 1);
+    expect(res).toHaveLength(2);
+    const entries = readEntries(dir, 'v');
+    expect(entries).toEqual([{ score: 3, text: 'alpha' }]); // +1 base, +1, +1
+  });
+
+  test('touched entries move to the fresh end in first-touch order (recency preserved)', async () => {
+    await addEntry(dir, 'v', 'alpha'); // oldest
+    await addEntry(dir, 'v', 'bravo');
+    await addEntry(dir, 'v', 'charlie'); // newest
+    // File order is least-recently-touched first: alpha, bravo, charlie.
+    await voteMany(dir, 'v', [entryId('charlie'), entryId('alpha')], 1);
+    // charlie then alpha are touched → they move to the end in that order; bravo
+    // (untouched) is now the stalest, so file order is bravo, charlie, alpha.
+    expect(readEntries(dir, 'v').map((e) => e.text)).toEqual(['bravo', 'charlie', 'alpha']);
+  });
+
+  test('a batch downvote lowers every targeted score', async () => {
+    await addEntry(dir, 'v', 'alpha');
+    await addEntry(dir, 'v', 'bravo');
+    await voteMany(dir, 'v', [entryId('alpha'), entryId('bravo')], -1);
+    const byText = Object.fromEntries(readEntries(dir, 'v').map((e) => [e.text, e.score]));
+    expect(byText).toEqual({ alpha: 0, bravo: 0 });
+  });
+
+  test('rejects a bad delta, an empty selector list, and an empty shelf', async () => {
+    await addEntry(dir, 'v', 'alpha');
+    await expect(voteMany(dir, 'v', [entryId('alpha')], 2)).rejects.toThrow(/delta/);
+    await expect(voteMany(dir, 'v', [], 1)).rejects.toThrow(/at least one/);
+    await expect(voteMany(dir, 'empty', [entryId('alpha')], 1)).rejects.toThrow(/empty/);
   });
 });
 
@@ -258,6 +396,7 @@ describe('caps', () => {
     expect(r.added).toBe(false);
     expect(r.reason).toBe('too-long');
     expect(r.length).toBe(50);
+    expect(r.overflow).toBe(20); // 50 - 30: how much to trim (issue #239)
     expect(readEntries(dir, 'c')).toHaveLength(0); // nothing stored
     const ok = await addEntry(dir, 'c', 'y'.repeat(30)); // exactly at the cap
     expect(ok.added).toBe(true);
@@ -343,6 +482,172 @@ describe('caps', () => {
     expect(byText.ddd).toBe(1);
   });
 
+  test('an add under the cap neither evicts nor decays (issue #293)', async () => {
+    process.env.NB_MAX_LINES = '3';
+    const r = await addEntry(dir, 'u', 'only');
+    expect(r.decayed).toBeNull();
+    expect(r.evicted).toBeNull();
+  });
+
+  test('add returns the stalest survivor as `decayed` with its POST-dock score; eviction target is unchanged', async () => {
+    process.env.NB_MAX_LINES = '3';
+    await addEntry(dir, 'g', 'aaa');
+    await addEntry(dir, 'g', 'bbb');
+    await addEntry(dir, 'g', 'ccc');
+    await vote(dir, 'g', 'aaa', 1);
+    const r = await addEntry(dir, 'g', 'ddd');
+    expect(r.evicted?.text).toBe('bbb'); // unchanged eviction behaviour
+    expect(r.decayed?.text).toBe('ccc');
+    expect(r.decayed?.score).toBe(0); // +1 -> 0 (post-dock)
+  });
+
+  test('a dock on a voted-up line reports the post-dock score (pre-decay > 1)', async () => {
+    process.env.NB_MAX_LINES = '2';
+    await addEntry(dir, 'v', 'stale high lesson');
+    for (let i = 0; i < 2; i++) await vote(dir, 'v', 'stale high', 1); // -> +3
+    await addEntry(dir, 'v', 'filler lesson');
+    const r = await addEntry(dir, 'v', 'newcomer');
+    expect(r.evicted?.text).toBe('filler lesson');
+    expect(r.decayed?.text).toBe('stale high lesson');
+    expect(r.decayed?.score).toBe(2); // 3 -> 2
+  });
+
+  test('move, merge and split also return decayed (split also returns evicted)', async () => {
+    process.env.NB_MAX_LINES = '3';
+    for (const t of ['aaa', 'bbb', 'ccc']) await addEntry(dir, 'dst', t);
+    await addEntry(dir, 'src', 'mover');
+    const m = await move(dir, 'src', 'dst', 'mover');
+    expect(m.evicted?.text).toBe('aaa');
+    expect(m.decayed?.text).toBe('bbb');
+
+    for (const t of ['one', 'two', 'three']) await addEntry(dir, 'sp', t);
+    const sp = await split(dir, 'sp', 'one', 'half alpha', 'half beta');
+    expect(sp.evicted).not.toBeNull();
+    expect(sp.decayed).not.toBeNull();
+
+    process.env.NB_MAX_LINES = '5';
+    for (const t of ['m1', 'm2', 'm3', 'm4', 'm5']) await addEntry(dir, 'mg', t);
+    process.env.NB_MAX_LINES = '3';
+    const mg = await merge(dir, 'mg', 'm1', 'm2', 'm1 and m2 merged');
+    expect(mg.decayed).not.toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Mass eviction on a lowered cap (issue #306)
+  // ---------------------------------------------------------------------------
+  //
+  // Lowering NB_MAX_LINES below a full shelf's size makes the next mutation trim
+  // the shelf all the way down in ONE call — many evictions at once. Before #306
+  // the result and the usage `evicted` column surfaced only the FIRST, so a
+  // data-loss event was under-reported to one entry and the
+  // eviction-while-still-voted signal that reads that column missed the scale.
+  describe('mass eviction on a lowered cap (issue #306)', () => {
+    test('add on a shelf filled to 50 then capped at 10 evicts all 41 and reports every one', async () => {
+      process.env.NB_MAX_LINES = '50';
+      for (let i = 0; i < 50; i++) await addEntry(dir, 'patcher', `lesson ${i}`);
+      expect(readEntries(dir, 'patcher')).toHaveLength(50); // full, nothing evicted yet
+
+      process.env.NB_MAX_LINES = '10';
+      const r = await addEntry(dir, 'patcher', 'the newcomer');
+
+      expect(r.size).toBe(10); // trimmed to the new cap
+      expect(r.evictedAll).toHaveLength(41); // 50 + 1 newcomer − 10
+      expect(r.evicted).toBe(r.evictedAll[0]); // primary is still the first evicted
+      // The protected newcomer is never among the evicted — only the pre-existing lessons left.
+      expect(r.evictedAll.some((e) => e.text === 'the newcomer')).toBe(false);
+      expect(r.evictedAll.every((e) => /^lesson \d+$/.test(e.text))).toBe(true);
+    });
+
+    test('a single over-cap add still reports exactly one eviction (common case unchanged)', async () => {
+      process.env.NB_MAX_LINES = '3';
+      for (const t of ['a', 'b', 'c']) await addEntry(dir, 's', t);
+      const r = await addEntry(dir, 's', 'd'); // 3 → 4, cap 3 ⇒ one eviction
+      expect(r.evictedAll).toHaveLength(1);
+      expect(r.evicted).toBe(r.evictedAll[0]);
+    });
+
+    test('move into a target filled to 10 then capped at 3 evicts all the overflow', async () => {
+      process.env.NB_MAX_LINES = '10';
+      for (let i = 0; i < 10; i++) await addEntry(dir, 'dst', `d${i}`);
+      await addEntry(dir, 'src', 'relocated');
+      process.env.NB_MAX_LINES = '3';
+      const r = await move(dir, 'src', 'dst', 'relocated');
+      expect(r.toSize).toBe(3);
+      expect(r.evictedAll).toHaveLength(8); // 10 + 1 moved − 3
+      expect(r.evicted).toBe(r.evictedAll[0]);
+      expect(r.evictedAll.some((e) => e.text === 'relocated')).toBe(false); // the moved lesson is protected
+    });
+
+    test('formatEvictedUsage: empty → "", single pair is byte-identical to the pre-#306 format', () => {
+      expect(formatEvictedUsage([])).toBe('');
+      expect(formatEvictedUsage([{ score: 3, text: 'solo' }])).toBe(`${entryId('solo')}:3`);
+    });
+
+    test('formatEvictedUsage: a short list records every pair in order', () => {
+      const evicted = [
+        { score: 2, text: 'one' },
+        { score: 5, text: 'two' },
+        { score: 1, text: 'three' },
+      ];
+      expect(formatEvictedUsage(evicted)).toBe(
+        `${entryId('one')}:2,${entryId('two')}:5,${entryId('three')}:1`,
+      );
+    });
+
+    test('formatEvictedUsage: a huge list is byte-bounded by maxChars with a count-preserving +N marker', () => {
+      const evicted = Array.from({ length: 41 }, (_, i) => ({ score: 1, text: `evicted lesson number ${i}` }));
+      const field = formatEvictedUsage(evicted);
+      expect(field.length).toBeLessThanOrEqual(maxChars()); // never blows the usage ring's per-row budget
+
+      const tokens = field.split(',');
+      const markers = tokens.filter((t) => t.startsWith('+'));
+      expect(markers).toHaveLength(1); // exactly one trailing overflow marker
+      const pairs = tokens.filter((t) => !t.startsWith('+'));
+      // Every listed token is a well-formed `<id>:<score>` pair (no mangled half-id).
+      for (const p of pairs) expect(p).toMatch(/^[0-9a-f]{6}:-?\d+$/);
+      // The TOTAL evicted count is recoverable: listed pairs + the dropped count.
+      const dropped = Number(markers[0].slice(1));
+      expect(pairs.length + dropped).toBe(41);
+      expect(pairs.length).toBeGreaterThan(1); // many are listed, not just one
+    });
+
+    test('eviction-while-still-voted counts EVERY still-voted entry in one mass eviction, not just the first', () => {
+      // One add row whose evicted column lists three evictions: two still above
+      // the +1 start (3 and 2) and one at the floor (1). Both still-voted ones
+      // must surface a signal; the floor one must not.
+      const evicted = [
+        { score: 3, text: 'still useful A' },
+        { score: 2, text: 'still useful B' },
+        { score: 1, text: 'never voted C' },
+      ];
+      logUsage(dir, 'patcher', 'add', true, 2, {
+        session: 's1',
+        entries: ['new999'],
+        outcome: 'accepted',
+        evicted: formatEvictedUsage(evicted),
+      });
+      const rep = stats(dir, { now: Date.now() });
+      const sigs = rep.signals.filter((s) => s.kind === 'eviction-while-still-voted');
+      expect(sigs.map((s) => s.entry).sort()).toEqual(
+        [entryId('still useful A'), entryId('still useful B')].sort(),
+      );
+    });
+
+    test('eviction-while-still-voted ignores the +N overflow marker (no phantom signal)', () => {
+      logUsage(dir, 'patcher', 'add', true, 2, {
+        session: 's1',
+        entries: ['new999'],
+        outcome: 'accepted',
+        evicted: `${entryId('still voted')}:4,+40`, // one real pair + a 40-dropped marker
+      });
+      const rep = stats(dir, { now: Date.now() });
+      const sigs = rep.signals.filter((s) => s.kind === 'eviction-while-still-voted');
+      expect(sigs).toHaveLength(1);
+      expect(sigs[0].entry).toBe(entryId('still voted'));
+      expect(sigs.some((s) => (s.entry ?? '').startsWith('+'))).toBe(false);
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // Randomized invariant sweep (issue #189)
   // ---------------------------------------------------------------------------
@@ -369,7 +674,9 @@ describe('caps', () => {
   //      docked EXACTLY ONE point; every other survivor is unchanged;
   //   5. a vote applies ±delta to its target and moves it to the fresh end — the
   //      recency signal the staleness targeting in (4) is built on.
-  test('randomized add/vote sequences never break the cap/eviction/decay invariants', async () => {
+  // [slow]: ~19s of durable fsync writes (300 sequences × 6 ops). Tagged so the
+  // `test:fast` inner loop skips it (issue #232); `npm test` and CI still run it.
+  test('randomized add/vote sequences never break the cap/eviction/decay invariants [slow]', async () => {
     // A tiny self-contained PRNG (mulberry32): deterministic given its seed, so
     // every sequence — and any failure — reproduces exactly. Zero dependency,
     // matching the round-trip generator below.
@@ -498,7 +805,9 @@ describe('serialization round-trip', () => {
   // Integer scores spanning negative, zero, the +1 default, and the +N path.
   const SCORES = [-3, 0, 1, 4];
 
-  test('format→parse recovers every (score, lesson) pair through the on-disk codec', async () => {
+  // [slow]: a randomized round-trip fuzz over the on-disk codec; tagged so the
+  // `test:fast` inner loop skips it (issue #232), the full `npm test` keeps it.
+  test('format→parse recovers every (score, lesson) pair through the on-disk codec [slow]', async () => {
     let n = 0;
     let exercised = 0;
     for (const raw of RAW_LESSONS) {
@@ -593,6 +902,51 @@ describe('serialization round-trip', () => {
       { score: 0, text: 'padded bare lesson' },
       { score: 0, text: 'café unicode bare lesson 🧠' },
     ]);
+  });
+
+  test('sanitizeLesson strips ESC/NUL/C1/bidi/zero-width but keeps emoji ZWJ and non-ASCII (issue #335)', () => {
+    // ESC, BEL, NUL, DEL, a C1 control, ZWSP, RTL override, word joiner, BOM, isolate.
+    const evil = 'a\u001b[31mred\u001b[0m\u0007b\u0000c\u007fd\u0085e\u200bf\u202eg\u2060h\uFEFFi\u2066j';
+    const clean = sanitizeLesson(evil);
+    expect(clean).toBe('a[31mred[0mbcdefghij');
+    // No raw control / bidi / zero-width bytes survive.
+    expect(clean).not.toMatch(/[\u0000-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/);
+    // Emoji ZWJ sequence (ZWJ U+200D) and a variation selector are preserved.
+    const family = '\u{1F469}\u200D\u{1F469}\u200D\u{1F467}';
+    expect(sanitizeLesson(`keep ${family} 👍🏽 café 漢字`)).toBe(`keep ${family} 👍🏽 café 漢字`);
+  });
+
+  test('VT and FF stay whitespace: they become a space, not a deletion (issue #335)', () => {
+    expect(sanitizeLesson('page1\fpage2')).toBe('page1 page2');
+    expect(sanitizeLesson('a\vb\u000b\u000cc')).toBe('a b c');
+  });
+
+  test('a lesson with control bytes is stored clean and the exact-dup check sees through ZWSP (issue #335)', async () => {
+    expect((await addEntry(dir, 's', 'x\u001b[31my\u0000z\u202e!')).added).toBe(true);
+    expect(readEntries(dir, 's')[0].text).toBe('x[31myz!');
+    expect((await addEntry(dir, 'z', 'ab')).added).toBe(true);
+    const zwsp = await addEntry(dir, 'z', 'a\u200bb');
+    expect(zwsp.added).toBe(false);
+    expect(zwsp.reason).toBe('duplicate');
+    expect(readEntries(dir, 'z')).toHaveLength(1);
+  });
+
+  test('show/list/search output contains no raw control bytes (issue #335)', async () => {
+    await addEntry(dir, 's', 'ansi \u001b[31mred\u001b[0m \u001b]0;title\u0007 injected');
+    await setDescription(dir, 's', 'desc \u001b[31mred\u0000');
+    // A pre-existing file that already holds an ESC byte (stored before the rule).
+    writeFileSync(join(dir, 'old.md'), '+1\tlegacy \u001b[31mred\u001b[0m line\n', 'utf-8');
+    const bad = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/;
+    expect(render(dir, 's')).not.toMatch(bad);
+    expect(renderEntries('s', readEntries(dir, 's'))).not.toMatch(bad);
+    expect(render(dir, 'old')).not.toMatch(bad);
+    expect(render(dir, 'old')).toContain('legacy [31mred[0m line');
+    const listing = listNotebooks(dir);
+    expect(JSON.stringify(listing)).not.toMatch(bad);
+    expect(listing.rows.find((r) => r.shelf === 's')!.desc).toBe('desc [31mred');
+    const found = search(dir, 'red');
+    expect(JSON.stringify(found)).not.toMatch(bad);
+    expect(showJson(dir, 's').description).toBe('desc [31mred');
   });
 
   test('sanitizeLesson is idempotent — a second pass is a fixed point', () => {
@@ -926,10 +1280,105 @@ describe('operation reasons (seed-and-grow enum)', () => {
     expect(row.note.length).toBeLessThanOrEqual(maxChars());
     expect(row.note.endsWith('…')).toBe(true);
   });
+
+  test('a broad search row\'s entries id-list is truncated so one row stays byte-bounded (issue #264)', () => {
+    process.env.NB_MAX_CHARS = '50'; // small, explicit cap for the assertion
+    // A `search match` row records the FULL pre-limit surfacedIds — every hit
+    // across every matching notebook — so a one-term search over many shelves
+    // can write hundreds of ids. Without a cap the usageRing bounds the ROW
+    // COUNT but not the BYTES, re-opening the gap #128/#202 closed for the
+    // free-text columns.
+    const manyIds = Array.from({ length: 500 }, (_, i) => `id${i}`);
+    expect(() => logUsage(dir, '-', 'search', true, 1, { entries: manyIds, outcome: 'match' })).not.toThrow();
+
+    const row = parseUsage(dir)[0];
+    const stored = row.entries.join(',');
+    // The stored id-list is bounded by maxChars(): one broad row cannot bloat
+    // the ring past ring-count × per-row cap.
+    expect(stored.length).toBeLessThanOrEqual(maxChars());
+    expect(stored.length).toBeGreaterThan(0); // some ids survive at cap 50
+    // Truncation keeps WHOLE ids from the front (no mangled half-id) and is
+    // SILENT — no sentinel token, because the column is iterated per id by the
+    // diagnostic consumers and a marker would leak in as a phantom entry id.
+    // Every stored token is one of the originals, in order, a prefix of the full
+    // list — and NONE is the ellipsis a `note`-style cap would have appended.
+    expect(row.entries).toEqual(manyIds.slice(0, row.entries.length));
+    expect(row.entries).not.toContain('…');
+    // parseUsage round-trips the now-bounded entries (the whole ROW is bounded
+    // too — the id-list no longer dominates the line).
+    const onDisk = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
+    expect(onDisk.trimEnd().length).toBeLessThanOrEqual(maxChars() + 200);
+  });
+
+  test('a real one-term search over many near-full shelves writes a bounded search row (issue #264 acceptance)', async () => {
+    process.env.NB_MAX_CHARS = '40';
+    process.env.NB_MAX_LINES = '3'; // tiny shelves so the fixture stays fast
+    // Build many shelves each near maxLines, every lesson sharing a term so one
+    // search hits most of them and surfaces an id per hit — the pathological
+    // broad-match shape the issue describes.
+    const shelfCount = 12;
+    for (let s = 0; s < shelfCount; s++) {
+      for (let l = 0; l < maxLines(); l++) {
+        await addEntry(dir, `shelf${s}`, `widget lesson ${s}-${l} about handling`);
+      }
+    }
+    const result = search(dir, 'widget');
+    // The search really is broad: its full id-list is far longer than one cap,
+    // so truncation genuinely fires on this path (not a no-op assertion).
+    expect(result.surfacedIds.join(',').length).toBeGreaterThan(maxChars());
+    // Log it exactly as the CLI's `search match` path does (meta.entries =
+    // result.surfacedIds) and assert the written row is byte-bounded.
+    logUsage(dir, '-', 'search', true, 1, { entries: result.surfacedIds, outcome: 'match' });
+    const searchRow = parseUsage(dir).find((r) => r.command === 'search');
+    expect(searchRow).toBeDefined();
+    expect(searchRow!.entries.join(',').length).toBeLessThanOrEqual(maxChars());
+    // Every stored token round-trips as a real surfaced id, whole and in order —
+    // and the truncation left no phantom sentinel token behind.
+    expect(searchRow!.entries).toEqual(result.surfacedIds.slice(0, searchRow!.entries.length));
+    expect(searchRow!.entries).not.toContain('…');
+  });
+
+  test('a capped entries list never injects a sentinel token into the per-id diagnostic consumers (issue #264)', () => {
+    process.env.NB_MAX_CHARS = '50';
+    // A batch `vote` — NOT just `search` — can also overflow the cap, and the
+    // vote-reversal / loop detectors iterate `r.entries` per id. Assert the
+    // truncated row carries only genuine ids, so no phantom `…` can forge a
+    // cross-session vote-reversal for a non-existent entry.
+    const manyIds = Array.from({ length: 60 }, (_, i) => `v${i}`);
+    logUsage(dir, 's', 'vote', true, 1, { entries: manyIds, outcome: 'up' });
+    const row = parseUsage(dir)[0];
+    expect(row.entries.join(',').length).toBeLessThanOrEqual(maxChars());
+    for (const id of row.entries) expect(manyIds).toContain(id); // every token is a real id
+  });
+
+  test('an entries id-list at exactly the cap is kept byte-identical; one over is truncated to whole ids (issue #264 boundary)', () => {
+    process.env.NB_MAX_CHARS = '20';
+    // Just within the cap: the joined column is 19 ≤ 20, so it is stored whole —
+    // this pins the `<= cap` boundary (a `< cap` / `cap - 1` bound would wrongly
+    // start dropping ids before the real limit).
+    const exact = ['aaaaa', 'bbbbb', 'ccccccc']; // joined = "aaaaa,bbbbb,ccccccc" = 19 ≤ 20
+    logUsage(dir, 's', 'split', true, 1, { entries: exact, outcome: 'split' });
+    expect(parseUsage(dir)[0].entries).toEqual(exact); // byte-identical, nothing dropped
+    // One id too many pushes the join over the cap → the overflowing id is
+    // dropped WHOLE (no mangled half-id, no sentinel).
+    const over = [...exact, 'eeee']; // joined = 24 > 20
+    logUsage(dir, 's', 'split', true, 1, { entries: over, outcome: 'split' });
+    const second = parseUsage(dir)[1].entries;
+    expect(second.join(',').length).toBeLessThanOrEqual(maxChars());
+    expect(second).toEqual(exact); // the first four fit (19 ≤ 20); 'eeee' dropped whole
+  });
+
+  test('an entries id-list within the cap is stored byte-identical (issue #264)', () => {
+    process.env.NB_MAX_CHARS = '50';
+    logUsage(dir, 's', 'split', true, 1, { entries: ['aaa', 'bbb', 'ccc'], outcome: 'split' });
+    const row = parseUsage(dir)[0];
+    // Sub-cap: unchanged — the common case and old on-disk rows are untouched.
+    expect(row.entries).toEqual(['aaa', 'bbb', 'ccc']);
+  });
 });
 
 describe('usage-log TSV wire format (golden, issue #126)', () => {
-  // The usage log is a positional 13-column TSV read back by parseUsage and, for
+  // The usage log is a positional 16-column TSV read back by parseUsage and, for
   // pre-upgrade rings, by any older reader that looks only at the first five
   // columns. The behavioral round-trip tests above all go THROUGH parseUsage, so
   // a reorder or insertion of a column would round-trip cleanly while silently
@@ -938,18 +1387,26 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
   // reorder/insert/remove fails here and becomes a deliberate, visible change.
 
   // The documented column order (notebook.ts logUsage): ts, shelf, command, ok,
-  // ms, session, entries, outcome, collided, evicted, reason, note, errorClass.
-  // `errorClass` (issue #176) is the trailing column — appended after `note` so a
-  // pre-#176 row (which ends at `note`) still reads every prior field in place.
+  // ms, session, entries, outcome, collided, evicted, reason, note, errorClass,
+  // decayed, recovered, misses. `misses` (issue #310) is the current trailing
+  // column — appended after `recovered` (#309), itself after `decayed` (#293),
+  // itself after `errorClass` (#176) — so a row from before any of them ends
+  // earlier and still reads every prior field in place.
   const COLUMN_ORDER = [
     'ts', 'shelf', 'command', 'ok', 'ms', 'session',
-    'entries', 'outcome', 'collided', 'evicted', 'reason', 'note', 'errorClass',
+    'entries', 'outcome', 'collided', 'evicted', 'reason', 'note', 'errorClass', 'decayed', 'recovered', 'misses',
   ] as const;
 
-  test('a fully-populated row serializes as exactly 13 tab-separated columns in the documented order', () => {
+  test('a fully-populated row serializes as exactly 16 tab-separated columns in the documented order', () => {
     // Distinct, recognizable value per column so a swap of any two columns is
     // detectable (not just a count change) — generic values would let a reorder
-    // pass. ms=1234 and ok=true pin the `1234ms` / `ok` renderings too.
+    // pass. ms=1234 and ok=true pin the `1234ms` / `ok` renderings too. The
+    // `recovered` column (issue #309) is system-recorded, not a meta field, so we
+    // prime the process tally the way withLock does and let logUsage drain it,
+    // giving a distinct `2:1` to pin its position and serialization. `misses`
+    // (issue #310) is a distinct `3` to pin the trailing column.
+    noteRecovery('lock-steal', 2);
+    noteRecovery('temp-reap', 1);
     logUsage(dir, 'myshelf', 'merge', true, 1234, {
       session: 'sess-7',
       entries: ['aaa', 'bbb'],
@@ -959,6 +1416,8 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       reason: 'duplicate',
       note: 'some note',
       errorClass: 'too_long',
+      decayed: 'eee:0',
+      misses: 3,
     });
 
     const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
@@ -969,8 +1428,8 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
     expect(linesWritten).toHaveLength(1);
     const cols = linesWritten[0].split('\t');
 
-    // Exactly 13 columns — a removed or injected column fails here first (an
-    // insertion pushes the width past the 13 names in COLUMN_ORDER, a removal
+    // Exactly 16 columns — a removed or injected column fails here first (an
+    // insertion pushes the width past the 16 names in COLUMN_ORDER, a removal
     // below them).
     expect(cols).toHaveLength(COLUMN_ORDER.length);
 
@@ -998,30 +1457,34 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       reason: 'duplicate',
       note: 'some note',
       errorClass: 'too_long',
+      decayed: 'eee:0', // <id>:<postDockScore> (issue #293)
+      recovered: '2:1', // <lockSteals>:<tempReaps> (issue #309)
+      misses: '3', // batch-vote partial misses (issue #310)
     });
   });
 
-  test('err status and an empty-meta row still render the fixed 13-column frame', () => {
+  test('err status and an empty-meta row still render the fixed 16-column frame', () => {
     // A `show`-shaped call fills no richer meta; the trailing columns must still
-    // be present (empty), keeping the frame 13 columns wide — an old reader that
+    // be present (empty), keeping the frame 16 columns wide — an old reader that
     // slices the first five columns depends on this stable prefix. session is
-    // pinned to '' so an ambient NB_SESSION cannot populate column 5.
+    // pinned to '' so an ambient NB_SESSION cannot populate column 5. A read-only
+    // `show` runs no withLock, so the crash-recovery column (#309) is empty too.
     logUsage(dir, 's', 'show', false, 2, { session: '' });
     // Split on the row's own newline, not trimEnd(), so the trailing empty
     // columns (which are tabs) are preserved and counted.
     const line = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').split('\n').filter((l) => l !== '')[0];
     const cols = line.split('\t');
-    expect(cols).toHaveLength(13);
+    expect(cols).toHaveLength(16);
     // The stable 5-column prefix an old reader slices: shelf, command, ok, ms.
     expect(cols.slice(1, 5)).toEqual(['s', 'show', 'err', '2ms']); // ok=false → 'err'
-    // session..errorClass (indices 5..12) are all empty for a bare call.
-    expect(cols.slice(5)).toEqual(['', '', '', '', '', '', '', '']);
+    // session..misses (indices 5..15) are all empty for a bare call.
+    expect(cols.slice(5)).toEqual(['', '', '', '', '', '', '', '', '', '', '']);
   });
 
   test('a legacy 5-column row parses with the newer columns defaulting to blank/empty', () => {
     // The backward-compat contract: a ring written before the richer columns
     // existed holds only ts, shelf, command, ok, ms. It must still parse, with
-    // every appended column (session…errorClass) defaulting to blank/empty.
+    // every appended column (session…recovered) defaulting to blank/empty.
     writeFileSync(
       join(dir, '.nb-usage.log'),
       '2026-01-02T03:04:05.000Z\tp\tadd\tok\t5ms\n',
@@ -1043,18 +1506,52 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       reason: '',
       note: '',
       errorClass: '',
+      decayed: '',
+      recovered: '',
+      misses: 0,
     });
   });
 
-  test('parseUsage pins the READER column order: a hand-typed 13-column row maps each field to its documented position', () => {
+  test('a pre-#309 14-column row (through decayed, no recovered/misses) parses with both trailing columns blank', () => {
+    // The real on-disk state right after an upgrade: rows written by the #293
+    // code end at `decayed` (14 columns). Both newer trailing columns — `recovered`
+    // (#309) and `misses` (#310) — must read back blank/0, exactly as every prior
+    // trailing-column addition did.
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      '2026-01-02T03:04:05.000Z\tp\tadd\tok\t5ms\tsess\taaa\taccepted\t\t\t\t\tother\tbbb:0\n',
+      'utf-8',
+    );
+    const [row] = parseUsage(dir);
+    expect(row.decayed).toBe('bbb:0'); // the last column it DID carry is in place
+    expect(row.recovered).toBe(''); // defaults blank
+    expect(row.misses).toBe(0); // the newest trailing column defaults to 0
+  });
+
+  test('a post-#309 15-column row (through recovered, no misses) parses with misses 0', () => {
+    // The most likely on-disk shape right after THIS upgrade: rows written by the
+    // #309 code end at `recovered` (15 columns). The new trailing `misses` column
+    // must read back 0 without disturbing any prior field.
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      '2026-01-02T03:04:05.000Z\tp\tvote\tok\t5ms\tsess\taaa\tup\t\t\t\t\t\t\t1:0\n',
+      'utf-8',
+    );
+    const [row] = parseUsage(dir);
+    expect(row.recovered).toBe('1:0'); // the last column it DID carry is in place
+    expect(row.misses).toBe(0); // the new trailing column defaults to 0
+  });
+
+  test('parseUsage pins the READER column order: a hand-typed 16-column row maps each field to its documented position', () => {
     // The writer golden above pins logUsage's serialization; this pins the
     // reader independently. parseUsage destructures positionally, so a reorder
     // of ITS destructuring (e.g. swapping collided/evicted) would not be caught
     // by the legacy test (whose richer columns are all blank). A distinct value
-    // per column makes any reader reorder fail this full `toEqual`.
+    // per column makes any reader reorder fail this full `toEqual`. The trailing
+    // `misses` column (issue #310) parses to an integer (`5` here).
     writeFileSync(
       join(dir, '.nb-usage.log'),
-      '2026-01-02T03:04:05.000Z\tmyshelf\tmerge\tok\t1234ms\tsess-7\taaa,bbb\tmerged\tccc\tddd:0.5\tduplicate\tsome note\ttoo_long\n',
+      '2026-01-02T03:04:05.000Z\tmyshelf\tmerge\tok\t1234ms\tsess-7\taaa,bbb\tmerged\tccc\tddd:0.5\tduplicate\tsome note\ttoo_long\teee:0\t2:1\t5\n',
       'utf-8',
     );
     expect(parseUsage(dir)[0]).toEqual({
@@ -1071,22 +1568,25 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       reason: 'duplicate',
       note: 'some note',
       errorClass: 'too_long',
+      decayed: 'eee:0',
+      recovered: '2:1',
+      misses: 5,
     });
   });
 
-  test('parseUsage reads a MIXED post-upgrade ring: a legacy 5-column row followed by a full 13-column row', () => {
+  test('parseUsage reads a MIXED post-upgrade ring: a legacy 5-column row followed by a full 16-column row', () => {
     // The real on-disk state right after an upgrade: old rows written by the
-    // pre-richer-columns code, then new rows with all 13. Both must parse in one
+    // pre-richer-columns code, then new rows with all 16. Both must parse in one
     // file — the legacy row with blank richer columns, the new row fully.
     writeFileSync(
       join(dir, '.nb-usage.log'),
       '2026-01-01T00:00:00.000Z\tp\tadd\tok\t5ms\n' +
-        '2026-01-02T03:04:05.000Z\ts\tmerge\terr\t9ms\tsess\taaa\tmerged\tccc\tddd:0.5\tduplicate\tnote\tbad_args\n',
+        '2026-01-02T03:04:05.000Z\ts\tmerge\terr\t9ms\tsess\taaa\tmerged\tccc\tddd:0.5\tduplicate\tnote\tbad_args\tfff:2\t1:0\t2\n',
       'utf-8',
     );
     const rows = parseUsage(dir);
     expect(rows).toHaveLength(2);
-    // Legacy row: richer columns default to blank/empty.
+    // Legacy row: richer columns default to blank/empty (misses → 0).
     expect(rows[0]).toEqual({
       ts: '2026-01-01T00:00:00.000Z',
       role: 'p',
@@ -1101,6 +1601,9 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       reason: '',
       note: '',
       errorClass: '',
+      decayed: '',
+      recovered: '',
+      misses: 0,
     });
     // Full row: every richer column is parsed into its field.
     expect(rows[1]).toEqual({
@@ -1117,7 +1620,227 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       reason: 'duplicate',
       note: 'note',
       errorClass: 'bad_args',
+      decayed: 'fff:2',
+      recovered: '1:0',
+      misses: 2,
     });
+  });
+});
+
+describe('lock ownership (issue #331)', () => {
+  const lock = () => join(dir, '.nb.lock');
+
+  test("a holder whose lock was stolen does not free the thief's live lock on release", async () => {
+    await withLock(dir, () => {
+      // Simulate: we outlived the stale threshold and thief B took over.
+      rmSync(lock(), { recursive: true });
+      mkdirSync(lock());
+      writeFileSync(join(lock(), 'owner'), 'B.thief-token', 'utf-8');
+    });
+    expect(existsSync(lock())).toBe(true); // A's finally left B's lock in place
+    expect(readFileSync(join(lock(), 'owner'), 'utf-8')).toBe('B.thief-token');
+  });
+
+  test('releaseHeldLock also leaves a thief-owned lock alone', async () => {
+    await withLock(dir, () => {
+      rmSync(lock(), { recursive: true });
+      mkdirSync(lock());
+      writeFileSync(join(lock(), 'owner'), 'B.thief-token', 'utf-8');
+      releaseHeldLock();
+    });
+    expect(existsSync(lock())).toBe(true);
+  });
+
+  test('a normal holder still releases its own lock, owner file and all', async () => {
+    await withLock(dir, () => {
+      expect(readFileSync(join(lock(), 'owner'), 'utf-8')).toMatch(/^\d+\.[0-9a-f]+$/);
+    });
+    expect(existsSync(lock())).toBe(false);
+  });
+
+  test('two waiters racing one stale lock: only one steals; the loser cannot remove the winner\'s live lock', () => {
+    mkdirSync(lock());
+    writeFileSync(join(lock(), 'owner'), 'dead.token', 'utf-8');
+    const aged = Date.now() / 1000 - 20;
+    utimesSync(join(lock(), 'owner'), aged, aged);
+    // B and C both observed token 'dead.token'. B steals and re-creates its own lock.
+    expect(stealStale(lock(), 'dead.token')).toBe(true);
+    mkdirSync(lock());
+    writeFileSync(join(lock(), 'owner'), 'B.live-token', 'utf-8');
+    // C, acting on its stale observation, must back off.
+    expect(stealStale(lock(), 'dead.token')).toBe(false);
+    expect(readFileSync(join(lock(), 'owner'), 'utf-8')).toBe('B.live-token');
+    expect(existsSync(join(lock(), 'reap'))).toBe(false); // C's mutex dir cleaned up
+  });
+
+  test('a stealer excludes a concurrent stealer while its reap mutex is held', () => {
+    mkdirSync(lock());
+    mkdirSync(join(lock(), 'reap')); // another stealer mid-steal
+    expect(stealStale(lock(), null)).toBe(false);
+    expect(existsSync(lock())).toBe(true);
+  });
+
+  test('a lock whose owner file is fresh is not stolen even if the observer saw a stale mtime (issue #331 TOCTOU)', () => {
+    mkdirSync(lock());
+    writeFileSync(join(lock(), 'owner'), 'C.live', 'utf-8'); // fresh owner file
+    expect(stealStale(lock(), 'C.live', 10_000)).toBe(false);
+    expect(readFileSync(join(lock(), 'owner'), 'utf-8')).toBe('C.live');
+  });
+
+  test('a stealer that died holding the reap mutex does not wedge the lock forever', () => {
+    mkdirSync(lock());
+    writeFileSync(join(lock(), 'owner'), 'dead.token', 'utf-8');
+    mkdirSync(join(lock(), 'reap'));
+    const aged = Date.now() / 1000 - 20;
+    utimesSync(join(lock(), 'reap'), aged, aged);
+    utimesSync(join(lock(), 'owner'), aged, aged);
+    expect(stealStale(lock(), 'dead.token', 10_000)).toBe(false); // clears the aged reap
+    expect(stealStale(lock(), 'dead.token', 10_000)).toBe(true); // next attempt steals
+  });
+
+  test('release yields to a stealer holding the reap mutex instead of racing it', () => {
+    // the holder's release path takes the same mutex; with it held, the lock stays
+    mkdirSync(lock());
+    writeFileSync(join(lock(), 'owner'), 'x.y', 'utf-8');
+    mkdirSync(join(lock(), 'reap'));
+    expect(stealStale(lock(), 'x.y', 10_000)).toBe(false);
+    expect(existsSync(lock())).toBe(true);
+  });
+
+  test('a legacy token-less stale lock is still stolen', async () => {
+    mkdirSync(lock());
+    const aged = Date.now() / 1000 - 20;
+    utimesSync(lock(), aged, aged);
+    const r = await addEntry(dir, 'legacy', 'stolen from a token-less lock');
+    expect(r.added).toBe(true);
+    expect(drainPendingRecovery().lockSteals).toBe(1);
+  });
+});
+
+describe('crash-recovery observability (issue #309)', () => {
+  test('withLock tallies a stale-lock steal as a crash-recovery event, mutation unchanged', async () => {
+    // Acceptance: pre-age a lock so the next mutation steals it. The steal must be
+    // recorded (the tally) WITHOUT changing the recovery action — the add still lands.
+    const lock = join(dir, '.nb.lock');
+    mkdirSync(lock); // a crashed nb left the lock dir behind
+    const aged = Date.now() / 1000 - 20; // back-date mtime 20s (> 10s default stale threshold)
+    utimesSync(lock, aged, aged);
+    const r = await addEntry(dir, 'stale', 'written after stealing a stale lock');
+    expect(r.added).toBe(true); // recovery behavior is unchanged — the mutation completes
+    const drained = drainPendingRecovery();
+    expect(drained.lockSteals).toBe(1);
+    expect(drained.tempReaps).toBe(0);
+    expect(existsSync(lock)).toBe(false); // the stolen lock is still released at the end
+  });
+
+  test('reapLeftoverTemps reports the count it removed, tallied as temp-reaps during a mutation', async () => {
+    // Acceptance: plant crash debris — a per-pid shelf temp and a usage-log temp a
+    // dead writer left — then run a mutation. Both are reaped and counted.
+    writeFileSync(join(dir, 'scout.md.99999.tmp'), 'half-written', 'utf-8');
+    writeFileSync(join(dir, '.nb-usage.log.99999.tmp'), 'half-written', 'utf-8');
+    const r = await addEntry(dir, 'victim', 'a mutation that reaps crash debris');
+    expect(r.added).toBe(true);
+    const drained = drainPendingRecovery();
+    expect(drained.lockSteals).toBe(0);
+    expect(drained.tempReaps).toBe(2); // both planted temps reaped
+    expect(existsSync(join(dir, 'scout.md.99999.tmp'))).toBe(false);
+    expect(existsSync(join(dir, '.nb-usage.log.99999.tmp'))).toBe(false);
+  });
+
+  test('reapLeftoverTemps returns 0 when there is no debris and on an unreadable dir', () => {
+    expect(reapLeftoverTemps(dir)).toBe(0); // empty dir — nothing to reap
+    expect(reapLeftoverTemps(join(dir, 'does-not-exist'))).toBe(0); // unreadable — never throws
+  });
+
+  test('logUsage drains the recovery tally into the recovered column; each event counts once', () => {
+    noteRecovery('lock-steal', 1);
+    noteRecovery('temp-reap', 3);
+    logUsage(dir, 'patcher', 'add', true, 1, { outcome: 'accepted' });
+    expect(parseUsage(dir)[0].recovered).toBe('1:3'); // <lockSteals>:<tempReaps>
+    // The next call drains to blank — the event was attributed to exactly one row.
+    logUsage(dir, 'patcher', 'show', true, 1);
+    expect(parseUsage(dir)[1].recovered).toBe('');
+  });
+
+  test('a non-positive recovery count is ignored and never throws', () => {
+    expect(() => noteRecovery('temp-reap', 0)).not.toThrow();
+    noteRecovery('lock-steal', 0);
+    noteRecovery('temp-reap', -5);
+    expect(drainPendingRecovery()).toEqual({ lockSteals: 0, tempReaps: 0 });
+  });
+
+  test('nb stats surfaces window-summed crash recovery, deployment-wide (acceptance)', () => {
+    const now = Date.now();
+    // A steal on one shelf, a double-reap on another, and a clean mutation.
+    noteRecovery('lock-steal', 1);
+    logUsage(dir, 'patcher', 'add', true, 1);
+    noteRecovery('temp-reap', 2);
+    logUsage(dir, 'scout', 'merge', true, 1);
+    logUsage(dir, 'patcher', 'vote', true, 1); // no recovery
+    const rep = stats(dir, { now });
+    expect(rep.crashRecovery).toEqual({ lockSteals: 1, tempReaps: 2 });
+    // Deployment-wide: a shelf-scoped report shows the SAME totals (the lock and
+    // temp debris are dir-global, like the usage ring), not just the shelf's own.
+    expect(stats(dir, { shelf: 'scout', now }).crashRecovery).toEqual({ lockSteals: 1, tempReaps: 2 });
+    // The field is additive — the schema version does not bump (#172 policy).
+    expect(rep.schemaVersion).toBe(1);
+  });
+
+  test('a steal and a reap on the same call combine into one recovered pair', async () => {
+    const lock = join(dir, '.nb.lock');
+    mkdirSync(lock);
+    const aged = Date.now() / 1000 - 20;
+    utimesSync(lock, aged, aged);
+    writeFileSync(join(dir, 'ghost.md.88888.tmp'), 'half-written', 'utf-8'); // crash-left shelf temp
+    await addEntry(dir, 'both', 'stole a lock and reaped a temp in one call');
+    // The acquire steals the stale lock; reapLeftoverTemps (run before fn) removes
+    // the planted temp — both tallied onto the single call.
+    expect(drainPendingRecovery()).toEqual({ lockSteals: 1, tempReaps: 1 });
+  });
+
+  test('a mutation whose body throws after a steal still tallies the recovery', async () => {
+    const lock = join(dir, '.nb.lock');
+    mkdirSync(lock);
+    const aged = Date.now() / 1000 - 20;
+    utimesSync(lock, aged, aged);
+    // The steal happens during lock acquire, BEFORE fn runs; a throwing fn must
+    // not lose the recovery — the next logUsage (the CLI's finally on an error
+    // exit) still records it, and the lock is still released on the throw path.
+    await expect(withLock(dir, () => { throw new Error('boom'); })).rejects.toThrow('boom');
+    expect(drainPendingRecovery().lockSteals).toBe(1);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test('crash recovery counts a row at the window edge and excludes one just beyond it', () => {
+    const now = Date.parse('2026-10-31T12:00:00Z');
+    const windowMs = 7 * 86_400_000;
+    const mkRow = (ts: string, rec: string): string =>
+      [ts, 'p', 'add', 'ok', '1ms', '', '', '', '', '', '', '', '', '', rec].join('\t');
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      // Exactly at the window edge (now - windowMs): inside, since the gate is `<=`.
+      mkRow(new Date(now - windowMs).toISOString(), '1:0') + '\n' +
+        // 1ms beyond the edge: excluded.
+        mkRow(new Date(now - windowMs - 1).toISOString(), '9:9') + '\n',
+      'utf-8',
+    );
+    expect(stats(dir, { now, windowMs }).crashRecovery).toEqual({ lockSteals: 1, tempReaps: 0 });
+  });
+
+  test('a malformed recovered column contributes 0 and never NaN', () => {
+    const now = Date.parse('2026-10-31T12:00:00Z');
+    const mkRow = (rec: string): string =>
+      ['2026-10-31T11:00:00.000Z', 'p', 'add', 'ok', '1ms', '', '', '', '', '', '', '', '', '', rec].join('\t');
+    writeFileSync(
+      join(dir, '.nb-usage.log'),
+      // 'abc' and 'x:y' are garbage → 0:0; only the well-formed '2:4' contributes.
+      [mkRow('abc'), mkRow('x:y'), mkRow('2:4')].join('\n') + '\n',
+      'utf-8',
+    );
+    const cr = stats(dir, { now, windowMs: 7 * 86_400_000 }).crashRecovery;
+    expect(Number.isNaN(cr.lockSteals)).toBe(false);
+    expect(Number.isNaN(cr.tempReaps)).toBe(false);
+    expect(cr).toEqual({ lockSteals: 2, tempReaps: 4 });
   });
 });
 
@@ -1143,6 +1866,7 @@ describe('error-class usage column (issue #176)', () => {
       'no_match',
       'multiline_refused',
       'bad_args',
+      'corrupt',
       'unknown_subcommand',
       'other',
     ]);
@@ -1240,6 +1964,130 @@ describe('error-class usage column (issue #176)', () => {
     const rep = stats(dir, { now });
     const anomaly = rep.anomalies.find((a) => a.kind === 'high-error-rate' && a.command === 'vote')!;
     expect(anomaly.detail).toContain('bad_args 50%, no_match 50%'); // alphabetical, not insertion order
+  });
+
+  test('errorCauses breaks each command down by cause and omits commands below the min (issue #223)', () => {
+    const now = Date.now();
+    const row = (cmd: string, ok: boolean, cls = '', outcome = ''): string =>
+      `${new Date(now - Math.random() * 1000).toISOString()}\tp\t${cmd}\t${ok ? 'ok' : 'err'}\t2ms\t\t\t${outcome}\t\t\t\t\t${cls}`;
+    const rows = [
+      // add: 5 errors (3 too_long, 2 unclassified) + 1 ok
+      row('add', false, 'too_long'), row('add', false, 'too_long'), row('add', false, 'too_long'),
+      row('add', false), row('add', false), row('add', true),
+      // vote: 3 errors, all no_match
+      row('vote', false, 'no_match'), row('vote', false, 'no_match'), row('vote', false, 'no_match'),
+      // rm: only 2 errors → below ERROR_CAUSE_MIN (3), must be omitted
+      row('rm', false, 'bad_args'), row('rm', false, 'bad_args'),
+    ];
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+
+    const causes = stats(dir, { now }).errorCauses;
+    expect(causes.map((c) => c.command)).toEqual(['add', 'vote']); // rm omitted; add first (more errors)
+    const add = causes.find((c) => c.command === 'add')!;
+    expect(add.errors).toBe(5);
+    expect(add.breakdown).toEqual([
+      { cause: 'too_long', pct: 60 },
+      { cause: 'unclassified', pct: 40 },
+    ]);
+    expect(causes.find((c) => c.command === 'vote')!.breakdown).toEqual([{ cause: 'no_match', pct: 100 }]);
+  });
+
+  test('errorCauses falls back to outcome=too-long on a pre-#176 row with no errorClass', () => {
+    const now = Date.now();
+    // errorClass column blank, but outcome records `too-long` (the shape a binary
+    // predating the errorClass column writes) → still classified as too_long.
+    const rows = Array.from(
+      { length: 3 },
+      (_, i) => `${new Date(now - i * 1000).toISOString()}\tp\tadd\terr\t2ms\t\t\ttoo-long`,
+    );
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const add = stats(dir, { now }).errorCauses.find((c) => c.command === 'add')!;
+    expect(add.breakdown).toEqual([{ cause: 'too_long', pct: 100 }]);
+  });
+
+  test('batch-vote partial misses surface as no_match in the vote error causes (issue #310)', () => {
+    const now = Date.now();
+    // Two ≥1-landed batch votes, each skipping two stale ids: ok=true SUCCESS rows
+    // (not error rows) that each record misses=2. Before #310 these were logged as
+    // clean successes, so the vote selector-miss readout was blind to the four
+    // stale selectors. Now the four misses must surface as `no_match`, crossing
+    // the noise floor (ERROR_CAUSE_MIN=3) the readout applies to every cause.
+    logUsage(dir, 'v', 'vote', true, 1, { outcome: 'up', entries: ['aaa'], misses: 2 });
+    logUsage(dir, 'v', 'vote', true, 1, { outcome: 'up', entries: ['bbb'], misses: 2 });
+    const rep = stats(dir, { now });
+    const vote = rep.errorCauses.find((c) => c.command === 'vote')!;
+    expect(vote.errors).toBe(4); // 0 error rows + 4 folded partial misses
+    expect(vote.breakdown).toEqual([{ cause: 'no_match', pct: 100 }]);
+    // The per-command error RATE stays honest: both rows exited 0, so vote's err%
+    // is 0 — the misses show only in the cause readout, never inflating the rate.
+    expect(rep.perCommand.find((c) => c.command === 'vote')!.errorRate).toBe(0);
+  });
+
+  test('partial misses ADD to (not overwrite) existing vote error causes, and stay out of the error rate (issue #310)', () => {
+    const now = Date.now();
+    // A window mixing real error rows AND a partial-miss success row. The misses
+    // must be ADDED to the no_match bucket (not overwrite the other causes), and
+    // the error rate must count only the two genuinely-failed calls — never the
+    // partial-success row. A fold that overwrote no_match, or that leaked misses
+    // into the rate, would fail here. Built via logUsage so the real serializer
+    // places every column (rather than hand-counting tabs).
+    logUsage(dir, 'v', 'vote', false, 2, { errorClass: 'no_match' }); // a wholly-failed vote
+    logUsage(dir, 'v', 'vote', false, 2, { errorClass: 'bad_args' }); // a different failure class
+    logUsage(dir, 'v', 'vote', true, 2, { outcome: 'up', entries: ['aaa'], misses: 2 }); // ≥1-landed batch, two stale ids
+    const rep = stats(dir, { now });
+    const vote = rep.errorCauses.find((c) => c.command === 'vote')!;
+    // 2 error rows + 2 folded misses = 4 events; no_match = 1 row + 2 misses = 3.
+    expect(vote.errors).toBe(4);
+    expect(vote.breakdown).toEqual([
+      { cause: 'no_match', pct: 75 }, // 3/4
+      { cause: 'bad_args', pct: 25 }, // 1/4
+    ]);
+    // Error RATE counts only the two failed CALLS out of three (the batch exited 0).
+    const perCmd = rep.perCommand.find((c) => c.command === 'vote')!;
+    expect(perCmd.errors).toBe(2);
+    expect(perCmd.calls).toBe(3);
+  });
+
+  test('the error-cause noise floor counts MISS EVENTS, not rows: 2 hidden, 3 surface (issue #310)', () => {
+    // The fold must respect ERROR_CAUSE_MIN=3 AND count miss events, not rows.
+    // 1 miss → hidden (a prior test). Two separate 1-miss rows (2 events) → still
+    // hidden. A single row carrying 3 misses → surfaces with errors=3. This pins
+    // the boundary from both sides and proves the floor is on events, not rows.
+    const now = Date.now();
+    logUsage(dir, 'v', 'vote', true, 1, { outcome: 'up', entries: ['a'], misses: 1 });
+    logUsage(dir, 'v', 'vote', true, 1, { outcome: 'up', entries: ['b'], misses: 1 });
+    expect(stats(dir, { now }).errorCauses.find((c) => c.command === 'vote')).toBeUndefined(); // 2 events < 3
+
+    logUsage(dir, 'w', 'vote', true, 1, { outcome: 'up', entries: ['c'], misses: 3 });
+    const w = stats(dir, { shelf: 'w', now }).errorCauses.find((c) => c.command === 'vote')!;
+    expect(w.errors).toBe(3); // one row, three miss events → meets the floor
+    expect(w.breakdown).toEqual([{ cause: 'no_match', pct: 100 }]);
+  });
+
+  test('a batch vote with ONE partial miss stays below the error-cause noise floor (issue #310)', () => {
+    const now = Date.now();
+    // A single stale id in an otherwise-landing batch is one miss — below
+    // ERROR_CAUSE_MIN (3), so like any stray error it is not yet a named cause.
+    // This pins that the fold respects the existing noise gate rather than
+    // surfacing every one-off miss.
+    logUsage(dir, 'v', 'vote', true, 1, { outcome: 'up', entries: ['aaa'], misses: 1 });
+    const rep = stats(dir, { now });
+    expect(rep.errorCauses.find((c) => c.command === 'vote')).toBeUndefined();
+  });
+
+  test('a corrupt negative `misses` cell cannot subtract from the vote miss aggregation (issue #310)', () => {
+    // parseUsage clamps misses to ≥0, so a hand-edited/torn negative cell can
+    // never reduce the folded count below the real misses. Here three genuine
+    // misses plus a bogus `-5` row must still read as three, not −2.
+    const now = Date.now();
+    // Columns after outcome(8): collided, evicted, reason, note, errorClass,
+    // decayed, recovered, then misses(16) — eight tabs after `up`.
+    const row = (misses: string): string =>
+      `${new Date(now - Math.random() * 1000).toISOString()}\tv\tvote\tok\t2ms\t\t\tup\t\t\t\t\t\t\t\t${misses}`;
+    writeFileSync(join(dir, '.nb-usage.log'), [row('3'), row('-5')].join('\n') + '\n', 'utf-8');
+    expect(parseUsage(dir).map((r) => r.misses)).toEqual([3, 0]); // the bogus cell clamps to 0
+    const vote = stats(dir, { now }).errorCauses.find((c) => c.command === 'vote')!;
+    expect(vote.errors).toBe(3);
   });
 
   test('pre-#176 error rows (no class) are bucketed as `unclassified`, not a misleading `other`', () => {
@@ -1409,6 +2257,9 @@ describe('move (score-preserving cross-shelf move, issue #103)', () => {
     // duplicating it. Pin the order by injecting a failure on the SECOND write
     // (the source rewrite) and proving the lesson survives in BOTH shelves.
     await addEntry(dir, 'from', 'crash-safety lesson');
+    // A second lesson keeps the source non-empty so its rewrite (not a phantom
+    // reap, issue #355) is what the injected rename failure interrupts.
+    await addEntry(dir, 'from', 'unrelated bystander');
     await vote(dir, 'from', 'crash-safety', 1); // +2: prove score-bearing data, not just presence
     const fromFile = join(dir, 'from.md');
     const toFile = join(dir, 'to.md');
@@ -1418,7 +2269,10 @@ describe('move (score-preserving cross-shelf move, issue #103)', () => {
       // The source rewrite fails, so move rejects — but the target write already committed.
       await expect(move(dir, 'from', 'to', 'crash-safety')).rejects.toThrow(/injected rename failure/);
       // The target was written FIRST: its rename ran and committed before the source's.
-      expect(fsHook.renames).toEqual([`${toFile}.tmp`, `${fromFile}.tmp`]);
+      expect(fsHook.renames).toEqual([
+        `${toFile}.${process.pid}.tmp`, // per-process shelf temp (issue #270)
+        `${fromFile}.${process.pid}.tmp`,
+      ]);
     } finally {
       fsHook.renames = null; // leave the shared hook as the other tests expect it
       fsHook.failRenameTo = null;
@@ -1428,7 +2282,7 @@ describe('move (score-preserving cross-shelf move, issue #103)', () => {
     // full +2 score. Had the writes been reordered, the source rewrite would have
     // failed FIRST and the target would be empty, so this pins the ordering.
     expect(readEntries(dir, 'to')).toEqual([{ score: 2, text: 'crash-safety lesson' }]);
-    expect(readEntries(dir, 'from')).toEqual([{ score: 2, text: 'crash-safety lesson' }]);
+    expect(readEntries(dir, 'from')).toContainEqual({ score: 2, text: 'crash-safety lesson' });
   });
 });
 
@@ -1544,6 +2398,75 @@ describe('shelf safety', () => {
   });
 });
 
+describe('NB_DIR leading-tilde expansion (issue #334)', () => {
+  // A process env from Claude Code `settings.json`, systemd, cron or a `.env`
+  // file never passes through a shell, so `NB_DIR=~/x` used to be taken
+  // verbatim and wrote a literal `~` directory under the CWD. `notebooksDir()`
+  // now expands a LEADING `~` itself; every other form is left untouched.
+  const savedHome = process.env.HOME;
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    delete process.env.NB_DIR;
+  });
+
+  test('a bare `~` resolves to the home directory', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agent-notebook-home-'));
+    try {
+      process.env.HOME = home;
+      expect(expandHomeDir('~')).toBe(home);
+      expect(notebooksDir()).not.toBe(home); // NB_DIR unset → default
+      process.env.NB_DIR = '~';
+      expect(notebooksDir()).toBe(home);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('`~/x` and `~/` resolve under the home directory', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agent-notebook-home-'));
+    try {
+      process.env.HOME = home;
+      expect(expandHomeDir('~/x')).toBe(join(home, 'x'));
+      expect(expandHomeDir('~/a/b')).toBe(join(home, 'a', 'b'));
+      expect(expandHomeDir('~/')).toBe(join(home));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('`~user/x`, absolute and relative paths are unchanged', () => {
+    expect(expandHomeDir('~user/x')).toBe('~user/x');
+    expect(expandHomeDir('/abs/x')).toBe('/abs/x');
+    expect(expandHomeDir('rel/x')).toBe('rel/x');
+    expect(expandHomeDir('x~y')).toBe('x~y'); // an interior tilde is not a home prefix
+    // `nb` must never silently rewrite a relative value; it is used as-is.
+    process.env.NB_DIR = '~user/x';
+    expect(notebooksDir()).toBe('~user/x');
+    process.env.NB_DIR = '/abs/x';
+    expect(notebooksDir()).toBe('/abs/x');
+  });
+
+  test('a leading `~` reaches addEntry through notebooksDir (no literal ./~ dir)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agent-notebook-home-'));
+    const literal = join(process.cwd(), '~'); // where an unexpanded `~/nb334` would land
+    expect(existsSync(literal)).toBe(false); // precondition: nothing stray from an earlier run
+    try {
+      process.env.HOME = home;
+      process.env.NB_DIR = '~/nb334';
+      const target = notebooksDir();
+      expect(target).toBe(join(home, 'nb334'));
+      await addEntry(target, 's', 'tilde test lesson');
+      expect(existsSync(join(target, 's.md'))).toBe(true);
+      expect(existsSync(literal)).toBe(false); // no literal ~ dir in the cwd
+    } finally {
+      rmSync(literal, { recursive: true, force: true }); // only reached with content if the fix regresses
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('listShelves', () => {
   test('excludes a README.md so it is not a notebook (issue #90)', () => {
     // A README that backs up the notebook folder (common when the dir is a git
@@ -1587,7 +2510,7 @@ describe('usage log + stats', () => {
     const rows = raw.split('\n').filter((l) => l !== '');
     expect(rows.length).toBe(1); // the CR/LF did not spawn extra rows
     const cols = rows[0].split('\t');
-    expect(cols.length).toBe(13); // five base + five richer + two reason columns + errorClass, all tabs collapsed
+    expect(cols.length).toBe(16); // five base + five richer + two reason columns + errorClass + decayed + recovered + misses, all tabs collapsed
     expect(cols[1]).toBe('evil role drop table'); // shelf: tab+CR+LF all collapsed to single spaces
     // stats still parses it as one call attributed to the sanitized command.
     const rep = stats(dir, { now: Date.now() });
@@ -1603,6 +2526,46 @@ describe('usage log + stats', () => {
     const [ts, shelf, command, status, ms] = raw.trimEnd().split('\t');
     expect([shelf, command, status, ms]).toEqual(['patcher', 'add', 'ok', '5ms']);
     expect(Number.isNaN(Date.parse(ts))).toBe(false); // ts untouched, still ISO
+  });
+
+  test('caps an over-long NB_SESSION to maxChars, same as the note (issue #202)', () => {
+    // `session` is caller-influenced free text (a harness sets NB_SESSION), so an
+    // over-long value must be truncated like `note` — otherwise it is appended to
+    // EVERY row and the ring's row-count bound stops bounding its bytes (#128).
+    const long = 's'.repeat(maxChars() + 50);
+    logUsage(dir, 'p', 'show', true, 1, { session: long });
+    const cols = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').trimEnd().split('\t');
+    expect(cols[5].length).toBe(maxChars()); // column 5 is `session`
+    expect(cols[5].endsWith('…')).toBe(true); // same ellipsis convention as the note
+  });
+
+  test('a short NB_SESSION round-trips byte-identical (issue #202)', () => {
+    logUsage(dir, 'p', 'show', true, 1, { session: 'task-42' });
+    const cols = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').trimEnd().split('\t');
+    expect(cols[5]).toBe('task-42'); // a sub-cap value is untouched
+  });
+
+  test('a pathological session never makes logUsage throw (issue #202)', () => {
+    // Logging is best-effort; truncating must not change its never-throw contract.
+    expect(() => logUsage(dir, 'p', 'show', true, 1, { session: 'z'.repeat(100_000) })).not.toThrow();
+  });
+
+  test('reports usage-ring occupancy (rows/cap), total and window-independent (issue #206)', () => {
+    process.env.NB_USAGE_RING = '5000';
+    for (let i = 0; i < 5; i++) logUsage(dir, 'p', 'show', true, 1);
+    const wide = stats(dir, { now: Date.now() });
+    expect(wide.usageRing).toEqual({ rows: 5, cap: 5000 });
+    // Occupancy is TOTAL (not windowed): a window that excludes every row still
+    // reports the same 5 rows on disk, so it can't be confused with `totalCalls`.
+    const narrow = stats(dir, { now: Date.now() + 10_000_000, windowMs: 1 });
+    expect(narrow.totalCalls).toBe(0);
+    expect(narrow.usageRing).toEqual({ rows: 5, cap: 5000 });
+  });
+
+  test('usage-ring cap tracks NB_USAGE_RING (issue #206)', () => {
+    process.env.NB_USAGE_RING = '100';
+    logUsage(dir, 'p', 'show', true, 1);
+    expect(stats(dir, { now: Date.now() }).usageRing.cap).toBe(100);
   });
 
   test('usage log is a bounded ring: a compaction keeps exactly the newest usageRing() rows (issue #135)', () => {
@@ -1781,14 +2744,19 @@ describe('usage log + stats', () => {
       [
         'activity',
         'anomalies',
+        'crashRecovery',
+        'errorCauses',
         'generatedAt',
         'notebookTotals',
         'notebooks',
         'perCommand',
+        'conflicts',
         'schemaVersion',
         'signals',
+        'skipped',
         'surfacing',
         'totalCalls',
+        'usageRing',
         'window',
         'windowStart',
       ].sort(),
@@ -1941,7 +2909,7 @@ describe('usage log + stats', () => {
     expect(existsSync(join(asFile, '.nb-usage.log'))).toBe(false);
   });
 
-  test('cross-process: overlapping usage-log writers leave a parseable file and no stray temp (issue #32)', async () => {
+  test('cross-process: overlapping usage-log writers leave a parseable file and no stray temp (issue #32) [timing]', async () => {
     // The acceptance scenario, with real OS processes (distinct pids): logUsage
     // runs unlocked, so concurrent `nb` invocations write the usage log at once.
     // A per-process temp keeps each rename atomic — the final file is always one
@@ -1965,9 +2933,10 @@ describe('usage log + stats', () => {
     // Every surviving line is a complete, well-formed usage row — no torn/partial
     // line (the corruption a shared temp path could leave).
     for (const l of lines) {
-      // Five base columns, the five richer ones, the two reason columns, then the
-      // trailing errorClass column (all empty for a successful `show`).
-      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){8}$/);
+      // Five base columns, then eleven richer ones (session, entries, outcome,
+      // collided, evicted, reason, note, errorClass, decayed, recovered, misses)
+      // — all empty for a successful `show`, so the row is 16 tab-separated columns.
+      expect(l).toMatch(/^[^\t]+\t[^\t]*\t[^\t]+\t(ok|err)\t\d+ms(\t[^\t]*){11}$/);
     }
     // No stray temp file lingered: every writer's rename consumed its own temp.
     expect(readdirSync(dir).filter((f) => f.startsWith('.nb-usage.log.') && f.endsWith('.tmp'))).toEqual([]);
@@ -2712,6 +3681,27 @@ describe('durable writes (issue #15)', () => {
     expect(existsSync(join(dir, 'patcher.md.tmp'))).toBe(false);
   });
 
+  test('the atomic-write temp path carries this process pid (issue #270)', async () => {
+    // writeEntries renames from `<shelf>.md.<pid>.tmp`, never the fixed
+    // `<shelf>.md.tmp`. withLock's single-host mkdir spinlock can declare a slow
+    // holder STALE and let a second process steal the lock mid-write (a
+    // network-FS fsync stall, heavy load, or a lowered NB_STALE_LOCK_MS); a
+    // shared temp would then have both writers open+truncate+write the SAME path,
+    // interleaving bytes before either rename and corrupting the notebook. A
+    // per-process temp keeps each writer's temp distinct, so the atomic rename
+    // degrades a stolen-lock overlap to a lost update, never a torn file. Pin the
+    // naming invariant on the real atomic-rename source — a revert to the shared
+    // `${file}.tmp` fails here.
+    fsHook.renames = []; // capture the atomic-rename source path
+    try {
+      await addEntry(dir, 'patcher', 'per-process temp lesson');
+      const file = join(dir, 'patcher.md');
+      expect(fsHook.renames).toEqual([`${file}.${process.pid}.tmp`]);
+    } finally {
+      fsHook.renames = null; // leave the shared hook as the other tests expect it
+    }
+  });
+
   test('fsyncs the body before the rename and the parent directory after it', async () => {
     fsHook.events = [];
     await addEntry(dir, 'patcher', 'ordering lesson');
@@ -2759,7 +3749,7 @@ describe('locking (mkdir spinlock)', () => {
   // passes even if the lock is deleted and proves nothing. The genuine hazard is
   // several OS processes, so the no-lost-update test spawns real `nb` children.
 
-  test('cross-process: concurrent `nb add` invocations on one shelf all land (no lost update)', async () => {
+  test('cross-process: concurrent `nb add` invocations on one shelf all land (no lost update) [timing]', async () => {
     const N = 8; // small, deterministic; ~N*20ms serialization ≪ each child's acquire budget
     const env = { ...process.env, NB_DIR: dir };
     delete env.NB_MAX_LINES; // keep the default cap (50); N is well under it, so none is evicted
@@ -2777,7 +3767,36 @@ describe('locking (mkdir spinlock)', () => {
     expect(texts).toEqual(expected); // all N present, none lost
   }, 30_000);
 
-  test('an operation blocked by a live lock waits, then acquires once the lock is freed', async () => {
+  test('cross-process: concurrent writers to one shelf under a steal-prone lock leave a whole, non-torn file and no stray temp (issue #270) [timing]', async () => {
+    // The acceptance scenario for #270: overlapping writes to the SAME shelf with
+    // the lock made steal-prone (NB_STALE_LOCK_MS at its 100ms floor), so a slow
+    // holder can be declared stale and a second process writes while the first is
+    // still mid-flight. Before #270 both writers opened and truncated the SAME
+    // `race.md.tmp`, so one writer's rename could publish a file spliced from both
+    // — a torn notebook. With a per-process temp each writer renames its own
+    // complete file atomically: the published notebook is ALWAYS wholly one
+    // writer's content (an overlap degrades to a lost update, never corruption),
+    // and every writer's temp is consumed by its own rename.
+    const N = 10;
+    const env = { ...process.env, NB_DIR: dir, NB_STALE_LOCK_MS: '100', NB_LOCK_GRACE_MS: '2000' };
+    delete env.NB_MAX_LINES; // default cap (50) >> N, so nothing is evicted
+    const lessons = Array.from({ length: N }, (_, i) => `issue 270 overlap lesson number ${i}`);
+    await Promise.all(
+      lessons.map((text) => execFileAsync(process.execPath, [CLI, 'add', 'race', text], { env })),
+    );
+    // Every surviving line is EXACTLY one writer's lesson — never a splice of two
+    // (the corruption a shared temp could publish). A steal may drop a lesson
+    // (lost update), so we assert content integrity, not that all N survive.
+    const texts = readEntries(dir, 'race').map((e) => e.text);
+    expect(texts.length).toBeGreaterThan(0); // at least one writer committed
+    for (const t of texts) expect(lessons).toContain(t); // no torn/spliced text
+    expect(new Set(texts).size).toBe(texts.length); // no duplicated/half-written rows
+    // No stray atomic-write temp lingered: every rename consumed its own per-pid temp.
+    const strays = readdirSync(dir).filter((f) => f.startsWith('race.md') && f.endsWith('.tmp'));
+    expect(strays).toEqual([]);
+  }, 30_000);
+
+  test('an operation blocked by a live lock waits, then acquires once the lock is freed [timing]', async () => {
     const lock = join(dir, '.nb.lock');
     mkdirSync(lock); // a live lock held by "another process" (fresh mtime → never stolen)
     let releasedAt = 0;
@@ -2810,7 +3829,7 @@ describe('locking (mkdir spinlock)', () => {
     expect(existsSync(lock)).toBe(false);
   });
 
-  test('a crashed holder’s fresh lock is reclaimed WITHIN the acquire window, not thrown (issue #133)', async () => {
+  test('a crashed holder’s fresh lock is reclaimed WITHIN the acquire window, not thrown (issue #133) [timing]', async () => {
     // The bug: a crash leaves a fresh `.nb.lock`; with a 2s budget but a 10s
     // steal threshold the next caller gave up before the lock ever aged enough
     // to steal, so every mutation failed with 'locked' for ~10s. With the budget
@@ -2832,7 +3851,7 @@ describe('locking (mkdir spinlock)', () => {
     expect(existsSync(lock)).toBe(false); // the stolen lock is released again
   }, 10_000);
 
-  test('a genuinely live holder that keeps its lock fresh still times out, reporting the DERIVED budget', async () => {
+  test('a genuinely live holder that keeps its lock fresh still times out, reporting the DERIVED budget [timing]', async () => {
     // Acceptance #3: the 'locked' error must still fire for a live contender that
     // never releases. A live holder keeps touching the lock, so its mtime never
     // ages past the stale threshold and it is never stolen — unlike a crashed
@@ -2879,12 +3898,126 @@ describe('locking (mkdir spinlock)', () => {
     const r = await addEntry(dir, 'nobody', 'usable after a thrown op released the lock');
     expect(r.added).toBe(true);
   });
+
+  // Issue #263: an unwritable NB_DIR makes `mkdirSync(.nb.lock)` fail with a code
+  // OTHER than EEXIST (EACCES/EPERM permission-denied, EROFS read-only mount,
+  // ENOSPC full disk). The old catch treated EVERY mkdir error as "lock held" and
+  // busy-waited the whole acquire budget (staleMs + grace, the default 12s) before
+  // dying with a misleading 'notebook is locked' — when no other process exists and
+  // the real cause is a store that simply cannot be written. The acquire loop must
+  // instead fail fast and name the real cause. The default budget is left untouched
+  // (12s), so a regression that busy-waits would blow well past these assertions.
+  for (const code of ['EACCES', 'EROFS', 'ENOSPC'] as const) {
+    test(`fails fast (not 'locked') when mkdir(.nb.lock) throws ${code} — unwritable store (issue #263)`, async () => {
+      fsHook.failLockMkdirCode = code; // simulate an unwritable NB_DIR for the lock-acquire mkdir
+      const started = Date.now();
+      const err = await addEntry(dir, 'unwritable', 'should never be written').then(
+        () => { throw new Error('expected addEntry to reject on an unwritable store, but it resolved'); },
+        (e: unknown) => e as Error,
+      );
+      const waited = Date.now() - started;
+      // Fails fast: well under the ~12s default acquire budget it would have spun
+      // through before the fix (a regression would exceed this and the vitest timeout).
+      expect(waited).toBeLessThan(1000);
+      // Reports the real cause, not the misleading 'notebook is locked'.
+      expect(err.message).not.toMatch(/notebook is locked/);
+      expect(err.message).toMatch(/not writable/);
+      expect(err.message).toContain(code); // surfaces the underlying errno for diagnosis
+      const cause = (err as { cause?: NodeJS.ErrnoException }).cause;
+      expect(cause?.code).toBe(code); // the ORIGINAL fs error is chained, with its real errno
+      expect(existsSync(join(dir, 'unwritable.md'))).toBe(false); // nothing was mutated
+      expect(existsSync(join(dir, '.nb.lock'))).toBe(false); // the fast-fail stranded no lock
+      // And no lock/state was left behind: once the store is writable again the
+      // very next mutation succeeds (a stranded `.nb.lock` would block it instead).
+      fsHook.failLockMkdirCode = null;
+      const recovered = await addEntry(dir, 'recovered', 'written once the store is writable again');
+      expect(recovered.added).toBe(true);
+    });
+  }
+});
+
+describe('reaps an emptied, undescribed phantom shelf (issue #209)', () => {
+  test('rm of the last lesson on an undescribed shelf leaves no file on disk', async () => {
+    await addEntry(dir, 's', 'x');
+    expect(existsSync(join(dir, 's.md'))).toBe(true);
+    await remove(dir, 's', 'x');
+    // The phantom 0-byte file is reaped, not left for listNotebooks to hide.
+    expect(existsSync(join(dir, 's.md'))).toBe(false);
+    expect(listNotebooks(dir).rows.map((n) => n.shelf)).not.toContain('s');
+  });
+
+  test('a described-but-empty shelf is preserved — the description is a deliberate trigger', async () => {
+    await setDescription(dir, 's', 'when to do X');
+    // No lessons, but a `# desc:` block makes the file non-empty, so it is kept.
+    expect(existsSync(join(dir, 's.md'))).toBe(true);
+  });
+
+  test('rm of the last lesson on a DESCRIBED shelf keeps the file (the description survives)', async () => {
+    await setDescription(dir, 's', 'trigger');
+    await addEntry(dir, 's', 'x');
+    await remove(dir, 's', 'x');
+    expect(existsSync(join(dir, 's.md'))).toBe(true); // meta block → not a phantom
+    expect(getDescription(dir, 's')).toBe('trigger');
+  });
+
+  test('reaping an emptied shelf leaves every other shelf intact', async () => {
+    await addEntry(dir, 'keep', 'y');
+    await addEntry(dir, 'gone', 'x');
+    await remove(dir, 'gone', 'x');
+    expect(existsSync(join(dir, 'gone.md'))).toBe(false);
+    expect(existsSync(join(dir, 'keep.md'))).toBe(true);
+    expect(readEntries(dir, 'keep').map((e) => e.text)).toEqual(['y']);
+  });
+});
+
+describe('reaps a phantom shelf left by move and describe "" (issue #355)', () => {
+  test('move of the last lesson off an undescribed shelf removes the source file', async () => {
+    await addEntry(dir, 'target', 'a lesson that stays');
+    await addEntry(dir, 'src', 'the only lesson');
+    const r = await move(dir, 'src', 'target', 'the only');
+    expect(r.reason).toBe('moved');
+    expect(existsSync(join(dir, 'src.md'))).toBe(false);
+    expect(readEntries(dir, 'target')).toHaveLength(2);
+    expect(listNotebooks(dir).rows.map((n) => n.shelf)).toEqual(['target']);
+  });
+
+  test('move of the last lesson off a DESCRIBED shelf keeps the file and its description', async () => {
+    await addEntry(dir, 'target', 'a lesson that stays');
+    await addEntry(dir, 'src', 'the only lesson');
+    await setDescription(dir, 'src', 'open when testing');
+    await move(dir, 'src', 'target', 'the only');
+    expect(existsSync(join(dir, 'src.md'))).toBe(true);
+    expect(getDescription(dir, 'src')).toBe('open when testing');
+  });
+
+  test('describe "" on a shelf with no lessons removes the file', async () => {
+    await addEntry(dir, 'target', 'a lesson that stays');
+    await addEntry(dir, 'old', 'another only lesson');
+    await setDescription(dir, 'old', 'open when testing');
+    await move(dir, 'old', 'target', 'another');
+    expect(existsSync(join(dir, 'old.md'))).toBe(true); // description keeps it
+    await setDescription(dir, 'old', '');
+    expect(existsSync(join(dir, 'old.md'))).toBe(false);
+  });
+
+  test('describe "" on a shelf that still has lessons keeps the file', async () => {
+    await addEntry(dir, 's', 'x');
+    await setDescription(dir, 's', 'trigger');
+    await setDescription(dir, 's', '');
+    expect(readEntries(dir, 's').map((e) => e.text)).toEqual(['x']);
+  });
+
+  test('describe "" on a shelf that never existed creates no file', async () => {
+    await setDescription(dir, 'ghost', '');
+    expect(existsSync(join(dir, 'ghost.md'))).toBe(false);
+  });
 });
 
 describe('reaps leftover temps on lock acquire (issues #46, #163)', () => {
   // A crash between an atomic write's temp and its rename leaves an orphan in the
   // notebooks dir that nothing else removes. The next locked mutation sweeps this
-  // writer's two temp conventions — `<shelf>.md.tmp` (writeFileDurable, #46) and
+  // writer's two temp conventions — `<shelf>.md.<pid>.tmp` (writeFileDurable,
+  // per-process since #270; the legacy shared `<shelf>.md.tmp` is still swept) and
   // `.nb-usage.log.<pid>.tmp` (usage-log compaction, #163) — and never a real
   // notebook, the live usage log, its `.count` sidecar, or the `.nb.lock`.
 
@@ -2897,6 +4030,32 @@ describe('reaps leftover temps on lock acquire (issues #46, #163)', () => {
     const r = await addEntry(dir, 'patcher', 'a fresh lesson');
     expect(r.added).toBe(true);
     expect(existsSync(orphan)).toBe(false);
+  });
+
+  test('a planted per-process shelf temp `<shelf>.md.<pid>.tmp` is reaped too (issue #270)', async () => {
+    // Since #270 a durable notebook write renames from `<shelf>.md.<pid>.tmp`, so
+    // a crash between its write and rename leaves that per-process orphan — the
+    // common case now, not the legacy `<shelf>.md.tmp`. A FOREIGN pid models a
+    // *crashed* writer (not this process) and guards against a regex that only
+    // swept the legacy name.
+    const orphan = join(dir, 'shelf.md.999999.tmp');
+    writeFileSync(orphan, 'crash debris from an interrupted per-process write', 'utf-8');
+    expect(existsSync(orphan)).toBe(true);
+    const r = await addEntry(dir, 'patcher', 'a fresh lesson');
+    expect(r.added).toBe(true);
+    expect(existsSync(orphan)).toBe(false);
+  });
+
+  test('a `.md.<non-numeric>.tmp` is NOT reaped — the sweep stays pinned to a numeric pid (issue #270)', async () => {
+    // process.pid is numeric, so the shelf-temp match is `<shelf>.md.tmp` or
+    // `<shelf>.md.<digits>.tmp` — never arbitrary `.md.<anything>.tmp`. A file
+    // with a non-numeric middle segment is not this writer's convention (and
+    // could belong to another tool), so it must survive. This pins the `\d+`
+    // precision: the per-pid widening did not turn the sweep into `.md.*.tmp`.
+    const foreign = join(dir, 'shelf.md.backup.tmp');
+    writeFileSync(foreign, 'not our temp — a non-numeric middle segment', 'utf-8');
+    await addEntry(dir, 'patcher', 'triggers a reap');
+    expect(existsSync(foreign)).toBe(true);
   });
 
   test('real *.md notebooks are never deleted by the reap', async () => {
@@ -3242,6 +4401,50 @@ describe('notebook metadata / descriptions (issue #70)', () => {
     expect(readMetaLines(dir, 'm')).toEqual(['# desc: build / test gotchas for this repo']);
   });
 
+  test('a CRLF-normalized notebook keeps its `# desc:` metadata (issue #273)', async () => {
+    // On Windows with core.autocrlf=true (or any CRLF hand-edit of a git-versioned
+    // notebook), every line of `<shelf>.md` arrives terminated by `\r\n`. The split
+    // must tolerate the trailing `\r`: otherwise `# desc: ...\r` fails the
+    // `$`-anchored META_RE and the description silently decays into a score-0 lesson.
+    writeFileSync(
+      join(dir, 'm.md'),
+      '# desc: build / test gotchas for this repo\r\n+3\trun build before test\r\n',
+      'utf-8',
+    );
+    // The metadata block is preserved verbatim (no stray `\r`), the entry parses,
+    // and the description reads back — identical to the LF case above.
+    expect(readShelf(dir, 'm')).toEqual({
+      metaLines: ['# desc: build / test gotchas for this repo'],
+      entries: [{ score: 3, text: 'run build before test' }],
+      conflict: null,
+    });
+    expect(getDescription(dir, 'm')).toBe('build / test gotchas for this repo');
+
+    // A subsequent mutation round-trips the description rather than demoting it to a
+    // lesson, and rewrites the file with clean LF endings (not a mixed-ending file).
+    await addEntry(dir, 'm', 'a new lesson');
+    expect(getDescription(dir, 'm')).toBe('build / test gotchas for this repo');
+    expect(readEntries(dir, 'm')).toEqual([
+      { score: 3, text: 'run build before test' },
+      { score: 1, text: 'a new lesson' },
+    ]);
+    expect(readFileSync(join(dir, 'm.md'), 'utf-8')).toBe(
+      '# desc: build / test gotchas for this repo\n+3\trun build before test\n+1\ta new lesson\n',
+    );
+  });
+
+  test('a leading UTF-8 BOM does not break the `# desc:` metadata (issue #299)', () => {
+    writeFileSync(join(dir, 'm.md'), '\uFEFF# desc: x\n+3\tlesson\n', 'utf-8');
+    expect(getDescription(dir, 'm')).toBe('x');
+    expect(readMetaLines(dir, 'm')).toEqual(['# desc: x']);
+    expect(readEntries(dir, 'm')).toEqual([{ score: 3, text: 'lesson' }]);
+    // BOM + CRLF together, and a BOM before a plain entry (no metadata).
+    writeFileSync(join(dir, 'c.md'), '\uFEFF# desc: y\r\n+1\tz\r\n', 'utf-8');
+    expect(readShelf(dir, 'c')).toEqual({ metaLines: ['# desc: y'], entries: [{ score: 1, text: 'z' }], conflict: null });
+    writeFileSync(join(dir, 'e.md'), '\uFEFF+2\tfirst\n', 'utf-8');
+    expect(readEntries(dir, 'e')).toEqual([{ score: 2, text: 'first' }]);
+  });
+
   test('only the LEADING block is metadata; a `# key:` line among entries stays a bare lesson', () => {
     // The metadata block ends at the first entry. A `# foo: bar` line AFTER an
     // entry is an ordinary tab-less lesson (FR-MODEL-003 tolerance), not metadata
@@ -3581,8 +4784,8 @@ describe('search — the demoted keyword fallback (issue #82)', () => {
 
   test('an empty / whitespace query yields no terms and no groups (never throws)', async () => {
     await addEntry(dir, 'r', 'something');
-    expect(search(dir, '   ')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [] });
-    expect(search(dir, '')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [] });
+    expect(search(dir, '   ')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [], skipped: [], conflicts: [] });
+    expect(search(dir, '')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [], skipped: [], conflicts: [] });
   });
 
   test('no match returns an empty group list (the gap-sensor case)', async () => {
@@ -3661,6 +4864,456 @@ describe('notebookExists / showJson exists flag (issue #166)', () => {
     const sh = showJson(dir, 'ghost');
     expect(sh.exists).toBe(true);
     expect(sh.entries).toEqual([]); // additive flag, entries stays empty
+  });
+});
+
+describe('showJson key + showJsonMany batch (issue #286)', () => {
+  test('each entry carries the dedupKey normal form as `key`', async () => {
+    await addEntry(dir, 'alpha', 'Use execFileSync, NOT execSync!');
+    const sh = showJson(dir, 'alpha');
+    expect(sh.entries[0].key).toBe(dedupKey('Use execFileSync, NOT execSync!'));
+    expect(sh.entries[0].key).toBe('use execfilesync not execsync');
+    // Equality-only: entries share a `key` iff they share an `id` (both hash the
+    // same normal form), so key-equality is exactly the exact-dupe relation.
+    await addEntry(dir, 'beta', 'use execfilesync not execsync');
+    const b = showJson(dir, 'beta');
+    expect(b.entries[0].key).toBe(sh.entries[0].key);
+    expect(b.entries[0].id).toBe(sh.entries[0].id);
+  });
+
+  test('showJsonMany returns one ShowResult per shelf, in order, missing → exists:false', async () => {
+    await addEntry(dir, 'alpha', 'alpha lesson');
+    await setDescription(dir, 'alpha', 'A');
+    await addEntry(dir, 'beta', 'beta lesson');
+    const batch = showJsonMany(dir, ['alpha', 'ghost', 'beta']);
+    expect(batch.map((s) => s.shelf)).toEqual(['alpha', 'ghost', 'beta']);
+    expect(batch[0]).toMatchObject({ description: 'A', exists: true });
+    expect(batch[0].entries[0]).toMatchObject({ text: 'alpha lesson', key: 'alpha lesson' });
+    expect(batch[1]).toMatchObject({ shelf: 'ghost', exists: false, entries: [] });
+    expect(batch[2].entries[0]).toMatchObject({ text: 'beta lesson' });
+  });
+
+  test('showJsonMany on an empty list yields an empty array (no shelves asked, none returned)', () => {
+    expect(showJsonMany(dir, [])).toEqual([]);
+  });
+
+  test('showJsonMany reads a repeated shelf once per occurrence, verbatim (no implicit dedup)', async () => {
+    await addEntry(dir, 'alpha', 'alpha lesson');
+    const batch = showJsonMany(dir, ['alpha', 'alpha']);
+    expect(batch).toHaveLength(2);
+    expect(batch[0]).toEqual(batch[1]);
+  });
+});
+
+describe('staleCandidates (nb stale — cull candidates, issue #240)', () => {
+  test('ranks lowest score first, ties broken by stalest (file order)', async () => {
+    // add a,b,c,d (all +1, file order a,b,c,d), then lift a to +3 and b to +2.
+    // A vote moves the touched entry to the fresh end, so c and d (never voted)
+    // stay the stalest +1 floor, c before d.
+    for (const t of ['a', 'b', 'c', 'd']) await addEntry(dir, 's', t);
+    await vote(dir, 's', entryId('a'), 1); // a -> +2
+    await vote(dir, 's', entryId('a'), 1); // a -> +3
+    await vote(dir, 's', entryId('b'), 1); // b -> +2
+    const r = staleCandidates(dir, 's');
+    // scores a+3, b+2, c+1, d+1 → stale order: c,d (both +1, c staler), b(+2), a(+3).
+    expect(r.entries.map((e) => e.text)).toEqual(['c', 'd', 'b', 'a']);
+    expect(r.entries.map((e) => e.score)).toEqual([1, 1, 2, 3]);
+    expect(r.total).toBe(4);
+    expect(r.exists).toBe(true);
+  });
+
+  test('a negatively-scored (downvoted) lesson sorts to the very top of the cull list', async () => {
+    for (const t of ['keep', 'bad']) await addEntry(dir, 's', t);
+    await vote(dir, 's', entryId('bad'), -1); // bad: +1 -> 0
+    await vote(dir, 's', entryId('bad'), -1); // bad: 0 -> -1
+    const r = staleCandidates(dir, 's');
+    expect(r.entries[0]).toMatchObject({ text: 'bad', score: -1 });
+  });
+
+  test('--limit caps the list but total reflects the whole shelf', async () => {
+    for (const t of ['a', 'b', 'c']) await addEntry(dir, 's', t);
+    const r = staleCandidates(dir, 's', 2);
+    expect(r.entries).toHaveLength(2);
+    expect(r.total).toBe(3);
+    // limit 0 returns an empty list but still reports the full total.
+    expect(staleCandidates(dir, 's', 0).entries).toEqual([]);
+    expect(staleCandidates(dir, 's', 0).total).toBe(3);
+  });
+
+  test('is strictly read-only — scores and file order are untouched', async () => {
+    for (const t of ['a', 'b', 'c']) await addEntry(dir, 's', t);
+    await vote(dir, 's', entryId('b'), 1);
+    const before = readEntries(dir, 's').map((e) => ({ score: e.score, text: e.text }));
+    staleCandidates(dir, 's');
+    staleCandidates(dir, 's', 1);
+    const after = readEntries(dir, 's').map((e) => ({ score: e.score, text: e.text }));
+    expect(after).toEqual(before); // no reorder, no score change, nothing removed
+  });
+
+  test('a missing shelf is exists:false/empty; a describe-only shelf is exists:true/empty (issue #166)', async () => {
+    const miss = staleCandidates(dir, 'ghost');
+    expect(miss.exists).toBe(false);
+    expect(miss.entries).toEqual([]);
+    expect(miss.total).toBe(0);
+    await setDescription(dir, 'ghost', 'a trigger with no lessons');
+    const empty = staleCandidates(dir, 'ghost');
+    expect(empty.exists).toBe(true);
+    expect(empty.total).toBe(0);
+    expect(empty.entries).toEqual([]);
+  });
+});
+
+describe('single-pass shelf read — list/search/show read each file once (issue #201)', () => {
+  // Count how many times each `<shelf>.md` is read via readFileSync. Only shelf
+  // files end in `.md`; the usage log (`.nb-usage.log`) and its `.count` sidecar
+  // never match, so this isolates the per-shelf disk reads the issue targets.
+  const countShelfReads = (reads: string[]): Record<string, number> => {
+    const counts: Record<string, number> = {};
+    for (const p of reads) {
+      const m = /([^/\\]+)\.md$/.exec(p);
+      if (m) counts[m[1]] = (counts[m[1]] ?? 0) + 1;
+    }
+    return counts;
+  };
+
+  // Seed three shelves, each with a `# desc:` line AND entries, so both the
+  // metadata read and the entries read have real work to do (the double-read
+  // the old code paid). `lint` appears in each so a single `search` term hits all.
+  const seedShelves = async (): Promise<void> => {
+    for (const s of ['alpha', 'beta', 'gamma']) {
+      await addEntry(dir, s, `first ${s} lesson`);
+      await addEntry(dir, s, `second ${s} lesson about lint`);
+      await setDescription(dir, s, `when working on ${s}`);
+    }
+  };
+
+  // Run `fn` with the readFileSync spy on, returning its result and read paths.
+  const withReadSpy = async <T>(fn: () => T | Promise<T>): Promise<{ result: T; reads: string[] }> => {
+    fsHook.reads = [];
+    try {
+      const result = await fn();
+      return { result, reads: fsHook.reads! };
+    } finally {
+      fsHook.reads = null;
+    }
+  };
+
+  test('listNotebooks reads each shelf file exactly once', async () => {
+    await seedShelves();
+    const { result, reads } = await withReadSpy(() => listNotebooks(dir));
+    expect(result.rows.map((r) => r.shelf)).toEqual(['alpha', 'beta', 'gamma']);
+    expect(countShelfReads(reads)).toEqual({ alpha: 1, beta: 1, gamma: 1 });
+  });
+
+  test('search reads each shelf file exactly once', async () => {
+    await seedShelves();
+    const { result, reads } = await withReadSpy(() => search(dir, 'lint'));
+    expect(result.groups.map((g) => g.shelf)).toEqual(['alpha', 'beta', 'gamma']);
+    expect(countShelfReads(reads)).toEqual({ alpha: 1, beta: 1, gamma: 1 });
+  });
+
+  test('showJson reads the shelf file exactly once', async () => {
+    await seedShelves();
+    const { result, reads } = await withReadSpy(() => showJson(dir, 'alpha'));
+    expect(result.description).toBe('when working on alpha');
+    // Exact entries (id/score/text/order), so a wrong read wouldn't slip past a
+    // mere length check.
+    expect(result.entries).toEqual([
+      { id: entryId('first alpha lesson'), score: 1, text: 'first alpha lesson', key: 'first alpha lesson' },
+      {
+        id: entryId('second alpha lesson about lint'),
+        score: 1,
+        text: 'second alpha lesson about lint',
+        key: 'second alpha lesson about lint',
+      },
+    ]);
+    expect(countShelfReads(reads)).toEqual({ alpha: 1 });
+  });
+
+  test('the `nb show` CLI branch (no --json) reads the shelf file exactly once', async () => {
+    // The actual changed call site (cli.ts show branch) — it used to read twice
+    // (getDescription then render→readEntries). Drive it in-process so the fs spy
+    // sees its reads; swallow its stdout/stderr and point NB_DIR at the temp dir.
+    await seedShelves();
+    const savedDir = process.env.NB_DIR;
+    const origOut = process.stdout.write.bind(process.stdout);
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.env.NB_DIR = dir;
+    // @ts-expect-error — test shim swallowing the command's writes
+    process.stdout.write = () => true;
+    // @ts-expect-error — test shim swallowing the command's writes
+    process.stderr.write = () => true;
+    try {
+      const { result, reads } = await withReadSpy(() => runNbCli(['show', 'alpha']));
+      expect(result).toBe(0); // exit 0
+      expect(countShelfReads(reads)).toEqual({ alpha: 1 });
+    } finally {
+      process.stdout.write = origOut;
+      process.stderr.write = origErr;
+      if (savedDir === undefined) delete process.env.NB_DIR;
+      else process.env.NB_DIR = savedDir;
+    }
+  });
+
+  test('readShelf keeps a mid-file `# key:` line out of metadata and as a score-0 lesson (FR-MODEL-003)', () => {
+    const shelf = 'midmeta';
+    // Hand-written file: a two-line leading metadata block, a scored entry, then a
+    // `# key:`-shaped line sitting AMONG the entries. Only the leading run is
+    // metadata; the mid-file line must stay an ordinary score-0 lesson. Literal
+    // expectations (not a comparison to readMetaLines/readEntries, which now
+    // delegate to readShelf) so a regression that flipped `inMeta` back on would
+    // fail here.
+    writeFileSync(
+      join(dir, `${shelf}.md`),
+      '# desc: leading description\n' +
+        '# owner: alice\n' +
+        '+2\ta real lesson\n' +
+        '# notakey: a mid-file pseudo-meta line\n',
+      'utf-8',
+    );
+    const { metaLines, entries } = readShelf(dir, shelf);
+    expect(metaLines).toEqual(['# desc: leading description', '# owner: alice']);
+    expect(entries).toEqual([
+      { score: 2, text: 'a real lesson' },
+      { score: 0, text: '# notakey: a mid-file pseudo-meta line' },
+    ]);
+  });
+
+  test('readShelf returns empty metadata and entries for a never-created shelf', () => {
+    expect(readShelf(dir, 'never-created')).toEqual({ metaLines: [], entries: [], conflict: null });
+  });
+
+  test('readShelf treats an ENOENT between existsSync and readFileSync as an empty shelf (issue #300)', () => {
+    writeFileSync(join(dir, 'raced.md'), '# desc: x\n1\tlesson\n');
+    fsHook.failReadOnceCode = 'ENOENT';
+    expect(readShelf(dir, 'raced')).toEqual({ metaLines: [], entries: [], conflict: null });
+    expect(fsHook.failReadOnceCode).toBeNull(); // the injected failure was actually consumed
+  });
+
+  test('readShelf still propagates non-ENOENT read errors (issue #300)', () => {
+    writeFileSync(join(dir, 'denied.md'), '# desc: x\n1\tlesson\n');
+    fsHook.failReadOnceCode = 'EACCES';
+    expect(() => readShelf(dir, 'denied')).toThrow(/EACCES/);
+  });
+
+  test('renderEntries renders ids+scores highest-first, with the empty line verbatim', async () => {
+    await addEntry(dir, 'r', 'first lesson');
+    await addEntry(dir, 'r', 'second lesson'); // equal +1 scores → insertion-order tie-break
+    // Literal expected output pins the format (two-space gaps, `[+N]` sign,
+    // score-desc order) directly, not by comparison to `render` (which now
+    // delegates to `renderEntries`).
+    expect(renderEntries('r', readEntries(dir, 'r'))).toBe(
+      `${entryId('first lesson')}  [+1]  first lesson\n` +
+        `${entryId('second lesson')}  [+1]  second lesson`,
+    );
+    // No entries → the exact empty-notebook line the `show` command prints for an
+    // existing-but-empty shelf.
+    expect(renderEntries('empty-shelf', [])).toBe('(notebook for shelf "empty-shelf" is empty)');
+  });
+});
+
+describe('one unreadable shelf does not abort list/search (issue #332)', () => {
+  // A directory named `<shelf>.md` makes readFileSync throw EISDIR — the same
+  // shape a root-owned/chmod'd file (EACCES) or an EIO read produces, and the
+  // reproduction the issue cites. `show` must still fail loudly for it; the two
+  // cross-shelf scans must degrade to a reported skip and keep the healthy rows.
+  const seedHealthy = async (): Promise<void> => {
+    await addEntry(dir, 'alpha', 'a lesson about lint');
+    await addEntry(dir, 'beta', 'another lesson about lint');
+  };
+
+  test('listNotebooks skips an unreadable shelf, keeps the rest, and reports it', async () => {
+    await seedHealthy();
+    mkdirSync(join(dir, 'weird.md'));
+    const listing = listNotebooks(dir);
+    expect(listing.rows.map((r) => r.shelf)).toEqual(['alpha', 'beta']);
+    expect(listing.total).toBe(2);
+    expect(listing.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
+  });
+
+  test('search skips an unreadable shelf, keeps the rest, and reports it', async () => {
+    await seedHealthy();
+    mkdirSync(join(dir, 'weird.md'));
+    const result = search(dir, 'lint');
+    expect(result.groups.map((g) => g.shelf)).toEqual(['alpha', 'beta']);
+    expect(result.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
+  });
+
+  test('a healthy store reports no skipped shelves (byte-identical path)', async () => {
+    await seedHealthy();
+    expect(listNotebooks(dir).skipped).toEqual([]);
+    expect(search(dir, 'lint').skipped).toEqual([]);
+  });
+
+  test('an unreadable-by-permission shelf (EACCES) is skipped with its real errno', async (ctx) => {
+    // The issue's motivating case is EACCES on a root-owned / chmod'd file after
+    // `sudo nb`, which EISDIR does not exercise. A root-owned file is still
+    // readable by root, so skip there where chmod cannot deny access.
+    if (process.getuid?.() === 0) ctx.skip();
+    await seedHealthy();
+    writeFileSync(join(dir, 'denied.md'), '1\tlesson about lint\n');
+    chmodSync(join(dir, 'denied.md'), 0o000);
+    try {
+      expect(listNotebooks(dir).skipped).toEqual([{ shelf: 'denied', code: 'EACCES' }]);
+      expect(search(dir, 'lint').skipped).toEqual([{ shelf: 'denied', code: 'EACCES' }]);
+      expect(stats(dir, { now: Date.now() }).skipped).toEqual([{ shelf: 'denied', code: 'EACCES' }]);
+    } finally {
+      chmodSync(join(dir, 'denied.md'), 0o600);
+    }
+  });
+
+  test('show still fails loudly for the unreadable shelf (no silent hide)', async () => {
+    mkdirSync(join(dir, 'weird.md'));
+    expect(() => showJson(dir, 'weird')).toThrow(/EISDIR/);
+  });
+});
+
+describe('one unreadable shelf does not abort the stats inventory (issue #332)', () => {
+  // `stats` is the health scan an operator (and nb-janitor) runs to find out why
+  // memory is unhealthy — so it too must survive a damaged store, reporting the
+  // casualty instead of aborting the whole report (the issue's motivating case).
+  test('stats skips the unreadable shelf, keeps every healthy one, and reports it', async () => {
+    await addEntry(dir, 'alpha', 'a lesson about lint');
+    await addEntry(dir, 'beta', 'another lesson about lint');
+    mkdirSync(join(dir, 'weird.md'));
+    const rep = stats(dir, { now: Date.now() });
+    expect(rep.notebooks.map((n) => n.shelf)).toEqual(['alpha', 'beta']);
+    expect(rep.notebookTotals).toEqual({ roles: 2, shelves: 2, lines: 2, cap: maxLines() });
+    expect(rep.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
+  });
+
+  test('a healthy store reports no skipped shelves in stats (byte-identical path)', async () => {
+    await addEntry(dir, 'alpha', 'a lesson');
+    expect(stats(dir, { now: Date.now() }).skipped).toEqual([]);
+  });
+});
+
+describe('skipUnreadable only swallows real errno read failures (issue #332)', () => {
+  // Finding: guarding EVERY throw converts a parser/programming bug (no errno
+  // `code`) into a silent "shelf skipped, code EUNKNOWN" and a success exit — the
+  // opposite of the issue's "surface it, never silent". A codeless throw must
+  // propagate unchanged; only a throw carrying an errno becomes a skip.
+  test('a codeless throw propagates out of listNotebooks instead of being hidden', async () => {
+    await addEntry(dir, 'alpha', 'a lesson');
+    writeFileSync(join(dir, 'weird.md'), '1\tlesson\n');
+    fsHook.failCodelessRead = true;
+    expect(() => listNotebooks(dir)).toThrow(TypeError);
+  });
+});
+
+describe('single shelf read per mutation — add/vote/voteMany/merge/split read the file once (issue #251)', () => {
+  // The mutation hot path used to read each shelf twice: once for entries
+  // (readEntries) and again for the metadata block inside writeEntries
+  // (readMetaLines). Reading once via readShelf and passing metaLines through
+  // collapses that to a single read, exactly as remove() already did (issue #209).
+  // These tests pin BOTH halves of the fix: one shelf read per mutation, and a
+  // byte-for-byte-preserved metadata block (no observable behavior change).
+
+  // Count readFileSync hits per `<shelf>.md`. Only shelf files end in `.md`; the
+  // usage log and its `.count` sidecar never match, so this isolates the per-shelf
+  // disk reads the issue targets.
+  const countShelfReads = (reads: string[]): Record<string, number> => {
+    const counts: Record<string, number> = {};
+    for (const p of reads) {
+      const m = /([^/\\]+)\.md$/.exec(p);
+      if (m) counts[m[1]] = (counts[m[1]] ?? 0) + 1;
+    }
+    return counts;
+  };
+
+  // Run `fn` with the readFileSync spy on, returning its result and read paths.
+  const withReadSpy = async <T>(fn: () => T | Promise<T>): Promise<{ result: T; reads: string[] }> => {
+    fsHook.reads = [];
+    try {
+      const result = await fn();
+      return { result, reads: fsHook.reads! };
+    } finally {
+      fsHook.reads = null;
+    }
+  };
+
+  // The shelf file's leading `# key:` metadata block as raw bytes (every line up
+  // to the first non-metadata line) — what a mutation must round-trip untouched.
+  const metaBlock = (shelf: string): string => {
+    const out: string[] = [];
+    for (const line of readFileSync(join(dir, `${shelf}.md`), 'utf-8').split('\n')) {
+      if (line.startsWith('# ')) out.push(line);
+      else break;
+    }
+    return out.join('\n');
+  };
+
+  // Seed a shelf with a TWO-line metadata block (a known `# desc:` key plus an
+  // unknown `# owner:` key, to exercise the forward-compatible round-trip of an
+  // unrecognized key) AND real entries, so both the metadata and the entries read
+  // have work to do — the double read the old code paid on every mutation.
+  const seed = async (shelf: string, ...lessons: string[]): Promise<void> => {
+    for (const l of lessons) await addEntry(dir, shelf, l);
+    await setDescription(dir, shelf, `when working on ${shelf}`);
+    const file = join(dir, `${shelf}.md`);
+    // Prepend an unknown metadata key by hand (setDescription only writes `# desc:`).
+    writeFileSync(file, '# owner: alice\n' + readFileSync(file, 'utf-8'), 'utf-8');
+  };
+
+  test('addEntry reads the shelf once and preserves the metadata block', async () => {
+    await seed('add', 'first add lesson');
+    const meta = metaBlock('add');
+    expect(meta).toBe('# owner: alice\n# desc: when working on add');
+    const { result, reads } = await withReadSpy(() => addEntry(dir, 'add', 'a brand new lesson'));
+    expect(result.added).toBe(true);
+    expect(result.size).toBe(2); // the new lesson joined the seeded one
+    expect(countShelfReads(reads)).toEqual({ add: 1 }); // one read, not two
+    expect(metaBlock('add')).toBe(meta); // byte-for-byte metadata round-trip
+    // The new lesson is on disk alongside the original — behavior is unchanged.
+    expect(readEntries(dir, 'add').map((e) => e.text)).toEqual(['first add lesson', 'a brand new lesson']);
+  });
+
+  test('vote reads the shelf once and preserves the metadata block', async () => {
+    await seed('vote', 'a votable lesson');
+    const meta = metaBlock('vote');
+    const { result, reads } = await withReadSpy(() => vote(dir, 'vote', 'a votable lesson', 1));
+    expect(result).toEqual({ text: 'a votable lesson', score: 2 }); // +1 applied
+    expect(countShelfReads(reads)).toEqual({ vote: 1 });
+    expect(metaBlock('vote')).toBe(meta);
+    // Re-read from disk: the bumped score must have been PERSISTED, not just
+    // returned (a return-value-only check can't see a write that dropped it).
+    expect(readEntries(dir, 'vote')).toEqual([{ score: 2, text: 'a votable lesson' }]);
+  });
+
+  test('voteMany reads the shelf once and preserves the metadata block', async () => {
+    await seed('votemany', 'lesson one', 'lesson two');
+    const meta = metaBlock('votemany');
+    const { result, reads } = await withReadSpy(() => voteMany(dir, 'votemany', ['lesson one', 'lesson two'], 1));
+    expect(result.map((r) => r.score)).toEqual([2, 2]); // both bumped under one read+write
+    expect(countShelfReads(reads)).toEqual({ votemany: 1 });
+    expect(metaBlock('votemany')).toBe(meta);
+    // Both bumped scores must be PERSISTED (not just reported), with the touched
+    // entries kept in their fresh-end order.
+    expect(readEntries(dir, 'votemany')).toEqual([
+      { score: 2, text: 'lesson one' },
+      { score: 2, text: 'lesson two' },
+    ]);
+  });
+
+  test('merge reads the shelf once and preserves the metadata block', async () => {
+    await seed('merge', 'alpha lesson', 'beta lesson');
+    const meta = metaBlock('merge');
+    const { result, reads } = await withReadSpy(() => merge(dir, 'merge', 'alpha lesson', 'beta lesson', 'merged lesson'));
+    expect(result.added).toBe(true);
+    expect(result.size).toBe(1); // 2 → 1
+    expect(countShelfReads(reads)).toEqual({ merge: 1 });
+    expect(metaBlock('merge')).toBe(meta);
+    expect(readEntries(dir, 'merge').map((e) => e.text)).toEqual(['merged lesson']);
+  });
+
+  test('split reads the shelf once and preserves the metadata block', async () => {
+    await seed('split', 'overloaded lesson');
+    const meta = metaBlock('split');
+    const { result, reads } = await withReadSpy(() => split(dir, 'split', 'overloaded lesson', 'first half', 'second half'));
+    expect(result.size).toBe(2); // 1 → 2
+    expect(countShelfReads(reads)).toEqual({ split: 1 });
+    expect(metaBlock('split')).toBe(meta);
+    expect(readEntries(dir, 'split').map((e) => e.text)).toEqual(['first half', 'second half']);
   });
 });
 
@@ -3803,6 +5456,18 @@ describe('env-tunable clamps (boundary + garbage)', () => {
         expect(v).toBe(dflt);
         expect(Number.isNaN(v)).toBe(false);
       });
+
+      // parseInt accepts a numeric PREFIX and silently drops the rest: '1e3' → 1,
+      // '12.9' → 12, '50abc' → 50. Using such a value would be a silent rewrite
+      // (an operator asking for 1000 getting 1), so a partial parse must fall
+      // back to the DEFAULT, not be honored as-if (issue #336 round 2).
+      test.each(['1e3', '12.9', '50abc', '1,000', '0x10'])(
+        'a partially-numeric value (%s) falls back to the default, never a truncated parse',
+        (raw) => {
+          process.env[envVar] = raw;
+          expect(getter()).toBe(dflt);
+        },
+      );
     });
   });
 
@@ -3834,5 +5499,119 @@ describe('env-tunable clamps (boundary + garbage)', () => {
       process.env.NB_NEAR_DUP = '';
       expect(nearThreshold()).toBe(0);
     });
+  });
+
+  describe('resolveIntEnv status (issue #336)', () => {
+    // The status is what `nb config` reports; it must be honest about a
+    // REWRITTEN value, not merely a missing one. A whole integer is honored;
+    // leading/trailing whitespace is harmless; a partial parse is not honored.
+    test('a whole integer is honored; surrounding whitespace is tolerated', () => {
+      expect(resolveIntEnv('123', 50, 1, 5000)).toEqual({ value: 123, status: 'honored' });
+      expect(resolveIntEnv(' 42 ', 50, 1, 5000)).toEqual({ value: 42, status: 'honored' });
+    });
+
+    test('an out-of-range whole integer is clamped, never ignored', () => {
+      expect(resolveIntEnv('999999', 50, 1, 5000)).toEqual({ value: 5000, status: 'clamped' });
+      expect(resolveIntEnv('0', 50, 1, 5000)).toEqual({ value: 1, status: 'clamped' });
+    });
+
+    test.each(['1e3', '12.9', '50abc', '1,000', '0x10', 'abc', ''])(
+      'a value parseInt would truncate (%j) reads ignored with the default, never honored',
+      (raw) => {
+        expect(resolveIntEnv(raw, 50, 1, 5000)).toEqual({ value: 50, status: 'ignored' });
+      },
+    );
+  });
+});
+
+describe('git merge-conflict markers are detected, never rewritten (issue #333)', () => {
+  // A git-versioned notebook that hits a `git merge`/`pull` conflict parses its
+  // `<<<<<<<`, `=======` and `>>>>>>>` lines as score-0 lessons, and the next
+  // mutation used to bake them in as real lessons — silently "resolving" the
+  // conflict. Reads must still work (with the marker surfaced) and every mutation
+  // must refuse, leaving the file byte-identical.
+  const marked = (): string =>
+    '+1\tfoo lesson\n<<<<<<< HEAD\n+2\tmine\n=======\n+3\ttheirs\n>>>>>>> branch\n';
+  const seed = (name = 'g'): string => {
+    const file = join(dir, `${name}.md`);
+    writeFileSync(file, marked());
+    return file;
+  };
+
+  test('the three marker shapes are recognized, a mid-line ======= or tab-less line is not', () => {
+    expect(isConflictMarker('<<<<<<< HEAD')).toBe(true);
+    expect(isConflictMarker('<<<<<<<')).toBe(true);
+    expect(isConflictMarker('=======')).toBe(true);
+    expect(isConflictMarker('>>>>>>> branch')).toBe(true);
+    expect(isConflictMarker('>>>>>>>')).toBe(true);
+    // Not markers: the ordinary hand-edited line and a lesson containing `=======`.
+    expect(isConflictMarker('a hand-edited line with no score')).toBe(false);
+    expect(isConflictMarker('some ======= text mid-line')).toBe(false);
+    expect(isConflictMarker('======= trailing')).toBe(false);
+    expect(isConflictMarker(' <<<<<<< HEAD')).toBe(false);
+  });
+
+  test('readShelf reports the first marker but still parses the stored lessons', async () => {
+    seed();
+    const { conflict, entries } = readShelf(dir, 'g');
+    expect(conflict).toBe('<<<<<<< HEAD');
+    expect(entries.map((e) => e.text)).toEqual(['foo lesson', '<<<<<<< HEAD', 'mine', '=======', 'theirs', '>>>>>>> branch']);
+  });
+
+  test('a shelf holding only a tab-less line or a mid-line ======= is not a conflict', async () => {
+    writeFileSync(join(dir, 'clean.md'), 'a hand-edited line\n1\ta lesson with ======= inside\n');
+    expect(readShelf(dir, 'clean').conflict).toBeNull();
+    // And it stays mutable.
+    await addEntry(dir, 'clean', 'new one');
+    expect(readEntries(dir, 'clean').map((e) => e.text)).toContain('new one');
+  });
+
+  test('add refuses with a handled `corrupt` error and leaves the file byte-identical', async () => {
+    const file = seed();
+    const before = readFileSync(file, 'utf-8');
+    await expect(addEntry(dir, 'g', 'new one')).rejects.toMatchObject({ errorClass: 'corrupt' });
+    await expect(addEntry(dir, 'g', 'new one')).rejects.toThrow(/shelf "g".*<<<<<<< HEAD/s);
+    expect(readFileSync(file, 'utf-8')).toBe(before);
+  });
+
+  test('every mutation refuses (vote/voteMany/merge/split/rm/move/describe) and drops nothing', async () => {
+    const file = seed();
+    const other = join(dir, 'h.md');
+    writeFileSync(other, '+1\tother lesson\n');
+    const before = readFileSync(file, 'utf-8');
+    const beforeOther = readFileSync(other, 'utf-8');
+    const calls: Array<() => Promise<unknown>> = [
+      () => vote(dir, 'g', 'foo', 1),
+      () => voteMany(dir, 'g', ['foo'], 1),
+      () => merge(dir, 'g', 'foo', 'mine', 'merged'),
+      () => split(dir, 'g', 'foo', 'a', 'b'),
+      () => remove(dir, 'g', 'foo'),
+      () => move(dir, 'h', 'g', 'other'),
+      () => move(dir, 'g', 'h', 'foo'),
+      () => setDescription(dir, 'g', 'a description'),
+    ];
+    for (const call of calls) {
+      await expect(call()).rejects.toMatchObject({ errorClass: 'corrupt' });
+    }
+    expect(readFileSync(file, 'utf-8')).toBe(before);
+    expect(readFileSync(other, 'utf-8')).toBe(beforeOther);
+  });
+
+  test('cross-shelf scans surface conflicted shelves additively and keep them', async () => {
+    seed();
+    await addEntry(dir, 'ok', 'a clean lesson');
+    const listing = listNotebooks(dir);
+    expect(listing.conflicts).toEqual([{ shelf: 'g', marker: '<<<<<<< HEAD' }]);
+    expect(listing.rows.map((r) => r.shelf)).toEqual(['g', 'ok']);
+    const hits = search(dir, 'lesson');
+    expect(hits.conflicts).toEqual([{ shelf: 'g', marker: '<<<<<<< HEAD' }]);
+    expect(stats(dir, { now: Date.now() }).conflicts).toEqual([{ shelf: 'g', marker: '<<<<<<< HEAD' }]);
+  });
+
+  test('a healthy store reports no conflicts', async () => {
+    await addEntry(dir, 'ok', 'a clean lesson');
+    expect(listNotebooks(dir).conflicts).toEqual([]);
+    expect(search(dir, 'clean').conflicts).toEqual([]);
+    expect(stats(dir, { now: Date.now() }).conflicts).toEqual([]);
   });
 });

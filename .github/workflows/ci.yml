@@ -25,7 +25,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node-version: [18, 20, 22]
+        node-version: [18, 20, 22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -39,5 +39,29 @@ jobs:
       # vitest 5 imports `styleText` from node:util, which only exists on
       # Node 20.12+, so the suite cannot run on Node 18. The build step above
       # still verifies the package compiles on its minimum engine (>=18).
+      #
+      # In CI, vitest.config.ts adds the `github-actions` reporter (annotates
+      # each failing test inline on the PR) and the `junit` reporter (writes
+      # junit.xml), so a red leg names the failing test instead of forcing a
+      # raw-log scroll (issue #248).
       - run: npm test
         if: matrix.node-version != 18
+
+      # Machine-readable result for triage: only uploaded when a test leg
+      # failed, and keyed per matrix leg so the six legs never collide on one
+      # artifact name. `if-no-files-found: ignore` keeps the step green if a
+      # pre-test step failed before junit.xml was written.
+      - name: Upload JUnit test results
+        if: failure() && matrix.node-version != 18
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-${{ matrix.os }}-node${{ matrix.node-version }}
+          path: junit.xml
+          if-no-files-found: ignore
+          retention-days: 7
+      # Node 18 cannot load Vitest (see above), so the suite is skipped there and
+      # the shipped code would otherwise never RUN on its minimum engine. Instead
+      # run a dependency-free runtime smoke of the built CLI — the only leg that
+      # actually executes the package on Node 18 (issue #231).
+      - run: node scripts/smoke-node18.mjs
+        if: matrix.node-version == 18

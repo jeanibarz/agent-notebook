@@ -30,7 +30,7 @@ function runHuman(): string {
 type CoAccess = {
   computed: boolean;
   sessions: number;
-  highPairs: { a: string; b: string; co: number; support: number; ratio: number }[];
+  highPairs: { a: string; b: string; co: number; support: number; ratio: number; kind: 'fragment' | 'panel' }[];
   isolated: { shelf: string; shows: number }[];
 };
 function runJson(): { coAccess: CoAccess } {
@@ -60,7 +60,8 @@ describe('nb-janitor section 5 — shelf co-access (issue #107)', () => {
     expect(coAccess.computed).toBe(true);
     expect(coAccess.sessions).toBe(3);
     expect(coAccess.highPairs).toEqual([
-      { a: 'patcher', b: 'repo-cartographer', co: 3, support: 3, ratio: 1 },
+      // patcher and repo-cartographer are DISTINCT roles → a panel, not a fragment.
+      { a: 'patcher', b: 'repo-cartographer', co: 3, support: 3, ratio: 1, kind: 'panel' },
     ]);
     expect(coAccess.isolated).toEqual([]); // both are paired
 
@@ -68,6 +69,62 @@ describe('nb-janitor section 5 — shelf co-access (issue #107)', () => {
     expect(human).toContain('── 5. Shelf co-access');
     expect(human).toContain('"patcher" + "repo-cartographer" — shown together in 3/3 session(s) (co-access 1)');
     expect(human).toContain('almost always opened together');
+    // Distinct roles → the "don't merge" panel advice, not a merge suggestion.
+    expect(human).toContain('distinct roles that co-fire');
+    expect(human).not.toContain('likely one shelf split in two');
+  });
+
+  test('a near-identical role pair in the same scope is a fragment (merge advice), not a panel', () => {
+    // `code-review` vs `code-reviews` — same (empty) scope, editSim ≥ 0.8 → one
+    // role split in two, so the advice is to merge/namespace, unlike a panel.
+    seed([
+      row('code-review', 'show', 's1'),
+      row('code-reviews', 'show', 's1'),
+      row('code-review', 'show', 's2'),
+      row('code-reviews', 'show', 's2'),
+    ]);
+    const { coAccess } = runJson();
+    expect(coAccess.highPairs).toEqual([
+      { a: 'code-review', b: 'code-reviews', co: 2, support: 2, ratio: 1, kind: 'fragment' },
+    ]);
+    const human = runHuman();
+    expect(human).toContain('likely one shelf split in two');
+    expect(human).not.toContain('distinct roles that co-fire');
+  });
+
+  test('intentional `.`-namespace siblings that co-fire are a panel, not a fragment (mirrors §2)', () => {
+    // `build.ci@kookr` + `build.cd@kookr` share the `.`-stem `build`: §2 treats
+    // these as intentional siblings (not a name-dup), so §5 must NOT advise a
+    // merge on them — they classify as `panel`, not `fragment`. Regression guard
+    // for an inversion where a shared stem wrongly routed to merge advice.
+    seed([
+      row('build.ci@kookr', 'show', 's1'),
+      row('build.cd@kookr', 'show', 's1'),
+      row('build.ci@kookr', 'show', 's2'),
+      row('build.cd@kookr', 'show', 's2'),
+    ]);
+    const { coAccess } = runJson();
+    expect(coAccess.highPairs).toEqual([
+      { a: 'build.cd@kookr', b: 'build.ci@kookr', co: 2, support: 2, ratio: 1, kind: 'panel' },
+    ]);
+    expect(runHuman()).not.toContain('likely one shelf split in two');
+  });
+
+  test('a fragment pair is listed before a panel pair even when the panel has a higher ratio', () => {
+    seed([
+      // fragment (dup role names), ratio 0.8: co=4 over 5 shows each
+      row('alpha-rev', 'show', 'f1'), row('alpha-revs', 'show', 'f1'),
+      row('alpha-rev', 'show', 'f2'), row('alpha-revs', 'show', 'f2'),
+      row('alpha-rev', 'show', 'f3'), row('alpha-revs', 'show', 'f3'),
+      row('alpha-rev', 'show', 'f4'), row('alpha-revs', 'show', 'f4'),
+      row('alpha-rev', 'show', 'f5'), row('alpha-revs', 'show', 'g5'),
+      // panel (distinct roles), ratio 1.0
+      row('orchestrator', 'show', 'p1'), row('patcher', 'show', 'p1'),
+      row('orchestrator', 'show', 'p2'), row('patcher', 'show', 'p2'),
+    ]);
+    const kinds = runJson().coAccess.highPairs.map((p) => p.kind);
+    expect(kinds[0]).toBe('fragment'); // fragment first despite its lower ratio (0.8 < 1.0)
+    expect(kinds).toContain('panel');
   });
 
   test('a shelf shown but never alongside another is reported as isolated', () => {
@@ -255,5 +312,322 @@ describe('nb-janitor section 2 — scope-aware shelf-name dedup', () => {
     mkShelf('build.ci@your-repo');
     mkShelf('build.cd@your-repo');
     expect(shelfDups()).toEqual([]);
+  });
+});
+
+describe('nb-janitor section 6 — curation: unreinforced +1-floor lessons (#223)', () => {
+  // A shelf file: lessons is a list of [score, text]; an optional desc line.
+  function mkShelf(name: string, lessons: [number, string][], desc?: string): void {
+    const head = desc ? `# desc: ${desc}\n` : '';
+    const body = lessons.map(([s, t]) => `${s >= 0 ? '+' : ''}${s}\t${t}`).join('\n');
+    writeFileSync(join(dir, `${name}.md`), head + body + '\n', 'utf-8');
+  }
+  function voteRow(shelf: string, session: string, outcome: 'up' | 'down'): string {
+    // ts, shelf, command, status, ms, session, entries, outcome
+    return `${TS}\t${shelf}\tvote\tok\t2ms\t${session}\tabc123\t${outcome}`;
+  }
+  function json(): {
+    curation: {
+      windowUpvotes: number;
+      windowDownvotes: number;
+      floorShelves: { shelf: string; floor: number; total: number; fraction: number }[];
+    };
+  } {
+    const out = execFileSync('node', [janitor, '--json'], { env: { ...process.env, NB_DIR: dir }, encoding: 'utf-8' });
+    return JSON.parse(out);
+  }
+
+  test('counts window upvotes vs downvotes and reports the one-sidedness', () => {
+    mkShelf('v', [[1, 'a']]);
+    seed([voteRow('v', 's1', 'up'), voteRow('v', 's1', 'up'), voteRow('v', 's2', 'down')]);
+    const c = json().curation;
+    expect(c.windowUpvotes).toBe(2);
+    expect(c.windowDownvotes).toBe(1);
+    expect(runHuman()).toContain('2 upvote(s), 1 downvote(s)');
+  });
+
+  test('a shelf dominated by never-reinforced +1 lessons is flagged; one above the floor is not', () => {
+    // Lessons are DISTINCT (no shared content tokens) on purpose: near-identical
+    // texts like "lesson 0".."lesson 11" make §3's paraphrase detector emit a
+    // huge O(n²) dup matrix that bloats `--json` past an 8 KB pipe boundary and
+    // trips a platform-specific partial-read in `execFileSync` here. The floor
+    // check keys on SCORE, not text, so distinctness changes nothing it asserts.
+    // 12 lessons all at +1 → floor=12 (≥10), fraction=1.0 (≥0.5): flagged.
+    mkShelf('floored', Array.from({ length: 12 }, (_, i) => [1, `floornote${i}aa topic${i}bb`] as [number, string]));
+    // 12 lessons all at +3 → floor=0: not flagged.
+    mkShelf('reinforced', Array.from({ length: 12 }, (_, i) => [3, `strongidea${i}cc matter${i}dd`] as [number, string]));
+    seed([voteRow('floored', 's1', 'up')]);
+    const floors = json().curation.floorShelves;
+    expect(floors.map((f) => f.shelf)).toEqual(['floored']);
+    expect(floors[0]).toMatchObject({ floor: 12, total: 12, fraction: 1 });
+    const human = runHuman();
+    expect(human).toContain('── 6. Curation');
+    expect(human).toContain('floored: 12/12 lessons still at +1');
+    // The JSON floorShelves equality above already pins that 'reinforced' is not
+    // flagged; the human section does not print it as a floor pile.
+    expect(human).not.toContain('reinforced: 12/12');
+  });
+
+  test('a small +1 pile below the minimum count is not flagged (pins FLOOR_MIN_LESSONS)', () => {
+    mkShelf('small', Array.from({ length: 9 }, (_, i) => [1, `l ${i}`] as [number, string]));
+    seed([voteRow('small', 's1', 'up')]);
+    expect(json().curation.floorShelves).toEqual([]);
+    expect(runHuman()).toContain('✅ no shelf is dominated by a large pile');
+  });
+
+  test('no downvotes in the window prints the "downvoting is unused" line', () => {
+    mkShelf('v', [[1, 'a']]);
+    seed([voteRow('v', 's1', 'up')]);
+    expect(runHuman()).toContain('downvoting is unused');
+  });
+});
+
+describe('nb-janitor section 7 — undescribed shelves ranked by browse-without-use (#223)', () => {
+  function mkShelf(name: string, desc?: string): void {
+    const head = desc ? `# desc: ${desc}\n` : '';
+    writeFileSync(join(dir, `${name}.md`), head + '+1\ta lesson\n', 'utf-8');
+  }
+  function voteRow(shelf: string, session: string): string {
+    return `${TS}\t${shelf}\tvote\tok\t2ms\t${session}\tabc123\tup`;
+  }
+  function json(): { undescribed: { computed: boolean; shelves: { shelf: string; browseWithoutUse: number }[] } } {
+    const out = execFileSync('node', [janitor, '--json'], { env: { ...process.env, NB_DIR: dir }, encoding: 'utf-8' });
+    return JSON.parse(out);
+  }
+
+  test('lists undescribed shelves ranked by browse-without-use; a described shelf is excluded', () => {
+    mkShelf('alpha'); // undescribed, browsed-without-use twice
+    mkShelf('bravo'); // undescribed, browsed-without-use once
+    mkShelf('charlie', 'open me when charlie-ing'); // described → never listed
+    seed([
+      row('alpha', 'show', 's1'),
+      row('alpha', 'show', 's2'),
+      row('bravo', 'show', 's1'),
+      row('charlie', 'show', 's1'), // described, so excluded regardless
+    ]);
+    const u = json().undescribed;
+    expect(u.computed).toBe(true);
+    expect(u.shelves).toEqual([
+      { shelf: 'alpha', browseWithoutUse: 2 },
+      { shelf: 'bravo', browseWithoutUse: 1 },
+    ]);
+    const human = runHuman();
+    expect(human).toContain('── 7. Undescribed shelves');
+    expect(human).toContain('alpha — shown-but-not-voted in 2 session(s)');
+    expect(human).not.toContain('charlie');
+  });
+
+  test('a shelf shown AND voted in the same session is not browse-without-use', () => {
+    mkShelf('alpha');
+    seed([row('alpha', 'show', 's1'), voteRow('alpha', 's1')]);
+    expect(json().undescribed.shelves).toEqual([{ shelf: 'alpha', browseWithoutUse: 0 }]);
+  });
+
+  test('every shelf described → section 7 reports the all-clear', () => {
+    mkShelf('alpha', 'trigger a');
+    seed([row('alpha', 'show', 's1')]);
+    expect(json().undescribed.shelves).toEqual([]);
+    expect(runHuman()).toContain('✅ every shelf has an explicit # desc: trigger.');
+  });
+});
+
+// Section 4 — volume over time. gitHistory() must distinguish "NB_DIR is not a
+// git repo" (no .git) from "git exists but `git log` failed" (its 5s timeout on
+// a huge repo, git's dubious-ownership refusal, a corrupt repo, or git missing
+// from PATH). Before the fix both collapsed to null and section 4 printed the
+// flatly-false "not a git repo" line on a genuine git failure (issue #269).
+const NOT_A_REPO = '(NB_DIR is not a git repo';
+const GIT_FAILED = '(git history unavailable';
+
+describe('nb-janitor section 4 — git history vs git failure (issue #269)', () => {
+  test('no .git → "not a git repo" (unchanged for existing users)', () => {
+    // Fresh temp NB_DIR has no .git at all; gitHistory never shells out to git.
+    const human = runHuman();
+    expect(human).toContain('── 4. Volume over time');
+    expect(human).toContain(NOT_A_REPO);
+    expect(human).not.toContain(GIT_FAILED);
+  });
+
+  test('.git present but `git log` fails → "git history unavailable", not "not a git repo"', () => {
+    // existsSync('.git') is true, so the old guard would try git and swallow the
+    // throw as null → the false "not a git repo" line. A gitfile pointing nowhere
+    // makes `git log` exit non-zero deterministically (no walk-up to a parent
+    // repo), standing in for timeout / dubious-ownership / corrupt-repo / no-PATH.
+    writeFileSync(join(dir, '.git'), 'gitdir: /nonexistent/nb-janitor-issue-269\n', 'utf-8');
+    const human = runHuman(); // execFileSync throws on nonzero exit → also pins exit 0
+    expect(human).toContain('── 4. Volume over time');
+    expect(human).toContain(GIT_FAILED);
+    expect(human).not.toContain(NOT_A_REPO);
+  });
+
+  test('a real git repo with notebook commits still renders the git volume line', () => {
+    // The happy path must survive the three-way split: a readable repo reports
+    // commits, never a degraded note.
+    const gitEnv = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+      GIT_AUTHOR_NAME: 't',
+      GIT_AUTHOR_EMAIL: 't@example.com',
+      GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@example.com',
+    };
+    const git = (...args: string[]): void => {
+      execFileSync('git', ['-C', dir, ...args], { env: gitEnv, stdio: 'ignore' });
+    };
+    git('init', '-q');
+    writeFileSync(join(dir, 'readme.md'), 'x\n', 'utf-8');
+    git('add', 'readme.md');
+    git('-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'nb add demo');
+    const human = runHuman();
+    expect(human).toContain('── 4. Volume over time');
+    expect(human).toContain('git: 1 notebook commits');
+    expect(human).toContain('add:1'); // "nb add …" subject → byCmd add:1
+    expect(human).not.toContain(GIT_FAILED);
+    expect(human).not.toContain(NOT_A_REPO);
+  });
+
+  test('a readable repo with zero commits in the window still reports git (pins the Array.isArray guard)', () => {
+    // git log succeeds but --since filters everything out → gitHistory returns an
+    // EMPTY array, the one success case the old `if (history)` truthiness and the
+    // new `Array.isArray(history)` guard must treat alike: a readable (just quiet)
+    // repo, never the "not a git repo" / "git failed" degrade. Commit far in the
+    // past so it falls outside the default 30-day window.
+    const old = '2000-01-01T00:00:00 +0000';
+    const gitEnv = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_SYSTEM: '/dev/null',
+      GIT_AUTHOR_NAME: 't',
+      GIT_AUTHOR_EMAIL: 't@example.com',
+      GIT_COMMITTER_NAME: 't',
+      GIT_COMMITTER_EMAIL: 't@example.com',
+      GIT_AUTHOR_DATE: old,
+      GIT_COMMITTER_DATE: old,
+    };
+    const git = (...args: string[]): void => {
+      execFileSync('git', ['-C', dir, ...args], { env: gitEnv, stdio: 'ignore' });
+    };
+    git('init', '-q');
+    writeFileSync(join(dir, 'readme.md'), 'x\n', 'utf-8');
+    git('add', 'readme.md');
+    git('-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'nb add demo');
+    const human = runHuman();
+    expect(human).toContain('git: 0 notebook commits on 0 active days');
+    expect(human).not.toContain(GIT_FAILED);
+    expect(human).not.toContain(NOT_A_REPO);
+  });
+});
+
+// The usage ring is bounded by ROW COUNT, not time: sections 1/4/6/7 keep only
+// rows within `now - --days`, but an active store rotates old rows out, so a wide
+// window can reach back further than the ring retains and report a false
+// all-clear. The janitor now detects this and prints a caveat (#275). These tests
+// drive the real script against a seeded ring, overriding NB_USAGE_RING so a
+// small, cheap log can reach "capacity".
+describe('nb-janitor — --days window vs usage-ring span (#275)', () => {
+  const DAY = 86400000;
+  // A usage row whose timestamp is `daysAgo` whole days before now, so the test
+  // is independent of the wall-clock date (unlike the fixed TS the other suites
+  // use). Minimal columns: ts, shelf, command, status, ms, session(blank).
+  function ageRow(shelf: string, command: string, daysAgo: number): string {
+    return `${new Date(Date.now() - daysAgo * DAY).toISOString()}\t${shelf}\t${command}\tok\t2ms\t`;
+  }
+  function run(args: string[], ring?: string): string {
+    const env = { ...process.env, NB_DIR: dir, ...(ring !== undefined ? { NB_USAGE_RING: ring } : {}) };
+    return execFileSync('node', [janitor, ...args], { env, encoding: 'utf-8' });
+  }
+  type UsageWindow = {
+    ring: number;
+    rows: number;
+    atCapacity: boolean;
+    requestedDays: number;
+    coverageDays: number | null;
+    blind: boolean;
+  };
+  function usageWindow(args: string[], ring?: string): UsageWindow {
+    return JSON.parse(run(['--json', ...args], ring)).usageWindow;
+  }
+
+  test('a full ring whose span is shorter than --days is flagged blind, with a caveat', () => {
+    // 100 rows (the NB_USAGE_RING floor), all from ~2 days ago → the ring is at
+    // capacity but spans only days, while --days 90 reaches back three months.
+    seed(Array.from({ length: 100 }, () => ageRow('busy', 'show', 2)));
+    const w = usageWindow(['--days', '90'], '100');
+    expect(w.ring).toBe(100);
+    expect(w.atCapacity).toBe(true);
+    expect(w.coverageDays).toBe(2);
+    expect(w.requestedDays).toBe(90);
+    expect(w.blind).toBe(true);
+
+    const human = run(['--days', '90'], '100');
+    expect(human).toContain('partially blind');
+    expect(human).toContain('raise NB_USAGE_RING');
+    expect(human).toContain('retains only the last 2d of activity');
+  });
+
+  test('a ring below capacity is never flagged blind, even with a wide --days (young store, no false alarm)', () => {
+    // Only 3 rows, far below the 100-row ring → nothing has been evicted; the
+    // store is simply young. The window is not "blind" — raising the ring would
+    // not help — so no caveat fires. This pins the capacity guard.
+    seed([ageRow('new', 'show', 1), ageRow('new', 'show', 1), ageRow('new', 'show', 1)]);
+    const w = usageWindow(['--days', '365'], '100');
+    expect(w.atCapacity).toBe(false);
+    expect(w.blind).toBe(false);
+    expect(run(['--days', '365'], '100')).not.toContain('partially blind');
+  });
+
+  test('a full ring that already spans more than --days is not blind (the window fits the data)', () => {
+    // 100 rows, the oldest 200 days old → the ring covers more than the 30-day
+    // window, so every day the window asks for is backed by retained rows.
+    const rows = Array.from({ length: 99 }, () => ageRow('busy', 'show', 1));
+    rows.push(ageRow('busy', 'show', 200)); // oldest row predates the window
+    seed(rows);
+    const w = usageWindow(['--days', '30'], '100');
+    expect(w.atCapacity).toBe(true);
+    expect(w.blind).toBe(false);
+    expect(run(['--days', '30'], '100')).not.toContain('partially blind');
+  });
+
+  test('no usage log → no blindness flag and no caveat (degrades cleanly)', () => {
+    // No .nb-usage.log at all: coverage is unknown, nothing is blind.
+    const w = usageWindow(['--days', '90']);
+    expect(w.rows).toBe(0);
+    expect(w.coverageDays).toBe(null);
+    expect(w.blind).toBe(false);
+    expect(run(['--days', '90'])).not.toContain('partially blind');
+  });
+
+  test('99 rows in a 100-row ring is below capacity — the >= guard is not off-by-one', () => {
+    // One short of the ring: nothing has rotated out yet, so even a wide window
+    // is fully backed by data. Pins the N-1 boundary of `usage.length >= ring`.
+    seed(Array.from({ length: 99 }, () => ageRow('busy', 'show', 2)));
+    const w = usageWindow(['--days', '90'], '100');
+    expect(w.rows).toBe(99);
+    expect(w.atCapacity).toBe(false);
+    expect(w.blind).toBe(false);
+    expect(run(['--days', '90'], '100')).not.toContain('partially blind');
+  });
+
+  test('mirrors the core NB_USAGE_RING clamp (floor 100, ceiling 100000, default 5000)', () => {
+    // The capacity test is only meaningful if the janitor judges against the SAME
+    // ring the core writes to. A wrong clamp would misfire on every real store
+    // while these tests (which pass NB_USAGE_RING=100) stayed green — so pin it.
+    seed([ageRow('x', 'show', 1)]);
+    expect(usageWindow(['--days', '30'], '10').ring).toBe(100); // below floor clamps up
+    expect(usageWindow(['--days', '30'], '0').ring).toBe(100); // a FINITE 0 clamps up to the floor, it does NOT fall back to 5000 (core clampInt parity)
+    expect(usageWindow(['--days', '30'], '999999').ring).toBe(100000); // above ceiling clamps down
+    expect(usageWindow(['--days', '30'], 'not-a-number').ring).toBe(5000); // unparseable → default
+  });
+
+  test('a full ring spanning only hours reports coverageDays 0 and an "under a day" caveat', () => {
+    // Oldest row ~3 hours old → (now - oldest)/DAY floors to 0; exercises the
+    // sub-day label branch the `2d` test does not reach.
+    const ts = new Date(Date.now() - 3 * 3600000).toISOString();
+    seed(Array.from({ length: 100 }, () => `${ts}\tbusy\tshow\tok\t2ms\t`));
+    const w = usageWindow(['--days', '30'], '100');
+    expect(w.coverageDays).toBe(0);
+    expect(w.blind).toBe(true);
+    expect(run(['--days', '30'], '100')).toContain('under a day');
   });
 });

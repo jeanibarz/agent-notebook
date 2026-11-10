@@ -5,7 +5,7 @@
 //   `nb stats` tells you how ONE notebook is doing right now. The janitor takes
 //   the long, cross-notebook view that stats cannot: it reads every notebook
 //   file, the usage log, and (if NB_DIR is a git repo) the commit history, and
-//   reports five things, each with a concrete suggested `nb` command:
+//   reports seven things, each with a concrete suggested `nb` command:
 //
 //     1. Lessons lost to eviction   — shelves that evict lessons still scored above +1,
 //                                      or whose evicted lessons get added again.
@@ -18,9 +18,17 @@
 //     4. Volume over time & silence — from git history: how the store grew, how
 //                                      busy it's been, and which shelves went quiet.
 //     5. Shelf co-access            — which shelves get `show`n together in the same
-//                                      session: pairs almost always opened together
-//                                      (merge/namespace), and isolated shelves.
+//                                      session: pairs almost always opened together,
+//                                      split into `fragment` (one role in two →
+//                                      merge/namespace) vs `panel` (distinct roles
+//                                      that co-fire → expected), and isolated shelves.
 //                                      Needs NB_SESSION; degrades to a note without it.
+//     6. Curation (+1-floor)        — window upvotes vs downvotes (is voting one-sided?)
+//                                      and shelves piled with never-reinforced +1 lessons
+//                                      to scan for ones that misfired (downvote/rm).
+//     7. Undescribed shelves        — shelves with no `# desc:` trigger, ranked by
+//                                      browse-without-use so the noisiest get a trigger
+//                                      first (`nb describe`). Browse rank needs NB_SESSION.
 //
 // WHY A SEPARATE, OFFLINE TOOL
 //   The notebook core stays dumb, deterministic, and offline (requirements.md
@@ -52,11 +60,35 @@ const flag = (name, dflt) => {
 const JSON_OUT = argv.includes('--json');
 const DAYS = Math.max(1, Number.parseInt(flag('--days', '30'), 10) || 30);
 const SIM = Math.min(1, Math.max(0, Number.parseFloat(flag('--sim', '0.6')) || 0.6));
+/** Expand a leading `~` / `~/…` (and `~\\…` on Windows) exactly like the package's
+ *  `expandHomeDir` (issue #334): `NB_DIR` set where no shell expands it (settings.json
+ *  `env`, systemd, cron) must not become a literal `~` directory. `~user/…` is left alone. */
+function expandHome(value) {
+  if (value === '~') return homedir();
+  if (value.startsWith('~/')) return join(homedir(), value.slice(2));
+  if (process.platform === 'win32' && value.startsWith('~\\')) return join(homedir(), value.slice(2));
+  return value;
+}
+
 const NB_DIR =
   process.env.NB_DIR && process.env.NB_DIR.trim() !== ''
-    ? process.env.NB_DIR
+    ? expandHome(process.env.NB_DIR)
     : join(homedir(), '.agent-notebook', 'notebooks');
 const MAX_LINES = Number.parseInt(process.env.NB_MAX_LINES ?? '50', 10) || 50;
+// The usage ring is bounded by ROW COUNT, not time (see notebook.ts usageRing():
+// default 5000, clamped to 100..100000). Mirror that clamp so we can tell when a
+// `--days` window reaches further back than the rows the ring still retains — an
+// active store rotates old rows out, so a wide window can be partially blind to
+// evicted activity and otherwise report a false all-clear (#275).
+// Mirror notebook.ts clampInt() EXACTLY (default 5000 only when the value is
+// non-finite; a finite 0 or negative clamps UP to the 100 floor, it does NOT
+// fall back to the default) — the `|| 5000` idiom would mishandle `NB_USAGE_RING=0`
+// (→ 5000 here vs 100 in core) and misjudge capacity.
+const USAGE_RING = (() => {
+  const raw = process.env.NB_USAGE_RING;
+  const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? Math.min(100000, Math.max(100, n)) : 5000;
+})();
 
 // ---- read the store (mirrors the package's file conventions) --------------
 function readNotebooks(dir) {
@@ -69,8 +101,14 @@ function readNotebooks(dir) {
   return files.map((f) => {
     const shelf = f.slice(0, -3);
     let lessons = [];
+    let described = false; // has an explicit `# desc:` trigger line (vs an auto-fallback)
     try {
-      lessons = readFileSync(join(dir, f), 'utf-8')
+      const raw = readFileSync(join(dir, f), 'utf-8');
+      // A `# desc:` line in the leading metadata block is the shelf's trigger —
+      // "the situation in which you should open me". Its presence (not its text)
+      // is what section 7 ranks on, so a plain boolean is enough.
+      described = raw.split('\n').some((l) => /^#\s*desc:/.test(l));
+      lessons = raw
         .split('\n')
         .filter((l) => l.trim() !== '' && !l.startsWith('#')) // skip the `# key:` metadata block
         .map((l) => {
@@ -83,7 +121,7 @@ function readNotebooks(dir) {
     } catch {
       /* unreadable → report as empty rather than crash the whole scan */
     }
-    return { shelf, lessons };
+    return { shelf, lessons, described };
   });
 }
 
@@ -155,6 +193,15 @@ function readUsage(dir) {
 }
 
 // ---- git history (optional) ----------------------------------------------
+// gitHistory distinguishes three outcomes so section 4 can report them apart:
+//   null         — NB_DIR is not a git repo (no .git); growth trends unavailable
+//                  because versioning is simply not enabled.
+//   GIT_FAILED   — .git exists but `git log` failed (its 5s timeout on a huge
+//                  repo, git's "dubious ownership" refusal on a shared host, a
+//                  corrupt repo, or git missing from PATH). The repo IS versioned;
+//                  the tool just could not read it this run.
+//   Commit[]     — history read successfully (possibly empty).
+const GIT_FAILED = Symbol('git-failed');
 function gitHistory(dir, days) {
   if (!existsSync(join(dir, '.git'))) return null;
   try {
@@ -174,7 +221,7 @@ function gitHistory(dir, days) {
       });
     return commits;
   } catch {
-    return null;
+    return GIT_FAILED;
   }
 }
 
@@ -183,6 +230,30 @@ const notebooks = readNotebooks(NB_DIR);
 const usage = readUsage(NB_DIR);
 const history = gitHistory(NB_DIR, DAYS);
 const now = Date.now();
+
+// --days blindness guard (#275): sections 1, 4, 6 and 7 keep only rows within
+// `now - DAYS`, but the usage ring is bounded by ROW COUNT, not time, so an
+// active store rotates old rows out. When the ring is AT CAPACITY and its oldest
+// retained row is NEWER than the window start, the `--days` window reaches back
+// further than any row we still have: those sections then see only part of the
+// window and can print a false all-clear. Requiring capacity (not just "oldest
+// row is recent") avoids misfiring on a young store that simply has < DAYS of
+// history — raising NB_USAGE_RING would not help there. Compute `min` with a loop
+// rather than `Math.min(...usage)` so a 100k-row ring can't overflow the stack.
+let oldestUsage = null;
+for (const r of usage)
+  if (Number.isFinite(r.t) && (oldestUsage === null || r.t < oldestUsage)) oldestUsage = r.t;
+const usageAtCapacity = usage.length >= USAGE_RING;
+const usageWindowBlind = usageAtCapacity && oldestUsage !== null && oldestUsage > now - DAYS * 86400000;
+const usageCoverageDays = oldestUsage === null ? null : Math.floor((now - oldestUsage) / 86400000);
+const usageWindow = {
+  ring: USAGE_RING,
+  rows: usage.length,
+  atCapacity: usageAtCapacity,
+  requestedDays: DAYS,
+  coverageDays: usageCoverageDays,
+  blind: usageWindowBlind,
+};
 
 // 1) lessons lost to eviction. A full shelf is the normal state: eviction and
 //    aging only run at the cap, and they are what retire unused lessons. So
@@ -250,7 +321,7 @@ lessonDups.sort((x, y) => y.sim - x.sim);
 
 // 4) volume over time & silence
 let volume = null;
-if (history) {
+if (Array.isArray(history)) {
   const byDay = {};
   const byCmd = {};
   for (const c of history) {
@@ -270,9 +341,13 @@ const silentShelves = notebooks
   .map((r) => ({ shelf: r.shelf, role: r.shelf, daysQuiet: r.lastUse ? Math.round((now - r.lastUse) / 86400000) : null }));
 
 // 5) shelf co-access — which shelves get `show`n together in the same session.
-//    A shelf is *defined* by co-access (lessons needed in the same situations),
-//    so two shelves almost always opened together are really one (merge/namespace
-//    candidate), and a shelf never opened alongside another is isolated. Rows
+//    A shelf is *defined* by co-access (lessons needed in the same situations), so
+//    two shelves almost always opened together MAY be one role split in two (a
+//    `fragment` → merge/namespace) — but they may instead be distinct roles that
+//    legitimately co-fire (a `panel`: an RFC review panel, or an orchestrator with
+//    its per-project reviewers), which must NOT be merged. Each high pair is
+//    classified (see `coPairKind`) so the advice fits. A shelf never opened
+//    alongside another is isolated. Rows
 //    with a blank session carry no co-access signal (requirements.md FR-USAGE-002:
 //    "co-access is then not computed"), so they are dropped here and the section
 //    degrades to a one-line note when nothing is left — mirroring section 4
@@ -298,6 +373,25 @@ for (const shelves of Object.values(sessionShelves)) {
       coCount.set(key, (coCount.get(key) ?? 0) + 1);
     }
 }
+// Classify a high-co-access pair: `fragment` = one underlying ROLE split in two
+// (a genuine merge/namespace candidate), vs `panel` = DISTINCT roles that
+// legitimately co-fire (an RFC review panel, or a per-project role bundle — the
+// orchestrator + its reviewers). Mirrors §2's name-dup rule EXACTLY so the two
+// sections never contradict: a pair is a `fragment` only when §2 would also flag
+// it as a near-duplicate NAME — same project scope, NOT intentional `.`-namespace
+// siblings, and a near-identical role (editSim ≥ 0.8). Everything else is a
+// `panel`: different scopes, `.`-stem siblings (e.g. `build.ci`/`build.cd`, which
+// §2 treats as intentional, not a dup), or simply different roles. This keeps §5
+// from advising a merge on a review panel or on intentional siblings — the false
+// positives the usage audit #223 flagged.
+const coPairKind = (a, b) => {
+  const sa = splitShelf(a);
+  const sb = splitShelf(b);
+  if (sa.scope !== sb.scope) return 'panel'; // different project scope → different jobs
+  const sharedDotStem = dotStem(sa.role) !== null && dotStem(sa.role) === dotStem(sb.role);
+  if (sharedDotStem) return 'panel'; // intentional `.`-namespace siblings (mirrors §2's `continue`)
+  return editSim(sa.role, sb.role) >= 0.8 ? 'fragment' : 'panel';
+};
 const shelvesShown = Object.keys(showsByShelf);
 const coAccessComputed = shelvesShown.length > 0;
 const coPaired = new Set(); // shelves that co-occur with ≥1 other (any count)
@@ -309,9 +403,14 @@ for (const [key, co] of coCount) {
   const support = Math.min(showsByShelf[a], showsByShelf[b]); // ≥1: a paired shelf was shown
   const ratio = co / support;
   if (co >= COACCESS_MIN_SUPPORT && ratio >= COACCESS_MIN_RATIO)
-    highPairs.push({ a, b, co, support, ratio: Number(ratio.toFixed(2)) });
+    highPairs.push({ a, b, co, support, ratio: Number(ratio.toFixed(2)), kind: coPairKind(a, b) });
 }
-highPairs.sort((x, y) => y.ratio - x.ratio || y.co - x.co);
+// Fragments first (the actionable merge candidates), then by strength — a review
+// panel is expected, so it should never bury a genuine split.
+highPairs.sort(
+  (x, y) =>
+    (x.kind === 'fragment' ? 0 : 1) - (y.kind === 'fragment' ? 0 : 1) || y.ratio - x.ratio || y.co - x.co,
+);
 // isolated: shown but never alongside another shelf — only meaningful once ≥2
 // distinct shelves were shown overall (with one, "isolated" is trivially true).
 const isolated =
@@ -328,6 +427,68 @@ const coAccess = {
   isolated,
 };
 
+// 6) Curation: unreinforced lessons at the +1 floor (#223). The usage audit
+//    found the vote mechanism is almost all upvotes — wrong lessons are rarely
+//    downvoted or removed, so they only leave when a shelf fills and the stalest
+//    floor line ages out. Surface how one-sided voting is in the window, and
+//    which shelves carry the biggest pile of never-reinforced (+1-floor) lessons
+//    to scan. Shelf-level on purpose: the janitor has no per-lesson id to date a
+//    single line, so it points at the shelf, not the line.
+const FLOOR_SCORE = 1; // a lesson enters at +1; still at +1 ⇒ never net-reinforced
+const FLOOR_MIN_LESSONS = 10; // a few fresh +1 lessons is normal; a big pile is the signal
+const FLOOR_MIN_FRACTION = 0.5; // …and they dominate the shelf
+let upvotes = 0;
+let downvotes = 0;
+for (const r of usage) {
+  if (now - r.t > DAYS * 86400000 || r.command !== 'vote') continue;
+  if (r.outcome === 'up') upvotes++;
+  else if (r.outcome === 'down') downvotes++;
+}
+const floorShelves = notebooks
+  .map((n) => {
+    const floor = n.lessons.filter((e) => e.score <= FLOOR_SCORE).length;
+    const total = n.lessons.length;
+    return { shelf: n.shelf, floor, total, fraction: total ? Number((floor / total).toFixed(2)) : 0 };
+  })
+  .filter((s) => s.floor >= FLOOR_MIN_LESSONS && s.fraction >= FLOOR_MIN_FRACTION)
+  .sort((a, b) => b.floor - a.floor || b.fraction - a.fraction);
+const curation = { windowUpvotes: upvotes, windowDownvotes: downvotes, floorScore: FLOOR_SCORE, floorShelves };
+
+// 7) Undescribed shelves, ranked by browse-without-use (#223). A shelf shown in
+//    a session but with no vote of IT that session is a "browse-without-use": the
+//    trigger surfaced it but nothing earned a vote, so its description may
+//    over-promise — and a shelf with no `# desc:` at all (an auto-fallback to its
+//    top lesson) is the likeliest over-promiser. Rank undescribed shelves by that
+//    count so the noisiest get a real trigger first. Needs NB_SESSION (same gate
+//    as co-access): the unit is the (session, shelf) pair.
+const bwuByShelf = {};
+{
+  const seen = new Map(); // session\tshelf → { shown, voted }
+  for (const r of usage) {
+    if (now - r.t > DAYS * 86400000) continue;
+    if (r.session === '' || r.shelf === '' || r.shelf === '-') continue;
+    const isShow = r.command === 'show';
+    const isVote = r.command === 'vote' && (r.outcome === 'up' || r.outcome === 'down');
+    if (!isShow && !isVote) continue;
+    const k = `${r.session}\t${r.shelf}`;
+    const cur = seen.get(k) ?? { shown: false, voted: false };
+    if (isShow) cur.shown = true;
+    else cur.voted = true;
+    seen.set(k, cur);
+  }
+  for (const [k, v] of seen) {
+    if (!v.shown || v.voted) continue;
+    const shelf = k.split('\t')[1];
+    bwuByShelf[shelf] = (bwuByShelf[shelf] ?? 0) + 1;
+  }
+}
+const undescribedComputed = usage.some((r) => r.session !== '');
+const undescribedShelves = notebooks
+  .filter((n) => !n.described)
+  .map((n) => ({ shelf: n.shelf, browseWithoutUse: bwuByShelf[n.shelf] ?? 0 }))
+  .sort((a, b) => b.browseWithoutUse - a.browseWithoutUse || a.shelf.localeCompare(b.shelf));
+const undescribed = { computed: undescribedComputed, shelves: undescribedShelves };
+
 const report = {
   dir: NB_DIR,
   notebooks: notebooks.length,
@@ -341,7 +502,10 @@ const report = {
   silentShelves,
   silentRoles: silentShelves, // deprecated alias of silentShelves
   coAccess,
+  curation,
+  undescribed,
   usageRows: usage.length,
+  usageWindow,
 };
 
 if (JSON_OUT) {
@@ -353,6 +517,12 @@ if (JSON_OUT) {
 const out = [];
 const H = (s) => out.push('', `── ${s} ` + '─'.repeat(Math.max(0, 60 - s.length)));
 out.push(`nb-janitor — ${report.notebooks} notebooks, ${report.totalLessons} lessons in ${NB_DIR}`);
+if (usageWindowBlind)
+  out.push(
+    `  ⚠️  usage log retains only the last ${usageCoverageDays >= 1 ? `${usageCoverageDays}d` : 'under a day'} of activity ` +
+      `(ring full at ${USAGE_RING} rows); the --days ${DAYS} window reaches further back, so sections 1/4/6/7 are ` +
+      `partially blind to evicted rows and may understate — raise NB_USAGE_RING or lower --days.`,
+  );
 
 H(`1. Lessons lost to eviction (last ${DAYS}d)`);
 out.push(
@@ -393,6 +563,8 @@ if (volume)
         ? ` — ${Object.entries(volume.byCmd).map(([k, v]) => `${k}:${v}`).join('  ')}`
         : ''),
   );
+else if (history === GIT_FAILED)
+  out.push('  (git history unavailable — git failed, timed out, or refused access (dubious ownership / corrupt repo / git not on PATH); NB_DIR is versioned but could not be read this run)');
 else out.push('  (NB_DIR is not a git repo — enable git-versioning for growth trends: harness-setup.md#git-versioning)');
 if (report.usageRows === 0) out.push('  (no usage log yet — set NB_SESSION and use the notebooks to populate it)');
 if (silentShelves.length === 0) out.push('  ✅ no shelf has gone silent in the window.');
@@ -414,7 +586,12 @@ else {
       out.push(
         `  ⚠️  "${p.a}" + "${p.b}" — shown together in ${p.co}/${p.support} session(s) (co-access ${p.ratio}); almost always opened together.`,
       );
-      out.push(`      → consider one namespaced shelf (e.g. "${p.a}.*"/"${p.b}.*") or nb merge their overlapping lessons.`);
+      if (p.kind === 'fragment')
+        out.push(`      → likely one shelf split in two: nb merge their overlapping lessons, or namespace ("${p.a}.*"/"${p.b}.*").`);
+      else
+        out.push(
+          `      → distinct roles that co-fire (a review panel / per-project bundle) — expected; extract a shared umbrella shelf ONLY if they carry duplicated cross-cutting lessons, don't merge the roles.`,
+        );
     }
     if (highPairs.length > COACCESS_MAX_ROWS)
       out.push(`  …(${highPairs.length - COACCESS_MAX_ROWS} more pairs — run with --json)`);
@@ -426,6 +603,45 @@ else {
     if (isolated.length > COACCESS_MAX_ROWS)
       out.push(`  …(${isolated.length - COACCESS_MAX_ROWS} more isolated — run with --json)`);
   }
+}
+
+H('6. Curation: unreinforced lessons at the +1 floor (last ' + DAYS + 'd)');
+out.push(
+  `  ${upvotes} upvote(s), ${downvotes} downvote(s) in the window — ` +
+    (downvotes === 0
+      ? 'downvoting is unused, so a wrong lesson only leaves when its shelf fills and ages out.'
+      : 'downvotes are rare relative to upvotes.'),
+);
+if (floorShelves.length === 0)
+  out.push(`  ✅ no shelf is dominated by a large pile of never-reinforced +${FLOOR_SCORE} lessons.`);
+else {
+  out.push('  biggest piles of never-reinforced lessons — scan each for any that misfired:');
+  for (const s of floorShelves.slice(0, COACCESS_MAX_ROWS)) {
+    out.push(
+      `  ⚠️  ${s.shelf}: ${s.floor}/${s.total} lessons still at +${FLOOR_SCORE} (${Math.round(s.fraction * 100)}%) — never reinforced.`,
+    );
+    out.push(`      → nb show ${s.shelf}: downvote/rm any that misfired; a +1 vote marks the keepers as recently useful.`);
+  }
+  if (floorShelves.length > COACCESS_MAX_ROWS)
+    out.push(`  …(${floorShelves.length - COACCESS_MAX_ROWS} more — run with --json)`);
+}
+
+H('7. Undescribed shelves (add a # desc: trigger)');
+if (undescribedShelves.length === 0) out.push('  ✅ every shelf has an explicit # desc: trigger.');
+else {
+  const noisy = undescribedShelves.filter((s) => s.browseWithoutUse > 0);
+  if (!undescribedComputed)
+    out.push('  (no NB_SESSION in the log — can\'t rank by browse-without-use; listing undescribed shelves alphabetically)');
+  else if (noisy.length === 0)
+    out.push('  no undescribed shelf has been browsed-without-use yet — still, an explicit trigger beats the auto-fallback:');
+  else out.push('  undescribed shelves, noisiest first (shown but nothing voted → the trigger may over-promise):');
+  for (const s of undescribedShelves.slice(0, COACCESS_MAX_ROWS)) {
+    const bwu = undescribedComputed ? ` — shown-but-not-voted in ${s.browseWithoutUse} session(s)` : '';
+    out.push(`  ⚠️  ${s.shelf}${bwu}, no # desc: (trigger is an auto-fallback to its top lesson).`);
+    out.push(`      → nb describe ${s.shelf} "<the situation in which you should open me>"`);
+  }
+  if (undescribedShelves.length > COACCESS_MAX_ROWS)
+    out.push(`  …(${undescribedShelves.length - COACCESS_MAX_ROWS} more — run with --json)`);
 }
 
 out.push('');

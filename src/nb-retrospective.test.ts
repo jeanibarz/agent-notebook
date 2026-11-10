@@ -5,13 +5,14 @@ import {
   rmSync,
   existsSync,
   writeFileSync,
+  readFileSync,
   utimesSync,
   readdirSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
 // Regression test for issue #165: `nb-retrospective.sh` writes a
 // `.retro-<session_id>` sentinel into NB_DIR once per session and nothing ever
@@ -56,6 +57,39 @@ function runHook(input: Record<string, unknown>, env: Record<string, string> = {
     env: { ...base, ...env },
     encoding: 'utf-8',
   });
+}
+
+// Spawn `n` hook processes that each block reading stdin (the hook reads its
+// JSON via `cat` before doing anything), then release every process's stdin in
+// the same tick so they contend on the sentinel claim together — the closest a
+// multi-process test can get to a real concurrent-SubagentStop race. Resolves to
+// each process's stdout and exit code. (Process-start jitter after stdin closes
+// still means overlap at the claim isn't guaranteed on every run, which is why
+// the race test is paired with a deterministic loser-path guard below.)
+function raceHooks(
+  n: number,
+  input: Record<string, unknown>,
+  env: Record<string, string> = {},
+): Promise<Array<{ out: string; code: number | null }>> {
+  const base = { ...process.env, NB_DIR: dir } as Record<string, string>;
+  delete base.NB_RETRO_TTL_DAYS;
+  const payload = JSON.stringify(input);
+
+  const children = Array.from({ length: n }, () =>
+    spawn('bash', [hook], { env: { ...base, ...env } }),
+  );
+  const done = children.map(
+    (child) =>
+      new Promise<{ out: string; code: number | null }>((resolve, reject) => {
+        let out = '';
+        child.stdout.on('data', (d) => (out += d));
+        child.on('error', reject);
+        child.on('close', (code) => resolve({ out, code }));
+      }),
+  );
+  // Release every process's stdin together to maximize overlap at the claim.
+  for (const child of children) child.stdin.end(payload);
+  return Promise.all(done);
 }
 
 beforeEach(() => {
@@ -190,5 +224,60 @@ describe('nb-retrospective.sh sentinel TTL prune (issue #165)', () => {
     // Only the session's own sentinel should exist among `.retro-` entries.
     const retros = readdirSync(dir).filter((n) => n.startsWith('.retro-'));
     expect(retros).toEqual(['.retro-sess-d']);
+  });
+});
+
+describe('nb-retrospective.sh atomic sentinel claim (issue #245)', () => {
+  test('concurrent stops on one session_id: exactly one blocks, every process exits 0', async () => {
+    // Parallel subagents share the parent session_id and can stop at once. With
+    // a non-atomic existsSync()-then-writeFileSync() claim, several processes
+    // could all see the sentinel absent and all emit `block`. The atomic `wx`
+    // create lets exactly one win; the losers throw EEXIST and exit 0. Spawn
+    // many real hook processes against ONE session_id and release their stdin
+    // together (see raceHooks) so they contend on the claim at once. Overlap at
+    // the claim is timing-dependent, so run several independent rounds: the fix
+    // holds the invariant every round, while a non-atomic claim breaks it as
+    // soon as any one round actually overlaps.
+    const N = 24;
+    const ROUNDS = 3;
+    for (let round = 0; round < ROUNDS; round++) {
+      const session = `sess-race-${round}`;
+      const runs = await raceHooks(N, { session_id: session });
+
+      const blocks = runs.filter((r) => r.out.trim() !== '');
+      expect(blocks).toHaveLength(1);
+      expect(JSON.parse(blocks[0].out).decision).toBe('block');
+      // Every other process let its stop through with no block decision …
+      expect(runs.filter((r) => r.out.trim() === '')).toHaveLength(N - 1);
+      // … and did so cleanly (exit 0), not by crashing with empty stdout.
+      expect(runs.every((r) => r.code === 0)).toBe(true);
+      // This round claimed exactly one sentinel and the losers left no stray
+      // temp files: the `.retro-*` count grows by exactly one per round.
+      const retros = readdirSync(dir).filter((n) => n.startsWith('.retro-'));
+      expect(retros).toContain(`.retro-${session}`);
+      expect(retros).toHaveLength(round + 1);
+    }
+  });
+
+  test('a loser finding the sentinel already present exits 0 without overwriting it', () => {
+    // Deterministic companion to the race (whose overlap is timing-dependent):
+    // the EEXIST path must allow the stop (no block) AND leave the existing
+    // sentinel untouched — proving the claim uses `wx` (create-only), never `w`,
+    // which would truncate and, by never throwing EEXIST, reintroduce the
+    // double-nudge bug.
+    const sentinel = join(dir, '.retro-sess-pre');
+    writeFileSync(sentinel, 'ORIGINAL-CLAIM');
+    const out = runHook({ session_id: 'sess-pre' });
+    expect(out.trim()).toBe('');
+    expect(readFileSync(sentinel, 'utf-8')).toBe('ORIGINAL-CLAIM');
+  });
+});
+
+describe('nb-retrospective.sh length target (issue #342)', () => {
+  test('the nudge gives an actionable ~150-char target while keeping the 200 cap', () => {
+    const reason = (JSON.parse(runHook({ session_id: 'sess-len' })) as { reason: string }).reason;
+    expect(reason).toContain('<=200-char lesson');
+    expect(reason).toMatch(/aim for ~150 chars/);
+    expect(reason).toMatch(/rejected, not truncated/);
   });
 });

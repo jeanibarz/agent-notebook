@@ -14,6 +14,13 @@
 # (already needed for `nb`) to parse/emit JSON safely.
 set -uo pipefail
 
+# A leading `~` / `~/` in NB_DIR is expanded here, exactly like the package does (issue #334):
+# a value set where no shell expands it (settings.json env, systemd, cron) would otherwise
+# create a literal `~` directory in the current project. `~user/...` is left alone.
+case "${NB_DIR:-}" in
+  "~") NB_DIR="$HOME" ;;
+  "~/"*) NB_DIR="$HOME/${NB_DIR#\~/}" ;;
+esac
 NB_DIR_DEFAULT="${HOME}/.agent-notebook/notebooks"
 SENTINEL_DIR="${NB_DIR:-$NB_DIR_DEFAULT}"
 mkdir -p "$SENTINEL_DIR" 2>/dev/null || true
@@ -33,11 +40,20 @@ const fs = require('node:fs');
 const path = require('node:path');
 const sentinel = path.join(sentinelDir, `.retro-${session}`);
 
-// Already did the retrospective for this session → allow the stop. (SubagentStop
-// fires with the parent session id, so the first stop — a subagent's or the main
-// agent's — claims the sentinel and later stops are let through: one nudge/session.)
-if (fs.existsSync(sentinel)) process.exit(0);
-try { fs.writeFileSync(sentinel, new Date().toISOString()); } catch {}
+// Claim this session's sentinel atomically. (SubagentStop fires with the parent
+// session id, so the first stop — a subagent's or the main agent's — claims the
+// sentinel and later stops are let through: one nudge/session.) The `wx` flag
+// makes create-if-absent a single OS-atomic step, so two hook processes racing
+// on one parent session_id (parallel subagents stopping at once) can't both see
+// the sentinel absent and both nudge: exactly one `writeFileSync` wins, the
+// other throws EEXIST and allows its stop. Any OTHER write error fails open —
+// fall through and still nudge rather than silently drop the retrospective.
+try {
+  fs.writeFileSync(sentinel, new Date().toISOString(), { flag: 'wx' });
+} catch (err) {
+  if (err && err.code === 'EEXIST') process.exit(0); // already claimed → allow stop
+  // Non-EEXIST (e.g. permission): fail open — fall through and nudge anyway.
+}
 
 // Bound the sentinel pile (issue #165): having claimed this session's sentinel,
 // sweep `.retro-*` files older than a TTL so they never accumulate without
@@ -64,6 +80,7 @@ const reason = [
   `  3. nb rm   <shelf> <id> --reason obsolete   — anything incorrect / no longer true`,
   `  4. nb merge/split <shelf> …    — only if lessons repeat or a line holds two`,
   `  5. nb add  <shelf> "<=200-char lesson"   — at MOST one new, non-obvious lesson, to the notebook it fits (or none)`,
+  `     Length: aim for ~150 chars / one clause, no preamble — over 200 is rejected, not truncated.`,
   `Do not pad to hit a quota — "nothing new worth storing" is a valid outcome. Then stop.`,
 ].join('\n');
 

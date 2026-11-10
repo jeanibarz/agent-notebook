@@ -13,7 +13,7 @@
 # discarded, and any failure degrades quietly to no suggestions.
 _nb() {
   local -a _nb_commands
-  _nb_commands=(show add vote merge split rm move describe search stats path config completion list ls shelves roles help version)
+  _nb_commands=(show stale add vote merge split rm move describe search stats path config completion list ls shelves roles help version)
 
   # Position 1 (CURRENT counts from 1, with words[1] = "nb"): the subcommand.
   if (( CURRENT == 2 )); then
@@ -24,7 +24,7 @@ _nb() {
   local cmd=${words[2]}
   local want_shelf=0
   case $cmd in
-    show|add|vote|merge|split|rm|describe|stats|path) (( CURRENT == 3 )) && want_shelf=1 ;;
+    show|stale|add|vote|merge|split|rm|describe|stats|path) (( CURRENT == 3 )) && want_shelf=1 ;;
     move)         (( CURRENT == 3 || CURRENT == 4 )) && want_shelf=1 ;;
   esac
 

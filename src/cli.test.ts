@@ -1,13 +1,15 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runNbCli, settleCliExit, closestCommand, KNOWN_COMMANDS } from './cli.js';
-import { entryId, parseUsage, usageFile } from './notebook.js';
+import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS } from './cli.js';
+import { drainPendingRecovery, entryId, parseUsage, usageFile } from './notebook.js';
+import type { IntTunable, RateTunable } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
@@ -19,13 +21,35 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 let dir: string;
 const SAVED = { ...process.env };
+// Every NB_* env var this suite reads or sets. Hoisted to one list so the
+// clean-baseline `beforeEach` and the restore-to-parent `afterEach` can never
+// drift apart (issue #230).
+const MANAGED_ENV = [
+  'NB_DIR',
+  'NB_MAX_LINES',
+  'NB_MAX_CHARS',
+  'NB_ROLE',
+  'NB_LOOP_N',
+  'NB_LOOP_WINDOW_S',
+  'NB_SESSION',
+  'NB_COVERAGE_HI',
+  'NB_RECALL_MISS_HI',
+] as const;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'agent-notebook-cli-'));
+  // Establish a clean baseline: clear every managed NB_* var so an ambient
+  // value the host exported (most often NB_SESSION — agents and CI-adjacent
+  // tooling set it) cannot leak into a test that assumes it is unset. NB_DIR is
+  // then pointed at this test's temp dir below (issue #230).
+  for (const k of MANAGED_ENV) delete process.env[k];
   process.env.NB_DIR = dir;
+  // Reset the process-global crash-recovery tally (issue #309) so a steal/reap in
+  // one in-process CLI run can never leak its count into a later test's usage row.
+  drainPendingRecovery();
 });
 afterEach(() => {
-  for (const k of ['NB_DIR', 'NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_ROLE', 'NB_LOOP_N', 'NB_LOOP_WINDOW_S', 'NB_SESSION', 'NB_COVERAGE_HI', 'NB_RECALL_MISS_HI']) {
+  for (const k of MANAGED_ENV) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
@@ -65,6 +89,56 @@ describe('runNbCli', () => {
     const r = await run([]);
     expect(r.code).toBe(0);
     expect(r.out).toContain('nb — the Agent Notebook');
+  });
+
+  test('--help appends a `help` usage row so the not-wired symptom is visible to stats (issue #250)', async () => {
+    // help/version used to return before the shared logUsage, so a harness that
+    // only ever ran `nb --help` left NO trace in the usage ring — exactly the
+    // signal `nb stats` exists to surface. Every alias canonicalises to `help`.
+    for (const flag of ['--help', '-h', 'help']) {
+      await run([flag]);
+    }
+    // No-args prints the same usage, so it logs under `help` too.
+    await run([]);
+    const helpRows = parseUsage(dir).filter((r) => r.command === 'help');
+    expect(helpRows.length).toBe(4);
+    for (const row of helpRows) {
+      expect(row.ok).toBe(true); // help never fails
+      expect(row.role).toBe('-'); // no shelf involved
+    }
+  });
+
+  test('--version appends a `version` usage row under one canonical command (issue #250)', async () => {
+    for (const flag of ['--version', '-v', 'version']) {
+      await run([flag]);
+    }
+    const versionRows = parseUsage(dir).filter((r) => r.command === 'version');
+    expect(versionRows.length).toBe(3);
+    expect(versionRows.every((r) => r.ok && r.role === '-')).toBe(true);
+    // Each `nb` call appends exactly one row — never zero (the old bug) and
+    // never two — so the "every call appends one line" invariant holds.
+    expect(parseUsage(dir).length).toBe(3);
+  });
+
+  test('--help/--version still succeed when NB_DIR is unwritable (logging stays best-effort, issue #250)', async () => {
+    // The usage-row logging must never break `--help`/`--version` on a read-only
+    // system (the issue's stated risk). Point NB_DIR at a path *under a regular
+    // file*, so the log's `mkdirSync(dir, { recursive: true })` fails with
+    // ENOTDIR — a deterministic, cross-platform write failure that needs no
+    // chmod. `logUsage` must swallow it and the command must still exit 0.
+    const blocker = join(dir, 'not-a-dir');
+    writeFileSync(blocker, 'x');
+    process.env.NB_DIR = join(blocker, 'nb'); // mkdir under a file → ENOTDIR
+
+    const help = await run(['--help']);
+    expect(help.code).toBe(0);
+    expect(help.out).toContain('nb — the Agent Notebook');
+    expect(help.err).toBe(''); // the swallowed log error never reaches stderr
+
+    const version = await run(['--version']);
+    expect(version.code).toBe(0);
+    expect(version.out).toBe(`nb (agent-notebook) ${PKG_VERSION}\n`);
+    expect(version.err).toBe('');
   });
 
   test('add then show round-trips a lesson', async () => {
@@ -119,10 +193,11 @@ describe('runNbCli', () => {
     const parsed = JSON.parse(r.out);
     expect(parsed.role).toBe('patcher');
     expect(parsed.description).toBe('bug-fix lessons');
-    // Highest score first (beta +2 before alpha +1); each entry carries id/score/text.
+    // Highest score first (beta +2 before alpha +1); each entry carries
+    // id/score/text and the dedupKey normal form `key` (issue #286).
     expect(parsed.entries).toEqual([
-      { id: betaId, score: 2, text: 'beta lesson' },
-      { id: entryId('alpha lesson'), score: 1, text: 'alpha lesson' },
+      { id: betaId, score: 2, text: 'beta lesson', key: 'beta lesson' },
+      { id: entryId('alpha lesson'), score: 1, text: 'alpha lesson', key: 'alpha lesson' },
     ]);
     // The ids match what the human `show` prints, and the order matches render()
     // (skipping the leading `# desc:` header line that the human output carries).
@@ -141,6 +216,230 @@ describe('runNbCli', () => {
     // `solo` was never created, so `exists` is false; `entries` stays `[]` for
     // backward compatibility (issue #166 adds `exists`, it does not change `entries`).
     expect(JSON.parse(r.out)).toEqual({ role: 'solo', shelf: 'solo', description: null, entries: [], exists: false });
+  });
+
+  // issue #286 — `nb show a b c --json` is a batch read: one ShowResult per shelf
+  // in one process, and each entry carries the dedupKey normal form `key` so the
+  // caller composes its own context (shelf selection, scope precedence, budget)
+  // and drops *exact* cross-shelf duplicates itself. No similarity dropping here.
+  describe('show --json batch + per-entry key (issue #286)', () => {
+    test('each entry carries its dedupKey normal form as `key` (case/punctuation-folded, distinct from the raw text)', async () => {
+      // A lesson whose normal form differs from its text — uppercase + punctuation.
+      await run(['add', 'patcher', 'Use execFileSync, NOT execSync!']);
+      const r = await run(['show', 'patcher', '--json']);
+      expect(r.code).toBe(0);
+      const [entry] = JSON.parse(r.out).entries as Array<{ text: string; key: string }>;
+      expect(entry.text).toBe('Use execFileSync, NOT execSync!');
+      // dedupKey: lowercase, punctuation → space, whitespace collapsed.
+      expect(entry.key).toBe('use execfilesync not execsync');
+    });
+
+    test('two entries with an equal `key` are exact dupes the caller can drop — even across shelves', async () => {
+      // Same lesson modulo case/punctuation lives on two different shelves.
+      await run(['add', 'alpha', 'Fail open is UNSAFE.']);
+      await run(['add', 'beta', 'fail open is unsafe']);
+      const r = await run(['show', 'alpha', 'beta', '--json']);
+      expect(r.code).toBe(0);
+      const [a, b] = JSON.parse(r.out) as Array<{ entries: Array<{ key: string }> }>;
+      // Identical normal form → identical `key`: the caller drops the cross-shelf dupe.
+      expect(a.entries[0].key).toBe(b.entries[0].key);
+      expect(a.entries[0].key).toBe('fail open is unsafe');
+    });
+
+    test('≥2 shelves → a per-shelf ShowResult[] in order, one consistent read', async () => {
+      await run(['add', 'alpha', 'alpha one']);
+      await run(['describe', 'alpha', 'A shelf']);
+      await run(['add', 'beta', 'beta one']);
+      const r = await run(['show', 'alpha', 'beta', '--json']);
+      expect(r.code).toBe(0);
+      // Exactly one JSON value (the array) on stdout, nothing else.
+      expect(r.out.trim().split('\n')).toHaveLength(1);
+      const arr = JSON.parse(r.out);
+      expect(Array.isArray(arr)).toBe(true);
+      expect(arr).toHaveLength(2);
+      expect(arr.map((s: { shelf: string }) => s.shelf)).toEqual(['alpha', 'beta']); // given order
+      expect(arr[0].description).toBe('A shelf');
+      expect(arr[0].entries[0]).toMatchObject({ text: 'alpha one', key: 'alpha one' });
+      expect(arr[1].entries[0]).toMatchObject({ text: 'beta one', key: 'beta one' });
+    });
+
+    test('a single shelf stays a lone object (not a one-element array) — backward compatible', async () => {
+      await run(['add', 'alpha', 'only lesson']);
+      const r = await run(['show', 'alpha', '--json']);
+      const parsed = JSON.parse(r.out);
+      expect(Array.isArray(parsed)).toBe(false);
+      expect(parsed.shelf).toBe('alpha');
+    });
+
+    test('a named shelf with no file reports exists:false in the batch (never a silent empty)', async () => {
+      await run(['add', 'alpha', 'alpha one']);
+      const r = await run(['show', 'alpha', 'ghost', '--json']);
+      expect(r.code).toBe(0);
+      const [a, ghost] = JSON.parse(r.out) as Array<{ shelf: string; exists: boolean; entries: unknown[] }>;
+      expect(a).toMatchObject({ shelf: 'alpha', exists: true });
+      expect(ghost).toMatchObject({ shelf: 'ghost', exists: false, entries: [] });
+    });
+
+    test('human-mode batch renders each shelf block in given order, blank-line separated', async () => {
+      await run(['add', 'alpha', 'alpha lesson']);
+      await run(['add', 'beta', 'beta lesson']);
+      const r = await run(['show', 'alpha', 'beta']);
+      expect(r.code).toBe(0);
+      // Both shelves' lessons appear (the pre-#286 path showed only the first)…
+      expect(r.out).toContain('alpha lesson');
+      expect(r.out).toContain('beta lesson');
+      expect(r.out).toContain('nb vote alpha');
+      expect(r.out).toContain('nb vote beta');
+      // …in the given order (not reversed)…
+      expect(r.out.indexOf('alpha lesson')).toBeLessThan(r.out.indexOf('beta lesson'));
+      // …with a blank line between the two blocks (the alpha vote hint, then an
+      // empty line, then beta's id line).
+      expect(r.out).toMatch(/nb vote alpha[^\n]*\n\n[0-9a-f]{6}\s+\[\+1\]\s+beta lesson/);
+    });
+
+    test('human-mode batch reports a missing shelf on stderr while still rendering the present ones', async () => {
+      await run(['add', 'alpha', 'alpha lesson']);
+      const r = await run(['show', 'alpha', 'ghost']);
+      expect(r.code).toBe(0); // not found is not an error (DP-5)
+      expect(r.out).toContain('alpha lesson');
+      expect(r.err).toContain('no notebook for shelf "ghost"');
+      // The missing shelf must NOT be rendered as a notebook on stdout — not even
+      // the "(… is empty)" line, which is reserved for an existing empty shelf.
+      expect(r.out).not.toContain('ghost');
+    });
+
+    test('human-mode batch with a missing FIRST shelf still renders the later present ones', async () => {
+      await run(['add', 'beta', 'beta lesson']);
+      const r = await run(['show', 'ghost', 'beta']);
+      expect(r.code).toBe(0);
+      expect(r.err).toContain('no notebook for shelf "ghost"');
+      expect(r.out).toContain('beta lesson');
+    });
+
+    test('near-but-not-equal lessons are KEPT with different keys — no similarity dropping (criterion 3)', async () => {
+      // These share a first word and most trigrams but have DISTINCT normal forms,
+      // so a similarity-based dedup would wrongly collapse them. The contract is
+      // exact-key equality only: both survive, in both shelves, with different keys.
+      await run(['add', 'alpha', 'alpha one']);
+      await run(['add', 'beta', 'alpha one two']);
+      const r = await run(['show', 'alpha', 'beta', '--json']);
+      const [a, b] = JSON.parse(r.out) as Array<{ entries: Array<{ key: string }> }>;
+      expect(a.entries).toHaveLength(1);
+      expect(b.entries).toHaveLength(1);
+      expect(a.entries[0].key).toBe('alpha one');
+      expect(b.entries[0].key).toBe('alpha one two');
+      expect(a.entries[0].key).not.toBe(b.entries[0].key);
+    });
+
+    test('an EXACT cross-shelf dupe is retained in BOTH shelves (nb never drops across shelves)', async () => {
+      await run(['add', 'alpha', 'same lesson']);
+      await run(['add', 'beta', 'same lesson']);
+      const r = await run(['show', 'alpha', 'beta', '--json']);
+      const [a, b] = JSON.parse(r.out) as Array<{ entries: Array<{ key: string }> }>;
+      // Dropping the dupe is the CALLER's job; nb returns both so the caller decides.
+      expect(a.entries).toHaveLength(1);
+      expect(b.entries).toHaveLength(1);
+      expect(a.entries[0].key).toBe(b.entries[0].key);
+    });
+
+    test('--json may precede or sit between the shelf operands', async () => {
+      await run(['add', 'alpha', 'alpha one']);
+      await run(['add', 'beta', 'beta one']);
+      for (const argv of [
+        ['show', '--json', 'alpha', 'beta'],
+        ['show', 'alpha', '--json', 'beta'],
+      ]) {
+        const r = await run(argv);
+        expect(r.code).toBe(0);
+        const arr = JSON.parse(r.out);
+        expect(Array.isArray(arr)).toBe(true);
+        expect(arr.map((s: { shelf: string }) => s.shelf)).toEqual(['alpha', 'beta']);
+      }
+    });
+
+    test('an invalid shelf name anywhere in a batch fails the whole call atomically (exit 1, no partial JSON)', async () => {
+      await run(['add', 'alpha', 'alpha one']);
+      // `showJsonMany` validates each shelf as it reads it and throws before any
+      // output is written, so a bad shelf aborts the batch with nothing on stdout.
+      const r = await run(['show', 'alpha', '../escape', '--json']);
+      expect(r.code).toBe(1);
+      // Structured error on stdout (the --json throw contract), never a partial array.
+      expect(r.out).not.toContain('"shelf":"alpha"');
+    });
+
+    test('a bare `nb show` with no shelf still errors', async () => {
+      const r = await run(['show']);
+      expect(r.code).not.toBe(0);
+      expect(r.err).toMatch(/missing <shelf>/);
+    });
+  });
+
+  // issue #240 (#223-F3) — `nb stale` surfaces cull candidates (the order
+  // eviction would drop them in) so the retro can downvote/rm the weakest.
+  describe('nb stale — cull candidates (issue #240)', () => {
+    // Seed four lessons, then lift two so the +1 floor (c, d) sorts to the top.
+    async function seedShelf(): Promise<void> {
+      for (const t of ['a', 'b', 'c', 'd']) await run(['add', 's', t]);
+      await run(['vote', 's', entryId('a'), '+1']);
+      await run(['vote', 's', entryId('a'), '+1']); // a -> +3
+      await run(['vote', 's', entryId('b'), '+1']); // b -> +2
+    }
+
+    test('lists candidates most-disposable-first with an N-of-M, cull-by-id footer', async () => {
+      await seedShelf();
+      const r = await run(['stale', 's']);
+      expect(r.code).toBe(0);
+      const lessonLines = r.out.split('\n').filter((l) => /^[0-9a-f]{6}\s/.test(l));
+      expect(lessonLines.map((l) => l.replace(/^[0-9a-f]{6}\s+\[[^\]]+\]\s+/, ''))).toEqual(['c', 'd', 'b', 'a']);
+      expect(r.out).toMatch(/most disposable first/);
+      expect(r.out).toContain('showing 4 of 4');
+      expect(r.out).toContain('nb vote s <id> -1');
+      expect(r.out).toContain('nb rm s <id> --reason obsolete');
+    });
+
+    test('--limit caps the printed list and the footer says "N of total"', async () => {
+      await seedShelf();
+      const r = await run(['stale', 's', '--limit', '2']);
+      expect(r.code).toBe(0);
+      expect(r.out.split('\n').filter((l) => /^[0-9a-f]{6}\s/.test(l))).toHaveLength(2);
+      expect(r.out).toContain('showing 2 of 4');
+    });
+
+    test('a bad --limit warns on stderr and falls back to the default (stdout stays clean)', async () => {
+      await seedShelf();
+      const r = await run(['stale', 's', '--limit', 'abc']);
+      expect(r.code).toBe(0);
+      expect(r.err).toMatch(/unrecognized --limit 'abc'/);
+      expect(r.out).not.toContain('--limit'); // the warning never leaks to stdout
+    });
+
+    test('--json emits a lone StaleResult object, same ranking, no comment lines', async () => {
+      await seedShelf();
+      const r = await run(['stale', 's', '--json']);
+      expect(r.code).toBe(0);
+      expect(r.out.trim().split('\n')).toHaveLength(1);
+      const parsed = JSON.parse(r.out);
+      expect(parsed.shelf).toBe('s');
+      expect(parsed.total).toBe(4);
+      expect(parsed.exists).toBe(true);
+      expect(parsed.entries.map((e: { text: string }) => e.text)).toEqual(['c', 'd', 'b', 'a']);
+    });
+
+    test('a never-created shelf prints "no notebook" on stderr, exit 0, nothing on stdout', async () => {
+      const r = await run(['stale', 'ghostshelf']);
+      expect(r.code).toBe(0); // not found is not an error (DP-5, like `show`)
+      expect(r.err).toContain('no notebook for shelf "ghostshelf"');
+      expect(r.out).toBe('');
+    });
+
+    test('it is read-only: a `show` after `stale` is byte-identical to before', async () => {
+      await seedShelf();
+      const before = await run(['show', 's']);
+      await run(['stale', 's']);
+      await run(['stale', 's', '--limit', '1']);
+      const after = await run(['show', 's']);
+      expect(after.out).toBe(before.out); // no reorder, no score change
+    });
   });
 
   // issue #166 — `nb show` must tell a never-created shelf (e.g. a typo) apart
@@ -185,6 +484,27 @@ describe('runNbCli', () => {
     });
   });
 
+  test('show prints a copy-paste vote hint with the shelf filled in (issue #223)', async () => {
+    await run(['add', 'patcher', 'a fine lesson']);
+    const show = await run(['show', 'patcher']);
+    expect(show.out).toContain('# vote by id: nb vote patcher <id> +1|-1');
+    expect(show.out).toContain('nb vote patcher <id1,id2,…> +1'); // batch form advertised
+    // The hint is a `#` comment line, so the json-vs-plain id filter ignores it
+    // and it can never be parsed back as a lesson.
+    expect(show.out).toMatch(/^#/m);
+  });
+
+  test('the vote hint is suppressed under --json and on an empty/missing notebook', async () => {
+    // --json stays a lone ShowResult object (no trailing hint line).
+    await run(['add', 'patcher', 'a fine lesson']);
+    const j = await run(['show', 'patcher', '--json']);
+    expect(j.out.trim().split('\n')).toHaveLength(1);
+    expect(j.out).not.toContain('vote by id');
+    // A never-created shelf prints no hint (nothing to vote on).
+    const missing = await run(['show', 'ghostshelf']);
+    expect(missing.out).not.toContain('vote by id');
+  });
+
   test('vote by the id shown in `show` succeeds', async () => {
     await run(['add', 'patcher', 'alpha one']);
     await run(['add', 'patcher', 'beta two']);
@@ -216,6 +536,438 @@ describe('runNbCli', () => {
     const down2 = await run(['vote', 'patcher', 'tune', '--']); // alias for -1
     expect(down2.code).toBe(0);
     expect(down2.out).toContain('[+0]'); // signed-zero formatting from fmt()
+  });
+
+  // issue #277 — `--json` was stripped from the WHOLE argv (operands included),
+  // and there was no `--` end-of-options terminator, so an operand that equals a
+  // known flag failed with a baffling "missing <lesson>". The fix adds a POSIX
+  // `--` terminator: every token after the first `--` is a literal operand.
+  describe('nb `--` end-of-options terminator (issue #277)', () => {
+    // Read back a single shelf's stored entry texts, highest-score first, via the
+    // structured `show --json` so the assertions never regex the human output.
+    async function texts(shelf: string): Promise<string[]> {
+      const r = await run(['show', shelf, '--json']);
+      return (JSON.parse(r.out).entries as Array<{ text: string }>).map((e) => e.text);
+    }
+
+    test('add stores a literal `--json` operand after `--` instead of stripping it', async () => {
+      // The exact failing case from the issue: record a glossary line that is
+      // literally `--json`. Pre-fix this threw `missing <lesson>`; now `--`
+      // passes it through verbatim.
+      const r = await run(['add', 'glossary', '--', '--json']);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('added — 1 line'); // human output => `--json` was NOT taken as the output flag
+      expect(await texts('glossary')).toEqual(['--json']);
+    });
+
+    test('a `--json` operand after `--` is not the output flag, yet a real `--json` before `--` still is', async () => {
+      // `--json` before `--` still selects structured output; the one after `--`
+      // is the literal lesson. Both honored in a single call.
+      const r = await run(['add', 'glossary', '--json', '--', '--json']);
+      expect(r.code).toBe(0);
+      const parsed = JSON.parse(r.out); // output flag honored => one JSON object
+      expect(parsed.reason).toBe('added');
+      expect(await texts('glossary')).toEqual(['--json']); // literal lesson stored
+    });
+
+    test('operands after `--` are shielded from `--reason`/`--note` extraction', async () => {
+      // A lesson that is literally `--reason` would otherwise be swallowed by the
+      // reason/note parser; after `--` it is a plain operand. A real `--note`
+      // before `--` is still consumed as the log note, not stored.
+      expect((await run(['add', 'glossary', '--', '--reason'])).code).toBe(0);
+      const r = await run(['add', 'glossary', '--note', 'escaping a flag', '--', '--json']);
+      expect(r.code).toBe(0);
+      expect((await texts('glossary')).sort()).toEqual(['--json', '--reason']);
+    });
+
+    test('describe accepts a literal `--json` description after `--`', async () => {
+      await run(['add', 'glossary', 'seed lesson']);
+      const d = await run(['describe', 'glossary', '--', '--json']);
+      expect(d.code).toBe(0);
+      expect(JSON.parse((await run(['show', 'glossary', '--json'])).out).description).toBe('--json');
+    });
+
+    test('a bare trailing `--` is a literal operand, not a terminator (vote downvote alias preserved)', async () => {
+      // `vote`'s `--` downvote alias is a bare trailing `--`; the terminator must
+      // only fire when a token follows, so this stays a downvote, and a trailing
+      // `--` to `add` stores the literal `--` lesson exactly as before the fix.
+      await run(['add', 'patcher', 'trailer lesson']);
+      const v = await run(['vote', 'patcher', 'trailer', '--']);
+      expect(v.code).toBe(0);
+      expect(v.out).toContain('[+0]'); // downvoted from +1
+      const a = await run(['add', 'patcher', '--']);
+      expect(a.code).toBe(0);
+      expect(await texts('patcher')).toContain('--');
+    });
+
+    test('search reads a flag-shaped query after `--` literally, not as its own `--any`/`--limit` flag', async () => {
+      // The per-command parsers (`--any`, `--limit`) run on the pre-`--` region,
+      // so a query that is literally `--any` or `--limit` after `--` is searched
+      // for, not consumed — pre-fix these threw "missing query" / "--limit needs
+      // a value". The `--any` OR-mode flag before `--` still works.
+      await run(['add', 'kb', 'mentions --any and --limit flags']);
+      const q1 = await run(['search', '--', '--any']);
+      expect(q1.code).toBe(0);
+      expect(q1.out).toContain('"--any"'); // the query echoed, AND-mode (not OR)
+      expect(q1.out).toContain('mentions --any and --limit flags');
+      const q2 = await run(['search', '--', '--limit']);
+      expect(q2.code).toBe(0);
+      expect(q2.out).toContain('"--limit"');
+      const flag = await run(['search', 'mentions', '--any']); // real OR-mode flag, no `--`
+      expect(flag.code).toBe(0);
+      expect(flag.out).toContain('(OR over 1 term)');
+    });
+
+    test('list takes a flag-shaped prefix after `--` literally instead of erroring on `--limit`', async () => {
+      // Pre-fix `nb list -- --limit` threw "--limit needs a value"; now `--limit`
+      // is a literal prefix (matching nothing), a clean exit-0 empty result.
+      const r = await run(['list', '--', '--limit']);
+      expect(r.code).toBe(0);
+      expect(r.err).not.toContain('needs a value');
+    });
+
+    test('without a `--` terminator, a bare `--json` operand still reads as the flag (behavior preserved)', async () => {
+      // The ambiguous bare form is unchanged: `--json` with nothing to
+      // disambiguate is still the output flag, so `add` reports the missing
+      // lesson. Escaping it is exactly what `--` is for.
+      const r = await run(['add', 'glossary', '--json']);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('missing <lesson> argument');
+    });
+  });
+
+  // issue #267 — a mistyped or misplaced `--flag` used to be silently ignored
+  // (or absorbed as a positional), so `nb stats --exitcode >/dev/null || alert`
+  // (a typo of `--exit-code`) ran WITHOUT the health gate and still exited 0 —
+  // the #129 cron monitor silently stopped firing. Unknown long options are now
+  // refused up front (exit 1, message on stderr, nearest-option hint).
+  describe('nb unknown-flag rejection (issue #267)', () => {
+    test('the motivating case: `nb stats --exitcode` is refused, not silently run exit 0', async () => {
+      const r = await run(['stats', '--exitcode']);
+      expect(r.code).toBe(1); // a non-zero exit so `|| alert` fires on the typo
+      expect(r.code).not.toBe(0); // the pre-fix silent-degrade bug
+      expect(r.err).toMatch(/unknown option "--exitcode" for `nb stats`/);
+      expect(r.err).toMatch(/Did you mean `--exit-code`\?/); // nearest-option hint
+      expect(r.out).toBe(''); // nothing printed; the command never ran
+    });
+
+    test('the correctly-spelled `--exit-code` is still accepted (regression guard)', async () => {
+      // A fresh notebook dir has no anomalies, so the gate passes with exit 0;
+      // the point is the real flag is NOT caught by the unknown-flag guard.
+      const r = await run(['stats', '--exit-code']);
+      expect(r.err).not.toContain('unknown option');
+      expect([0, 3]).toContain(r.code); // 0 (no anomalies) or 3 (anomalies), never 1
+    });
+
+    test('a valid flag with a value is accepted and its value is not mistaken for an option', async () => {
+      const r = await run(['stats', '--since', '7d']);
+      expect(r.code).toBe(0);
+      expect(r.err).not.toContain('unknown option'); // `7d` is a value, not a flag
+    });
+
+    test('an unknown flag on a read command (`show`) is refused before it needs a shelf', async () => {
+      const r = await run(['show', 'reviewer', '--verbose']);
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/unknown option "--verbose" for `nb show`/);
+    });
+
+    test('a flag valid elsewhere but not for this command is refused (no cross-command bleed)', async () => {
+      // `--since` is a `stats` flag; on `show` it is unknown and was silently
+      // dropped (and `reviewer` taken as the shelf) before the fix.
+      const r = await run(['show', 'reviewer', '--since', '7d']);
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/unknown option "--since" for `nb show`/);
+    });
+
+    test('a mutation flag typo (`--resaon`) is refused and points at `--reason`', async () => {
+      await run(['add', 'glossary', 'a seed lesson']);
+      const r = await run(['add', 'glossary', 'another lesson', '--resaon', 'dup']);
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/unknown option "--resaon" for `nb add`/);
+      expect(r.err).toMatch(/Did you mean `--reason`\?/);
+    });
+
+    test('a far-off unknown flag is still refused, with NO misleading suggestion', async () => {
+      const r = await run(['show', 'reviewer', '--zzzzzz']);
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/unknown option "--zzzzzz" for `nb show`/);
+      expect(r.err).not.toContain('Did you mean'); // nothing close enough to suggest
+    });
+
+    test('a flag-shaped VALUE of a value-taking flag is not mistaken for an unknown option', async () => {
+      // `--note`/`--reason`/`--limit`/`--since` consume their following token, so
+      // a note that is literally `--exitcode` must be stored, never rejected.
+      const r = await run(['add', 'glossary', 'noted lesson', '--note', '--exitcode']);
+      expect(r.code).toBe(0);
+      expect(r.err).not.toContain('unknown option');
+    });
+
+    test('the `--` terminator still shields a flag-shaped token from the guard (issue #277 interop)', async () => {
+      // After `--`, every token is a literal operand, so `nb stats -- --exitcode`
+      // is NOT an unknown-flag error — it is the documented escape hatch.
+      const r = await run(['stats', '--', '--exitcode']);
+      expect(r.code).toBe(0);
+      expect(r.err).not.toContain('unknown option');
+    });
+
+    test('stats honors the `--` terminator: `-- --json` stays human, `-- --exit-code` skips the gate (issue #302)', async () => {
+      const r = await run(['stats', '--', '--json']);
+      expect(r.code).toBe(0);
+      expect(() => JSON.parse(r.out)).toThrow();
+      const g = await run(['stats', '--', '--exit-code']);
+      expect(g.code).toBe(0);
+      expect(g.out).not.toMatch(/^\{/);
+    });
+
+    test('a bare trailing `--` (vote downvote alias) is never treated as an unknown flag', async () => {
+      await run(['add', 'patcher', 'downvote me']);
+      const r = await run(['vote', 'patcher', 'downvote', '--']); // `--` == -1
+      expect(r.code).toBe(0);
+      expect(r.err).not.toContain('unknown option');
+      expect(r.out).toContain('[+0]'); // downvoted from +1
+    });
+
+    test('an unknown COMMAND with a flag still takes the exit-2 unknown-command path, not exit 1', async () => {
+      // The flag guard must not mask (or downgrade) the unknown-command error.
+      const r = await run(['frobnicate', '--json']);
+      expect(r.code).toBe(2);
+      expect(r.err).toMatch(/^nb: unknown command "frobnicate"\./);
+    });
+
+    test('an unknown flag under --json emits the structured error contract (issue #266 interop)', async () => {
+      const r = await run(['stats', '--exitcode', '--json']);
+      expect(r.code).toBe(1);
+      expect(JSON.parse(r.out)).toMatchObject({
+        ok: false,
+        command: 'stats',
+        error: { class: 'bad_args' },
+      });
+      expect(r.err).toMatch(/unknown option "--exitcode"/); // prose still on stderr
+    });
+
+    test('KNOWN_FLAGS has a row for every dispatched command (drift guard)', () => {
+      // Every KNOWN_COMMANDS entry except help/version (which return before the
+      // switch) MUST have a KNOWN_FLAGS row, or that command silently opts out of
+      // unknown-flag validation. Mirrors the KNOWN_COMMANDS dispatch drift guard.
+      const needRow = KNOWN_COMMANDS.filter((c) => c !== 'help' && c !== 'version');
+      const missing = needRow.filter((c) => !(c in KNOWN_FLAGS));
+      expect(missing).toEqual([]);
+      // And no phantom rows for commands that do not exist.
+      const phantom = Object.keys(KNOWN_FLAGS).filter((c) => !KNOWN_COMMANDS.includes(c));
+      expect(phantom).toEqual([]);
+      // Anti-vacuous: the guard is meaningless if either list resolved empty.
+      expect(needRow.length).toBeGreaterThan(0);
+    });
+
+    test('behavioral drift guard: every command rejects a nonsense `--flag`', async () => {
+      // Independently of the KNOWN_FLAGS table, prove each real command actually
+      // runs the guard: a nonsense flag must exit 1 with "unknown option".
+      for (const cmd of KNOWN_COMMANDS) {
+        if (cmd === 'help' || cmd === 'version') continue; // return before the switch
+        const r = await run([cmd, '--definitely-not-a-real-flag']);
+        expect(r.code, `\`nb ${cmd} --definitely-not-a-real-flag\` should be refused`).toBe(1);
+        expect(r.err).toContain('unknown option "--definitely-not-a-real-flag"');
+      }
+    });
+
+    test('acceptance guard: each list-like command still ACCEPTS its real `--limit`', async () => {
+      // The rejection guards prove a nonsense flag dies; this proves the real
+      // `--limit` row is not over-zealously rejected. Without it, emptying the
+      // `ls`/`shelves`/`roles`/`stale` row to [] would silently break `--limit`
+      // there and no test would notice (the rejection loop can't catch it).
+      await run(['add', 'reviewer', 'a seed lesson']); // a shelf to list/cull
+      for (const cmd of ['list', 'ls', 'shelves', 'roles', 'stale']) {
+        const argv = cmd === 'stale' ? [cmd, 'reviewer', '--limit', '2'] : [cmd, '--limit', '2'];
+        const r = await run(argv);
+        expect(r.code, `\`nb ${argv.join(' ')}\` should accept --limit`).toBe(0);
+        expect(r.err).not.toContain('unknown option');
+      }
+    });
+
+    test('no cross-command bleed into empty-row commands (`vote`/`config`)', async () => {
+      // `vote`, `config`, `completion` accept only `--json`; a flag valid on
+      // another command must still be unknown here. Pins the empty rows so a
+      // regression that leaks `--reason`/`--limit` into them is caught.
+      await run(['add', 'patcher', 'bleed check']);
+      const v = await run(['vote', 'patcher', 'bleed', '+1', '--reason', 'dup']);
+      expect(v.code).toBe(1);
+      expect(v.err).toMatch(/unknown option "--reason" for `nb vote`/);
+      const c = await run(['config', '--limit', '3']);
+      expect(c.code).toBe(1);
+      expect(c.err).toMatch(/unknown option "--limit" for `nb config`/);
+    });
+
+    test('value flags other than --note also consume a flag-shaped value (no false "unknown option")', async () => {
+      // Pins every VALUE_FLAGS entry, not only `--note`: the token after a
+      // value-taking flag is its value and must never be re-examined as an
+      // option. (Whether the command then succeeds, warns-and-defaults, or
+      // throws "needs a value" is its own concern — the invariant under test is
+      // that NONE of them is ever mis-reported as an unknown option.)
+      const r1 = await run(['add', 'glossary', 'reasoned lesson', '--reason', '--exitcode']);
+      expect(r1.code).toBe(0); // `--reason` stores arbitrary text, incl. flag-shaped
+      expect(r1.err).not.toContain('unknown option');
+      // `--since`'s flag-shaped value is forgivingly defaulted (warned), never an
+      // unknown option; the real `--exit-code` after it is still honored.
+      const r2 = await run(['stats', '--since', '--exit-code']);
+      expect(r2.err).not.toContain('unknown option');
+      // `--limit`'s value token is consumed by the guard; the command then throws
+      // its own "needs a value" — still never an "unknown option" rejection.
+      const r3 = await run(['search', 'needle', '--limit', '--any']);
+      expect(r3.err).not.toContain('unknown option');
+    });
+
+    test('a rejected flag aborts BEFORE the mutation runs (no partial write)', async () => {
+      // The guard must fire before dispatch: a typo'd flag on `add` must NOT
+      // store the lesson. Guards against the guard being moved after the write.
+      await run(['add', 'glossary', 'the only real lesson']);
+      const r = await run(['add', 'glossary', 'should never be stored', '--resaon', 'dup']);
+      expect(r.code).toBe(1);
+      const shown = await run(['show', 'glossary', '--json']);
+      const texts = (JSON.parse(shown.out).entries as Array<{ text: string }>).map((e) => e.text);
+      expect(texts).toEqual(['the only real lesson']); // the rejected lesson never landed
+    });
+  });
+
+  test('a comma-separated id list votes every entry at once', async () => {
+    await run(['add', 'patcher', 'alpha one']);
+    await run(['add', 'patcher', 'beta two']);
+    await run(['add', 'patcher', 'gamma three']);
+    const idA = entryId('alpha one');
+    const idG = entryId('gamma three');
+    const v = await run(['vote', 'patcher', `${idA},${idG}`, '+1']);
+    expect(v.code).toBe(0);
+    // One output line per landed vote, both at +2; beta untouched.
+    expect(v.out).toContain('alpha one');
+    expect(v.out).toContain('gamma three');
+    expect(v.out).not.toContain('beta two');
+    expect((v.out.match(/\[\+2\]/g) ?? [])).toHaveLength(2);
+  });
+
+  test('batch vote is best-effort: a stale id is reported on stderr, the rest land', async () => {
+    await run(['add', 'patcher', 'alpha one']);
+    const idA = entryId('alpha one');
+    const v = await run(['vote', 'patcher', `${idA},ffffff`, '+1']);
+    expect(v.code).toBe(0); // one landed → success
+    expect(v.out).toContain('[+2]');
+    expect(v.err).toContain('ffffff');
+  });
+
+  test('batch vote exits non-zero when NO id resolves', async () => {
+    await run(['add', 'patcher', 'alpha one']);
+    const v = await run(['vote', 'patcher', 'ffffff,eeeeee', '+1']);
+    expect(v.code).toBe(1);
+    expect(v.err).toContain('ffffff');
+    expect(v.err).toContain('eeeeee');
+  });
+
+  test('an all-fail batch logs a BLANK outcome (not up/down), like a single failed vote', async () => {
+    // Regression guard: stats() keys vote engagement on the outcome column, not
+    // the ok flag, so an all-fail batch that stamped outcome='up' would count a
+    // phantom upvote and mark the session engaged. The failure row must carry a
+    // blank outcome and no entries, exactly as the single-vote no-match path does.
+    await run(['add', 'patcher', 'alpha one']);
+    await run(['vote', 'patcher', 'ffffff,eeeeee', '+1']); // both stale → nothing lands
+    const row = parseUsage(dir).at(-1)!;
+    expect(row.command).toBe('vote');
+    expect(row.ok).toBe(false);
+    expect(row.outcome).toBe('');
+    expect(row.entries).toEqual([]);
+  });
+
+  test('a partially-landed batch records the stale-id miss count and keeps exit 0 (issue #310)', async () => {
+    // Acceptance (#310): one good + two stale ids. The row must exit 0 (success),
+    // record only the landed id, AND stamp misses=2 so `nb stats` can count the
+    // two laundered selector misses in its vote error causes. Before #310 this
+    // row logged a clean success with no trace of the two stale ids.
+    await run(['add', 'patcher', 'alpha one']);
+    const idA = entryId('alpha one');
+    const v = await run(['vote', 'patcher', `${idA},ffffff,eeeeee`, '+1']);
+    expect(v.code).toBe(0); // one landed → exit unchanged
+    const row = parseUsage(dir).at(-1)!;
+    expect(row.command).toBe('vote');
+    expect(row.ok).toBe(true);
+    expect(row.outcome).toBe('up');
+    expect(row.entries).toEqual([idA]); // only the landed id
+    expect(row.misses).toBe(2); // the two stale ids are counted, not laundered
+    expect(row.errorClass).toBe(''); // a dedicated counter, NOT errorClass (keeps exit 0)
+  });
+
+  test('an all-fail batch records NO miss count (issue #310 leaves the no_match path untouched)', async () => {
+    // The all-fail path keeps its errorClass=no_match / exit-1 behavior; it does
+    // NOT also stamp the partial-miss counter (that is only for a ≥1-landed batch).
+    await run(['add', 'patcher', 'alpha one']);
+    const v = await run(['vote', 'patcher', 'ffffff,eeeeee', '+1']);
+    expect(v.code).toBe(1);
+    const row = parseUsage(dir).at(-1)!;
+    expect(row.ok).toBe(false);
+    expect(row.errorClass).toBe('no_match');
+    expect(row.misses).toBe(0); // the miss counter is reserved for partial successes
+  });
+
+  test('a fully-landed batch records no misses (issue #310)', async () => {
+    // No stale ids → the miss counter stays 0, so the vote error causes see nothing.
+    await run(['add', 'patcher', 'alpha one']);
+    await run(['add', 'patcher', 'beta two']);
+    const idA = entryId('alpha one');
+    const idB = entryId('beta two');
+    const v = await run(['vote', 'patcher', `${idA},${idB}`, '+1']);
+    expect(v.code).toBe(0);
+    expect(parseUsage(dir).at(-1)!.misses).toBe(0);
+  });
+
+  test('partial-batch misses surface end-to-end in `nb stats` vote error causes (issue #310)', async () => {
+    // Full wiring through the real CLI: two ≥1-landed batch votes each skip two
+    // stale ids (4 misses total, over the ERROR_CAUSE_MIN noise floor). Both
+    // exit 0, yet `nb stats` must now name the laundered selector misses as
+    // no_match under the vote command — proving logUsage writes and parseUsage
+    // reads the new column, and stats folds it into the cause readout.
+    await run(['add', 'patcher', 'alpha one']);
+    const idA = entryId('alpha one');
+    const v1 = await run(['vote', 'patcher', `${idA},ffffff,eeeeee`, '+1']);
+    const v2 = await run(['vote', 'patcher', `${idA},dddddd,cccccc`, '+1']);
+    expect(v1.code).toBe(0);
+    expect(v2.code).toBe(0);
+    const s = await run(['stats', 'patcher', '--json']);
+    expect(s.code).toBe(0);
+    const vote = JSON.parse(s.out).errorCauses.find((c: { command: string }) => c.command === 'vote');
+    expect(vote).toBeDefined();
+    expect(vote.errors).toBe(4); // 0 error rows + 4 folded partial misses
+    expect(vote.breakdown).toEqual([{ cause: 'no_match', pct: 100 }]);
+  });
+
+  test('a landed batch logs outcome=up and the touched ids', async () => {
+    await run(['add', 'patcher', 'alpha one']);
+    await run(['add', 'patcher', 'beta two']);
+    const idA = entryId('alpha one');
+    const idB = entryId('beta two');
+    await run(['vote', 'patcher', `${idA},${idB}`, '+1']);
+    const row = parseUsage(dir).at(-1)!;
+    expect(row.ok).toBe(true);
+    expect(row.outcome).toBe('up');
+    expect(row.entries).toEqual([idA, idB]);
+  });
+
+  test('--json on a batch emits the per-id result array', async () => {
+    await run(['add', 'patcher', 'alpha one']);
+    await run(['add', 'patcher', 'beta two']);
+    const idA = entryId('alpha one');
+    const idB = entryId('beta two');
+    const v = await run(['vote', 'patcher', `${idA},${idB}`, '+1', '--json']);
+    expect(v.code).toBe(0);
+    const parsed = JSON.parse(v.out);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed.map((r: { id: string }) => r.id)).toEqual([idA, idB]);
+    expect(parsed.every((r: { score: number }) => r.score === 2)).toBe(true);
+  });
+
+  test('a text selector containing a comma is NOT treated as an id list', async () => {
+    // Guards the id-only batch rule: "build, then test" has a comma but is not a
+    // list of bare hex ids, so it must resolve as a single substring selector.
+    await run(['add', 'patcher', 'build, then test the change']);
+    const v = await run(['vote', 'patcher', 'build, then test', '+1']);
+    expect(v.code).toBe(0);
+    expect(v.out).toContain('[+2]');
+    expect(v.out).toContain('build, then test the change');
   });
 
   test('stats --since labels the window and returns 0', async () => {
@@ -275,6 +1027,69 @@ describe('runNbCli', () => {
     expect(s.out).not.toContain('anomalies: none');
     // The per-command table row is rendered too (the `add` command summary line).
     expect(s.out).toMatch(/^\s*add\s+\d+\s+\d+%/m);
+  });
+
+  test('the human stats table renders the error-causes block with the upgrade hint (issue #223)', async () => {
+    const now = Date.now();
+    const mk = (cmd: string, cls = '', outcome = ''): string =>
+      `${new Date(now - Math.random() * 1000).toISOString()}\tpatcher\t${cmd}\terr\t2ms\t\t\t${outcome}\t\t\t\t\t${cls}`;
+    const rows = [
+      mk('add', 'too_long'), mk('add', 'too_long'), mk('add', 'too_long'), // 3 → meets the min
+      mk('vote'), mk('vote'), mk('vote'), // 3 unclassified → triggers the upgrade hint
+    ];
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const s = await run(['stats', 'patcher']);
+    expect(s.code).toBe(0);
+    expect(s.out).toContain('  error causes:');
+    expect(s.out).toMatch(/add\s+too_long 100%\s+\(3 err\)/);
+    expect(s.out).toMatch(/vote\s+unclassified 100%\s+\(3 err\)/);
+    expect(s.out).toContain('upgrade nb'); // the hint, since vote errors are unclassified
+  });
+
+  test('the human stats table shows the usage-ring occupancy line (issue #206)', async () => {
+    // The ring's own fill (how full the monitoring log is) must be visible in the
+    // human table, not only in --json — the analogue of the notebook inventory.
+    process.env.NB_USAGE_RING = '5000';
+    const now = Date.now();
+    const rows = Array.from({ length: 3 }, (_, i) =>
+      `${new Date(now - i * 1000).toISOString()}\tpatcher\tshow\tok\t1ms`,
+    );
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const s = await run(['stats', 'patcher']);
+    expect(s.code).toBe(0);
+    expect(s.out).toContain('usage ring: 3/5000 rows');
+  });
+
+  test('a clean ring reports zero crash recovery, shown not omitted, with no warning marker (issue #309)', async () => {
+    await run(['add', 'patcher', 'a lesson with no crash in sight']);
+    const s = await run(['stats']);
+    expect(s.code).toBe(0);
+    // Zero is shown (plural wording) so "measured, healthy" isn't read as "not
+    // measured", and the ⚠ marker only appears when something was actually recovered.
+    expect(s.out).toContain('crash recovery: 0 stale locks stolen, 0 leftover temps reaped (window)');
+    expect(s.out).not.toContain('⚠ crashes recovered');
+  });
+
+  test('a mutation over a stale lock + crash-left temp surfaces in nb stats (issue #309)', async () => {
+    // End-to-end acceptance: pre-age the lock and plant a per-pid shelf temp so the
+    // next real `nb add` steals the lock and reaps the temp; the recovery must then
+    // show up in both the human stats table and --json, without failing the add.
+    const lock = join(dir, '.nb.lock');
+    mkdirSync(lock); // a crashed nb left the lock behind
+    const aged = Date.now() / 1000 - 20; // > 10s default stale threshold
+    utimesSync(lock, aged, aged);
+    writeFileSync(join(dir, 'scout.md.99999.tmp'), 'half-written', 'utf-8'); // crash-left temp
+
+    const add = await run(['add', 'patcher', 'a lesson added after crash recovery']);
+    expect(add.code).toBe(0); // recovery did not break the mutation
+
+    const human = await run(['stats']);
+    expect(human.code).toBe(0);
+    // Singular wording at a count of 1, and the warning marker flags the nonzero.
+    expect(human.out).toContain('crash recovery: 1 stale lock stolen, 1 leftover temp reaped (window)  ⚠ crashes recovered');
+
+    const js = await run(['stats', '--json']);
+    expect(JSON.parse(js.out).crashRecovery).toEqual({ lockSteals: 1, tempReaps: 1 });
   });
 
   // --exit-code (issue #129): the opt-in health gate. Seed a tight loop of calls
@@ -709,11 +1524,41 @@ describe('runNbCli', () => {
     expect(r.code).toBe(1);
     expect(r.err).toMatch(/too long/i);
     expect(r.err).toMatch(/retry/i);
+    // The overflow count (length 60 - cap 25 = 35) is reported so the re-draft
+    // trims exactly that much instead of guessing (issue #239).
+    expect(r.err).toMatch(/35 over the 25 limit/);
+    expect(r.err).toMatch(/trim at least 35/);
     const show = await run(['show', 'patcher']);
     // Nothing was stored, so the shelf was never created: `show` reports it as
     // missing (issue #166), not as a real empty notebook.
     expect(show.err).toContain('no notebook for shelf "patcher"');
     expect(show.out).toBe('');
+  });
+
+  test('add past the cap always LOGS the aging dock but PRINTS it only when the pre-dock score was > 1 (issue #293)', async () => {
+    process.env.NB_MAX_LINES = '2';
+    // Routine +1 -> 0 dock: logged, but the human line stays quiet.
+    await run(['add', 'q', 'alpha lesson one']);
+    await run(['add', 'q', 'beta lesson two']);
+    await run(['vote', 'q', 'beta', '-1']); // beta -> 0, evicted next
+    const quiet = await run(['add', 'q', 'gamma lesson three']);
+    expect(quiet.out).toMatch(/\(evicted lowest-scored: \[\+0\] beta lesson two\)/);
+    expect(quiet.out).not.toMatch(/aged stalest/);
+    const quietRow = parseUsage(dir).filter((r) => r.command === 'add').pop()!;
+    expect(quietRow.decayed).toBe(`${entryId('alpha lesson one')}:0`);
+
+    // Voted-up line (+3) docked to +2: printed AND logged.
+    process.env.NB_MAX_LINES = '2';
+    await run(['add', 'w', 'stale high lesson']);
+    await run(['vote', 'w', 'stale high', '1']);
+    await run(['vote', 'w', 'stale high', '1']); // +3
+    await run(['add', 'w', 'filler lesson']);
+    const loud = await run(['add', 'w', 'newcomer lesson']);
+    expect(loud.out).toMatch(/\(evicted lowest-scored: \[\+1\] filler lesson\)/);
+    expect(loud.out).toMatch(/\(aged stalest −1 → \[\+2\] stale high lesson\)/);
+    const loudRow = parseUsage(dir).filter((r) => r.role === 'w' && r.command === 'add').pop()!;
+    expect(loudRow.decayed).toBe(`${entryId('stale high lesson')}:2`);
+    expect(loudRow.evicted).toBe(`${entryId('filler lesson')}:1`);
   });
 
   test('add past NB_MAX_LINES evicts the lowest-scored entry and names it in the output', async () => {
@@ -742,6 +1587,34 @@ describe('runNbCli', () => {
     expect(show.out).not.toContain('beta lesson two');
     expect(show.out).toContain('alpha lesson one');
     expect(show.out).toContain('gamma lesson three');
+  });
+
+  test('add on a cap LOWERED below a full shelf reports all evictions in the message and the usage row (issue #306)', async () => {
+    // Fill a shelf to 50 under the default cap, then lower NB_MAX_LINES to 10 and
+    // add once: that one add trims the shelf all the way down (50 + 1 − 10 = 41
+    // evictions). Before #306 both the `added` line and the usage `evicted`
+    // column surfaced only ONE of those 41, hiding the scale of the loss.
+    process.env.NB_MAX_LINES = '50';
+    for (let i = 0; i < 50; i++) {
+      expect((await run(['add', 'patcher', `lesson number ${i}`])).code).toBe(0);
+    }
+    process.env.NB_MAX_LINES = '10';
+    const r = await run(['add', 'patcher', 'the newcomer lesson']);
+    expect(r.code).toBe(0);
+    // The message names the primary evicted entry AND the count of the rest
+    // (41 evicted − 1 named = 40 more), instead of silently dropping 40 lessons.
+    expect(r.out).toMatch(/added — 10 lines \(evicted lowest-scored: .* \+40 more lines\)/);
+
+    // The usage row's `evicted` column records the full loss, byte-bounded with a
+    // count-preserving marker, not a single entry.
+    const row = parseUsage(dir).filter((x) => x.command === 'add').at(-1)!;
+    const tokens = row.evicted.split(',');
+    const markers = tokens.filter((t) => t.startsWith('+'));
+    expect(markers).toHaveLength(1);
+    const dropped = Number(markers[0].slice(1));
+    const pairs = tokens.filter((t) => !t.startsWith('+'));
+    expect(pairs.length + dropped).toBe(41); // every eviction accounted for
+    expect(pairs.length).toBeGreaterThan(1); // not under-reported to one
   });
 
   test('merge consolidates two entries into one, reflected by show', async () => {
@@ -782,6 +1655,39 @@ describe('runNbCli', () => {
     expect(r.err).toContain('missing <id|query>');
   });
 
+  test('NB_DIR with a leading ~ is expanded by nb itself (issue #334)', async () => {
+    // A harness (settings.json `env`, systemd, cron) sets NB_DIR without a
+    // shell expanding the tilde. nb must expand it, so the notebook lands in
+    // $HOME/x — not a literal `./~` directory under whatever the CWD is — and
+    // `nb path`/`nb config` report the expanded absolute path.
+    const tmpHome = mkdtempSync(join(tmpdir(), 'agent-notebook-home-'));
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-notebook-cwd-'));
+    const savedHome = process.env.HOME;
+    const savedCwd = process.cwd();
+    try {
+      process.env.HOME = tmpHome;
+      process.env.NB_DIR = '~/x';
+      process.chdir(cwd);
+      expect((await run(['add', 's', 'tilde test lesson'])).code).toBe(0);
+      const expected = join(tmpHome, 'x');
+      expect(existsSync(join(expected, 's.md'))).toBe(true);
+      expect(existsSync(join(cwd, '~'))).toBe(false);
+      expect((await run(['path'])).out).toBe(`${expected}\n`);
+      expect((await run(['path', '--usage'])).out).toBe(`${usageFile(expected)}\n`);
+      expect((await run(['config'])).out).toMatch(
+        new RegExp(`^NB_DIR=${expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+\\(env\\)$`, 'm'),
+      );
+      // The usage log lands under the expanded dir, not the literal `~` one.
+      expect(parseUsage(expected).length).toBeGreaterThan(0);
+    } finally {
+      process.chdir(savedCwd);
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   test('path with no shelf prints the notebooks dir (respecting NB_DIR)', async () => {
     const r = await run(['path']);
     expect(r.code).toBe(0);
@@ -815,15 +1721,16 @@ describe('runNbCli', () => {
     expect(r.err).toBe('');
   });
 
-  test('path with an unrecognized --flag is rejected, never silently treated as the dir (issue #169)', async () => {
-    // `--usage` is the ONLY recognized flag; any other `--`-prefixed token falls
-    // through to the shelf branch, where assertSafeShelf rejects it. This is why
-    // `--usage` cannot collide with a shelf literally named `--usage` — such a
-    // name is unreachable — and it guards against a typo'd flag quietly printing
-    // the notebooks dir.
+  test('path with an unrecognized --flag is rejected, never silently treated as the dir (issue #169, #267)', async () => {
+    // `--usage`/`--json` are the ONLY recognized flags; any other `--`-prefixed
+    // token is refused up front by the central unknown-flag guard (issue #267)
+    // rather than quietly printing the notebooks dir. The message names the
+    // offending option (not a confusing "invalid shelf name"), and `--usage`
+    // still cannot collide with a shelf literally named `--usage` — such a name
+    // is unreachable.
     const r = await run(['path', '--bogus']);
     expect(r.code).toBe(1);
-    expect(r.err).toMatch(/invalid shelf name/);
+    expect(r.err).toMatch(/unknown option "--bogus" for `nb path`/);
   });
 
   describe('path --json (issue #185)', () => {
@@ -872,11 +1779,20 @@ describe('runNbCli', () => {
       expect((await run(['path', '--usage'])).out).toBe(`${usageFile(dir)}\n`);
     });
 
-    test('--json does not disable the safe-shelf guard (still exit 1, no JSON)', async () => {
+    test('--json does not disable the safe-shelf guard (still exit 1) and now emits a structured error on stdout (issue #266)', async () => {
       const r = await run(['path', '../escape', '--json']);
-      expect(r.code).toBe(1);
-      expect(r.err).toMatch(/invalid shelf name/);
-      expect(r.out).toBe(''); // nothing emitted on stdout when rejected
+      expect(r.code).toBe(1); // the guard still fires — exit is unchanged
+      expect(r.err).toMatch(/invalid shelf name/); // the English line still goes to stderr
+      // Previously stdout was empty on this throw path, so a --json consumer got
+      // nothing to branch on. It now carries the structured error (issue #266).
+      expect(JSON.parse(r.out)).toEqual({
+        ok: false,
+        command: 'path',
+        error: {
+          class: 'bad_args',
+          message: 'invalid shelf name: "../escape" (allowed: letters, digits, . _ @ -)',
+        },
+      });
     });
   });
 
@@ -921,8 +1837,15 @@ describe('runNbCli', () => {
       for (const [name, value] of DEFAULTS) {
         expect(r.out).toContain(`${name}=${value}`);
       }
-      // Exactly one line per tunable, nothing extra.
-      expect(r.out.trimEnd().split('\n')).toHaveLength(DEFAULTS.length);
+      // The numeric block is exactly one line per tunable, then a blank-line
+      // separator and the three string env rows (issue #312) — nothing extra.
+      const [numericBlock, envBlock] = r.out.trimEnd().split('\n\n');
+      expect(numericBlock.split('\n')).toHaveLength(DEFAULTS.length);
+      expect(envBlock.split('\n').map((l) => l.split('=')[0])).toEqual([
+        'NB_DIR',
+        'NB_SESSION',
+        'NB_ASCII',
+      ]);
     });
 
     test('each default line is tagged (default); the derived one is tagged derived', async () => {
@@ -936,10 +1859,13 @@ describe('runNbCli', () => {
       expect(r.code).toBe(0);
       expect(r.out.trim().split('\n')).toHaveLength(1); // exactly one JSON object on stdout
       const obj = JSON.parse(r.out);
-      expect(Object.keys(obj).sort()).toEqual(DEFAULTS.map(([n]) => n).sort());
-      expect(obj.maxLines).toEqual({ value: 50, source: 'default', env: 'NB_MAX_LINES' });
+      // The 14 numeric rows keep their exact keys; issue #312 adds ONE new
+      // top-level `environment` key (a new section, not a changed row shape) and
+      // issue #336 adds the informational `unrecognized` array. Nothing else.
+      expect(Object.keys(obj).sort()).toEqual([...DEFAULTS.map(([n]) => n), 'environment', 'unrecognized'].sort());
+      expect(obj.maxLines).toEqual({ value: 50, source: 'default', env: 'NB_MAX_LINES', status: null, rawValue: null });
       // The derived value has no env var of its own.
-      expect(obj.usageRingSlack).toEqual({ value: 312, source: 'derived', env: null });
+      expect(obj.usageRingSlack).toEqual({ value: 312, source: 'derived', env: null, status: null, rawValue: null });
       // Values are real numbers, not stringified — a supervisor can branch on them.
       expect(typeof obj.errRate.value).toBe('number');
       expect(obj.errRate.value).toBe(0.3);
@@ -949,14 +1875,14 @@ describe('runNbCli', () => {
       process.env.NB_MAX_LINES = '123';
       expect((await run(['config'])).out).toMatch(/^maxLines=123\s+\(env NB_MAX_LINES\)$/m);
       const j = JSON.parse((await run(['config', '--json'])).out);
-      expect(j.maxLines).toEqual({ value: 123, source: 'env', env: 'NB_MAX_LINES' });
+      expect(j.maxLines).toEqual({ value: 123, source: 'env', env: 'NB_MAX_LINES', status: 'honored', rawValue: '123' });
     });
 
     test('an out-of-range env override prints the POST-CLAMP value, still source=env (DP-5)', async () => {
       process.env.NB_MAX_CHARS = '99999'; // above the 2000 ceiling → clamped
       const j = JSON.parse((await run(['config', '--json'])).out);
-      expect(j.maxChars).toEqual({ value: 2000, source: 'env', env: 'NB_MAX_CHARS' });
-      expect((await run(['config'])).out).toMatch(/^maxChars=2000\s+\(env NB_MAX_CHARS\)$/m);
+      expect(j.maxChars).toEqual({ value: 2000, source: 'env', env: 'NB_MAX_CHARS', status: 'clamped', rawValue: '99999' });
+      expect((await run(['config'])).out).toMatch(/^maxChars=2000\s+\(env NB_MAX_CHARS: clamped to 2000 from 99999\)$/m);
     });
 
     test('a NON-NUMERIC env clamps back to the default value yet still reads source=env (DP-5)', async () => {
@@ -967,8 +1893,8 @@ describe('runNbCli', () => {
       // every other test but fail this one.
       process.env.NB_MAX_LINES = 'abc';
       const j = JSON.parse((await run(['config', '--json'])).out);
-      expect(j.maxLines).toEqual({ value: 50, source: 'env', env: 'NB_MAX_LINES' });
-      expect((await run(['config'])).out).toMatch(/^maxLines=50\s+\(env NB_MAX_LINES\)$/m);
+      expect(j.maxLines).toEqual({ value: 50, source: 'env', env: 'NB_MAX_LINES', status: 'ignored', rawValue: 'abc' });
+      expect((await run(['config'])).out).toMatch(/^maxLines=50\s+\(env NB_MAX_LINES: ignored "abc", not an integer; using default\)$/m);
     });
 
     test('a blank env var reads source=env, not default, matching the value the getter yields (DP-5)', async () => {
@@ -978,14 +1904,14 @@ describe('runNbCli', () => {
       // misleading value/tag pair FR-CONFIG-001 forbids. source must read `env`.
       process.env.NB_ERR_RATE = '';
       const j = JSON.parse((await run(['config', '--json'])).out);
-      expect(j.errRate).toEqual({ value: 0, source: 'env', env: 'NB_ERR_RATE' });
+      expect(j.errRate).toEqual({ value: 0, source: 'env', env: 'NB_ERR_RATE', status: 'honored', rawValue: '' });
       expect((await run(['config'])).out).toMatch(/^errRate=0\s+\(env NB_ERR_RATE\)$/m);
     });
 
     test('config reuses the live getter, so a set stats threshold is surfaced (no drift)', async () => {
       process.env.NB_LOOP_N = '7';
       const j = JSON.parse((await run(['config', '--json'])).out);
-      expect(j.loopN).toEqual({ value: 7, source: 'env', env: 'NB_LOOP_N' });
+      expect(j.loopN).toEqual({ value: 7, source: 'env', env: 'NB_LOOP_N', status: 'honored', rawValue: '7' });
     });
 
     test('config mutates nothing — no shelf file is created or changed', async () => {
@@ -1005,6 +1931,359 @@ describe('runNbCli', () => {
       // (.nb-usage.log is the only side effect, shared by every read command.)
       expect(readFileSync(file, 'utf8')).toBe(before);
       expect(readdirSync(dir).filter((f) => f.endsWith('.md')).sort()).toEqual(filesBefore);
+    });
+
+    describe('per-variable status + unrecognized NB_* scan (issue #336)', () => {
+      // A fresh `NB_*` name that no shipping code reads, used to prove an
+      // unrecognized var is listed. Cleaned up so it can't leak into other tests.
+      const TYPO = 'NB_MAX_LINE';
+      afterEach(() => {
+        delete process.env[TYPO];
+      });
+
+      test('an unparseable value reads status=ignored with the raw value, annotated in both outputs', async () => {
+        process.env.NB_MAX_LINES = 'abc';
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.maxLines).toEqual({
+          value: 50, source: 'env', env: 'NB_MAX_LINES', status: 'ignored', rawValue: 'abc',
+        });
+        expect((await run(['config'])).out).toMatch(
+          /^maxLines=50\s+\(env NB_MAX_LINES: ignored "abc", not an integer; using default\)$/m,
+        );
+      });
+
+      test('an out-of-range value reads status=clamped with the raw value, annotated in both outputs', async () => {
+        process.env.NB_NEAR_DUP = '2'; // rate ceiling is 1
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.nearThreshold).toEqual({
+          value: 1, source: 'env', env: 'NB_NEAR_DUP', status: 'clamped', rawValue: '2',
+        });
+        expect((await run(['config'])).out).toMatch(
+          /^nearThreshold=1\s+\(env NB_NEAR_DUP: clamped to 1 from 2\)$/m,
+        );
+      });
+
+      test('a misspelled NB_* var is listed as not-read-by-nb with a nearest-name suggestion, both outputs', async () => {
+        process.env[TYPO] = '9';
+        const human = (await run(['config'])).out;
+        // Tagged "not read by nb" (other tooling may legitimately set NB_*), with
+        // the typo hint — padded to the historical tag width so the block keeps
+        // its shape.
+        expect(human).toMatch(
+          new RegExp(`^${TYPO}\\s+\\(not read by nb — did you mean NB_MAX_LINES\\?\\)\\s*$`, 'm'),
+        );
+        // Informational only: stderr clean, exit 0.
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.unrecognized).toContainEqual({ name: TYPO, suggestion: 'NB_MAX_LINES' });
+      });
+
+      test('an NB_* var with no close match is still listed, without a suggestion (issue #336)', async () => {
+        // The spec promises EVERY unread NB_* var is surfaced; a name far from
+        // any real knob (or one another tool owns) must not be dropped just
+        // because closestMatch found nothing — that is the invisible case the
+        // scan exists to expose.
+        const FAR = 'NB_FAKE_TUNE_XYZ';
+        process.env[FAR] = '1';
+        try {
+          const human = (await run(['config'])).out;
+          expect(human).toMatch(new RegExp(`^${FAR}\\s+\\(not read by nb\\)\\s*$`, 'm'));
+          const j = JSON.parse((await run(['config', '--json'])).out);
+          expect(j.unrecognized).toContainEqual({ name: FAR, suggestion: null });
+        } finally {
+          delete process.env[FAR];
+        }
+      });
+
+      test('a var read by the shipped example tooling is never flagged as unknown or mis-suggested', async () => {
+        // examples/ ships scripts that legitimately read these (guarded by
+        // src/env-docs.test.ts); a user who exports them while following the
+        // setup docs must not be told nb does not know them, and must not get a
+        // confident, wrong `did you mean NB_DIR?` for NB_BIN.
+        const SHIPPED = [
+          'NB_BIN',
+          'NB_RETRO_TTL_DAYS',
+          'NB_GIT_AUTOCOMMIT',
+          'NB_BACKUP_PUSH_TIMEOUT',
+          'NB_BACKUP_GIT_LOCK_WAIT',
+        ];
+        for (const v of SHIPPED) process.env[v] = 'x';
+        try {
+          const human = (await run(['config'])).out;
+          const j = JSON.parse((await run(['config', '--json'])).out);
+          for (const v of SHIPPED) {
+            expect(human).not.toContain(v);
+            expect(j.unrecognized.map((u: { name: string }) => u.name)).not.toContain(v);
+          }
+          // A real typo is still caught alongside them.
+          process.env[TYPO] = '9';
+          const j2 = JSON.parse((await run(['config', '--json'])).out);
+          expect(j2.unrecognized).toContainEqual({ name: TYPO, suggestion: 'NB_MAX_LINES' });
+        } finally {
+          for (const v of SHIPPED) delete process.env[v];
+        }
+      });
+
+      test('an honored in-range value has status=honored and no human status note', async () => {
+        process.env.NB_MAX_LINES = '123';
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.maxLines).toEqual({
+          value: 123, source: 'env', env: 'NB_MAX_LINES', status: 'honored', rawValue: '123',
+        });
+        // No clamped/ignored suffix — the honored line is the plain pre-#336 form.
+        expect((await run(['config'])).out).toMatch(/^maxLines=123\s+\(env NB_MAX_LINES\)$/m);
+      });
+
+      test('an unset tunable has status=rawValue=null (source default) and no status note', async () => {
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.maxLines).toEqual({
+          value: 50, source: 'default', env: 'NB_MAX_LINES', status: null, rawValue: null,
+        });
+        // The derived row also carries null status/rawValue (it has no env var).
+        expect(j.usageRingSlack.status).toBeNull();
+        expect(j.usageRingSlack.rawValue).toBeNull();
+      });
+
+      test('the registry stays in lockstep with every getter (same value for honored/clamped/ignored)', async () => {
+        // The registry duplicates each getter's default + clamp so `nb config`
+        // can report a status. This pins them together: for each tunable, set a
+        // representative honored, clamped-high, clamped-low and garbage value and
+        // assert the JSON's `value` matches the exported getter's value exactly.
+        // A drifted default, clamp bound or parse rule fails here rather than
+        // silently printing a value the hot path never uses (the #116 drift).
+        const { maxLines, maxChars, nearThreshold, usageRing, staleLockMs, lockGraceMs,
+          loopN, loopWindowSec, silentHours, errMin, errRate, coverageHi, recallMissHi } = await import('./notebook.js');
+        const cases: Array<[string, () => number, string, string[]]> = [
+          ['maxLines', maxLines, 'NB_MAX_LINES', ['3', '999999', '0', 'abc']],
+          ['maxChars', maxChars, 'NB_MAX_CHARS', ['50', '999999', '0', 'x']],
+          ['nearThreshold', nearThreshold, 'NB_NEAR_DUP', ['0.4', '9', '-3', 'no']],
+          ['usageRing', usageRing, 'NB_USAGE_RING', ['500', '9999999', '1', 'z']],
+          ['staleLockMs', staleLockMs, 'NB_STALE_LOCK_MS', ['5000', '9999999', '1', 'q']],
+          ['lockGraceMs', lockGraceMs, 'NB_LOCK_GRACE_MS', ['100', '9999999', '-1', 'q']],
+          ['loopN', loopN, 'NB_LOOP_N', ['5', '999999', '1', 'q']],
+          ['loopWindowSec', loopWindowSec, 'NB_LOOP_WINDOW_S', ['60', '9999999', '1', 'q']],
+          ['silentHours', silentHours, 'NB_SILENT_H', ['24', '9999999', '0', 'q']],
+          ['errMin', errMin, 'NB_ERR_MIN', ['3', '9999999', '0', 'q']],
+          ['errRate', errRate, 'NB_ERR_RATE', ['0.1', '9', '-1', 'q']],
+          ['coverageHi', coverageHi, 'NB_COVERAGE_HI', ['0.1', '9', '-1', 'q']],
+          ['recallMissHi', recallMissHi, 'NB_RECALL_MISS_HI', ['0.1', '9', '-1', 'q']],
+        ];
+        for (const [name, getter, envVar, raws] of cases) {
+          for (const raw of raws) {
+            process.env[envVar] = raw;
+            const j = JSON.parse((await run(['config', '--json'])).out);
+            expect(j[name].value, `${name} with ${envVar}=${raw}`).toBe(getter());
+            delete process.env[envVar];
+          }
+        }
+      });
+
+      test('a moved int bound is caught: probes at the live lo-1/lo/hi/hi+1, not fixed literals', async () => {
+        // The fixed-literal matrix above can miss a moved bound (a value that is
+        // out of range for both old and new ceilings clamps identically). Derive
+        // the probes from the tunable's OWN declared bounds so shifting a bound
+        // in notebook.ts is exercised the moment it moves — the regression guard
+        // for issue #336 review finding 1.
+        const nb = await import('./notebook.js');
+        const specs: Array<[string, () => number, IntTunable | RateTunable]> = [
+          ['maxLines', nb.maxLines, nb.MAX_LINES],
+          ['maxChars', nb.maxChars, nb.MAX_CHARS],
+          ['usageRing', nb.usageRing, nb.USAGE_RING],
+          ['staleLockMs', nb.staleLockMs, nb.STALE_LOCK_MS],
+          ['lockGraceMs', nb.lockGraceMs, nb.LOCK_GRACE_MS],
+          ['loopN', nb.loopN, nb.LOOP_N],
+          ['loopWindowSec', nb.loopWindowSec, nb.LOOP_WINDOW_S],
+          ['silentHours', nb.silentHours, nb.SILENT_H],
+          ['errMin', nb.errMin, nb.ERR_MIN],
+        ];
+        for (const [name, getter, t] of specs) {
+          const spec = t as IntTunable;
+          const probes = [spec.lo - 1, spec.lo, spec.hi, spec.hi + 1].map(String);
+          for (const raw of probes) {
+            process.env[spec.env] = raw;
+            const j = JSON.parse((await run(['config', '--json'])).out);
+            expect(j[name].value, `${name} with ${spec.env}=${raw}`).toBe(getter());
+            delete process.env[spec.env];
+          }
+        }
+      });
+
+      test('every documented NB_* tunable is recognized (never listed unknown)', async () => {
+        // The registry must cover every `NB_*` tunable the README documents — the
+        // one place the user-facing set is written down (and the home the #164
+        // env-docs guard already pins). Drive the assertion from the DOCUMENTED
+        // set (`documented → surfaced`), not the other way round: a new knob
+        // added to the README but forgotten in TUNABLE_REGISTRY is absent from
+        // `surfaced`, so a `surfaced → documented` loop would never inspect it
+        // and the omission it was written to catch would slip through.
+        const readme = readFileSync(join(REPO_ROOT, 'README.md'), 'utf8');
+        const documented = new Set(readme.match(/NB_[A-Z_]+/g) ?? []);
+        // Vars documented only because the shipped examples/ tooling reads them
+        // are legitimately not nb's own config (see SHIPPED_TOOL_ENV_VARS), so
+        // they are excluded from the tunable set this test requires to surface.
+        // `NB_MAX_LINE` is the deliberate typo the docs use to illustrate the
+        // unknown-var block, not a real knob.
+        const EXAMPLE_ONLY = new Set([
+          'NB_BIN',
+          'NB_RETRO_TTL_DAYS',
+          'NB_GIT_AUTOCOMMIT',
+          'NB_BACKUP_PUSH_TIMEOUT',
+          'NB_BACKUP_GIT_LOCK_WAIT',
+          'NB_MAX_LINE',
+        ]);
+        // The registry's live view is the `--json` output: every numeric row's
+        // `env` plus every `environment` key.
+        const j0 = JSON.parse((await run(['config', '--json'])).out);
+        const surfaced = new Set<string>([
+          ...Object.values(j0)
+            .filter((v): v is { env: string | null } => !!v && typeof v === 'object' && 'env' in v)
+            .map((v) => v.env)
+            .filter((e): e is string => e !== null),
+          ...Object.keys(j0.environment),
+        ]);
+        const names = new Set<string>(j0.unrecognized.map((u: { name: string }) => u.name));
+        // Every documented tunable must be surfaced by `nb config` and must not
+        // be reported unknown...
+        const missing = [...documented].filter((v) => !EXAMPLE_ONLY.has(v) && !surfaced.has(v)).sort();
+        expect(missing, `documented but not surfaced by nb config: ${missing.join(', ')}`).toEqual([]);
+        // ...and, the other direction, a surfaced var must be documented and
+        // never reported unknown.
+        for (const v of surfaced) {
+          expect(documented.has(v), `${v} is surfaced but missing from the README`).toBe(true);
+          expect(names.has(v), `${v} is read but reported unknown`).toBe(false);
+        }
+      });
+    });
+
+    // The three behavior-critical STRING env vars (issue #312). These are not in
+    // TUNABLES, so manage NB_SESSION / NB_ASCII explicitly here; NB_DIR is already
+    // set to the per-test temp dir by the outer beforeEach.
+    describe('string env section — NB_DIR / NB_SESSION / NB_ASCII (issue #312)', () => {
+      // Also pin the locale: with NB_ASCII unset, asciiMode() falls back to
+      // LC_ALL/LC_CTYPE/LANG, so a `C`/`POSIX` CI locale would otherwise flip the
+      // default NB_ASCII value and make the "unset" assertion flaky. Force a
+      // UTF-8 locale for a deterministic `off` baseline.
+      const STRING_VARS = ['NB_SESSION', 'NB_ASCII', 'LC_ALL', 'LC_CTYPE', 'LANG'];
+      const savedStrings: Record<string, string | undefined> = {};
+      beforeEach(() => {
+        for (const k of STRING_VARS) {
+          savedStrings[k] = process.env[k];
+          delete process.env[k];
+        }
+        process.env.LANG = 'C.UTF-8';
+      });
+      afterEach(() => {
+        for (const k of STRING_VARS) {
+          if (savedStrings[k] === undefined) delete process.env[k];
+          else process.env[k] = savedStrings[k];
+        }
+      });
+
+      test('unset NB_SESSION/NB_ASCII read (default) with empty/off values; set NB_DIR reads (env)', async () => {
+        const r = await run(['config']);
+        expect(r.code).toBe(0);
+        // NB_DIR is set to the temp dir by the harness → (env) with that path.
+        expect(r.out).toMatch(new RegExp(`^NB_DIR=${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+\\(env\\)$`, 'm'));
+        // Unset NB_SESSION → empty value, (default). Unset NB_ASCII → off, (default).
+        expect(r.out).toMatch(/^NB_SESSION=\s+\(default\)$/m);
+        expect(r.out).toMatch(/^NB_ASCII=off\s+\(default\)$/m);
+        // The same unset state in --json: source 'default' under `environment`.
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.environment.NB_SESSION).toEqual({ value: '', source: 'default' });
+        expect(j.environment.NB_ASCII).toEqual({ value: 'off', source: 'default' });
+      });
+
+      test('an unset NB_DIR reads (default) with the home-relative default path', async () => {
+        // NB_DIR unset → notebooksDir() falls back to <home>/.agent-notebook/
+        // notebooks. The harness always sets NB_DIR, so override HOME to a temp
+        // dir (os.homedir() honors $HOME on POSIX) and clear NB_DIR, so the
+        // fallback resolves INTO the temp home — the usage-log side effect lands
+        // there, not in the real home — then restore both.
+        const savedDir = process.env.NB_DIR;
+        const savedHome = process.env.HOME;
+        const tmpHome = mkdtempSync(join(tmpdir(), 'agent-notebook-home-'));
+        try {
+          delete process.env.NB_DIR;
+          process.env.HOME = tmpHome;
+          const expected = join(tmpHome, '.agent-notebook', 'notebooks');
+          const r = await run(['config']);
+          expect(r.out).toMatch(
+            new RegExp(`^NB_DIR=${expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+\\(default\\)$`, 'm'),
+          );
+          const j = JSON.parse((await run(['config', '--json'])).out);
+          expect(j.environment.NB_DIR).toEqual({ value: expected, source: 'default' });
+        } finally {
+          if (savedDir === undefined) delete process.env.NB_DIR;
+          else process.env.NB_DIR = savedDir;
+          if (savedHome === undefined) delete process.env.HOME;
+          else process.env.HOME = savedHome;
+          rmSync(tmpHome, { recursive: true, force: true });
+        }
+      });
+
+      test('NB_ASCII unset under a non-UTF-8 locale defaults to on, still tagged (default)', async () => {
+        // The locale-driven branch of asciiMode(): with NB_ASCII unset and a set,
+        // non-UTF-8 locale (C), rendering is ASCII — value `on`, but the SOURCE is
+        // still (default) because NB_ASCII itself is unset (the mode came from the
+        // locale, not the var). This is the useful "ascii is on, and here's why"
+        // diagnostic the numeric rows can't express.
+        process.env.LANG = 'C';
+        expect((await run(['config'])).out).toMatch(/^NB_ASCII=on\s+\(default\)$/m);
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.environment.NB_ASCII).toEqual({ value: 'on', source: 'default' });
+      });
+
+      test('a set NB_SESSION is surfaced with its value and tagged (env)', async () => {
+        process.env.NB_SESSION = 'task-42';
+        expect((await run(['config'])).out).toMatch(/^NB_SESSION=task-42\s+\(env\)$/m);
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.environment.NB_SESSION).toEqual({ value: 'task-42', source: 'env' });
+      });
+
+      test('NB_ASCII truthy forces on and reads (env); a falsey value forces off yet still reads (env)', async () => {
+        process.env.NB_ASCII = '1';
+        expect((await run(['config'])).out).toMatch(/^NB_ASCII=on\s+\(env\)$/m);
+        process.env.NB_ASCII = '0';
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        // Falsey → effective off, but the var IS set, so source stays env (DP-5).
+        expect(j.environment.NB_ASCII).toEqual({ value: 'off', source: 'env' });
+        expect((await run(['config'])).out).toMatch(/^NB_ASCII=off\s+\(env\)$/m);
+      });
+
+      test('--json nests the string vars under `environment`, keyed by var name, { value, source }', async () => {
+        process.env.NB_SESSION = 'sess-1';
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(Object.keys(j.environment).sort()).toEqual(['NB_ASCII', 'NB_DIR', 'NB_SESSION']);
+        expect(j.environment.NB_DIR).toEqual({ value: dir, source: 'env' });
+        expect(j.environment.NB_SESSION).toEqual({ value: 'sess-1', source: 'env' });
+        // Values are strings, so a supervisor reads NB_DIR without regex-parsing
+        // the human lines.
+        expect(typeof j.environment.NB_DIR.value).toBe('string');
+      });
+
+      test('a blank NB_SESSION reads (env), not (default) — a set-but-empty var IS set (DP-5)', async () => {
+        process.env.NB_SESSION = '';
+        const j = JSON.parse((await run(['config', '--json'])).out);
+        expect(j.environment.NB_SESSION).toEqual({ value: '', source: 'env' });
+        expect((await run(['config'])).out).toMatch(/^NB_SESSION=\s+\(env\)$/m);
+      });
+
+      test('the new env section does not disturb the numeric rows, even with a numeric override set', async () => {
+        // Guard the acceptance criterion "existing numeric rows are unchanged":
+        // the numeric block (everything before the blank-line separator) must be
+        // identical whether or not the string env vars are set, and an env
+        // override (NB_MAX_LINES) must still flow through untouched.
+        process.env.NB_MAX_LINES = '7';
+        const withEnvUnset = (await run(['config'])).out.split('\n\n')[0];
+        process.env.NB_SESSION = 'sess-x';
+        process.env.NB_ASCII = '1';
+        const withEnvSet = (await run(['config'])).out.split('\n\n')[0];
+        // Setting the STRING vars leaves the numeric block byte-identical...
+        expect(withEnvSet).toBe(withEnvUnset);
+        // ...and the numeric override still appears with its (env) tag.
+        expect(withEnvSet).toMatch(/^maxLines=7\s+\(env NB_MAX_LINES\)$/m);
+        expect(withEnvSet.split('\n')).toHaveLength(DEFAULTS.length);
+        delete process.env.NB_MAX_LINES;
+      });
     });
   });
 
@@ -1110,6 +2389,83 @@ describe('runNbCli', () => {
       expect(parsed.dir).toBe(dir);
       expect(parsed.total).toBe(1);
       expect(parsed.rows[0]).toEqual({ role: 'reviewer', shelf: 'reviewer', lessons: 1, desc: 'the trigger', auto: null });
+    });
+
+    describe('one unreadable shelf does not abort list (issue #332)', () => {
+      // A directory named `<shelf>.md` reproduces an EISDIR read failure (the
+      // issue's own reproduction); EACCES from a root-owned/chmod'd file is the
+      // same class. `list` must still exit 0, show every healthy shelf, and
+      // report the casualty + errno on stderr, while `show` stays loud.
+      test('exits 0, lists the rest, and reports the skipped shelf on stderr', async () => {
+        await run(['add', 'alpha', 'a lesson']);
+        await run(['add', 'beta', 'b lesson']);
+        mkdirSync(join(dir, 'weird.md'));
+        const r = await run(['list']);
+        expect(r.code).toBe(0);
+        expect(r.out).toContain('alpha');
+        expect(r.out).toContain('beta');
+        expect(r.out).not.toContain('weird');
+        expect(r.err).toContain('skipped shelf "weird"');
+        expect(r.err).toContain('EISDIR');
+      });
+
+      test('--json stays byte-identical on a healthy store (no skipped field)', async () => {
+        await run(['add', 'reviewer', 'a lesson']);
+        const r = await run(['list', '--json']);
+        const parsed = JSON.parse(r.out);
+        expect(parsed).not.toHaveProperty('skipped');
+        expect(Object.keys(parsed)).toEqual(['dir', 'total', 'rows']);
+      });
+
+      test('--json surfaces the skipped shelf additively when one is unreadable', async () => {
+        await run(['add', 'alpha', 'a lesson']);
+        mkdirSync(join(dir, 'weird.md'));
+        const r = await run(['list', '--json']);
+        expect(r.code).toBe(0);
+        const parsed = JSON.parse(r.out);
+        expect(parsed.rows.map((x: { shelf: string }) => x.shelf)).toEqual(['alpha']);
+        expect(parsed.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
+      });
+
+      test('show of the unreadable shelf still fails loudly with a clear error', async () => {
+        mkdirSync(join(dir, 'weird.md'));
+        const r = await run(['show', 'weird']);
+        expect(r.code).toBe(1);
+        expect(r.err).toMatch(/EISDIR/);
+      });
+
+      test('a prefix whose only match is the skipped shelf says so, not "no match"', async () => {
+        await run(['add', 'alpha', 'a lesson']);
+        mkdirSync(join(dir, 'weird.md'));
+        const r = await run(['list', 'weird']);
+        expect(r.code).toBe(0);
+        expect(r.err).toContain('skipped shelf "weird"');
+        expect(r.err).toContain('no readable notebooks matching "weird"');
+        expect(r.err).not.toContain('no notebooks matching "weird" — run');
+      });
+    });
+
+    describe('one unreadable shelf does not abort the stats inventory (issue #332)', () => {
+      test('stats exits 0, lists the healthy shelves, and reports the skipped shelf on stderr', async () => {
+        await run(['add', 'alpha', 'a lesson']);
+        mkdirSync(join(dir, 'weird.md'));
+        const r = await run(['stats']);
+        expect(r.code).toBe(0);
+        expect(r.out).toContain('alpha');
+        expect(r.out).not.toContain('weird');
+        expect(r.err).toContain('nb stats: skipped shelf "weird"');
+        expect(r.err).toContain('EISDIR');
+      });
+
+      test('--json stats carries the skipped field additively', async () => {
+        await run(['add', 'alpha', 'a lesson']);
+        const healthy = JSON.parse((await run(['stats', '--json'])).out);
+        expect(healthy.skipped).toEqual([]);
+        mkdirSync(join(dir, 'weird.md'));
+        const damaged = JSON.parse((await run(['stats', '--json'])).out);
+        expect(damaged.notebooks.map((n: { shelf: string }) => n.shelf)).toEqual(['alpha']);
+        expect(damaged.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
+      });
     });
 
     test('a zero-lesson, no-description notebook is hidden (phantom debris)', async () => {
@@ -1300,7 +2656,7 @@ describe('runNbCli', () => {
       const r = await run(['add', 'reviewer', '-', '--json'], 'piped with json\n');
       expect(r.code).toBe(0);
       expect(r.err).toBe('');
-      expect(JSON.parse(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1, created: true, id: entryId('piped with json') });
+      expect(JSON.parse(r.out)).toEqual({ added: true, reason: 'added', evicted: null, evictedAll: [], decayed: null, size: 1, created: true, id: entryId('piped with json') });
     });
   });
 
@@ -1318,7 +2674,7 @@ describe('runNbCli', () => {
       const r = await run(['add', 'patcher', 'prefer execFileSync', '--json']);
       expect(r.code).toBe(0);
       expect(r.err).toBe(''); // warnings/errors would be on stderr; there are none
-      expect(parseOnly(r.out)).toEqual({ added: true, reason: 'added', evicted: null, size: 1, created: true, id: entryId('prefer execFileSync') });
+      expect(parseOnly(r.out)).toEqual({ added: true, reason: 'added', evicted: null, evictedAll: [], decayed: null, size: 1, created: true, id: entryId('prefer execFileSync') });
     });
 
     test('add --json on a duplicate emits reason:"duplicate" and stays exit 0', async () => {
@@ -1332,7 +2688,7 @@ describe('runNbCli', () => {
       process.env.NB_MAX_CHARS = '25';
       const r = await run(['add', 'patcher', 'z'.repeat(60), '--json']);
       expect(r.code).toBe(1); // exit code unchanged from the text path
-      expect(parseOnly(r.out)).toMatchObject({ added: false, reason: 'too-long', length: 60 });
+      expect(parseOnly(r.out)).toMatchObject({ added: false, reason: 'too-long', length: 60, overflow: 35 }); // overflow = 60 - 25 (issue #239)
       const show = await run(['show', 'patcher']);
       expect(show.err).toContain('no notebook for shelf "patcher"'); // not stored → shelf never created (issue #166)
     });
@@ -1372,6 +2728,137 @@ describe('runNbCli', () => {
     test('without --json the English lines are unchanged', async () => {
       const r = await run(['add', 'patcher', 'plain text path']);
       expect(r.out).toBe('added — 1 line\n');
+    });
+  });
+
+  describe('--json completes the machine contract on throw + defaulted-flag paths (issue #266)', () => {
+    /** stdout must be exactly one parseable JSON object and nothing else. */
+    function parseOnly(out: string): unknown {
+      expect(out.endsWith('\n')).toBe(true);
+      expect(out.trimEnd().includes('\n')).toBe(false); // single line, no stray prose
+      return JSON.parse(out);
+    }
+
+    test('a bad_args throw emits {ok:false, command, error:{class,message}} on stdout, keeps the English line on stderr, exit 1', async () => {
+      const r = await run(['add', '--json']); // missing <shelf> (and <lesson>)
+      expect(r.code).toBe(1); // exit unchanged from the prose path
+      expect(parseOnly(r.out)).toEqual({
+        ok: false,
+        command: 'add',
+        error: { class: 'bad_args', message: 'missing <shelf> argument' },
+      });
+      // The human line is byte-for-byte what it always was (stderr is untouched).
+      expect(r.err).toBe('nb add: missing <shelf> argument\n');
+    });
+
+    test('a no_match throw carries error.class="no_match" so a supervisor branches on the class, not the prose', async () => {
+      // vote on a shelf that was never created → requireExistingShelf throws no_match.
+      const r = await run(['vote', 'ghostshelf', 'anything', '+1', '--json']);
+      expect(r.code).toBe(1);
+      const obj = parseOnly(r.out) as { ok: boolean; command: string; error: { class: string; message: string } };
+      expect(obj.ok).toBe(false);
+      expect(obj.command).toBe('vote');
+      expect(obj.error.class).toBe('no_match'); // the branch key — never regex-parsed prose
+      expect(obj.error.message).toContain('no notebook for shelf "ghostshelf"');
+      expect(r.err).toContain('no notebook for shelf "ghostshelf"'); // stderr still carries the prose
+    });
+
+    test('an ambiguous_selector throw is reported with its own class', async () => {
+      await run(['add', 'patcher', 'alpha one']);
+      await run(['add', 'patcher', 'alpha two']);
+      const r = await run(['vote', 'patcher', 'alpha', '+1', '--json']); // matches both
+      expect(r.code).toBe(1);
+      const obj = parseOnly(r.out) as { error: { class: string } };
+      expect(obj.error.class).toBe('ambiguous_selector');
+    });
+
+    test('an unknown subcommand emits a structured unknown_subcommand error on stdout and keeps exit 2', async () => {
+      const r = await run(['upvote', '--json']); // not a real command
+      expect(r.code).toBe(2); // distinct from the 1 a handled error returns
+      const obj = parseOnly(r.out) as { ok: boolean; command: string; error: { class: string; message: string } };
+      expect(obj.ok).toBe(false);
+      expect(obj.command).toBe('upvote');
+      expect(obj.error.class).toBe('unknown_subcommand');
+      expect(r.err).toMatch(/^nb: unknown command "upvote"\./); // bare `nb:` prefix unchanged
+    });
+
+    test('without --json the throw paths are byte-for-byte unchanged (no JSON leaks to stdout)', async () => {
+      const bad = await run(['add']); // missing <shelf>, no --json
+      expect(bad.code).toBe(1);
+      expect(bad.out).toBe(''); // stdout stays empty on the human path
+      expect(bad.err).toBe('nb add: missing <shelf> argument\n');
+
+      const unknown = await run(['upvote']); // unknown command, no --json
+      expect(unknown.code).toBe(2);
+      expect(unknown.out).toBe('');
+      expect(unknown.err).toMatch(/^nb: unknown command "upvote"\./);
+    });
+
+    test('a silently-defaulted --since adds a machine-readable warning on stderr under --json while stdout stays a pure StatsReport', async () => {
+      await run(['add', 'patcher', 'x']);
+      const r = await run(['stats', 'patcher', '--since', '7days', '--json']);
+      expect(r.code).toBe(0); // a defaulted flag is forgiving, not an error
+      const rep = JSON.parse(r.out) as { window: string }; // stdout is still ONE bare StatsReport
+      expect(rep.window).toBe('7d');
+      // The prose line is preserved (existing behavior/tests rely on it) AND a
+      // structured warning is now emitted so a --json consumer can branch on it.
+      expect(r.err).toContain("unrecognized --since '7days'");
+      const warnLine = r.err.trimEnd().split('\n').find((l) => l.startsWith('{'));
+      expect(warnLine).toBeDefined();
+      expect(JSON.parse(warnLine as string)).toEqual({
+        warning: { class: 'defaulted_flag', command: 'stats', flag: '--since', value: '7days', usedDefault: '7d' },
+      });
+    });
+
+    // One case per --limit call site of warnDefaultedFlag (search / list / stale),
+    // so a regression at any single site is caught (the helper has four callers;
+    // --since is covered above). Each asserts true channel separation: the bare
+    // result object stays alone on stdout and the structured warning is ONLY on
+    // stderr — `JSON.parse not.toThrow` alone would not prove the warning stayed
+    // off stdout.
+    test.each([
+      { command: 'search', argv: ['search', 'lint', '--limit', 'abc', '--json'], usedDefault: 50 }, // SEARCH_DEFAULT_LIMIT
+      { command: 'list', argv: ['list', '--limit', 'abc', '--json'], usedDefault: 50 }, // LIST_DEFAULT_LIMIT
+      { command: 'stale', argv: ['stale', 'patcher', '--limit', 'abc', '--json'], usedDefault: 10 }, // STALE_DEFAULT_LIMIT
+    ])('a silently-defaulted --limit is flagged under --json for $command (stdout stays a pure result)', async ({ command, argv, usedDefault }) => {
+      await run(['add', 'patcher', 'run lint before done']);
+      const r = await run(argv);
+      expect(r.code).toBe(0);
+      expect(() => JSON.parse(r.out)).not.toThrow(); // stdout is the bare result object
+      expect(r.out.trimEnd().includes('\n')).toBe(false); // exactly one object on stdout
+      expect(r.out).not.toContain('defaulted_flag'); // channel separation: the warning never leaks to stdout
+      expect(r.err).toContain("unrecognized --limit 'abc'"); // prose preserved on stderr
+      const warnLine = r.err.trimEnd().split('\n').find((l) => l.startsWith('{'));
+      expect(JSON.parse(warnLine as string)).toEqual({
+        warning: { class: 'defaulted_flag', command, flag: '--limit', value: 'abc', usedDefault },
+      });
+    });
+
+    test('a generic (non-NbError) throw — e.g. an EACCES-style write failure — is reported as class "other"', async () => {
+      // The EACCES path the issue names is any throw the catch classifies as
+      // `other`. Force a deterministic, cross-platform write failure: point NB_DIR
+      // under a regular file so the notebook mkdir fails with ENOTDIR (a plain
+      // Error, not an NbError). Under --json it must still yield a structured
+      // error object on stdout keyed `other`, exit 1.
+      const blocker = join(dir, 'not-a-dir');
+      writeFileSync(blocker, 'x');
+      process.env.NB_DIR = join(blocker, 'nb'); // mkdir under a file → ENOTDIR
+      const r = await run(['add', 'patcher', 'a lesson', '--json']);
+      expect(r.code).toBe(1);
+      const obj = parseOnly(r.out) as { ok: boolean; command: string; error: { class: string } };
+      expect(obj.ok).toBe(false);
+      expect(obj.command).toBe('add');
+      expect(obj.error.class).toBe('other'); // a non-NbError classifies as other, never guessed from prose
+      expect(r.err).toMatch(/^nb add: /); // the English line still goes to stderr
+    });
+
+    test('WITHOUT --json a defaulted flag stays a single prose line — no JSON warning leaks to stderr', async () => {
+      await run(['add', 'patcher', 'x']);
+      const r = await run(['stats', 'patcher', '--since', 'nope']); // no --json
+      expect(r.code).toBe(0);
+      expect(r.err).toContain("unrecognized --since 'nope'");
+      expect(r.err.trimEnd().split('\n')).toHaveLength(1); // exactly one line, no structured warning
+      expect(r.err).not.toContain('defaulted_flag');
     });
   });
 
@@ -1522,6 +3009,31 @@ describe('runNbCli', () => {
       expect(row.outcome).toBe('');
       expect(row.session).toBe('');
     });
+
+    // Hermeticity regression (issue #230): an ambient NB_SESSION — exported by
+    // the host before the suite started, as agents and CI-adjacent tooling do —
+    // must NOT leak into a test that assumes a blank session. `beforeAll` sets
+    // it to mimic that ambient value; the clean-baseline `beforeEach` clears it,
+    // so a blank-session assertion still holds. Remove the clearing and this
+    // test reproduces the original spurious failure.
+    describe('with an ambient NB_SESSION pre-set before the suite runs', () => {
+      const PRESET = 'ambient-session-from-host';
+      let savedSession: string | undefined;
+      beforeAll(() => {
+        savedSession = process.env.NB_SESSION;
+        process.env.NB_SESSION = PRESET;
+      });
+      afterAll(() => {
+        if (savedSession === undefined) delete process.env.NB_SESSION;
+        else process.env.NB_SESSION = savedSession;
+      });
+
+      test('a read-only command still logs a blank session (no ambient leak)', async () => {
+        await run(['show', 'patcher']);
+        const [row] = parseUsage(dir);
+        expect(row.session).toBe('');
+      });
+    });
   });
 
   describe('split (issue #68)', () => {
@@ -1656,7 +3168,8 @@ describe('nb move (score-preserving cross-shelf move, issue #103)', () => {
     // the score survived the move — `show` on the target prints [+2], not the +1 add floor
     const show = await run(['show', 'broad']);
     expect(show.out).toMatch(/\[\+2\]\s+use execFileSync with array args/);
-    expect((await run(['show', 'thin'])).out).toContain('is empty');
+    // the undescribed source emptied by the move is reaped (issue #355), not left as a 0-byte file
+    expect((await run(['show', 'thin'])).err).toContain('no notebook for shelf "thin"');
   });
 
   test('--json emits a MoveResult with the preserved score', async () => {
@@ -1774,6 +3287,125 @@ describe('settleCliExit', () => {
     expect(two.exitCode).toBe(2);
     expect(two.err).toBe('');
   });
+});
+
+// A reader that closes a pipe early (`nb show <shelf> | head -1`, `| grep -q`,
+// quitting a pager) makes the next stdout write fail with EPIPE. Without a guard
+// that is an uncaught async error — a `write EPIPE` stack trace on stderr and an
+// abnormal exit — which is noise for interactive use and trips piping scripts.
+// `installPipeGuards` turns a broken pipe into a clean exit while keeping any
+// other stream error loud. The unit tests drive the handler with a fake emitter
+// (no need to tear down the runner's real stdout); the end-to-end test proves
+// the whole thing against a real `| head -1` pipe on the built CLI.
+describe('installPipeGuards — stdout broken-pipe guard (issue #246)', () => {
+  const CLI_JS = join(REPO_ROOT, 'dist', 'cli.js');
+  const BASH_PRESENT = ((): boolean => {
+    try {
+      execFileSync('bash', ['--version'], { stdio: 'ignore' });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  test('EPIPE on a guarded stream exits cleanly and is not re-thrown', () => {
+    const stream = new EventEmitter();
+    let cleanExits = 0;
+    installPipeGuards([stream], () => {
+      cleanExits += 1;
+    });
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    // A listener is present, so emit() routes to our handler rather than
+    // re-throwing; the benign broken pipe must NOT propagate as an error.
+    expect(() => stream.emit('error', epipe)).not.toThrow();
+    expect(cleanExits).toBe(1); // routed to the clean-exit path exactly once
+  });
+
+  test('a non-EPIPE stream error still surfaces loudly (re-thrown, not swallowed)', () => {
+    const stream = new EventEmitter();
+    let cleanExits = 0;
+    installPipeGuards([stream], () => {
+      cleanExits += 1;
+    });
+    const eacces = Object.assign(new Error('write EACCES'), { code: 'EACCES' });
+    // A real write failure must keep throwing — the guard is scoped to EPIPE so
+    // genuine errors are never silently turned into a success exit.
+    expect(() => stream.emit('error', eacces)).toThrow(/EACCES/);
+    expect(cleanExits).toBe(0); // the clean-exit path was NOT taken
+  });
+
+  test('every passed stream is guarded (stdout and stderr both covered)', () => {
+    const a = new EventEmitter();
+    const b = new EventEmitter();
+    let cleanExits = 0;
+    installPipeGuards([a, b], () => {
+      cleanExits += 1;
+    });
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    expect(() => a.emit('error', epipe)).not.toThrow();
+    expect(() => b.emit('error', epipe)).not.toThrow();
+    expect(cleanExits).toBe(2);
+  });
+
+  test('defaults to guarding BOTH process.stdout and process.stderr', () => {
+    // No-args call exercises the default stream list — the real entrypoint wiring
+    // lives under `/* c8 ignore */`, so without this a regression that dropped
+    // `process.stderr` from the default would go uncaught. Record the pre-existing
+    // listeners, install, assert exactly one new `error` listener landed on each
+    // stream, then remove precisely those so the default `process.exit()` handler
+    // can never fire during the rest of the suite.
+    const stdoutBefore = process.stdout.listeners('error');
+    const stderrBefore = process.stderr.listeners('error');
+    installPipeGuards();
+    const added = (s: NodeJS.EventEmitter, before: unknown[]): unknown[] =>
+      s.listeners('error').filter((l) => !before.includes(l));
+    try {
+      expect(added(process.stdout, stdoutBefore)).toHaveLength(1);
+      expect(added(process.stderr, stderrBefore)).toHaveLength(1);
+    } finally {
+      for (const l of added(process.stdout, stdoutBefore)) {
+        process.stdout.removeListener('error', l as (...a: unknown[]) => void);
+      }
+      for (const l of added(process.stderr, stderrBefore)) {
+        process.stderr.removeListener('error', l as (...a: unknown[]) => void);
+      }
+    }
+  });
+
+  // End-to-end acceptance (issue #246): the real built CLI piped into `head -1`.
+  // Needs bash + the built dist/cli.js (pretest builds it); `skipIf` so a host
+  // missing either shows the skip in the report rather than a silent green pass.
+  test.skipIf(!BASH_PRESENT || !existsSync(CLI_JS))(
+    '`nb show <shelf> | head -1` exits 0 with no EPIPE on stderr',
+    () => {
+      // The shelf must render larger than the OS pipe buffer (~64 KiB) so the
+      // single `show` write can't complete before `head -1` reads its line and
+      // closes the pipe — only then does the deferred flush hit EPIPE and exercise
+      // the guard. A tiny shelf would be fully buffered and never trigger it. Write
+      // the shelf file directly (storage format `<score>\t<text>`) to keep it fast.
+      const bigDir = mkdtempSync(join(tmpdir(), 'agent-notebook-epipe-'));
+      try {
+        const lines: string[] = [];
+        for (let i = 0; i < 3000; i++) lines.push(`+1\t#${i} ${'x'.repeat(180)}`);
+        writeFileSync(join(bigDir, 'big.md'), lines.join('\n') + '\n');
+
+        // `set -o pipefail` so the pipeline's status reflects nb's OWN exit (not
+        // head's 0): an unguarded EPIPE crash would make nb exit non-zero and turn
+        // this status to 1. nb's stderr propagates through the inherited fd.
+        const r = spawnSync(
+          'bash',
+          ['-c', `set -o pipefail; node ${JSON.stringify(CLI_JS)} show big | head -1`],
+          { env: { ...process.env, NB_DIR: bigDir }, encoding: 'utf8' },
+        );
+
+        expect(r.stderr).not.toMatch(/EPIPE/); // no uncaught broken-pipe crash
+        expect(r.status).toBe(0); // clean exit, not 1 from an uncaught EPIPE error
+        expect(r.stdout.split('\n').filter(Boolean).length).toBe(1); // head got its one line
+      } finally {
+        rmSync(bigDir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('nb describe (issue #70)', () => {
@@ -1975,6 +3607,38 @@ describe('nb search — the demoted keyword fallback (issue #82)', () => {
     await run(['add', 'reviewer', 'a lesson about locks']);
     const r = await run(['search', 'locks']);
     expect(r.out.toLowerCase()).toContain('secondary');
+  });
+
+  test('an unreadable shelf is skipped and reported, not fatal (issue #332)', async () => {
+    await run(['add', 'alpha', 'a lesson about lint']);
+    await run(['add', 'beta', 'another lesson about lint']);
+    mkdirSync(join(dir, 'weird.md'));
+    const r = await run(['search', 'lint']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('alpha');
+    expect(r.out).toContain('beta');
+    expect(r.err).toContain('skipped shelf "weird"');
+    expect(r.err).toContain('EISDIR');
+  });
+
+  test('a skip-caused no-match is not logged as a coverage gap (issue #332)', async () => {
+    // A no-match that exists only because a shelf was skipped must not key the
+    // `failed-search → add` gap-sensor (which pairs on outcome `no-match`).
+    await run(['add', 'alpha', 'a lesson about lint']);
+    mkdirSync(join(dir, 'weird.md'));
+    await run(['search', 'nostringmatchesanywhere']);
+    const row = parseUsage(dir).filter((r) => r.command === 'search').at(-1)!;
+    expect(row.outcome).not.toBe('no-match');
+    expect(row.outcome).toBe('skipped');
+  });
+
+  test('--json search omits skipped on a healthy store and includes it otherwise (issue #332)', async () => {
+    await run(['add', 'alpha', 'a lesson about lint']);
+    const healthy = JSON.parse((await run(['search', 'lint', '--json'])).out);
+    expect(healthy).not.toHaveProperty('skipped');
+    mkdirSync(join(dir, 'weird.md'));
+    const damaged = JSON.parse((await run(['search', 'lint', '--json'])).out);
+    expect(damaged.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
   });
 
   test('AND by default; --any switches to OR', async () => {
@@ -2389,6 +4053,22 @@ describe('HELP ↔ dispatch drift guard (issue #131)', () => {
     expect(orphans).toEqual([]);
   });
 
+  // The spec (docs/requirements.md FR-CLI-001) is the authoritative command
+  // list, so it must name every dispatched command too (issue #340). Matches on
+  // command NAMES as whole tokens within the FR-CLI-001 paragraph, not prose.
+  test('every dispatched command is named in the FR-CLI-001 paragraph of requirements.md', () => {
+    const spec = readFileSync(join(REPO_ROOT, 'docs', 'requirements.md'), 'utf8');
+    const start = spec.indexOf('**FR-CLI-001');
+    expect(start).not.toBe(-1);
+    const end = spec.indexOf('<a id="fr-cli-002">', start);
+    expect(end).toBeGreaterThan(start);
+    const para = spec.slice(start, end);
+    const missing = dispatched.filter(
+      (cmd) => !new RegExp('(^|[^\\w-])' + cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w-])').test(para),
+    );
+    expect(missing).toEqual([]);
+  });
+
   // Anti-vacuous-pass anchor: if the `case` parser silently returned an empty set
   // the equality guards above could pass trivially, so pin that the derived
   // dispatched set actually captured the full known current command set
@@ -2472,6 +4152,239 @@ describe('closestCommand (did-you-mean, issue #171)', () => {
     for (const cmd of KNOWN_COMMANDS) {
       expect((await run([cmd])).code).not.toBe(2);
     }
+  });
+});
+
+describe('closestShelf (shelf did-you-mean, issue #200)', () => {
+  test('a one-edit typo resolves to the nearest existing shelf', () => {
+    expect(closestShelf('reviewr', ['patcher', 'reviewer'])).toBe('reviewer'); // deletion
+    expect(closestShelf('patchr', ['patcher', 'reviewer'])).toBe('patcher'); // deletion
+    expect(closestShelf('ptacher', ['patcher', 'reviewer'])).toBe('patcher'); // transposition (two edits)
+  });
+
+  test('the prefix branch resolves an abbreviation only at >= 3 chars', () => {
+    // `rev` is too far for an edit-distance match (distance 5 to `reviewer`), so
+    // ONLY the prefix branch can resolve it — pinning that the branch fires.
+    expect(closestShelf('rev', ['reviewer', 'patcher'])).toBe('reviewer');
+    // A 2-char input is below the length gate AND too far for an edit match, so
+    // it must NOT resolve — guards `>= 3` against a loosening mutation (`>= 1`),
+    // which would wrongly yield `reviewer` from its `re` prefix.
+    expect(closestShelf('re', ['reviewer', 'patcher'])).toBeUndefined();
+  });
+
+  test('a far-off, too-short, or empty-set input yields no suggestion', () => {
+    expect(closestShelf('frobnicate', ['patcher', 'reviewer'])).toBeUndefined();
+    expect(closestShelf('x', ['ab', 'cd'])).toBeUndefined(); // a lone char must not match
+    expect(closestShelf('anything', [])).toBeUndefined(); // no shelves exist yet
+    expect(closestShelf('', ['patcher'])).toBeUndefined();
+  });
+
+  test('the edit-distance budget is capped at <= 2 — a distance-3 input does not resolve', () => {
+    // `reviewing` is edit distance 3 from `reviewer` (long enough that the
+    // length-swamp guard passes) and is NOT a prefix of any candidate, so ONLY
+    // the `<= 2` gate can reject it. This pins the UPPER bound against a
+    // loosening mutation (`<= 2` → `<= 3`), which would wrongly yield `reviewer`.
+    // Mirrors the prefix-branch negative above, applied to the Levenshtein branch.
+    expect(closestShelf('reviewing', ['patcher', 'reviewer'])).toBeUndefined();
+  });
+
+  test('a match whose distance equals the input length does not resolve (length-swamp guard)', () => {
+    // `xy` is edit distance 2 from both `ab` and `cd` — i.e. distance === length.
+    // The strict `bestDist < needle.length` guard must reject it; this pins that
+    // strict `<` against a `<=` mutation, which would wrongly yield `ab`.
+    expect(closestShelf('xy', ['ab', 'cd'])).toBeUndefined();
+  });
+
+  test('an existing shelf name is not "suggested" as a correction of itself', () => {
+    expect(closestShelf('patcher', ['patcher', 'reviewer'])).toBeUndefined();
+  });
+
+  test('ties resolve to the earlier (already sorted) candidate', () => {
+    // `listShelves` returns a sorted list; `ax` sits one edit from both `aa` and
+    // `az`, and the strict `<` keeps the first — so the suggestion is stable.
+    expect(closestShelf('ax', ['aa', 'az'])).toBe('aa');
+  });
+});
+
+// Issue #200 — a mutation (vote/rm/split/move) on a shelf that was never created
+// must read as a typo ("no notebook"), with a nearest-shelf did-you-mean, NOT as
+// a real empty notebook ("is empty"). It extends the #166 exists-vs-empty split
+// (previously `show`-only) to the mutating commands, reusing the #171
+// closest-match pattern over shelf names.
+describe('mutations distinguish a missing shelf from an empty one (issue #200)', () => {
+  test('vote on a never-created shelf says "no notebook", not "is empty", and exits 1', async () => {
+    const r = await run(['vote', 'missingshelf', 'x', '+1']);
+    expect(r.code).toBe(1); // a mutation on nothing is still an error (unlike read-only `show`)
+    expect(r.err).toContain('no notebook for shelf "missingshelf"');
+    expect(r.err).not.toContain('is empty'); // the misleading message is gone
+  });
+
+  test('vote names the nearest existing shelf when one is close (did-you-mean)', async () => {
+    await run(['add', 'patcher', 'prefer execFileSync, array args']); // a real shelf to be near
+    const r = await run(['vote', 'pather', 'x', '+1']); // typo of `patcher`
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('no notebook for shelf "pather"');
+    expect(r.err).toContain('did you mean "patcher"?');
+  });
+
+  test('no shelf is suggested when none is close — the reader is pointed at `nb list`', async () => {
+    await run(['add', 'patcher', 'some lesson']); // exists but nowhere near the typo
+    const r = await run(['vote', 'zzzzzz', 'x', '+1']);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('no notebook for shelf "zzzzzz"');
+    expect(r.err).not.toContain('did you mean');
+    expect(r.err).toContain('nb list'); // still points the reader at how to find real shelves
+  });
+
+  test('an existing-but-empty shelf still reports "is empty" — the #166 distinction preserved', async () => {
+    await run(['describe', 'drafts', 'where half-baked lessons go']); // creates the file, no lessons
+    const r = await run(['vote', 'drafts', 'x', '+1']);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('notebook for shelf "drafts" is empty'); // the core empty throw still fires
+    expect(r.err).not.toContain('no notebook for shelf'); // NOT the missing-shelf path
+  });
+
+  test('rm/split/move on an existing-but-empty shelf also still report "is empty", not "no notebook"', async () => {
+    // The guard is shared, but pin every command so a future change that wrongly
+    // intercepted an existing-empty shelf for rm/split/move (not just vote) is
+    // caught. Each must fall through to the core "is empty" throw.
+    await run(['describe', 'drafts', 'where half-baked lessons go']); // existing file, no lessons
+    for (const argv of [
+      ['rm', 'drafts', 'x'],
+      ['split', 'drafts', 'x', 'half one', 'half two'],
+      ['move', 'drafts', 'target', 'x'], // `drafts` is the (empty) SOURCE
+    ]) {
+      const r = await run(argv);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('is empty'); // core empty throw, not the missing-shelf path
+      expect(r.err).not.toContain('no notebook for shelf');
+    }
+  });
+
+  test('rm and split on a never-created shelf take the same "no notebook" path', async () => {
+    const rm = await run(['rm', 'missingshelf', 'x']);
+    expect(rm.code).toBe(1);
+    expect(rm.err).toContain('no notebook for shelf "missingshelf"');
+    expect(rm.err).not.toContain('is empty');
+
+    const split = await run(['split', 'missingshelf', 'x', 'half one', 'half two']);
+    expect(split.code).toBe(1);
+    expect(split.err).toContain('no notebook for shelf "missingshelf"');
+    expect(split.err).not.toContain('is empty');
+  });
+
+  test('move guards the SOURCE shelf (never-created) but still auto-creates a new target', async () => {
+    // Missing source → the typo path.
+    const missingSrc = await run(['move', 'missingsrc', 'target', 'x']);
+    expect(missingSrc.code).toBe(1);
+    expect(missingSrc.err).toContain('no notebook for shelf "missingsrc"');
+    expect(missingSrc.err).not.toContain('is empty');
+
+    // A real source + a never-created target still succeeds: move creates the
+    // target like `add`, so the guard must NOT block a missing target.
+    await run(['add', 'patcher', 'relocate me']);
+    const ok = await run(['move', 'patcher', 'brandnewtarget', 'relocate me']);
+    expect(ok.code).toBe(0);
+    expect((await run(['show', 'brandnewtarget'])).out).toContain('relocate me');
+  });
+
+  test('a real-shelf mutation is unaffected — the guard only fires on a missing shelf', async () => {
+    await run(['add', 'patcher', 'alpha lesson']);
+    const r = await run(['vote', 'patcher', 'alpha', '+1']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('[+2] alpha lesson'); // vote landed and scored, exactly as before
+    expect(r.err).toBe('');
+  });
+});
+
+// Issue #341: `stats` takes a shelf operand but (unlike the mutations, #200, and
+// `show`, #166) never validated it, so a typo produced a plausible, empty report
+// indistinguishable from a real shelf with no recent activity — a wrong
+// conclusion in a command meant to surface unused shelves. The fix is advisory
+// only: one stderr note (with a did-you-mean when close), stdout/exit unchanged.
+describe('stats names a shelf that does not exist (issue #341)', () => {
+  test('a typo prints a did-you-mean stderr note while stdout stays the normal report', async () => {
+    await run(['add', 'patcher', 'some lesson']); // a real shelf to be near
+    const r = await run(['stats', 'pather']); // typo of `patcher`
+    expect(r.code).toBe(0); // advisory only — never an error
+    expect(r.err).toContain('nb stats: no shelf named "pather"');
+    expect(r.err).toContain('did you mean "patcher"?');
+    // stdout is byte-identical to today: the report still renders normally.
+    expect(r.out).toContain('nb usage — shelf pather, window 7d');
+  });
+
+  test('no suggestion when no shelf is close, but the missing-shelf note still prints', async () => {
+    await run(['add', 'patcher', 'some lesson']);
+    const r = await run(['stats', 'zzzzzz']);
+    expect(r.code).toBe(0);
+    expect(r.err).toContain('nb stats: no shelf named "zzzzzz"');
+    expect(r.err).not.toContain('did you mean');
+  });
+
+  test('an existing shelf prints no note', async () => {
+    await run(['add', 'patcher', 'some lesson']);
+    const r = await run(['stats', 'patcher']);
+    expect(r.code).toBe(0);
+    expect(r.err).toBe('');
+  });
+
+  test('a retired shelf with historical rows is not flagged (only "no rows" is a typo signal)', async () => {
+    await run(['add', 'retired', 'an old lesson']); // leaves a usage row under `retired`
+    rmSync(join(dir, 'retired.md')); // shelf file removed, history remains
+    const r = await run(['stats', 'retired']);
+    expect(r.code).toBe(0);
+    expect(r.err).not.toContain('no shelf named');
+    expect(r.out).toContain('nb usage — shelf retired'); // historical call is still reported
+  });
+
+  test('the note repeats on every `stats <typo>` call, not just the first (stats logs its own row)', async () => {
+    await run(['add', 'patcher', 'some lesson']);
+    for (let i = 0; i < 3; i++) {
+      const r = await run(['stats', 'pather']);
+      expect(r.code).toBe(0);
+      expect(r.err).toContain('nb stats: no shelf named "pather" — did you mean "patcher"?');
+    }
+  });
+
+  test('a retired shelf still gets no note after repeated stats calls', async () => {
+    await run(['add', 'retired', 'an old lesson']);
+    rmSync(join(dir, 'retired.md'));
+    for (let i = 0; i < 3; i++) {
+      const r = await run(['stats', 'retired']);
+      expect(r.err).not.toContain('no shelf named');
+    }
+  });
+
+  test('--json stdout stays a single valid StatsReport object while the note goes to stderr', async () => {
+    await run(['add', 'patcher', 'some lesson']);
+    const r = await run(['stats', 'pather', '--json']);
+    expect(r.code).toBe(0);
+    const rep = JSON.parse(r.out) as { window: string; totalCalls: number };
+    expect(rep.window).toBe('7d');
+    expect(typeof rep.totalCalls).toBe('number');
+    expect(r.err).toContain('nb stats: no shelf named "pather"');
+  });
+});
+
+// Issue #335: lessons and descriptions are free text printed to a terminal and
+// injected into agent context, so no raw control / bidi / zero-width byte may reach
+// stdout from `show`, `list` or `search` — including from a shelf file written
+// before the sanitizer existed.
+describe('printed output carries no raw control bytes (issue #335)', () => {
+  // eslint-disable-next-line no-control-regex
+  const bad = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/;
+
+  test('show/list/search never print an ESC, even for a pre-existing shelf file', async () => {
+    await run(['add', 's', 'ansi \u001b[31mred\u001b[0m \u001b]0;title\u0007 injected']);
+    await run(['describe', 's', 'desc \u001b[31mred']);
+    writeFileSync(join(dir, 'old.md'), '+1\tlegacy \u001b[31mred\u001b[0m \u200bz\u202ew line\n', 'utf-8');
+    for (const args of [['show', 's'], ['show', 'old'], ['list'], ['search', 'red'], ['show', 'old', '--json']]) {
+      const r = await run(args);
+      expect(r.code).toBe(0);
+      expect(r.out).not.toMatch(bad);
+      expect(r.err).not.toMatch(bad);
+    }
+    expect((await run(['show', 'old'])).out).toContain('legacy [31mred[0m zw line');
   });
 });
 
@@ -2603,5 +4516,144 @@ describe('nb completion (shell completion, issue #187)', () => {
       dependencies?: Record<string, string>;
     };
     expect(pkg.dependencies ?? {}).toEqual({});
+  });
+});
+
+describe('readBoundedStream (issue #304)', () => {
+  async function* gen(chunks: string[], seen: { n: number }) {
+    for (const c of chunks) {
+      seen.n++;
+      yield Buffer.from(c);
+    }
+  }
+
+  test('a normal single line (with trailing newline) is returned unchanged', async () => {
+    const seen = { n: 0 };
+    expect(await readBoundedStream(gen(['run lint ', 'first\n'], seen), 100)).toBe('run lint first\n');
+  });
+
+  test('an endless newline-less stream throws too_long without draining it', async () => {
+    const seen = { n: 0 };
+    async function* endless() {
+      for (;;) {
+        seen.n++;
+        yield Buffer.alloc(1024, 'a');
+      }
+    }
+    await expect(readBoundedStream(endless(), 4096)).rejects.toMatchObject({ errorClass: 'too_long' });
+    expect(seen.n).toBe(5);
+  });
+
+  test('stops reading once a second line appears (no further chunks pulled)', async () => {
+    const seen = { n: 0 };
+    const out = await readBoundedStream(gen(['one\n', 'two', 'three', 'four'], seen), 100);
+    expect(out).toBe('one\ntwo');
+    expect(seen.n).toBe(2);
+  });
+
+  test('a CR split from its LF across chunks is still a single line', async () => {
+    const seen = { n: 0 };
+    expect(await readBoundedStream(gen(['one\r', '\n'], seen), 100)).toBe('one\r\n');
+  });
+});
+
+describe('a git merge-conflicted shelf warns on reads and refuses mutations (issue #333)', () => {
+  // A `git merge`/`pull` conflict on a git-versioned notebook leaves `<<<<<<<`,
+  // `=======` and `>>>>>>>` lines in `<shelf>.md`. Reads must keep working (the
+  // lessons print as before, plus one stderr warning) and every mutation must
+  // refuse with exit 1 and leave the file byte-identical — otherwise the next
+  // write would bake the markers in as real lessons and erase the conflict.
+  const MARKED = '+1\tfoo lesson\n<<<<<<< HEAD\n+2\tmine\n=======\n+3\ttheirs\n>>>>>>> branch\n';
+  const seed = (shelf = 'g'): string => {
+    const file = join(dir, `${shelf}.md`);
+    writeFileSync(file, MARKED);
+    return file;
+  };
+
+  test('show prints the stored lessons plus one stderr warning; stdout is unchanged and exit 0', async () => {
+    seed();
+    const r = await run(['show', 'g']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('foo lesson');
+    expect(r.out).toContain('<<<<<<< HEAD');
+    expect(r.err).toContain('shelf "g"');
+    expect(r.err).toContain('<<<<<<< HEAD');
+    expect(r.err.split('\n').filter((l) => l.includes('merge-conflict marker'))).toHaveLength(1);
+  });
+
+  test('show --json stdout is unchanged and valid, warning on stderr', async () => {
+    seed();
+    const r = await run(['show', 'g', '--json']);
+    expect(r.code).toBe(0);
+    const parsed = JSON.parse(r.out);
+    expect(parsed.entries.map((e: { text: string }) => e.text)).toContain('foo lesson');
+    expect(r.err).toContain('merge-conflict marker');
+  });
+
+  test('list / search / stale still print, warn once, and exit 0', async () => {
+    seed();
+    await run(['add', 'ok', 'a clean lesson']);
+    for (const argv of [['list'], ['search', 'foo'], ['stale', 'g']]) {
+      const r = await run(argv);
+      expect(r.code).toBe(0);
+      expect(r.err).toContain('shelf "g"');
+      expect(r.err).toContain('merge-conflict marker');
+    }
+    const list = await run(['list', '--json']);
+    const parsed = JSON.parse(list.out);
+    expect(parsed.conflicts).toEqual([{ shelf: 'g', marker: '<<<<<<< HEAD' }]);
+    expect(parsed.rows.map((x: { shelf: string }) => x.shelf)).toContain('g');
+    expect(list.err).toContain('merge-conflict marker');
+    const search = await run(['search', 'foo', '--json']);
+    expect(JSON.parse(search.out).conflicts).toEqual([{ shelf: 'g', marker: '<<<<<<< HEAD' }]);
+    expect(search.err).toContain('shelf "g"');
+    expect(search.err).toContain('merge-conflict marker');
+  });
+
+  test('list --json stays byte-identical on a healthy store (no conflicts field)', async () => {
+    await run(['add', 'ok', 'a clean lesson']);
+    const r = await run(['list', '--json']);
+    expect(JSON.parse(r.out)).not.toHaveProperty('conflicts');
+    expect(Object.keys(JSON.parse(r.out))).toEqual(['dir', 'total', 'rows']);
+  });
+
+  test('a mid-line ======= or a tab-less hand-edited line is not a conflict', async () => {
+    writeFileSync(join(dir, 'clean.md'), 'a hand-edited line\n1\ta lesson with ======= inside\n');
+    const show = await run(['show', 'clean']);
+    expect(show.code).toBe(0);
+    expect(show.err).not.toContain('merge-conflict');
+    const add = await run(['add', 'clean', 'new one']);
+    expect(add.code).toBe(0);
+  });
+
+  test('every mutation exits 1, names the shelf and marker, and leaves the file byte-identical', async () => {
+    const file = seed();
+    writeFileSync(join(dir, 'h.md'), '+1\tother lesson\n');
+    const before = readFileSync(file, 'utf-8');
+    const id = entryId('foo lesson');
+    const id2 = entryId('mine');
+    const mutations: string[][] = [
+      ['add', 'g', 'new one'],
+      ['vote', 'g', id, '+1'],
+      ['merge', 'g', id, id2, 'merged'],
+      ['split', 'g', id, 'a', 'b'],
+      ['rm', 'g', id],
+      ['move', 'h', 'g', entryId('other lesson')],
+      ['describe', 'g', 'a description'],
+    ];
+    for (const argv of mutations) {
+      const r = await run(argv);
+      expect(r.code, argv.join(' ')).toBe(1);
+      expect(r.err).toContain('shelf "g"');
+      expect(r.err).toContain('merge-conflict marker');
+      expect(readFileSync(file, 'utf-8')).toBe(before);
+    }
+  });
+
+  test('the refusal is logged with errorClass corrupt (issue #333)', async () => {
+    seed();
+    const r = await run(['add', 'g', 'new one']);
+    expect(r.code).toBe(1);
+    expect(parseUsage(dir).at(-1)!.errorClass).toBe('corrupt');
   });
 });

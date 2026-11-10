@@ -24,6 +24,26 @@ security or data-sovereignty constraints, see the
 These scripts are examples to adapt, not a published API — they are intentionally
 short and commented so you can read and modify them. Each is standalone.
 
+## Environment knobs
+
+Each script reads the environment variable(s) it needs; the knob is documented
+where the script that reads it lives. A CI drift guard
+(`src/env-docs.test.ts`) fails the build if a shipped example script reads an
+`NB_*` variable that no shipped doc mentions, so a new knob can't ship
+undocumented (issue #207, extending the `src/*.ts` guard of #164).
+
+| Var | Default | Read by | Purpose |
+|---|---|---|---|
+| `NB_DIR` | `~/.agent-notebook/notebooks` | all | the notebooks (and backup/history) directory |
+| `NB_BACKUP_PUSH_TIMEOUT` | `300` (seconds) | [`nb-backup.sh`](nb-backup.sh) | caps the `git push` (any `timeout` duration, e.g. `5m`; `0` disables) so a hung credential/askpass prompt can't hold the single-instance lock forever and wedge later runs — needs `timeout` (GNU/coreutils) |
+| `NB_BACKUP_GIT_LOCK_WAIT` | `12` (seconds) | [`nb-backup.sh`](nb-backup.sh) | how long the straggler commit waits for the git-wrapper's `.nb-git.lock` before skipping the commit this run (a lock older than 30 s is treated as a crashed holder's and reclaimed) |
+| `NB_GIT_AUTOCOMMIT` | `1` (on) | [`nb-git-wrapper.mjs`](nb-git-wrapper.mjs) | set to `0` to skip the auto-commit for a single `nb` call (e.g. a scripted bulk edit you'll commit yourself) |
+| `NB_MAX_LINES` | `50` | [`nb-janitor.mjs`](nb-janitor.mjs) | the per-shelf line cap the diagnostics report against (mirrors the package's own [`NB_MAX_LINES`](../README.md#other-environment-variables)) |
+| `NB_SESSION` | — | [`nb-janitor.mjs`](nb-janitor.mjs) | the session id that unlocks per-session [surfacing metrics](../README.md#surfacing-metrics) |
+
+The `hooks/claude-code/` scripts (`NB_BIN`, `NB_RETRO_TTL_DAYS`, `NB_SESSION`)
+are documented in their own [README](hooks/claude-code/README.md#configuration-environment).
+
 ## Status of these examples
 
 - **Claude Code is the primary target** — the [`hooks/claude-code/`](hooks/claude-code/)

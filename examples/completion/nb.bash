@@ -17,14 +17,14 @@ _nb_complete() {
 
   # Position 1: the subcommand itself.
   if [ "$cword" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "show add vote merge split rm move describe search stats path config completion list ls shelves roles help version" -- "$cur") )
+    COMPREPLY=( $(compgen -W "show stale add vote merge split rm move describe search stats path config completion list ls shelves roles help version" -- "$cur") )
     return 0
   fi
 
   # Later positions: offer shelf names only where an operand is a shelf.
   local cmd="${COMP_WORDS[1]}"
   case "$cmd" in
-    show|add|vote|merge|split|rm|describe|stats|path)
+    show|stale|add|vote|merge|split|rm|describe|stats|path)
       [ "$cword" -eq 2 ] || return 0 ;;
     move)
       [ "$cword" -eq 2 ] || [ "$cword" -eq 3 ] || return 0 ;;

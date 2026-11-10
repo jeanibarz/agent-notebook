@@ -1,0 +1,38 @@
+name: Coverage
+
+# On-demand and at-release coverage reporting (issue #233). This is deliberately
+# NOT wired into pull_request / push: the per-PR pipeline (ci.yml) stays fast and
+# non-flaky with no coverage step and no coverage threshold gate. Run it from the
+# Actions tab (workflow_dispatch) or let a published release trigger it. It only
+# uploads the V8 coverage report as an artifact — it never gates a merge.
+on:
+  workflow_dispatch: {}
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:coverage
+
+      # Upload whatever report was produced, even if a test failed, so the run is
+      # still useful for inspecting uncovered lines.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: error

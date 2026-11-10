@@ -156,6 +156,8 @@ hash -r; nb add build-and-test "first versioned lesson"
 git -C "$(nb path)" log --oneline      # → "nb add build-and-test"
 ```
 
+The wrapper (like `nb` itself and the other `examples/` helpers) expands a leading `~` in `NB_DIR`, so `NB_DIR=~/notes` also works when set in `settings.json` `env`, systemd or cron.
+
 The wrapper is fail-open: if git is missing or a hook hangs, the lesson is still
 written and the commit is skipped (the backup job sweeps stragglers). Opt out any
 time with `NB_GIT_AUTOCOMMIT=0`. Don't want to shadow `nb`? Keep the real `nb` and
