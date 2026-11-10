@@ -10,6 +10,12 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb doctor` reports the structural problems the other commands tolerate silently (#338).**
+  A read-only scan (no lock, no writes) of the notebooks directory listing, per shelf and line, git
+  merge-conflict markers, lines without a valid `<score>\t` prefix, control/bidi characters, lessons over
+  `NB_MAX_CHARS`, shelves over `NB_MAX_LINES` and 0-byte shelf files, plus case-colliding shelf names,
+  leftover `*.tmp` files (older than the stale-lock threshold) and a stale `.nb.lock`. Each finding has a stable `code`. `--json` emits
+  `{schemaVersion, findings}`; `--exit-code` exits 3 when anything is found (same convention as `nb stats`).
 - **`nb stats` shows each shelf's add rate, the retention window of a full shelf, and sessions that add in bursts (#353).**
   On a full shelf each add evicts a line, so an untouched lesson lasts about `cap ÷ adds per day`, and nothing
   showed that rate. Each shelf row now prints its accepted adds in the window (`N adds (R/day)`) and, when full,

@@ -161,6 +161,7 @@ nb move   <from> <to> <id|query>         move an entry to another shelf, keeping
 nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print it)
 nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback — scan all notebooks (surfacing is primary)
 nb stats  [<shelf>] [--since 7d] [--json] usage analytics + anomaly/diagnostic flags + surfacing metrics (--json emits the raw StatsReport)
+nb doctor [--json] [--exit-code]  read-only check of the notebooks dir for structural problems (conflict markers, lines without a score, control chars, case-colliding shelves, over-cap, 0-byte files, leftover temps, stale lock); --exit-code exits 3 if any are found
 nb path   [<shelf> | --usage]            print the notebooks dir, a shelf's resolved file path, or (--usage) the usage-log path
 nb config [--json]                       print the effective (post-clamp) NB_* tunables as name=value (--json: object keyed by name)
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lessons, description)

@@ -600,7 +600,7 @@ shelves; `--json` emits a lone object for one shelf, an array for several),
 `merge`, `split <shelf> <id|query> "<a>" "<b>"`,
 `rm`, `move <from> <to> <id|query>`, `describe <shelf> ["<text>"|-]`,
 `search <query> [prefix] [--any] [--limit <N>]`,
-`stats [<shelf>] [--since <N{d,h,m}>] [--json] [--exit-code]`, `path [<shelf>] [--usage] [--json]`, `config [--json]`,
+`stats [<shelf>] [--since <N{d,h,m}>] [--json] [--exit-code]`, `doctor [--json] [--exit-code]`, `path [<shelf>] [--usage] [--json]`, `config [--json]`,
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`),
 `completion <bash|zsh>` ([FR-CLI-010](#fr-cli-010)), `--help`, `--version`. Every command
 dispatched by `src/cli.ts` SHALL be named in this paragraph (guarded by `cli.test.ts` →
@@ -725,6 +725,19 @@ command (exit `2`). The shipped `examples/completion/` files SHALL match the emi
 score then stalest first (see [FR-SHOW-003](#fr-show-003)).
 *Proven by:* `cli.test.ts` → `describe('nb completion (shell completion, issue #187)')`
 and `describe('nb stale — cull candidates (issue #240)')`.
+
+<a id="fr-cli-011"></a>
+**FR-CLI-011 (Should).** `nb doctor [--json] [--exit-code]` SHALL be a strictly read-only
+check of the notebooks directory: it SHALL take no lock and write no shelf. On a clean directory
+it prints a one-line OK summary and exits `0`. Each finding has a stable `code` — `conflict-marker`,
+`bad-score` (no valid `<score>\t` prefix), `control-char`, `lesson-too-long`, `shelf-over-cap`,
+`empty-file` (0 bytes), `case-collision`, `leftover-temp` (older than `NB_STALE_LOCK_MS`, so a live
+writer's temp is not reported), `stale-lock`, `unreadable` — a `shelf` and, for line-level
+findings, a 1-based `line`. `--json` emits `{schemaVersion, findings:[{code, shelf, line?, message}]}`
+(plus a `shelves` count); `--exit-code` exits `3` when any finding exists, otherwise the exit is `0`.
+The detectors are the ones the guards use (conflict markers, control characters, the temp
+predicate), so definitions cannot drift.
+*Proven by:* `cli.test.ts` → `describe('nb doctor (issue #338)')`.
 
 <a id="fr-config-001"></a>
 **FR-CONFIG-001 (Should).** `nb config` SHALL print every effective (post-clamp) tunable
