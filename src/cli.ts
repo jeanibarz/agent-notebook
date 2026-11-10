@@ -68,6 +68,8 @@ import {
   releaseHeldLock,
   remove,
   renderEntries,
+  resolveIntEnv,
+  resolveRateEnv,
   search,
   setDescription,
   showJson,
@@ -269,12 +271,14 @@ notes:
   - \`nb config\` prints every effective (post-clamp) tunable as \`name=value\`, each read from the live
     getter the hot path uses, so you never re-derive it by hand from the env var, its default and its
     clamp. Each line is tagged with its source: \`(default)\` (the var is unset), \`(env NB_*)\` (the var is
-    set — the printed value is still the post-clamp effective value, so an out-of-range or non-numeric
-    value is clamped/ignored and may differ from what you exported), or \`(derived …)\`. A trailing section
-    then prints the three behavior-critical STRING env vars — \`NB_DIR\` (storage), \`NB_SESSION\` (the id the
-    usage/engagement diagnostics group by), and \`NB_ASCII\` (rendering mode) — each tagged \`(env)\`/\`(default)\`.
-    \`--json\` emits one object keyed by tunable name, each \`{ value, source, env }\`, plus an \`environment\`
-    key holding the string vars (\`{ value, source }\` each). Read-only — it mutates nothing, and is
+    set), or \`(derived …)\`. A set value that was rewritten or thrown away is annotated: it is still the
+    post-clamp effective value, but the tag names \`clamped\`/\`ignored\` (with the raw value) so it never reads
+    as if honored. A trailing section then prints the three behavior-critical STRING env vars — \`NB_DIR\`
+    (storage), \`NB_SESSION\` (the id the usage/engagement diagnostics group by), and \`NB_ASCII\` (rendering
+    mode) — each tagged \`(env)\`/\`(default)\`. Any \`NB_*\` var nb does not read is listed as \`unrecognized\`
+    (with a did-you-mean hint); informational only. \`--json\` emits one object keyed by tunable name, each
+    \`{ value, source, env, status, rawValue }\`, plus an \`environment\` key holding the string vars
+    (\`{ value, source }\` each) and an \`unrecognized\` array. Read-only — it mutates nothing, and is
     scoped to CONFIGURATION (the knobs), distinct from \`nb stats\` (usage, anomalies, engagement).
   - \`nb completion <bash|zsh>\` prints a static, dependency-free completion script to stdout.
     Source it with \`eval "$(nb completion bash)"\` (or the zsh form) to tab-complete the command set
@@ -1361,23 +1365,31 @@ export async function runNbCli(
         // not a shelf.
         const rows = effectiveConfig();
         const envRows = environmentRows();
+        const unknown = unknownEnvVars();
         if (json) {
           // One object keyed by tunable name; each carries the effective value,
           // its source (env/default/derived), and the env var that overrides it,
           // so a supervisor can branch on the live value without regex-parsing
           // the human lines. The value is always the post-clamp effective value.
-          const obj: Record<string, { value: number; source: ConfigSource; env: string | null }> = {};
-          for (const r of rows) obj[r.name] = { value: r.value, source: configSource(r.env), env: r.env };
+          // Issue #336 adds two ADDITIVE fields: `status` (honored/clamped/
+          // ignored/how the env value was resolved — `null` when the var is unset)
+          // and `rawValue` (the raw env string, `null` when unset), so a consumer
+          // can tell an in-force override from one that was rewritten or dropped.
+          const obj: Record<string, { value: number; source: ConfigSource; env: string | null; status: ConfigStatus | null; rawValue: string | null }> = {};
+          for (const r of rows) {
+            obj[r.name] = { value: r.value, source: configSource(r.env), env: r.env, status: r.status, rawValue: r.rawValue };
+          }
           // The string env vars live under a dedicated `environment` key, keyed by
           // the var name, so the 14 numeric rows keep their exact shape and keys —
           // the --json contract stays backward-compatible (a NEW section, not a
-          // changed type on an existing row; issue #312). No tunable is named
-          // `environment`, so the key can't collide.
+          // changed type on an existing row; issue #312). Issue #336 adds a second
+          // new top-level `unrecognized` array (informational only) alongside it.
           const environment: Record<string, { value: string; source: ConfigSource }> = {};
           for (const r of envRows) environment[r.name] = { value: r.value, source: configSource(r.name) };
-          process.stdout.write(JSON.stringify({ ...obj, environment }) + '\n');
+          const unrecognized = unknown.map((u) => ({ name: u.name, suggestion: u.suggestion ?? null }));
+          process.stdout.write(JSON.stringify({ ...obj, environment, unrecognized }) + '\n');
         } else {
-          const { out } = renderConfig(rows, envRows);
+          const { out } = renderConfig(rows, envRows, unknown);
           process.stdout.write(out);
         }
         break;
@@ -1720,39 +1732,112 @@ const READOUT_GLOSS: Record<'healthy' | 'surfacing-failure' | 'coverage-building
 /** Where a tunable's effective value came from: a set env var, the built-in default, or a derived value with no own env var. */
 type ConfigSource = 'env' | 'default' | 'derived';
 
+/**
+ * How a set numeric env var was resolved (issue #336): used as given, silently
+ * clamped to a bound, or silently ignored (unparseable, default used). Absent
+ * for the derived row and for a default (the var is unset). This is the
+ * information `source` alone cannot carry — `source: 'env'` says "you set it",
+ * while `status: 'ignored'` says "and `nb` threw it away".
+ */
+type ConfigStatus = 'honored' | 'clamped' | 'ignored';
+
 /** One `nb config` row: the tunable's config name, the value its live getter resolves to RIGHT NOW, and the env var that overrides it (null for a derived value). */
 interface ConfigRow {
   name: string;
   value: number;
   env: string | null;
+  /** How the env value was resolved; `null` for the derived row or when the var is unset. */
+  status: ConfigStatus | null;
+  /** The raw env string when the var is set (so the human line can quote it), else `null`. */
+  rawValue: string | null;
+  /** The parse family, for the `ignored` wording ("not an integer" vs "not a number"). */
+  kind: 'int' | 'rate';
 }
 
 /**
- * The effective, post-clamp tunables `nb config` reports (issue #188). Every
- * value comes from the SAME exported getter the hot path uses, so a printed
- * value can never drift from the value `nb` actually runs under — the honest way
- * to surface a post-clamp value without re-reading the env (and re-copying every
- * default + clamp) here, which is exactly the #116-class drift the #131 guard
- * exists to prevent. `usageRingSlack` is DERIVED from `usageRing` and has no env
- * var of its own (env `null`).
+ * One numeric tunable in the shared registry: its config name, the `NB_*` var
+ * that overrides it, its built-in default, and a resolver that reproduces its
+ * getter's clamp exactly. Each resolver returns the SAME number the exported
+ * getter returns — and ALSO reports whether that number came from an honored,
+ * clamped or ignored raw value ([issue #336]). The `cli.test.ts` config test
+ * cross-checks every resolver's value against the exported getter, so a drift in
+ * either direction (a changed default, a changed clamp) fails loudly.
+ *
+ * The registry is the single source of the recognised-variable set: both
+ * `effectiveConfig` and the unknown-`NB_*` scan derive from it, so a variable
+ * cannot be reported but unknown, or read but unreported.
+ */
+interface TunableSpec {
+  name: string;
+  env: string;
+  kind: 'int' | 'rate';
+  resolve: () => { value: number; status: 'default' | ConfigStatus };
+}
+
+/**
+ * Resolve an int tunable from `NB_<env>` read live. A thin wrapper over
+ * `resolveIntEnv` so the registry stays declarative while still reading
+ * `process.env` at call time, exactly like the hot-path getters.
+ */
+function intTunable(name: string, env: string, dflt: number, lo: number, hi: number): TunableSpec {
+  return { name, env, kind: 'int', resolve: () => resolveIntEnv(process.env[env], dflt, lo, hi) };
+}
+
+/** Resolve a rate tunable (bounds [0, 1]) from `NB_<env>` read live. */
+function rateTunable(name: string, env: string, dflt: number): TunableSpec {
+  return { name, env, kind: 'rate', resolve: () => resolveRateEnv(process.env[env], dflt) };
+}
+
+/**
+ * The source of truth for the numeric tunables `nb config` reports (issue #188),
+ * made status-aware in issue #336. Each default and bound mirrors its hot-path
+ * getter in `notebook.ts`; the config test asserts the resolved value equals the
+ * exported getter for a matrix of raw values, so the two can never drift.
+ * `usageRingSlack` is DERIVED from `usageRing` and has no env var of its own, so
+ * it is not a registry entry — it is rendered separately.
+ */
+const TUNABLE_REGISTRY: readonly TunableSpec[] = [
+  intTunable('maxLines', 'NB_MAX_LINES', 50, 1, 5000),
+  intTunable('maxChars', 'NB_MAX_CHARS', 200, 20, 2000),
+  rateTunable('nearThreshold', 'NB_NEAR_DUP', 0.5),
+  intTunable('usageRing', 'NB_USAGE_RING', 5000, 100, 100000),
+  intTunable('staleLockMs', 'NB_STALE_LOCK_MS', 10_000, 100, 600_000),
+  intTunable('lockGraceMs', 'NB_LOCK_GRACE_MS', 2_000, 0, 600_000),
+  intTunable('loopN', 'NB_LOOP_N', 10, 2, 1000),
+  intTunable('loopWindowSec', 'NB_LOOP_WINDOW_S', 120, 5, 86_400),
+  intTunable('silentHours', 'NB_SILENT_H', 48, 1, 24 * 365),
+  intTunable('errMin', 'NB_ERR_MIN', 5, 1, 10_000),
+  rateTunable('errRate', 'NB_ERR_RATE', 0.3),
+  rateTunable('coverageHi', 'NB_COVERAGE_HI', 0.5),
+  rateTunable('recallMissHi', 'NB_RECALL_MISS_HI', 0.2),
+];
+
+/**
+ * The effective, post-clamp tunables `nb config` reports (issue #188): the
+ * registry rows, each resolved live and annotated with its `status`/`rawValue`
+ * (issue #336), plus the DERIVED `usageRingSlack` row (no env var of its own),
+ * spliced into its historical position so a clean render stays byte-identical.
+ * Every value is the number the hot-path getter returns, so a printed value can
+ * never drift from the value `nb` actually runs under — the #116-class drift the
+ * #131 guard exists to prevent.
  */
 function effectiveConfig(): ConfigRow[] {
-  return [
-    { name: 'maxLines', value: maxLines(), env: 'NB_MAX_LINES' },
-    { name: 'maxChars', value: maxChars(), env: 'NB_MAX_CHARS' },
-    { name: 'nearThreshold', value: nearThreshold(), env: 'NB_NEAR_DUP' },
-    { name: 'usageRing', value: usageRing(), env: 'NB_USAGE_RING' },
-    { name: 'usageRingSlack', value: usageRingSlack(), env: null },
-    { name: 'staleLockMs', value: staleLockMs(), env: 'NB_STALE_LOCK_MS' },
-    { name: 'lockGraceMs', value: lockGraceMs(), env: 'NB_LOCK_GRACE_MS' },
-    { name: 'loopN', value: loopN(), env: 'NB_LOOP_N' },
-    { name: 'loopWindowSec', value: loopWindowSec(), env: 'NB_LOOP_WINDOW_S' },
-    { name: 'silentHours', value: silentHours(), env: 'NB_SILENT_H' },
-    { name: 'errMin', value: errMin(), env: 'NB_ERR_MIN' },
-    { name: 'errRate', value: errRate(), env: 'NB_ERR_RATE' },
-    { name: 'coverageHi', value: coverageHi(), env: 'NB_COVERAGE_HI' },
-    { name: 'recallMissHi', value: recallMissHi(), env: 'NB_RECALL_MISS_HI' },
-  ];
+  const rows: ConfigRow[] = TUNABLE_REGISTRY.map((t) => {
+    const { value, status } = t.resolve();
+    const raw = process.env[t.env];
+    return {
+      name: t.name,
+      value,
+      env: t.env,
+      status: status === 'default' ? null : status,
+      rawValue: raw ?? null,
+      kind: t.kind,
+    };
+  });
+  // Keep the DERIVED row in its historical position (after `usageRing`, before
+  // `staleLockMs`) so a clean render stays byte-identical to the pre-#336 output.
+  rows.splice(4, 0, { name: 'usageRingSlack', value: usageRingSlack(), env: null, status: null, rawValue: null, kind: 'int' });
+  return rows;
 }
 
 /**
@@ -1790,6 +1875,46 @@ function environmentRows(): EnvRow[] {
 }
 
 /**
+ * Every `NB_*` variable name `nb` actually reads — the registry's numeric vars
+ * plus the three string vars — as a set. This is the reference list the unknown
+ * scan checks against, derived from the SAME registry `effectiveConfig` uses so
+ * the two cannot drift (a var that is read can never be reported "unrecognized",
+ * and a new tunable is automatically recognised; issue #336).
+ */
+function recognizedEnvVars(): string[] {
+  return [...TUNABLE_REGISTRY.map((t) => t.env), ...environmentRows().map((r) => r.name)];
+}
+
+/** One unrecognized `NB_*` variable found in the environment, with a nearest-name hint when one is close. */
+interface UnknownEnv {
+  name: string;
+  suggestion: string | undefined;
+}
+
+/**
+ * Find every `NB_*`-prefixed variable in the environment that `nb` does not read
+ * (issue #336) — a typo like `NB_MAX_LINE` (missing the `S`) that otherwise stays
+ * silently set while every `nb` call ignores it. Purely informational: other
+ * tools may legitimately set `NB_*` vars, so these are reported as "unrecognized
+ * by nb", never as an error, and the exit code is untouched. A close-enough name
+ * gets a `did you mean` hint via the same Levenshtein/prefix matcher the command
+ * and shelf typo paths use (`closestMatch`), sorted for deterministic output.
+ */
+function unknownEnvVars(): UnknownEnv[] {
+  const known = recognizedEnvVars();
+  // `closestMatch` lowercases its needle, so compare against lowercased
+  // candidates and map a hit back to the canonical (uppercase) var name.
+  const byLower = new Map(known.map((k) => [k.toLowerCase(), k]));
+  return Object.keys(process.env)
+    .filter((k) => k.startsWith('NB_') && !known.includes(k))
+    .sort()
+    .map((name) => {
+      const hit = closestMatch(name, [...byLower.keys()]);
+      return { name, suggestion: hit === undefined ? undefined : byLower.get(hit) };
+    });
+}
+
+/**
  * Classify where a tunable's effective value comes from. A tunable with no env
  * var of its own (`env === null`) is `derived`; otherwise it is `env` when the
  * variable is DEFINED and `default` when it is unset (absent from the
@@ -1810,19 +1935,47 @@ function configSource(env: string | null): ConfigSource {
 }
 
 /**
+ * The parenthetical a human `nb config` numeric line carries after its source
+ * tag, explaining a non-honored env value (issue #336):
+ *   - `honored` → nothing (the value you set is in force; byte-identical to the
+ *     pre-#336 output);
+ *   - `clamped` → `: clamped to <value> from <raw>` (you asked for something out
+ *     of range and got the bound instead);
+ *   - `ignored` → `: ignored "<raw>", not an integer; using default` (unparseable,
+ *     so `nb` quietly used the default — the misleading case this fixes).
+ * Rates vs ints only differ in the wording ("not a number" vs "not an integer").
+ */
+function statusNote(row: ConfigRow, kind: 'int' | 'rate'): string {
+  if (row.status === 'clamped') return `: clamped to ${row.value} from ${row.rawValue}`;
+  if (row.status === 'ignored') {
+    return `: ignored "${row.rawValue}", not ${kind === 'rate' ? 'a number' : 'an integer'}; using default`;
+  }
+  return '';
+}
+
+/**
  * Render `nb config` for the human path. One `name=value` line per numeric
  * tunable, the `name=value` column left-padded so the source tags line up. The
  * tag names the source: `(default)`, `(env NB_*)`, or `(derived from usageRing)`.
+ * A clamped or ignored env value appends a status note inside the tag (issue
+ * #336) so a value that was rewritten or thrown away can never read as honored.
  * A blank line then separates a `NB_*=value` block for the string env vars
  * (issue #312), tagged `(env)`/`(default)` — the var name is already the row
- * label, so the tag need not repeat it. Returns `{ out }` (stdout only) — there
- * is no error/empty state, the table is fixed.
+ * label, so the tag need not repeat it. A final block lists unrecognized `NB_*`
+ * vars (issue #336) when any exist. With no problems the output is byte-identical
+ * to the pre-#336 renderer. Returns `{ out }` (stdout only) — there is no
+ * error/empty state, the table is fixed.
  */
-function renderConfig(rows: ConfigRow[], envRows: EnvRow[]): { out: string } {
+function renderConfig(rows: ConfigRow[], envRows: EnvRow[], unknown: UnknownEnv[]): { out: string } {
   const pairW = rows.reduce((w, r) => Math.max(w, `${r.name}=${r.value}`.length), 0);
   const lines = rows.map((r) => {
     const src = configSource(r.env);
-    const tag = src === 'env' ? `(env ${r.env})` : src === 'derived' ? '(derived from usageRing)' : '(default)';
+    const base = src === 'env' ? `(env ${r.env})` : src === 'derived' ? '(derived from usageRing)' : '(default)';
+    if (src !== 'env' || r.status === null) {
+      return `${`${r.name}=${r.value}`.padEnd(pairW)}  ${base}`;
+    }
+    const note = statusNote(r, r.kind);
+    const tag = note === '' ? base : base.slice(0, -1) + note + ')';
     return `${`${r.name}=${r.value}`.padEnd(pairW)}  ${tag}`;
   });
   const envPairW = envRows.reduce((w, r) => Math.max(w, `${r.name}=${r.value}`.length), 0);
@@ -1830,7 +1983,15 @@ function renderConfig(rows: ConfigRow[], envRows: EnvRow[]): { out: string } {
     const tag = configSource(r.name) === 'env' ? '(env)' : '(default)';
     return `${`${r.name}=${r.value}`.padEnd(envPairW)}  ${tag}`;
   });
-  return { out: lines.join('\n') + '\n\n' + envLines.join('\n') + '\n' };
+  let out = lines.join('\n') + '\n\n' + envLines.join('\n') + '\n';
+  if (unknown.length > 0) {
+    const unknownLines = unknown.map((u) => {
+      const hint = u.suggestion === undefined ? '' : ` — did you mean ${u.suggestion}?`;
+      return `${u.name}  (unrecognized by nb${hint})`;
+    });
+    out += '\n' + unknownLines.join('\n') + '\n';
+  }
+  return { out };
 }
 
 /**

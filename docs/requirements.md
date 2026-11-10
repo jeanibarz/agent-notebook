@@ -692,7 +692,19 @@ source: `(default)` when the backing `NB_*` var is unset, `(env NB_*)` when it i
 is always the post-clamp effective one, a set-but-out-of-range or non-numeric var reads `env`
 while its value is shown corrected — the pair never silently misleads ([DP-5](#dp-5)).
 `nb config --json` SHALL emit one object keyed by tunable name, each value
-`{ value, source, env }`. `nb config` SHALL be read-only (it mutates no notebook) and is scoped
+`{ value, source, env }`. For each *set* numeric tunable, `nb config` SHALL additionally
+report how the raw value was resolved ([issue #336](#fr-config-001)): `honored` (used as given),
+`clamped` (a parseable value outside the bound, with the raw value quoted), or `ignored` (an
+unparseable value that fell back to the default). The human path appends this to the source tag —
+e.g. `(env NB_NEAR_DUP: clamped to 1 from 2)` or `(env NB_MAX_LINES: ignored "abc", not an integer;
+using default)` — and `--json` gains the additive `status` (`"honored"`/`"clamped"`/`"ignored"`,
+`null` when unset or derived) and `rawValue` (the raw env string, `null` when unset) fields, leaving
+`source` and every existing key unchanged. Output for a config with no problems SHALL be
+byte-identical to the pre-#336 form. `nb config` SHALL further list every `NB_*` environment
+variable it does not read as `unrecognized` (with a nearest-name `did you mean` suggestion when one
+is close) — in the human output as a trailing block and in `--json` as an additive top-level
+`unrecognized` array — derived from the SAME registry `effectiveConfig` uses, informational only
+(never an error, exit code stays `0`). `nb config` SHALL be read-only (it mutates no notebook) and is scoped
 to *configuration*, distinct from `nb stats` (usage, anomalies, engagement). To surface the
 `nb stats` thresholds without duplicating their clamp logic, `stats()` reads them through those
 exported getters rather than inline — a behavior-preserving extraction (same defaults, same

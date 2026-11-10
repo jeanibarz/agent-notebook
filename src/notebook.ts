@@ -116,16 +116,62 @@ export function recallMissHi(): number {
   return clampRate(process.env.NB_RECALL_MISS_HI, DEFAULT_RECALL_MISS_HI);
 }
 
+/**
+ * How a numeric env tunable's raw value was turned into the effective value `nb`
+ * runs with (issue #336). `default` — the var is unset, so the built-in default
+ * applies. `honored` — the var is set to a parseable in-range value and used
+ * as-is. `clamped` — the var is set to a parseable value outside the bound and
+ * `nb` silently used the nearest bound instead. `ignored` — the var is set but
+ * unparseable (e.g. `abc`), so `nb` silently used the default.
+ *
+ * This is what lets `nb config` distinguish "the setting you exported is in
+ * force" from "it was rewritten" from "it was thrown away" — the whole point of
+ * an introspection command ([DP-5](#dp-5)).
+ */
+export type TunableStatus = 'default' | 'honored' | 'clamped' | 'ignored';
+
+/** A raw env value resolved against its default and bounds, plus how it was resolved. */
+export interface ResolvedInt {
+  value: number;
+  status: TunableStatus;
+}
+
+/**
+ * The status-aware form of `clampInt`: resolve `raw` against `dflt`/`lo`/`hi` and
+ * report WHETHER the raw value was honored, clamped, ignored (unparseable) or
+ * absent (default). The getters that `nb config` reports call this; the plain
+ * `clampInt` above wraps it for the hot path.
+ */
+export function resolveIntEnv(raw: string | undefined, dflt: number, lo: number, hi: number): ResolvedInt {
+  if (raw === undefined) return { value: dflt, status: 'default' };
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n)) return { value: dflt, status: 'ignored' };
+  const value = Math.min(hi, Math.max(lo, n));
+  return { value, status: value === n ? 'honored' : 'clamped' };
+}
+
+/**
+ * The status-aware form of `clampRate`: resolve a rate `raw` against `dflt` and
+ * the [0, 1] bounds, reporting how the raw value was resolved (see
+ * {@link TunableStatus}). An empty string is parsed by `Number('')` as `0`, so it
+ * is honored (clamped to the floor), not ignored — the divergence from
+ * `parseInt`-backed ints the clamp tests already pin.
+ */
+export function resolveRateEnv(raw: string | undefined, dflt: number): ResolvedInt {
+  if (raw === undefined) return { value: dflt, status: 'default' };
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return { value: dflt, status: 'ignored' };
+  const value = Math.min(1, Math.max(0, n));
+  return { value, status: value === n ? 'honored' : 'clamped' };
+}
+
 function clampInt(raw: string | undefined, dflt: number, lo: number, hi: number): number {
-  const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
-  if (!Number.isFinite(n)) return dflt;
-  return Math.min(hi, Math.max(lo, n));
+  return resolveIntEnv(raw, dflt, lo, hi).value;
 }
 
 /** Clamp an env-supplied rate to [0, 1]; a missing/non-numeric value falls back to the default (never NaN, which would break the LOW/HIGH comparison). Mirrors the NB_ERR_RATE handling. */
 function clampRate(raw: string | undefined, dflt: number): number {
-  const n = raw === undefined ? NaN : Number(raw);
-  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : dflt;
+  return resolveRateEnv(raw, dflt).value;
 }
 
 /** The coverage×surfacing readout thresholds (issue #81). A rate ≥ its HIGH cutoff reads as "HIGH" on that axis; both default to a deliberately blunt split, tunable via env. */
