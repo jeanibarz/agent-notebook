@@ -4584,6 +4584,11 @@ describe('a git merge-conflicted shelf warns on reads and refuses mutations (iss
     const parsed = JSON.parse(list.out);
     expect(parsed.conflicts).toEqual([{ shelf: 'g', marker: '<<<<<<< HEAD' }]);
     expect(parsed.rows.map((x: { shelf: string }) => x.shelf)).toContain('g');
+    expect(list.err).toContain('merge-conflict marker');
+    const search = await run(['search', 'foo', '--json']);
+    expect(JSON.parse(search.out).conflicts).toEqual([{ shelf: 'g', marker: '<<<<<<< HEAD' }]);
+    expect(search.err).toContain('shelf "g"');
+    expect(search.err).toContain('merge-conflict marker');
   });
 
   test('list --json stays byte-identical on a healthy store (no conflicts field)', async () => {

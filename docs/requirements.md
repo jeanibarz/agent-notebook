@@ -195,7 +195,7 @@ parsing it exactly as before, so a read's stdout is unchanged. A lesson that mer
 mid-line, and the ordinary hand-edited tab-less line ([FR-MODEL-003](#fr-model-003)), SHALL NOT be
 treated as a conflict. When a shelf holds a marker: the read commands `show`, `list`, `search` and `stale`
 SHALL still succeed (exit `0`) and print exactly what they printed before, plus one stderr warning naming
-the shelf and the marker line, and `--json` stdout SHALL stay valid and byte-identical (the conflicted
+the shelf and the marker line, and `--json` stdout SHALL stay valid JSON, a clean store's `list`/`search` output byte-identical, and the stderr warning SHALL also be printed under `--json` (the conflicted
 shelves appear in the additive `NotebookListing.conflicts` / `SearchResult.conflicts` /
 `StatsReport.conflicts` field — emitted only when non-empty for `list`/`search`, always present (`[]` when clean) in the `stats` report, like `skipped`); and **every** mutation (`add`, `vote`,
 `voteMany`, `merge`, `split`, `rm`, `move`, `describe`) SHALL refuse with exit `1`, a handled `NbError`

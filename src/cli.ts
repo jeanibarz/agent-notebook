@@ -1274,6 +1274,8 @@ export async function runNbCli(
                 : { terms: result.terms, groups: result.groups, total: result.total, surfacedIds: result.surfacedIds },
             ) + '\n',
           );
+          // Same stderr warning as the text path (issue #333); stdout stays JSON.
+          process.stderr.write(renderConflicts('search', result.conflicts));
         } else {
           const { out, err } = renderSearch(query, any, result);
           if (out) process.stdout.write(out);
