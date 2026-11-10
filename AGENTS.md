@@ -193,6 +193,10 @@ npm test           # vitest run — needs Node 20.12+ (see CONTRIBUTING.md)
   results — `npm test` runs the build first via its `pretest` hook.
 - Keep `docs/requirements.md` and `CHANGELOG.md` in sync with any user-facing
   change; the [PR template](.github/PULL_REQUEST_TEMPLATE.md) has the checklist.
+- **Every PR body is built from [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md)**,
+  `<!-- kookr:check:… -->` markers kept verbatim. Check a box only if it is true of
+  the diff, or strike it with a one-line reason (`- [ ] ~~<marker> row~~ — reason`).
+  Write the body to a file and pass `gh pr create --body-file` — inline `--body` skips the template.
 - The docs added for harness integration — [getting-started](docs/getting-started.md),
   [harness-setup](docs/harness-setup.md), [enterprise](docs/enterprise.md), and the
   [`examples/`](examples/) scripts — describe a layer that lives *around* the
