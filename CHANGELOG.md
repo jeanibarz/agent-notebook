@@ -18,6 +18,11 @@ versions are listed plainly.
   into one shelf. Docs now say the first remedy for a short window is fewer adds per session.
 
 ### Fixed
+- **A new shelf whose name differs only by case from an existing one is refused (#337).**
+  `Foo.md` and `foo.md` coexist on Linux but are one file on default macOS/Windows filesystems, so a git-synced
+  notebook could not be checked out cleanly, or a write to `foo` landed in `Foo`. `nb add`, `nb move` (target)
+  and `nb describe` now exit 1 naming the existing shelf instead of creating the variant. Existing shelves and
+  already-colliding pairs are untouched.
 - **A shelf with git merge-conflict markers is no longer silently rewritten as clean lessons (#333).**
   After a `git pull`/`git merge` conflict in a git-versioned notebook, the `<<<<<<<`, `=======` and `>>>>>>>`
   lines parsed as score-0 lessons, and the next `nb add|vote|rm` wrote them back as real lessons — erasing the
