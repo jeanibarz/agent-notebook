@@ -100,6 +100,7 @@ import {
   usageRingSlack,
   vote,
   voteMany,
+  type ConflictShelf,
   type EngagementDiagnosis,
   type IntTunable,
   type RateTunable,
@@ -781,6 +782,12 @@ export async function runNbCli(
           // entry carrying its `key` so the caller drops exact cross-shelf dupes
           // itself; nb does no cross-shelf dedup or ordering here. Same per-shelf
           // ordering as `render()`.
+          // Warn on stderr about a conflicted shelf (issue #333); the JSON on
+          // stdout is unchanged and still valid.
+          for (const s of shelves) {
+            const { conflict } = readShelf(dir, s);
+            if (conflict !== null) process.stderr.write(renderConflict('show', s, conflict));
+          }
           const out = shelves.length === 1 ? showJson(dir, shelves[0]) : showJsonMany(dir, shelves);
           process.stdout.write(JSON.stringify(out) + '\n');
         } else {
@@ -792,7 +799,11 @@ export async function runNbCli(
             // One read for both the description header and the rendered lessons
             // (issue #201): this branch used to read the shelf twice
             // (getDescription then render→readEntries).
-            const { metaLines, entries } = readShelf(dir, s);
+            const { metaLines, entries, conflict } = readShelf(dir, s);
+            // Warn (stderr only) that the shelf needs a merge resolved (issue
+            // #333) — the lessons below still render exactly as stored, stdout
+            // unchanged, but the reader is told the file is not clean.
+            if (conflict !== null) process.stderr.write(renderConflict('show', s, conflict));
             // Print the one-line description (if any) as a header above the lessons,
             // so a reader sees what the notebook is *for* before its contents.
             const descRaw = getMetaValue(metaLines, DESC_KEY);
@@ -850,6 +861,8 @@ export async function runNbCli(
           }
         }
         shelf = need(staleArgs[1], 'shelf');
+        const staleConflict = readShelf(dir, shelf).conflict;
+        if (staleConflict !== null) process.stderr.write(renderConflict('stale', shelf, staleConflict));
         const result = staleCandidates(dir, shelf, limit);
         if (json) {
           // Lone StaleResult object on stdout (same contract as `show --json`).
@@ -1256,7 +1269,7 @@ export async function runNbCli(
           // field (issue #332) is emitted only when a shelf was actually skipped.
           process.stdout.write(
             JSON.stringify(
-              result.skipped.length > 0
+              result.skipped.length > 0 || result.conflicts.length > 0
                 ? result
                 : { terms: result.terms, groups: result.groups, total: result.total, surfacedIds: result.surfacedIds },
             ) + '\n',
@@ -1342,6 +1355,8 @@ export async function runNbCli(
         // health scan still succeeds but never hides why a shelf is missing.
         const statsSkip = renderSkipped('stats', rep.skipped);
         if (statsSkip) process.stderr.write(statsSkip);
+        // Warn about any shelf holding a merge conflict (issue #333), same rule.
+        process.stderr.write(renderConflicts('stats', rep.conflicts));
         // The command itself succeeded (stats read cleanly); the usage log must
         // record that, so set `ok` before the opt-in anomaly exit returns early.
         ok = true;
@@ -1472,8 +1487,13 @@ export async function runNbCli(
           // field (issue #332) is emitted only when a shelf was actually skipped.
           const listing = listNotebooks(dir, { prefix, limit });
           process.stdout.write(
-            JSON.stringify(listing.skipped.length > 0 ? listing : { dir: listing.dir, total: listing.total, rows: listing.rows }) + '\n',
+            JSON.stringify(
+              listing.skipped.length > 0 || listing.conflicts.length > 0
+                ? listing
+                : { dir: listing.dir, total: listing.total, rows: listing.rows },
+            ) + '\n',
           );
+          process.stderr.write(renderConflicts('list', listing.conflicts));
         } else {
           const { out, err } = renderList(dir, prefix, limit);
           if (out) process.stdout.write(out);
@@ -2111,7 +2131,7 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
   const listing = listNotebooks(dir, { prefix, limit });
   // Report any shelf skipped for an unreadable file (issue #332) on stderr, so
   // the success path still lists every healthy shelf but never hides the loss.
-  const skipErr = renderSkipped('list', listing.skipped);
+  const skipErr = renderSkipped('list', listing.skipped) + renderConflicts('list', listing.conflicts);
   if (listing.total === 0) {
     // A prefix the user explicitly scoped to may have matched ONLY a skipped
     // shelf (issue #332): report that it is unreadable, not "no notebooks
@@ -2152,7 +2172,7 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
   const mode = any ? 'OR' : 'AND';
   // Name any shelf skipped for an unreadable file (issue #332) — a search over a
   // damaged store still returns every healthy hit, but never silently drops one.
-  const skipErr = renderSkipped('search', result.skipped);
+  const skipErr = renderSkipped('search', result.skipped) + renderConflicts('search', result.conflicts);
   // A no-match is only a genuine coverage gap when every shelf in scope was
   // actually searched: if a skipped (unreadable) shelf exists, the miss may be
   // hiding a hit in it, so the note must not claim a gap (issue #332).
@@ -2215,6 +2235,28 @@ function renderSkipped(cmd: string, skipped: SkippedShelf[]): string {
         `fix the file (permissions, or remove a directory named ${s.shelf}.md) to include it again\n`,
     )
     .join('');
+}
+
+/**
+ * One stderr line warning that a READ found a git merge-conflict marker in a
+ * shelf (issue #333). Reads are never refused — the lessons print as stored — but
+ * a mutation will refuse until the conflict is resolved, so the reader is told
+ * which shelf (and which line) needs `git merge` / a manual fix. stdout and the
+ * `--json` result stay untouched and valid.
+ */
+function renderConflict(cmd: string, shelf: string, marker: string): string {
+  return (
+    `nb ${cmd}: warning: shelf "${shelf}" contains a git merge-conflict marker (${JSON.stringify(marker)}); ` +
+    `resolve the conflict in ${shelf}.md before mutating it — writes are refused until then\n`
+  );
+}
+
+/**
+ * The stderr lines for every conflicted shelf a scan saw (issue #333), by the
+ * same additive, only-when-non-empty rule as `renderSkipped`.
+ */
+function renderConflicts(cmd: string, conflicts: ConflictShelf[]): string {
+  return conflicts.map((c) => renderConflict(cmd, c.shelf, c.marker)).join('');
 }
 
 function renderStats(rep: StatsReport, shelf: string | undefined): string {

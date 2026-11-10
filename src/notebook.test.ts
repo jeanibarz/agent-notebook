@@ -86,6 +86,7 @@ import {
   getDescription,
   getMetaValue,
   isMetaLine,
+  isConflictMarker,
   isValidWindow,
   listNotebooks,
   listRoles,
@@ -1865,6 +1866,7 @@ describe('error-class usage column (issue #176)', () => {
       'no_match',
       'multiline_refused',
       'bad_args',
+      'corrupt',
       'unknown_subcommand',
       'other',
     ]);
@@ -2748,6 +2750,7 @@ describe('usage log + stats', () => {
         'notebookTotals',
         'notebooks',
         'perCommand',
+        'conflicts',
         'schemaVersion',
         'signals',
         'skipped',
@@ -4413,6 +4416,7 @@ describe('notebook metadata / descriptions (issue #70)', () => {
     expect(readShelf(dir, 'm')).toEqual({
       metaLines: ['# desc: build / test gotchas for this repo'],
       entries: [{ score: 3, text: 'run build before test' }],
+      conflict: null,
     });
     expect(getDescription(dir, 'm')).toBe('build / test gotchas for this repo');
 
@@ -4436,7 +4440,7 @@ describe('notebook metadata / descriptions (issue #70)', () => {
     expect(readEntries(dir, 'm')).toEqual([{ score: 3, text: 'lesson' }]);
     // BOM + CRLF together, and a BOM before a plain entry (no metadata).
     writeFileSync(join(dir, 'c.md'), '\uFEFF# desc: y\r\n+1\tz\r\n', 'utf-8');
-    expect(readShelf(dir, 'c')).toEqual({ metaLines: ['# desc: y'], entries: [{ score: 1, text: 'z' }] });
+    expect(readShelf(dir, 'c')).toEqual({ metaLines: ['# desc: y'], entries: [{ score: 1, text: 'z' }], conflict: null });
     writeFileSync(join(dir, 'e.md'), '\uFEFF+2\tfirst\n', 'utf-8');
     expect(readEntries(dir, 'e')).toEqual([{ score: 2, text: 'first' }]);
   });
@@ -4780,8 +4784,8 @@ describe('search — the demoted keyword fallback (issue #82)', () => {
 
   test('an empty / whitespace query yields no terms and no groups (never throws)', async () => {
     await addEntry(dir, 'r', 'something');
-    expect(search(dir, '   ')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [], skipped: [] });
-    expect(search(dir, '')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [], skipped: [] });
+    expect(search(dir, '   ')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [], skipped: [], conflicts: [] });
+    expect(search(dir, '')).toEqual({ terms: [], groups: [], total: 0, surfacedIds: [], skipped: [], conflicts: [] });
   });
 
   test('no match returns an empty group list (the gap-sensor case)', async () => {
@@ -5076,13 +5080,13 @@ describe('single-pass shelf read — list/search/show read each file once (issue
   });
 
   test('readShelf returns empty metadata and entries for a never-created shelf', () => {
-    expect(readShelf(dir, 'never-created')).toEqual({ metaLines: [], entries: [] });
+    expect(readShelf(dir, 'never-created')).toEqual({ metaLines: [], entries: [], conflict: null });
   });
 
   test('readShelf treats an ENOENT between existsSync and readFileSync as an empty shelf (issue #300)', () => {
     writeFileSync(join(dir, 'raced.md'), '# desc: x\n1\tlesson\n');
     fsHook.failReadOnceCode = 'ENOENT';
-    expect(readShelf(dir, 'raced')).toEqual({ metaLines: [], entries: [] });
+    expect(readShelf(dir, 'raced')).toEqual({ metaLines: [], entries: [], conflict: null });
     expect(fsHook.failReadOnceCode).toBeNull(); // the injected failure was actually consumed
   });
 
@@ -5517,5 +5521,97 @@ describe('env-tunable clamps (boundary + garbage)', () => {
         expect(resolveIntEnv(raw, 50, 1, 5000)).toEqual({ value: 50, status: 'ignored' });
       },
     );
+  });
+});
+
+describe('git merge-conflict markers are detected, never rewritten (issue #333)', () => {
+  // A git-versioned notebook that hits a `git merge`/`pull` conflict parses its
+  // `<<<<<<<`, `=======` and `>>>>>>>` lines as score-0 lessons, and the next
+  // mutation used to bake them in as real lessons — silently "resolving" the
+  // conflict. Reads must still work (with the marker surfaced) and every mutation
+  // must refuse, leaving the file byte-identical.
+  const marked = (): string =>
+    '+1\tfoo lesson\n<<<<<<< HEAD\n+2\tmine\n=======\n+3\ttheirs\n>>>>>>> branch\n';
+  const seed = (name = 'g'): string => {
+    const file = join(dir, `${name}.md`);
+    writeFileSync(file, marked());
+    return file;
+  };
+
+  test('the three marker shapes are recognized, a mid-line ======= or tab-less line is not', () => {
+    expect(isConflictMarker('<<<<<<< HEAD')).toBe(true);
+    expect(isConflictMarker('<<<<<<<')).toBe(true);
+    expect(isConflictMarker('=======')).toBe(true);
+    expect(isConflictMarker('>>>>>>> branch')).toBe(true);
+    expect(isConflictMarker('>>>>>>>')).toBe(true);
+    // Not markers: the ordinary hand-edited line and a lesson containing `=======`.
+    expect(isConflictMarker('a hand-edited line with no score')).toBe(false);
+    expect(isConflictMarker('some ======= text mid-line')).toBe(false);
+    expect(isConflictMarker('======= trailing')).toBe(false);
+    expect(isConflictMarker(' <<<<<<< HEAD')).toBe(false);
+  });
+
+  test('readShelf reports the first marker but still parses the stored lessons', async () => {
+    seed();
+    const { conflict, entries } = readShelf(dir, 'g');
+    expect(conflict).toBe('<<<<<<< HEAD');
+    expect(entries.map((e) => e.text)).toEqual(['foo lesson', '<<<<<<< HEAD', 'mine', '=======', 'theirs', '>>>>>>> branch']);
+  });
+
+  test('a shelf holding only a tab-less line or a mid-line ======= is not a conflict', async () => {
+    writeFileSync(join(dir, 'clean.md'), 'a hand-edited line\n1\ta lesson with ======= inside\n');
+    expect(readShelf(dir, 'clean').conflict).toBeNull();
+    // And it stays mutable.
+    await addEntry(dir, 'clean', 'new one');
+    expect(readEntries(dir, 'clean').map((e) => e.text)).toContain('new one');
+  });
+
+  test('add refuses with a handled `corrupt` error and leaves the file byte-identical', async () => {
+    const file = seed();
+    const before = readFileSync(file, 'utf-8');
+    await expect(addEntry(dir, 'g', 'new one')).rejects.toMatchObject({ errorClass: 'corrupt' });
+    await expect(addEntry(dir, 'g', 'new one')).rejects.toThrow(/shelf "g".*<<<<<<< HEAD/s);
+    expect(readFileSync(file, 'utf-8')).toBe(before);
+  });
+
+  test('every mutation refuses (vote/voteMany/merge/split/rm/move/describe) and drops nothing', async () => {
+    const file = seed();
+    const other = join(dir, 'h.md');
+    writeFileSync(other, '+1\tother lesson\n');
+    const before = readFileSync(file, 'utf-8');
+    const beforeOther = readFileSync(other, 'utf-8');
+    const calls: Array<() => Promise<unknown>> = [
+      () => vote(dir, 'g', 'foo', 1),
+      () => voteMany(dir, 'g', ['foo'], 1),
+      () => merge(dir, 'g', 'foo', 'mine', 'merged'),
+      () => split(dir, 'g', 'foo', 'a', 'b'),
+      () => remove(dir, 'g', 'foo'),
+      () => move(dir, 'h', 'g', 'other'),
+      () => move(dir, 'g', 'h', 'foo'),
+      () => setDescription(dir, 'g', 'a description'),
+    ];
+    for (const call of calls) {
+      await expect(call()).rejects.toMatchObject({ errorClass: 'corrupt' });
+    }
+    expect(readFileSync(file, 'utf-8')).toBe(before);
+    expect(readFileSync(other, 'utf-8')).toBe(beforeOther);
+  });
+
+  test('cross-shelf scans surface conflicted shelves additively and keep them', async () => {
+    seed();
+    await addEntry(dir, 'ok', 'a clean lesson');
+    const listing = listNotebooks(dir);
+    expect(listing.conflicts).toEqual([{ shelf: 'g', marker: '<<<<<<< HEAD' }]);
+    expect(listing.rows.map((r) => r.shelf)).toEqual(['g', 'ok']);
+    const hits = search(dir, 'lesson');
+    expect(hits.conflicts).toEqual([{ shelf: 'g', marker: '<<<<<<< HEAD' }]);
+    expect(stats(dir, { now: Date.now() }).conflicts).toEqual([{ shelf: 'g', marker: '<<<<<<< HEAD' }]);
+  });
+
+  test('a healthy store reports no conflicts', async () => {
+    await addEntry(dir, 'ok', 'a clean lesson');
+    expect(listNotebooks(dir).conflicts).toEqual([]);
+    expect(search(dir, 'clean').conflicts).toEqual([]);
+    expect(stats(dir, { now: Date.now() }).conflicts).toEqual([]);
   });
 });

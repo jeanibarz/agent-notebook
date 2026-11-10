@@ -187,6 +187,28 @@ tab by treating its whole content as `text` with `score = 0`, and SHALL skip bla
 lines.
 **Rationale:** The file is advertised as human-editable; a hand edit must not crash a read.
 
+<a id="fr-model-004"></a>
+**FR-MODEL-004 (Must).** `readShelf` SHALL recognize a git merge-conflict marker line — a line-start
+`<<<<<<<` or `>>>>>>>` followed by a space or the end of the line, or a bare `=======` (nothing else on
+it) — and SHALL surface the first one as `ShelfContents.conflict` (`null` for a clean shelf) while still
+parsing it exactly as before, so a read's stdout is unchanged. A lesson that merely contains `=======`
+mid-line, and the ordinary hand-edited tab-less line ([FR-MODEL-003](#fr-model-003)), SHALL NOT be
+treated as a conflict. When a shelf holds a marker: the read commands `show`, `list`, `search` and `stale`
+SHALL still succeed (exit `0`) and print exactly what they printed before, plus one stderr warning naming
+the shelf and the marker line, and `--json` stdout SHALL stay valid and byte-identical (the conflicted
+shelves appear in the additive `NotebookListing.conflicts` / `SearchResult.conflicts` /
+`StatsReport.conflicts` field, emitted only when non-empty); and **every** mutation (`add`, `vote`,
+`voteMany`, `merge`, `split`, `rm`, `move`, `describe`) SHALL refuse with exit `1`, a handled `NbError`
+of class `corrupt` naming the shelf and the marker, and leave the file byte-identical — no data is
+dropped or rewritten.
+**Rationale:** A git-versioned notebook (the documented `nb-git-wrapper`/`nb-backup.sh` flow) that hits a
+merge conflict would otherwise parse the markers as score-0 lessons and the next mutation would persist
+them as real lessons, silently "resolving" the conflict and evicting real lessons ([DP-5](#dp-5)).
+*Acceptance:* a shelf with `<<<<<<< HEAD`, `+2<TAB>mine`, `=======`, `+3<TAB>theirs`, `>>>>>>> branch`
+makes `nb add|vote|merge|split|rm|move|describe` exit `1` with `errorClass` `corrupt` and leaves the file
+byte-identical, while `nb show|list|search|stale` exit `0` with the same stdout plus one stderr warning.
+*Proven by:* `notebook.test.ts` → `describe('git merge-conflict markers are detected, never rewritten (issue #333)')`; `cli.test.ts` → `describe('a git merge-conflicted shelf warns on reads and refuses mutations (issue #333)')`.
+
 ### 4.2 `add`
 
 <a id="fr-add-001"></a>
@@ -654,7 +676,7 @@ sole operand is a shelf name, which cannot be flag-shaped.
 paths too (issue #266), so a supervisor never falls back to regex-parsing the English
 prose on exactly the paths where structured data matters most. (1) When a command
 *throws* under `--json` (a handled `NbError` — `bad_args`, `no_match`,
-`ambiguous_selector`, `multiline_refused`, `too_long` — or any other error such as an
+`ambiguous_selector`, `multiline_refused`, `too_long`, `corrupt` — or any other error such as an
 `EACCES`/`ENOTDIR` write failure, which classifies as `other`), it SHALL write a single
 structured error object to **stdout** — `{ ok: false, command, error: { class, message } }`,
 where `class` is the same bounded `ErrorClass` token the usage log records (issue #176,
