@@ -196,6 +196,10 @@ to get G2, and this is the gentlest, most targeted form of it. "Staying near the
 top requires continued use" is the intended behavior, not a bug. Scores stay
 bounded (C4) because decay pulls the top down as votes push it up.
 
+### The retention window is set by the add rate
+
+Because eviction and aging fire once per add, a full shelf turns over at the pace of adds. An untouched lesson reaches the top of the file in about `cap` adds and then loses a point per add, so it lasts roughly `cap ÷ adds per day`, whatever its score. `nb stats` shows each shelf's accepted adds and, for a full shelf, that estimate, and flags a session that adds in a burst (`add-burst`). If the window is shorter than you want, the first remedy is fewer adds per session; only then divide the shelf or raise `NB_MAX_LINES`.
+
 ## 7. Worked examples
 
 These trace the actual bytes. The file is written **top = stalest → bottom =

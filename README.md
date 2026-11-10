@@ -298,6 +298,8 @@ A shelf at its cap is not a problem to fix. Eviction and aging only run on a ful
 
 Do not divide a shelf into two shelves because it is full. (This is not about `nb split`, which cuts one overloaded lesson in two.) Dividing makes two half-empty shelves where nothing is evicted, so stale lessons pile up again, and every new shelf lengthens the index that agents read to choose one. Many small shelves with overlapping descriptions are harder to choose from than one full shelf.
 
+**How long does a lesson get?** On a full shelf each add evicts one line, so an untouched lesson lasts about `cap ÷ adds per day`, whatever its score. `nb stats` prints each shelf's accepted adds in the window and, for a full shelf, that estimate (`~10d retention`). Read it before reading "FULL" as healthy: a window of days means the shelf forgets quickly. The first remedy is **fewer adds per session** (the `add-burst` signal names the sessions that wrote more than `NB_ADD_BURST_N` lessons into one shelf), before dividing the shelf or raising the cap. The estimate is calendar days over the `--since` window, and a shelf younger than the window reads longer than it is.
+
 Act only when a full shelf loses lessons that agents still use:
 
 - **Signal:** `nb stats` reports `eviction-while-still-voted` for the shelf repeatedly: a lesson was evicted with a score above the +1 a new lesson starts at. The [example janitor](docs/harness-setup.md#the-janitor) flags a shelf with 2 or more such evictions, or evicted lessons that were added again, within its window (30 days by default).
@@ -375,8 +377,9 @@ Each of the eight Unicode block glyphs (`▁▂▃▄▅▆▇█`) is one bucke
 - **eviction-while-still-voted** — the cap evicted an entry (`add`'s `evicted` column) whose score was still above the +1 a new lesson starts at → a lesson agents found useful was lost. One occurrence is normal churn; repeated ones on the same shelf mean the cap is too tight for it (see [A full shelf is the normal state](#a-full-shelf-is-the-normal-state)).
 - **vote-reversal** — the same entry was upvoted in one session and downvoted in another → the lesson may be correct but *mis-aimed* (right in one context, wrong in another).
 - **failed-search** — a [`nb search`](#searching--the-demoted-fallback) returned nothing and a lesson was then `add`ed in the same session → a coverage gap the notebook did not hold, labelled by the agent's own query.
+- **add-burst** — one session accepted more than `NB_ADD_BURST_N` (default 15) adds into a single shelf → on a full shelf each add evicts a line, so the burst shortens how long the other lessons survive. Fix it with fewer, better lessons per session.
 
-All four are **session-aware**, so set `NB_SESSION` (a hook or supervising agent does this) for them to attribute calls to a session — browse-without-use, vote-reversal, and failed-search need it, and skip calls with a blank session. Like the anomalies, they are computed over the windowed, shelf-scoped usage rows (so `--since` and `[<shelf>]` apply). They are deliberately heuristic *hints*, not verdicts: a glance that didn't lead to a vote isn't proof a description is bad, just a place worth a look.
+All five are **session-aware**, so set `NB_SESSION` (a hook or supervising agent does this) for them to attribute calls to a session — browse-without-use, vote-reversal, failed-search and add-burst need it, and skip calls with a blank session. Like the anomalies, they are computed over the windowed, shelf-scoped usage rows (so `--since` and `[<shelf>]` apply). They are deliberately heuristic *hints*, not verdicts: a glance that didn't lead to a vote isn't proof a description is bad, just a place worth a look.
 
 ### Surfacing metrics
 
@@ -437,6 +440,7 @@ The anomaly detection in `nb stats` (loop / went-silent / high-error-rate flags)
 - `NB_LOOP_WINDOW_S` — window those calls must fall within, in seconds (default `120`, range `5`–`86400`).
 - `NB_SILENT_H` — hours since a command's last call before it is flagged went-silent (default `48`, range `1`–`8760`).
 - `NB_ERR_MIN` — minimum calls before a command's error rate is judged (default `5`, range `1`–`10000`).
+- `NB_ADD_BURST_N` — a session that accepts more than this many adds into one shelf raises an `add-burst` signal (default `15`, range `1`–`100000`).
 - `NB_ERR_RATE` — fraction of a command's calls that failed, above which it is flagged (default `0.3` = 30%, range `0`–`1`).
 - `NB_COVERAGE_HI` — coverage at/above which the surfacing readout reads novel-adds as HIGH (default `0.5`, range `0`–`1`).
 - `NB_RECALL_MISS_HI` — recall-miss at/above which the surfacing readout reads dedup-blocks as HIGH (default `0.2`, range `0`–`1`).

@@ -152,6 +152,7 @@ const MANAGED_ENV = [
   'NB_LOOP_WINDOW_S',
   'NB_SILENT_H',
   'NB_ERR_MIN',
+  'NB_ADD_BURST_N',
   'NB_ERR_RATE',
   'NB_SESSION',
   'NB_COVERAGE_HI',
@@ -4150,7 +4151,7 @@ describe('stats notebook inventory (issue #40)', () => {
     await addEntry(dir, 'patcher', 'prefer execFileSync, array args');
     await addEntry(dir, 'patcher', 'run lint before done');
     const rep = stats(dir, { now: Date.now() });
-    expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 2, cap: maxLines() }]);
+    expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 2, cap: maxLines(), adds: 0, addsPerDay: 0, retentionDays: null }]);
     expect(rep.notebookTotals).toEqual({ roles: 1, shelves: 1, lines: 2, cap: maxLines() });
   });
 
@@ -4162,8 +4163,8 @@ describe('stats notebook inventory (issue #40)', () => {
     // Exact rows (sorted). The full shelf's lines equal its cap — the "about to
     // evict" signal — while the sibling, under the same global cap, stays below.
     expect(rep.notebooks).toEqual([
-      { role: 'full', shelf: 'full', lines: 3, cap: 3 },
-      { role: 'spare', shelf: 'spare', lines: 1, cap: 3 },
+      { role: 'full', shelf: 'full', lines: 3, cap: 3, adds: 0, addsPerDay: 0, retentionDays: null },
+      { role: 'spare', shelf: 'spare', lines: 1, cap: 3, adds: 0, addsPerDay: 0, retentionDays: null },
     ]);
     expect(rep.notebookTotals).toEqual({ roles: 2, shelves: 2, lines: 4, cap: 3 });
   });
@@ -4174,8 +4175,8 @@ describe('stats notebook inventory (issue #40)', () => {
     await addEntry(dir, 'alpha', 'c');
     const rep = stats(dir, { now: Date.now() });
     expect(rep.notebooks).toEqual([
-      { role: 'alpha', shelf: 'alpha', lines: 2, cap: maxLines() },
-      { role: 'zeta', shelf: 'zeta', lines: 1, cap: maxLines() },
+      { role: 'alpha', shelf: 'alpha', lines: 2, cap: maxLines(), adds: 0, addsPerDay: 0, retentionDays: null },
+      { role: 'zeta', shelf: 'zeta', lines: 1, cap: maxLines(), adds: 0, addsPerDay: 0, retentionDays: null },
     ]);
     expect(rep.notebookTotals).toEqual({ roles: 2, shelves: 2, lines: 3, cap: maxLines() });
   });
@@ -4185,7 +4186,7 @@ describe('stats notebook inventory (issue #40)', () => {
     await addEntry(dir, 'patcher2', 'y'); // a prefix-collision sibling: must NOT leak in
     await addEntry(dir, 'cartographer', 'z');
     const rep = stats(dir, { shelf: 'patcher', now: Date.now() });
-    expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 1, cap: maxLines() }]);
+    expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 1, cap: maxLines(), adds: 0, addsPerDay: 0, retentionDays: null }]);
     expect(rep.notebookTotals).toEqual({ roles: 1, shelves: 1, lines: 1, cap: maxLines() });
   });
 
@@ -4211,7 +4212,7 @@ describe('stats notebook inventory (issue #40)', () => {
     writeFileSync(join(dir, 'notes.txt'), 'not a role file', 'utf-8');
     writeFileSync(join(dir, '.hidden.md'), 'a dotfile, not a role', 'utf-8');
     const rep = stats(dir, { now: Date.now() });
-    expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 1, cap: maxLines() }]);
+    expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 1, cap: maxLines(), adds: 0, addsPerDay: 0, retentionDays: null }]);
   });
 
   test('inventory reflects current on-disk state, not the usage window', async () => {
@@ -4221,7 +4222,7 @@ describe('stats notebook inventory (issue #40)', () => {
     const rep = stats(dir, { now: Date.now() + 10 * 86_400_000, windowMs: 60_000 });
     expect(rep.totalCalls).toBe(0);
     expect(rep.perCommand).toEqual([]);
-    expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 1, cap: maxLines() }]);
+    expect(rep.notebooks).toEqual([{ role: 'patcher', shelf: 'patcher', lines: 1, cap: maxLines(), adds: 0, addsPerDay: 0, retentionDays: null }]);
   });
 });
 
@@ -4793,6 +4794,66 @@ describe('search — the demoted keyword fallback (issue #82)', () => {
     const r = search(dir, 'absent-keyword');
     expect(r.terms).toEqual(['absent-keyword']);
     expect(r.groups).toEqual([]);
+  });
+});
+
+describe('stats add rate, retention window and add-burst (issue #353)', () => {
+  const addRows = (shelf: string, session: string, n: number): void => {
+    for (let i = 0; i < n; i++) logUsage(dir, shelf, 'add', true, 1, { session, outcome: 'accepted', entries: [`e${i}`] });
+  };
+
+  test('a full shelf reports adds, adds/day and cap ÷ adds/day as its retention window', async () => {
+    process.env.NB_MAX_LINES = '3';
+    for (const l of ['one', 'two', 'three']) await addEntry(dir, 'full', l); // 3/3
+    addRows('full', 's1', 7); // 7 accepted adds over a 7d window → 1/day
+    const n = stats(dir, { now: Date.now() }).notebooks.find((x) => x.shelf === 'full')!;
+    expect(n.adds).toBe(7);
+    expect(n.addsPerDay).toBe(1);
+    expect(n.retentionDays).toBe(3); // cap 3 ÷ 1 per day
+  });
+
+  test('retention is null (not 0 or Infinity) for a full shelf with no adds, and for a shelf below its cap', async () => {
+    process.env.NB_MAX_LINES = '2';
+    writeFileSync(join(dir, 'full.md'), '1\ta\n1\tb\n', 'utf-8'); // at cap, written outside nb so no usage rows
+    writeFileSync(join(dir, 'part.md'), '1\tc\n', 'utf-8');
+    addRows('part', 's1', 4); // adds, but below cap
+    const rep = stats(dir, { now: Date.now() });
+    const full = rep.notebooks.find((x) => x.shelf === 'full')!;
+    const part = rep.notebooks.find((x) => x.shelf === 'part')!;
+    expect([full.adds, full.retentionDays]).toEqual([0, null]);
+    expect([part.adds, part.retentionDays]).toEqual([4, null]);
+  });
+
+  test('only accepted adds on THAT shelf inside the window count', async () => {
+    process.env.NB_MAX_LINES = '2';
+    writeFileSync(join(dir, 'a.md'), '1\tx\n1\ty\n', 'utf-8');
+    logUsage(dir, 'a', 'add', true, 1, { session: 's', outcome: 'accepted', entries: ['1'] });
+    logUsage(dir, 'a', 'add', true, 1, { session: 's', outcome: 'dedup-blocked' });
+    logUsage(dir, 'a', 'vote', true, 1, { session: 's', outcome: 'up', entries: ['1'] });
+    logUsage(dir, 'b', 'add', true, 1, { session: 's', outcome: 'accepted', entries: ['2'] });
+    expect(stats(dir, { now: Date.now() }).notebooks.find((x) => x.shelf === 'a')!.adds).toBe(1);
+    // Outside the window: the same row, observed 30 days later with a 7d window, no longer counts.
+    expect(stats(dir, { now: Date.now() + 30 * 86_400_000 }).notebooks.find((x) => x.shelf === 'a')!.adds).toBe(0);
+  });
+
+  test('add-burst fires only ABOVE NB_ADD_BURST_N, per (session, shelf)', () => {
+    process.env.NB_ADD_BURST_N = '3';
+    addRows('s-exact', 'at-threshold', 3); // exactly N: not a burst
+    addRows('s-over', 'burst', 4); // N+1: a burst
+    addRows('x', 'split', 2);
+    addRows('y', 'split', 2); // 4 in one session but 2 per shelf: not a burst
+    const sigs = stats(dir).signals.filter((g) => g.kind === 'add-burst');
+    expect(sigs.map((g) => [g.shelf, g.session])).toEqual([['s-over', 'burst']]);
+    expect(sigs[0].detail).toContain('4 accepted adds');
+  });
+
+  test('add-burst ignores blank sessions, non-accepted adds, and respects the default threshold', () => {
+    addRows('s', '', 40); // blank session cannot be grouped
+    for (let i = 0; i < 40; i++) logUsage(dir, 's', 'add', true, 1, { session: 'dup', outcome: 'dedup-blocked' });
+    addRows('s', 'ok', 15); // default N is 15: exactly 15 is not a burst
+    expect(stats(dir).signals.some((g) => g.kind === 'add-burst')).toBe(false);
+    addRows('s', 'ok', 1);
+    expect(stats(dir).signals.filter((g) => g.kind === 'add-burst')).toHaveLength(1);
   });
 });
 

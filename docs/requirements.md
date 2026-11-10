@@ -730,7 +730,7 @@ and `describe('nb stale — cull candidates (issue #240)')`.
 **FR-CONFIG-001 (Should).** `nb config` SHALL print every effective (post-clamp) tunable
 as `name=value`, one per line — `maxLines`, `maxChars`, `nearThreshold`, `usageRing`,
 `usageRingSlack`, `staleLockMs`, `lockGraceMs`, and the `nb stats` thresholds
-`loopN`/`loopWindowSec`/`silentHours`/`errMin`/`errRate`/`coverageHi`/`recallMissHi` — each
+`loopN`/`loopWindowSec`/`silentHours`/`errMin`/`addBurstN`/`errRate`/`coverageHi`/`recallMissHi` — each
 read from the SAME exported getter the hot path uses (see [§7](#7-configuration)), so a
 printed value can never drift from the value in force. Each line SHALL be tagged with its
 source: `(default)` when the backing `NB_*` var is unset, `(env NB_*)` when it is set, or
@@ -1163,6 +1163,22 @@ paths record no misses), and `notebook.test.ts` → `describe('usage log + stats
 round-trips the column, clamps a negative cell, folds into the vote error causes without
 inflating the error rate, and respects the noise floor on miss events).
 
+<a id="fr-stats-010"></a>
+**FR-STATS-010 (Should).** The `stats` notebook inventory SHALL carry, per shelf, `adds` (the
+`accepted` `add` rows for that shelf in the window), `addsPerDay` (`adds ÷ window days`, two
+decimals) and `retentionDays` — `cap ÷ addsPerDay` to one decimal when the shelf is at its cap and
+took at least one add, else `null` (never 0 or Infinity, [DP-5]). The human table prints
+`N adds (R/day)` on every shelf row and `, ~Dd retention` on a full one. `stats` SHALL also emit an
+`add-burst` diagnostic signal for each (session, shelf) pair whose accepted adds exceed
+`NB_ADD_BURST_N` (default 15); a blank session is skipped. The change only counts rows
+[FR-USAGE-002](#fr-usage-002) already writes: no field is added to a lesson ([NG-004]), no aging
+rule or scheduler ([NG-005]), and `STATS_SCHEMA_VERSION` SHALL NOT bump (additive).
+**Rationale:** On a full shelf eviction and aging fire once per add, so the time an unvoted lesson
+has to earn a vote is `cap ÷ add rate`. Nothing showed that rate, so "a full shelf is normal"
+could not be told from "this shelf forgets a lesson in ten days" (issue #353).
+*Proven by:* `notebook.test.ts` → `describe('stats add rate, retention window and add-burst (issue #353)')`
+and `cli.test.ts` → the `stats table shows the notebook inventory` tests.
+
 <a id="fr-stats-009"></a>
 **FR-STATS-009 (Should).** When `stats` is scoped to a shelf operand that has no
 `<shelf>.md` AND the requested window holds no usage rows for it, `stats` SHALL print one
@@ -1391,6 +1407,7 @@ to the default (integer vars also fall back on a non-numeric string).
 | `NB_LOOP_WINDOW_S` | 120 | 5–86400 | Loop anomaly: window (seconds). |
 | `NB_SILENT_H` | 48 | 1–8760 | Went-silent anomaly: silence threshold (hours). |
 | `NB_ERR_MIN` | 5 | 1–10000 | High-error-rate anomaly: min calls. |
+| `NB_ADD_BURST_N` | 15 | 1–100000 | `add-burst` signal ([FR-STATS-010](#fr-stats-010)): a session with more than this many accepted adds to one shelf. |
 | `NB_ERR_RATE` | 0.3 | 0–1 | High-error-rate anomaly: min failure fraction. |
 | `NB_COVERAGE_HI` | 0.5 | 0–1 | Surfacing readout ([FR-STATS-004](#fr-stats-004)): coverage ≥ this reads as novel-adds HIGH. |
 | `NB_RECALL_MISS_HI` | 0.2 | 0–1 | Surfacing readout ([FR-STATS-004](#fr-stats-004)): recall-miss ≥ this reads as dedup-blocks HIGH. |

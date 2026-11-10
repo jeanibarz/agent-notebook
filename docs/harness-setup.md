@@ -269,6 +269,7 @@ defaults to `%USERPROFILE%\.agent-notebook\notebooks`.
 nb --version                         # the CLI resolves
 nb add smoke "setup check" && nb show smoke   # a notebook round-trips
 nb list                              # the index renders
+nb stats                             # each shelf shows its adds and, when full, its retention window
 node examples/nb-janitor.mjs         # diagnostics run
 git -C "$(nb path)" log --oneline    # (if versioning) a commit appeared
 nb rm smoke "setup check"            # clean up the smoke lesson
@@ -278,6 +279,8 @@ In your harness, start a fresh session and give it a task: the agent should run
 `nb list` and open a relevant notebook on its own (the contract is in context),
 and — if you added the optional hooks — you'll also see the index injected at the
 top and a retrospective nudge when the task ends.
+
+If `nb stats` later shows a full shelf with a short retention window (a few days), the first remedy is fewer adds per session, before dividing the shelf or raising `NB_MAX_LINES`; the `add-burst` signal names the sessions that add in bursts.
 
 ---
 

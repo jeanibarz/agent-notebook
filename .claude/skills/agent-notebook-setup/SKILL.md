@@ -84,7 +84,10 @@ weekly cadence. It is read-only and safe.
 Run the checklist in `docs/harness-setup.md#verify-its-working`. Then tell them to
 start a fresh harness session and confirm the agent runs `nb list` and opens a
 relevant notebook on its own (and, if they added the optional hooks, that the index
-is injected at the top and a retrospective is nudged at the end).
+is injected at the top and a retrospective is nudged at the end). Also run `nb stats`:
+each shelf shows its adds and, once full, its retention window (`cap ÷ adds per day`). If that
+window is short, the first remedy is fewer adds per session (the `add-burst` signal names the
+sessions), before dividing a shelf or raising `NB_MAX_LINES`.
 
 ## Rules
 

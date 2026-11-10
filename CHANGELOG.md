@@ -9,6 +9,14 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Added
+- **`nb stats` shows each shelf's add rate, the retention window of a full shelf, and sessions that add in bursts (#353).**
+  On a full shelf each add evicts a line, so an untouched lesson lasts about `cap ÷ adds per day`, and nothing
+  showed that rate. Each shelf row now prints its accepted adds in the window (`N adds (R/day)`) and, when full,
+  `~Dd retention`; `--json` gains `adds`, `addsPerDay` and `retentionDays` per shelf (additive, schema version
+  unchanged). A new `add-burst` signal flags a session that accepted more than `NB_ADD_BURST_N` (default 15) adds
+  into one shelf. Docs now say the first remedy for a short window is fewer adds per session.
+
 ### Fixed
 - **A shelf with git merge-conflict markers is no longer silently rewritten as clean lessons (#333).**
   After a `git pull`/`git merge` conflict in a git-versioned notebook, the `<<<<<<<`, `=======` and `>>>>>>>`
