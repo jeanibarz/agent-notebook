@@ -1022,6 +1022,22 @@ function writeEntries(dir: string, shelf: string, entries: Entry[], metaLines?: 
   const file = shelfFile(dir, shelf);
   const meta = metaLines ?? readMetaLines(dir, shelf);
   const lines = [...meta, ...entries.map(formatLine)];
+  if (lines.length === 0) {
+    // Phantom reap (issues #209, #355): no lesson and no metadata would persist
+    // as a 0-byte `<shelf>.md` — debris `listNotebooks` HIDES ([FR-LIST-004]) but
+    // nothing ever removes, so it lingers in the dir, backups, and git history.
+    // Unlink instead, centrally, so every mutation that can empty a shelf
+    // (`rm`, `move`, `describe <shelf> ""`) reaps it. Callers hold the lock, so no
+    // concurrent writer's in-flight temp is at risk. A shelf that keeps a
+    // `# desc:` line never gets here. If the unlink fails for a reason other than
+    // "already absent", fall through and write the empty file as before.
+    try {
+      unlinkSync(file);
+      return;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    }
+  }
   const body = lines.join('\n');
   // Per-process-unique temp path (issue #270). withLock serializes writers on a
   // healthy host, but its single-host mkdir spinlock can declare a slow holder
@@ -1537,23 +1553,8 @@ export function remove(dir: string, shelf: string, selector: string): Promise<Vo
     if (entries.length === 0) throw new NbError('no_match', `notebook for shelf "${shelf}" is empty`);
     const idx = selectIndex(entries, selector);
     const [gone] = entries.splice(idx, 1);
-    if (entries.length === 0 && metaLines.length === 0) {
-      // Phantom reap (issue #209): removing the last lesson left an UNDESCRIBED
-      // shelf, which `writeEntries` would persist as a 0-byte `<shelf>.md` —
-      // debris `listNotebooks` HIDES ([FR-LIST-004]) but nothing ever removes, so
-      // it lingers in the dir, every backup, and git history without bound. Unlink
-      // it instead. Best-effort (the `rm` has already succeeded) and under this
-      // lock, so no concurrent writer's in-flight `.md.<pid>.tmp` is at risk and
-      // only a truly empty file qualifies. A described-but-empty shelf (metaLines
-      // non-empty) falls to the else branch and keeps its `# desc:` trigger.
-      try {
-        unlinkSync(shelfFile(dir, shelf));
-      } catch {
-        /* already absent or not removable — reaping is best-effort */
-      }
-    } else {
-      writeEntries(dir, shelf, entries, metaLines);
-    }
+    // An emptied UNDESCRIBED shelf is reaped by writeEntries (issues #209, #355).
+    writeEntries(dir, shelf, entries, metaLines);
     return { text: gone.text, score: gone.score };
   });
 }

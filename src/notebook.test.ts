@@ -2255,6 +2255,9 @@ describe('move (score-preserving cross-shelf move, issue #103)', () => {
     // duplicating it. Pin the order by injecting a failure on the SECOND write
     // (the source rewrite) and proving the lesson survives in BOTH shelves.
     await addEntry(dir, 'from', 'crash-safety lesson');
+    // A second lesson keeps the source non-empty so its rewrite (not a phantom
+    // reap, issue #355) is what the injected rename failure interrupts.
+    await addEntry(dir, 'from', 'unrelated bystander');
     await vote(dir, 'from', 'crash-safety', 1); // +2: prove score-bearing data, not just presence
     const fromFile = join(dir, 'from.md');
     const toFile = join(dir, 'to.md');
@@ -2277,7 +2280,7 @@ describe('move (score-preserving cross-shelf move, issue #103)', () => {
     // full +2 score. Had the writes been reordered, the source rewrite would have
     // failed FIRST and the target would be empty, so this pins the ordering.
     expect(readEntries(dir, 'to')).toEqual([{ score: 2, text: 'crash-safety lesson' }]);
-    expect(readEntries(dir, 'from')).toEqual([{ score: 2, text: 'crash-safety lesson' }]);
+    expect(readEntries(dir, 'from')).toContainEqual({ score: 2, text: 'crash-safety lesson' });
   });
 });
 
@@ -3961,6 +3964,49 @@ describe('reaps an emptied, undescribed phantom shelf (issue #209)', () => {
     expect(existsSync(join(dir, 'gone.md'))).toBe(false);
     expect(existsSync(join(dir, 'keep.md'))).toBe(true);
     expect(readEntries(dir, 'keep').map((e) => e.text)).toEqual(['y']);
+  });
+});
+
+describe('reaps a phantom shelf left by move and describe "" (issue #355)', () => {
+  test('move of the last lesson off an undescribed shelf removes the source file', async () => {
+    await addEntry(dir, 'target', 'a lesson that stays');
+    await addEntry(dir, 'src', 'the only lesson');
+    const r = await move(dir, 'src', 'target', 'the only');
+    expect(r.reason).toBe('moved');
+    expect(existsSync(join(dir, 'src.md'))).toBe(false);
+    expect(readEntries(dir, 'target')).toHaveLength(2);
+    expect(listNotebooks(dir).rows.map((n) => n.shelf)).toEqual(['target']);
+  });
+
+  test('move of the last lesson off a DESCRIBED shelf keeps the file and its description', async () => {
+    await addEntry(dir, 'target', 'a lesson that stays');
+    await addEntry(dir, 'src', 'the only lesson');
+    await setDescription(dir, 'src', 'open when testing');
+    await move(dir, 'src', 'target', 'the only');
+    expect(existsSync(join(dir, 'src.md'))).toBe(true);
+    expect(getDescription(dir, 'src')).toBe('open when testing');
+  });
+
+  test('describe "" on a shelf with no lessons removes the file', async () => {
+    await addEntry(dir, 'target', 'a lesson that stays');
+    await addEntry(dir, 'old', 'another only lesson');
+    await setDescription(dir, 'old', 'open when testing');
+    await move(dir, 'old', 'target', 'another');
+    expect(existsSync(join(dir, 'old.md'))).toBe(true); // description keeps it
+    await setDescription(dir, 'old', '');
+    expect(existsSync(join(dir, 'old.md'))).toBe(false);
+  });
+
+  test('describe "" on a shelf that still has lessons keeps the file', async () => {
+    await addEntry(dir, 's', 'x');
+    await setDescription(dir, 's', 'trigger');
+    await setDescription(dir, 's', '');
+    expect(readEntries(dir, 's').map((e) => e.text)).toEqual(['x']);
+  });
+
+  test('describe "" on a shelf that never existed creates no file', async () => {
+    await setDescription(dir, 'ghost', '');
+    expect(existsSync(join(dir, 'ghost.md'))).toBe(false);
   });
 });
 
