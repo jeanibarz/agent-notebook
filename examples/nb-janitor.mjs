@@ -150,10 +150,12 @@ function readNotebooks(dir) {
       // A `# desc:` line in the leading metadata block is the shelf's trigger —
       // "the situation in which you should open me". Its presence (not its text)
       // is what section 7 ranks on, so a plain boolean is enough.
-      described = rawLines.some((l) => /^#\s*desc:/.test(l));
       let inMeta = true;
       for (const l of rawLines) {
-        if (inMeta && META_RE.test(l)) continue;
+        if (inMeta && META_RE.test(l)) {
+          if (/^#\s*desc:/.test(l)) described = true;
+          continue;
+        }
         inMeta = false;
         if (l.trim() === '') continue;
         const tab = l.indexOf('\t');
@@ -368,8 +370,13 @@ shelfDups.sort((x, y) => y.sim - x.sim);
 const shelfKeys = new Map(); // shelf → Map(dedupKey → { id, score, text }), best-scored copy per key
 for (const n of notebooks) {
   const keys = new Map();
+  // A shelf holding a merge-conflict marker is left out: nb refuses `move`/`rm` on it until the conflict is
+  // resolved, so any command suggested for it would fail ("<<<<<<< HEAD" / "=======" are merge debris anyway).
+  if (n.lessons.some((e) => e.marker)) {
+    shelfKeys.set(n.shelf, keys);
+    continue;
+  }
   for (const e of n.lessons) {
-    if (e.marker) continue; // "<<<<<<< HEAD" / "=======" are merge debris, not lessons
     const key = dedupKey(e.text);
     if (key === '') continue; // punctuation-only: nothing to compare
     const prior = keys.get(key);
@@ -666,6 +673,11 @@ if (JSON_OUT) {
   // Wait for the write to drain before exiting: a pipe write is asynchronous on macOS (and Windows), so an
   // immediate process.exit() cut a report larger than the first pipe chunk (8 KB) off mid-string and the
   // consumer's JSON.parse failed.
+  // A reader that closes early (`| head`) is not an error here: exit 0 as before (nb's own CLI treats EPIPE the same way).
+  process.stdout.on('error', (e) => {
+    if (e.code === 'EPIPE') process.exit(0);
+    throw e;
+  });
   await new Promise((resolve) => process.stdout.write(JSON.stringify(report, null, 2) + '\n', resolve));
   process.exit(0);
 }

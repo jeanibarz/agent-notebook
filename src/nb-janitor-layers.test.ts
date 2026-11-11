@@ -290,6 +290,21 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
     expect(json().crossShelfDups).toEqual([]);
   });
 
+  test('a shelf holding git merge-conflict markers is left out (nb would refuse the printed commands)', () => {
+    shelf('o@a', [[1, 'Pin the base'], '<<<<<<< HEAD', '=======', '>>>>>>> branch']);
+    shelf('o@b', [[1, 'pin the base']]);
+    expect(json().crossShelfDups).toEqual([]);
+  });
+
+  test('--json exits 0 when the reader closes the pipe early (no EPIPE crash)', () => {
+    for (const base of ['w', 'x', 'y', 'z'])
+      for (const slug of ['a', 'b'])
+        shelf(`${base}@${slug}`, Array.from({ length: 50 }, (_, i): [number, string] => [1, `${base} shared lesson number ${i} about builds`]));
+    const script = `node ${JSON.stringify(janitor)} --json | head -c 100 >/dev/null; echo "exit=\${PIPESTATUS[0]}"`;
+    const out = execFileSync('bash', ['-c', script], { env: env(), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+    expect(out.trim()).toBe('exit=0');
+  });
+
   test('the key and id match what the package computes from the file (control/zero-width chars are deleted, not spaced)', () => {
     const samples = [
       'Plain lesson',

@@ -37,7 +37,7 @@ versions are listed plainly.
   macOS, so a report larger than the first 8 KB chunk reached the consumer truncated and `JSON.parse` failed;
   it now waits for the write to drain. The shelf reader also now strips a leading byte-order mark, accepts CRLF
   line endings, deletes control and zero-width characters before collapsing whitespace, and treats only the
-  leading `# key:` lines as metadata, as `nb` does. Before, a BOM-prefixed `# desc:` line counted as a lesson
+  leading `# key:` lines as metadata, as `nb` does; a closed pipe (`| head`) still exits 0. Before, a BOM-prefixed `# desc:` line counted as a lesson
   (and the shelf as undescribed in section 7).
 - **A new shelf whose name differs only by case from an existing one is refused (#337).**
   `Foo.md` and `foo.md` coexist on Linux but are one file on default macOS/Windows filesystems, so a git-synced

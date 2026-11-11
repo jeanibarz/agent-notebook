@@ -1346,8 +1346,8 @@ shelves", names the highest-scored copy (ties broken by shelf name), and suggest
 `nb move <that-shelf> <base> <id>` followed by `nb rm <other-shelf> <id> --reason obsolete --note duplicate`
 (`duplicate` is a `merge` reason code, not an `rm` one). If the bare `<base>` shelf already
 holds the lesson, only the `nb rm` lines are suggested, because `nb move` refuses a target
-that holds an equal lesson. Bare shelves (no `@`), bases that differ by case, git
-merge-conflict marker lines and lessons whose normal form is empty never form a group.
+that holds an equal lesson. Bare shelves (no `@`), bases that differ by case, shelves holding git
+merge-conflict markers (`nb` refuses to rewrite them) and lessons whose normal form is empty never form a group.
 The script mirrors `sanitizeLesson` + `dedupKey` + `entryId` and `readShelf`'s parsing (leading BOM,
 CRLF, leading `# key:` metadata lines) because it ships dependency-free and cannot import them, so the
 same key and id are printed as `nb show --json` shows. `--json` SHALL be written in full before the
