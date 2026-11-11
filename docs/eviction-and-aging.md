@@ -183,9 +183,15 @@ flowchart TD
 - **G5:** decay targets the *stalest* line (recency), so an actively-used high
   lesson is spared while a quiet one is not — the targeting score-alone could not
   do.
-- **G6:** at most one lesson is evicted per add; a run of junk adds churns the
-  single freshest "probation" slot rather than eroding the proven corpus, and one
-  upvote rescues any lesson the decay is pushing out.
+- **G6 (met in part):** at most one lesson is evicted per add, and one upvote
+  rescues any lesson the decay is pushing out. It is **not** met for proven
+  lessons that receive no further votes: every over-cap add also docks the
+  stalest survivor by a point, so a run of adds does erode them. With a cap of
+  ten and ten lessons at +3, the original lessons left after each of twenty
+  unrelated adds are 9, 9, 8, 8, 7, 7, 6, 6, 5, 5, 4, 4, 3, 3, 2, 2, 1, 1, 0, 0
+  (pinned by a test in `src/notebook.test.ts`). See
+  [The retention window is set by the add rate](#the-retention-window-is-set-by-the-add-rate).
+  Whether G6 *should* hold is a separate design question.
 
 ### The price we knowingly pay
 
