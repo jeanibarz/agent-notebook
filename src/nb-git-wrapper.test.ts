@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { MUTATING_COMMANDS, KNOWN_COMMANDS } from './cli.js';
 
 // Guards issue #244: nb-git-wrapper.mjs commits a notebook on every *mutating*
 // nb command, but its hard-coded MUTATING set once omitted `move` — a fully
@@ -87,6 +88,40 @@ describe('nb-git-wrapper MUTATING set (issue #244)', () => {
     expect(runWrapper(['add', 'notes', 'a durable lesson']).status).toBe(0);
     expect(commitCount(nbDir)).toBe(before + 1);
     expect(lastSubject(nbDir)).toBe('nb add notes');
+  });
+
+  test("the wrapper's MUTATING literal equals the CLI's MUTATING_COMMANDS (issue #411)", () => {
+    const m = source.match(/const MUTATING = new Set\(\[([^\]]*)\]\);/);
+    expect(m).not.toBeNull();
+    const literal = [...m![1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort();
+    expect(literal).toEqual([...MUTATING_COMMANDS].sort());
+    // Every mutating command must also be a command the CLI actually dispatches.
+    for (const c of MUTATING_COMMANDS) expect(KNOWN_COMMANDS as readonly string[]).toContain(c);
+  });
+
+  test.each(MUTATING_COMMANDS)('`%s` through the wrapper yields exactly one commit', (cmd) => {
+    // Seed two lessons in a source shelf (merge needs two ids; move/split/rm/vote one).
+    expect(runWrapper(['add', 'src-shelf', 'alpha lesson one']).status).toBe(0);
+    expect(runWrapper(['add', 'src-shelf', 'beta lesson two']).status).toBe(0);
+    const shown = execFileSync('node', [join(root, 'dist', 'cli.js'), 'show', 'src-shelf'], {
+      encoding: 'utf-8',
+      env: { ...process.env, NB_DIR: nbDir },
+    });
+    const ids = [...shown.matchAll(/^([0-9a-f]{6})\s/gm)].map((x) => x[1]);
+    expect(ids).toHaveLength(2);
+    const args: Record<string, string[]> = {
+      add: ['add', 'src-shelf', 'gamma lesson three'],
+      vote: ['vote', 'src-shelf', ids[0], '+1'],
+      merge: ['merge', 'src-shelf', ids[0], ids[1], 'alpha and beta merged'],
+      rm: ['rm', 'src-shelf', ids[0]],
+      split: ['split', 'src-shelf', ids[0], 'alpha part one', 'alpha part two'],
+      move: ['move', 'src-shelf', 'dst-shelf', ids[0]],
+      describe: ['describe', 'src-shelf', 'a shelf description'],
+    };
+    const before = commitCount(nbDir);
+    expect(runWrapper(args[cmd]).status).toBe(0);
+    expect(commitCount(nbDir)).toBe(before + 1);
+    expect(lastSubject(nbDir)).toBe(`nb ${cmd} src-shelf`);
   });
 
   test('a read-only command (`show`) produces no commit', () => {

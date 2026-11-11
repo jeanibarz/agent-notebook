@@ -346,6 +346,15 @@ export const KNOWN_COMMANDS = [
 ] as const;
 
 /**
+ * The commands that write a notebook. `examples/nb-git-wrapper.mjs` keeps a
+ * literal copy of this list (it is a standalone script and cannot import from
+ * the package) to decide which commands are worth an auto-commit; a test
+ * compares the two so they cannot drift apart (issue #411). Deliberately NOT
+ * derived from `MAX_ARGS`, whose keys are operand caps, not a write surface.
+ */
+export const MUTATING_COMMANDS = ['add', 'vote', 'merge', 'rm', 'split', 'move', 'describe'] as const;
+
+/**
  * Commands whose FIRST operand is a shelf name, so the generated shell
  * completion offers existing shelf names there. `move` is handled on its own in
  * the emitted scripts (both its `from` and `to` operands are shelves). Commands
