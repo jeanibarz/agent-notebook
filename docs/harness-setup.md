@@ -168,7 +168,10 @@ run the wrapper only where you want commits.
 
 > Why commit per change and not once a day? So the history mirrors the agent's
 > actual learning sequence — you can see *which task* added or downvoted a lesson,
-> not just a daily blob. The daily job (next section) only pushes.
+> not just a daily blob. (Seeing the *task* needs the opt-in `NB_GIT_SESSION_TRAILER=1`, which adds
+> a `Nb-Session: <NB_SESSION>` line to each commit body; find a task's changes with
+> `git log --grep '^Nb-Session: <id>$'`. It is off by default because session ids then
+> enter history the backup job may push.) The daily job (next section) only pushes.
 
 ---
 

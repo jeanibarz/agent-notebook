@@ -39,6 +39,12 @@
 //   problem never fails an `nb` call or loses a lesson (the daily backup sweeps
 //   any straggler). Opt out entirely with NB_GIT_AUTOCOMMIT=0.
 //
+// TASK ATTRIBUTION (opt-in)
+//   Set NB_GIT_SESSION_TRAILER=1 and every commit also carries a body line
+//   `Nb-Session: <NB_SESSION>` (cleaned and capped exactly as the usage log stores
+//   the session), so `git log --grep '^Nb-Session: <id>$'` finds a task's changes.
+//   Off by default: it puts session ids into history the backup job may push.
+//
 // CONCURRENCY
 //   Under the parallel-subagent workloads this project anticipates, two wrappers
 //   race in the git section: with a plain `git add -A`, one stages the other's
@@ -289,7 +295,7 @@ function changedShelfPaths(cmd, args) {
 
 /** Commit a notebook change when NB_DIR is a git repo. Best-effort, fail-open.
  *  Runs AFTER the lesson is already on disk; only the git calls are serialized. */
-async function autoCommit(dir, argv) {
+async function autoCommit(dir, argv, sessionTrailer = '') {
   if (process.env.NB_GIT_AUTOCOMMIT === '0') return;
   if (!existsSync(join(dir, '.git'))) return;
   const env = cleanGitEnv();
@@ -319,11 +325,27 @@ async function autoCommit(dir, argv) {
         /* exit 1 → staged changes present → fall through to commit */
       }
       const msg = `nb ${cmd}${shelf ? ` ${shelf}` : ''}`.slice(0, 72);
-      run(['commit', '--quiet', '-m', msg]);
+      run(['commit', '--quiet', '-m', msg, ...(sessionTrailer ? ['-m', sessionTrailer] : [])]);
     } catch {
       /* fail-open: never fail an nb call because the backup commit failed */
     }
   });
+}
+
+// The `Nb-Session:` trailer (opt-in via NB_GIT_SESSION_TRAILER=1), or '' when off, the
+// session is blank, or the package's helpers cannot be loaded (fail-open). The value is
+// cleaned and capped with the package's own helpers, matching the usage log's session column.
+async function sessionTrailerFor(entry) {
+  if (process.env.NB_GIT_SESSION_TRAILER !== '1') return '';
+  try {
+    const nbm = await import(pathToFileURL(join(dirname(entry), 'notebook.js')).href);
+    let session = nbm.stripControlChars(String(process.env.NB_SESSION ?? '').replace(/[\t\r\n]+/g, ' '));
+    const cap = nbm.maxChars();
+    if (session.length > cap) session = session.slice(0, cap - 1) + '…';
+    return session.trim() ? `Nb-Session: ${session}` : '';
+  } catch {
+    return '';
+  }
 }
 
 async function main() {
@@ -354,7 +376,7 @@ async function main() {
   const code = await mod.runNbCli(argv);
   process.exitCode = code;
   if (code === 0 && MUTATING.has((argv[0] ?? '').trim())) {
-    await autoCommit(dir, argv);
+    await autoCommit(dir, argv, await sessionTrailerFor(entry));
   }
 }
 

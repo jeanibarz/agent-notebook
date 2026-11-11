@@ -791,7 +791,7 @@ variable it does not read as *not read by `nb`* (with a nearest-name `did you me
 one is close) — in the human output as a trailing block and in `--json` as an additive top-level
 `unrecognized` array — derived from the SAME registry `effectiveConfig` uses, informational only
 (never an error, exit code stays `0`). Variables read only by the tooling shipped under
-`examples/` (`NB_BIN`, `NB_RETRO_TTL_DAYS`, `NB_GIT_AUTOCOMMIT`, `NB_BACKUP_PUSH_TIMEOUT`,
+`examples/` (`NB_BIN`, `NB_RETRO_TTL_DAYS`, `NB_GIT_AUTOCOMMIT`, `NB_GIT_SESSION_TRAILER`, `NB_BACKUP_PUSH_TIMEOUT`,
 `NB_BACKUP_GIT_LOCK_WAIT`) SHALL NOT be flagged — they belong to those tools, not to `nb`. `nb config` SHALL be read-only (it mutates no notebook) and is scoped
 to *configuration*, distinct from `nb stats` (usage, anomalies, engagement). To surface the
 `nb stats` thresholds without duplicating their clamp logic, `stats()` reads them through those
