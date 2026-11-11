@@ -38,6 +38,14 @@ versions are listed plainly.
   The "blocked move target" note no longer appears when no move is needed.
 
 ### Fixed
+- **`nb list`, `nb search` and `nb stats` no longer report an unreadable notebooks directory as an empty store (#383).**
+  Before, any failure to list `NB_DIR` (permissions, an I/O error, a regular file where the directory should be)
+  printed "no notebooks yet" and exited 0, so a session-start hook could not tell a broken store from an empty one.
+  Only a missing directory still means empty. Any other errno now fails the command with one stderr line naming
+  the directory and the code, for example `nb list: cannot read notebooks directory "/x" (EACCES)`, and exit 1; `--json`
+  carries the usual structured error object. `nb doctor` fails the same way instead of reporting a clean store,
+  and `nb add` into a directory it can write but not list (mode `-wx`) now fails with the same message instead
+  of writing a shelf no `nb list` could show. See [FR-LIST-007](docs/requirements.md#fr-list-007).
 - **`nb-janitor --json` is no longer cut off when piped, and the janitor reads shelves the way `nb` does (#362).**
   The `--json` path called `process.exit()` straight after writing, and a pipe write is asynchronous on
   macOS, so a report larger than the first 8 KB chunk reached the consumer truncated and `JSON.parse` failed;

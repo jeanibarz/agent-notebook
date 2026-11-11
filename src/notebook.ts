@@ -2003,13 +2003,25 @@ export function renderEntries(shelf: string, entries: Entry[]): string {
  * (issue #90) — the reserved name keeps a write command from ever creating one.
  * An absent/empty notebooks dir yields `[]` (not an error), so `nb list` can
  * report "no notebooks yet" and exit 0 on a clean machine.
+ *
+ * Only a missing directory (`ENOENT`) means "empty" (issue #383). A directory
+ * that exists but cannot be read (`EACCES`, `EIO`, a regular file in its place →
+ * `ENOTDIR`, …) throws, naming the directory and the errno, so `nb list` /
+ * `search` / `stats` fail loudly instead of reporting an empty store. The thrown
+ * error keeps the original `code`. A codeless throw is re-thrown as is, as in
+ * `skipUnreadable` (#332), so a code bug is never relabeled as a filesystem error.
  */
 export function listShelves(dir: string): string[] {
   let names: string[];
   try {
     names = readdirSync(dir);
-  } catch {
-    return []; // dir does not exist yet (nothing has been written)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === 'ENOENT') return []; // dir does not exist yet (nothing has been written)
+    if (typeof code !== 'string' || code === '') throw err;
+    throw Object.assign(new Error(`cannot read notebooks directory ${JSON.stringify(dir)} (${code})`, { cause: err }), {
+      code,
+    });
   }
   return names
     .filter((n) => !n.startsWith('.') && n.endsWith('.md') && n.toLowerCase() !== 'readme.md')
