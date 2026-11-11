@@ -43,7 +43,8 @@ echo
 # Prints the grouped index and returns 0. Returns non-zero without printing
 # anything when `nb list --json` fails or is not JSON, so the caller falls back
 # to the flat index below (fail open: a session start never errors).
-# `--limit 1000` lifts the default 50-row cap so the hidden count is exact.
+# `--limit 1000` lifts the default 50-row cap so the hidden count is exact for any
+# store under 1000 shelves; beyond that, a line says how many shelves were not read.
 # Only POSIX shell plus `node` (which `nb` already needs): no bash-4 syntax, so
 # it also runs under macOS's bash 3.2.
 layered_index() {
@@ -80,6 +81,9 @@ layered_index() {
     section("Domain layer (bare shelves)", layers.domain);
     section("Global layer", layers.global);
     console.log("");
+    const unread = (data.total || 0) - data.rows.length;
+    if (unread > 0)
+      console.log("  (" + unread + " more shelf(s) were not classified; `nb list` shows all)");
     if (hidden > 0 && layers.project.length === 0)
       console.log("  (NOTE: " + hidden + " shelf(s) for other projects hidden and NONE end in @" + slug + " — if that slug is wrong, run `nb list` to see them all)");
     else
@@ -87,8 +91,11 @@ layered_index() {
   ' || return 1
 }
 
-if [ -n "${NB_PROJECT_SLUG:-}" ]; then
-  layered="$(layered_index "$NB_PROJECT_SLUG")" && { printf '%s\n' "$layered"; exit 0; }
+# A blank or whitespace-only slug counts as unset (the layered index needs a slug).
+slug="${NB_PROJECT_SLUG:-}"
+slug="${slug#"${slug%%[![:space:]]*}"}"   # trim leading whitespace (POSIX, bash 3.2-safe)
+if [ -n "$slug" ]; then
+  layered="$(layered_index "$slug")" && { printf '%s\n' "$layered"; exit 0; }
   echo "  (WARNING: layered index unavailable — showing the flat index instead)"
 fi
 

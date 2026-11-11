@@ -29,9 +29,12 @@ describe('docs/memory-layers.md (issue #363)', () => {
   test('every ```sh block runs as written against a throwaway store', () => {
     const blocks = [...pageText.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]);
     expect(blocks.length).toBeGreaterThan(0); // not vacuous
-    // `set -e` stops at the first failing command; the page sets NB_DIR itself, so
-    // the developer's own store is never reached (NB_DIR is unset first as a belt).
-    const env = { ...process.env, PATH: `${join(tmp, 'bin')}:${process.env.PATH}` };
+    // `set -e` stops at the first failing command; the page sets NB_DIR itself.
+    // HOME points into the temp dir too, so even if a block lost its `export NB_DIR`,
+    // `nb` would write to the default store under THIS home, never the developer's.
+    const home = join(tmp, 'home');
+    mkdirSync(home);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, PATH: `${join(tmp, 'bin')}:${process.env.PATH}` };
     delete env.NB_DIR;
     delete env.NB_MAX_LINES;
     const r = spawnSync('bash', ['-e', '-c', blocks.join('\n')], {
@@ -51,6 +54,22 @@ describe('docs/memory-layers.md (issue #363)', () => {
     expect(links.length).toBeGreaterThan(0);
     for (const l of links) {
       expect(existsSync(resolve(dirname(page), l)), `broken link in docs/memory-layers.md: ${l}`).toBe(true);
+    }
+  });
+
+  test('relative links with a #anchor point at a heading that exists', () => {
+    const slug = (h: string) =>
+      h.toLowerCase().replace(/[^\p{L}\p{N} _-]/gu, '').trim().replace(/ /g, '-');
+    const withAnchor = [...pageText.matchAll(/\]\((?!https?:)([^)#\s]*)#([^)\s]+)\)/g)];
+    expect(withAnchor.length).toBeGreaterThan(0);
+    for (const [, file, anchor] of withAnchor) {
+      const text = file ? readFileSync(resolve(dirname(page), file), 'utf-8') : pageText;
+      // A target is a heading (GitHub slug) or an explicit `<a id="...">` (requirements.md uses those).
+      const anchors = [
+        ...[...text.matchAll(/^#{1,6} +(.+?) *$/gm)].map((m) => slug(m[1])),
+        ...[...text.matchAll(/<a id="([^"]+)"/g)].map((m) => m[1]),
+      ];
+      expect(anchors, `${file || 'memory-layers.md'}#${anchor} has no matching heading`).toContain(anchor);
     }
   });
 
