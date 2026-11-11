@@ -3370,6 +3370,32 @@ describe('surfacing metrics (issue #81)', () => {
     expect(sf.precisionMiss).toBeCloseTo(0.5); // 1 downvote of 2 votes
   });
 
+  test('a batch vote row counts one vote per landed id (issue #373)', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['a1', 'a2', 'a3', 'a4', 'a5'] });
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'down', entries: ['a6'] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.upvotes).toBe(5);
+    expect(sf.votesActedOn).toBe(6);
+    expect(sf.precisionMiss).toBeCloseTo(1 / 6);
+  });
+
+  test('a batch downvote counts per id; a legacy row without ids counts once', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'down', entries: ['a1', 'a2'] });
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: [] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.votesActedOn).toBe(3);
+    expect(sf.upvotes).toBe(1);
+    expect(sf.serendipity).toBe(1);
+  });
+
+  test('a batch upvote splits pulled vs pushed per id for serendipity (issue #373)', () => {
+    logUsage(dir, '-', 'search', true, 1, { session: 's1', outcome: 'match', entries: ['a2'], note: 'q' });
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['a1', 'a2', 'a3', 'a4'] });
+    const sf = stats(dir, { now: Date.now() }).surfacing;
+    expect(sf.upvotes).toBe(4);
+    expect(sf.serendipity).toBeCloseTo(3 / 4);
+  });
+
   test('the engagement gate excludes a session with no vote (not scored as healthy quiet)', () => {
     // s1 has adds but NO vote → not engaged → its adds are not scored.
     logUsage(dir, 'patcher', 'add', true, 2, { session: 's1', outcome: 'dedup-blocked', entries: ['x'] });

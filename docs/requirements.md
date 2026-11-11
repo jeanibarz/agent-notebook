@@ -1050,7 +1050,9 @@ Each rate SHALL be conditioned on **attempts** (`addAttempts` = `accepted` +
 `dedup-blocked` + `rejected-full`, excluding the malformed `empty`/`too-long`;
 `rejected-full` is a historical outcome — the always-admit policy no longer
 produces it, but old logs may still carry it, so it stays in the denominator;
-`votesActedOn` = `up` + `down`), so a lazy agent is a small sample rather than a
+`votesActedOn` = `up` + `down`; votes are counted **per lesson** — a batch vote row
+listing N landed ids counts N votes, each tested separately for search-pull provenance
+— [#373](https://github.com/jeanibarz/agent-notebook/issues/373)), so a lazy agent is a small sample rather than a
 deflated `0`. Each rate SHALL be **gated on engagement**: only sessions that show a
 vote are scored (a vote-less or blank-session row is excluded as a setup/plumbing gap,
 not read as "healthy quiet"). A rate with an empty denominator (no engaged sessions, or
