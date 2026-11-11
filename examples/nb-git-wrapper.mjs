@@ -12,10 +12,14 @@
 // HOW TO USE IT (pick one)
 //   • Put it first on PATH as `nb` (shadowing the global `nb`):
 //       mkdir -p ~/.local/bin && cp nb-git-wrapper.mjs ~/.local/bin/nb-git-wrapper.mjs
-//       printf '#!/bin/sh\nexec node "$(dirname "$0")/nb-git-wrapper.mjs" "$@"\n' > ~/.local/bin/nb
+//       NB_GLOBAL_ROOT="$(npm root -g)"; [ -d "$NB_GLOBAL_ROOT" ] || NB_GLOBAL_ROOT=   # bake the root only if it exists
+//       printf '#!/bin/sh\nNODE_PATH="%s" exec node "$(dirname "$0")/nb-git-wrapper.mjs" "$@"\n' "$NB_GLOBAL_ROOT" > ~/.local/bin/nb
 //       chmod +x ~/.local/bin/nb         # ensure ~/.local/bin precedes npm's bin
 //     (Keep the .mjs name: older Node (e.g. 18, 22.5) cannot run an extensionless
 //     ES module and stops at its first `import`. The shim works on all.)
+//     (The shim bakes in the global npm root as NODE_PATH, so a call does not spawn
+//     `npm root -g` (~120 ms). After a Node-version or npm-prefix change, rewrite the
+//     shim; until then the wrapper still works via the per-call npm fallback.)
 //   • Or keep the real `nb` as-is and call this explicitly where you want commits.
 //
 //   Then make NB_DIR a repo once:  (cd "$(nb path)" && git init)
@@ -133,7 +137,7 @@ function resolveNbCliEntry() {
     main = require.resolve('agent-notebook');
   } catch {
     // A copy in ~/.local/bin cannot see a global install by normal resolution, so
-    // fall back to the global npm root (one subprocess, only on this failure path).
+    // fall back to the global npm root (one subprocess; skipped when the shim set NODE_PATH).
     const globalRoot = globalNpmRoot();
     if (globalRoot) {
       searched.push(`the global npm root (${globalRoot})`);

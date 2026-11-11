@@ -190,6 +190,80 @@ describe('nb-git-wrapper installed outside the package (issue #376)', () => {
     }
   });
 
+  // Issue #405: the documented recipe bakes the global root into the shim as NODE_PATH,
+  // so a call does not spawn `npm root -g`. The fake npm logs every invocation.
+  function installDocumentedShim(npmRoot: (globalRoot: string) => string): { dir: string; log: string; env: NodeJS.ProcessEnv } {
+    const { dir } = installCopy();
+    const globalRoot = join(dir, 'global', 'node_modules');
+    const log = join(dir, 'npm-calls.log');
+    const fakeNpm = join(dir, 'bin', 'npm');
+    writeFileSync(fakeNpm, `#!/bin/sh\necho called >> "${log}"\necho "${npmRoot(globalRoot)}"\n`);
+    chmodSync(fakeNpm, 0o755);
+    const home = join(dir, 'home');
+    mkdirSync(join(home, '.local', 'bin'), { recursive: true });
+    copyFileSync(wrapper, join(home, '.local', 'bin', 'nb-git-wrapper.mjs'));
+    const env = { ...process.env, HOME: home, PATH: `${join(dir, 'bin')}:${process.env.PATH}` };
+    // Run the install lines of the documented recipe verbatim (docs/harness-setup.md).
+    const doc = readFileSync(join(root, 'docs', 'harness-setup.md'), 'utf-8');
+    const recipe = doc.split('\n').filter((l) => l.startsWith('NB_GLOBAL_ROOT=') || l.startsWith("printf '#!/bin/sh")).join('\n');
+    expect(recipe).toContain('NODE_PATH');
+    const w = spawnSync('sh', ['-c', recipe], { env, encoding: 'utf-8' });
+    expect(w.status).toBe(0);
+    chmodSync(join(home, '.local', 'bin', 'nb'), 0o755);
+    writeFileSync(log, ''); // forget the install-time lookup; only call-time invocations count
+    return { dir, log, env: { ...env, NB_DIR: nbDir } };
+  }
+
+  test.skipIf(process.platform === 'win32')('a shim written by the documented recipe does not spawn npm at call time', () => {
+    const { dir, log, env } = installDocumentedShim((g) => g);
+    try {
+      const r = spawnSync(join(dir, 'home', '.local', 'bin', 'nb'), ['--version'], { env, encoding: 'utf-8', timeout: 20000 });
+      expect(r.status).toBe(0);
+      expect(r.stdout.trim()).toMatch(/\d+\.\d+\.\d+/);
+      expect(readFileSync(log, 'utf-8')).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform === 'win32')('a shim without NODE_PATH does spawn npm (the two paths are distinct)', () => {
+    const { dir, env } = installCopy();
+    const log = join(dir, 'npm-calls.log');
+    try {
+      const globalRoot = join(dir, 'global', 'node_modules');
+      writeFileSync(join(dir, 'bin', 'npm'), `#!/bin/sh\necho called >> "${log}"\necho "${globalRoot}"\n`);
+      chmodSync(join(dir, 'bin', 'npm'), 0o755);
+      const r = spawnSync(join(dir, 'nb'), ['--version'], { env: { ...process.env, NB_DIR: nbDir, ...env }, encoding: 'utf-8', timeout: 20000 });
+      expect(r.status).toBe(0);
+      expect(readFileSync(log, 'utf-8')).toContain('called');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform === 'win32')('a baked root that no longer exists falls back to npm and still runs', () => {
+    const { dir, log, env } = installDocumentedShim((g) => g);
+    try {
+      const shim = join(dir, 'home', '.local', 'bin', 'nb');
+      const baked = join(dir, 'global', 'node_modules');
+      writeFileSync(shim, readFileSync(shim, 'utf-8').replace(baked, join(dir, 'gone')));
+      const r = spawnSync(shim, ['--version'], { env, encoding: 'utf-8', timeout: 20000 });
+      expect(r.status).toBe(0);
+      expect(readFileSync(log, 'utf-8')).toContain('called');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform === 'win32')('the recipe bakes nothing when npm reports a directory that does not exist', () => {
+    const { dir, env } = installDocumentedShim((g) => join(g, 'missing'));
+    try {
+      expect(readFileSync(join(dir, 'home', '.local', 'bin', 'nb'), 'utf-8')).toContain('NODE_PATH=""');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test.skipIf(process.platform === 'win32')('when the package cannot be found the message says what was searched', () => {
     const dir = mkdtempSync(join(tmpdir(), 'nb-wrapper-missing-'));
     try {
