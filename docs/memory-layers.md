@@ -138,7 +138,7 @@ nb stale code-review --limit 1    # the first row after the header is the lesson
 ```
 
 To see the effect without filling 50 lines, lower the cap with `NB_MAX_LINES`
-(see [the README](../README.md#other-environment-variables)). The parentheses run
+(see [A full shelf is the normal state](../README.md#a-full-shelf-is-the-normal-state) in the README). The parentheses run
 the block in a subshell, so the lowered cap does not leak into your shell:
 
 ```sh
@@ -191,7 +191,7 @@ If a repo already has two slugs, fold the short one into the long one with
 
 The example [janitor](harness-setup.md#the-janitor) (`examples/nb-janitor.mjs`,
 read-only) has two checks aimed at exactly this convention
-([FR-JANITOR-001](requirements.md#fr-janitor-001), issue #362):
+([FR-JANITOR-001](requirements.md#fr-janitor-001), [issue #362](https://github.com/jeanibarz/agent-notebook/issues/362)):
 
 - **Possible slug drift** (section 2): the same base name under two slugs where
   the shorter is the longer with leading parts dropped (`code-review@app` and
@@ -234,7 +234,7 @@ for setup.
 | Layer metadata in a shelf file (a `layer:` header) | A lesson is a string and a score ([NG-004](requirements.md#ng-004)); the name already says the layer. |
 | An `nb promote` command | `nb move` already relocates a lesson and keeps its score. |
 | A scope filter (`nb list --project …`) | `@` stays an opaque part of the name. `nb list [prefix]` matches only the *start* of a name ([FR-LIST-002](requirements.md#fr-list-002)). Considered and deferred: the harness already owns the hook and the wrapper, so it can filter without `nb` having to define what a slug is. |
-| Ordering shelves or composing a session's context by layer | Left to the caller. Issue #286 (closed) added batch `nb show --json` for exactly this, so a harness can assemble context itself, and kept ordering and budgeting out of `nb`. |
+| Ordering shelves or composing a session's context by layer | Left to the caller. [Issue #286](https://github.com/jeanibarz/agent-notebook/issues/286) (closed) added batch `nb show --json` for exactly this, so a harness can assemble context itself, and kept ordering and budgeting out of `nb`. |
 | Enforcing precedence, or protecting the global shelf | Which shelf is "global" and who may write it are harness policy. |
 
 If you do need more than this page offers, filter `nb list --json` in your own

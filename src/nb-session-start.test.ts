@@ -19,10 +19,12 @@ function run(stubBody: string, extraEnv: Record<string, string> = {}): string {
   const stub = join(dir, 'nb-stub');
   writeFileSync(stub, `#!/usr/bin/env bash\n${stubBody}\n`);
   chmodSync(stub, 0o755);
+  // NB_PROJECT_SLUG / NB_GLOBAL_SHELF are removed first (truly unset, not empty) so a
+  // developer's own shell cannot switch the layered variant on for the default tests.
+  const env: NodeJS.ProcessEnv = { ...process.env, NB_BIN: stub, ...extraEnv };
+  for (const k of ['NB_PROJECT_SLUG', 'NB_GLOBAL_SHELF']) if (!(k in extraEnv)) delete env[k];
   return execFileSync('bash', [hook], {
-    // NB_PROJECT_SLUG / NB_GLOBAL_SHELF are cleared first so a developer's own
-    // shell cannot switch the layered variant on for the default-path tests.
-    env: { ...process.env, NB_PROJECT_SLUG: '', NB_GLOBAL_SHELF: '', NB_BIN: stub, ...extraEnv },
+    env,
     encoding: 'utf-8',
   });
 }
@@ -68,8 +70,8 @@ const row = (shelf: string, lessons = 1, desc: string | null = null) => ({
 });
 // A stub `nb` that serves the given rows for `list --json` and the flat text for
 // plain `list`, so a test can tell which of the two the hook asked for.
-const layeredStub = (rows: unknown[]) =>
-  `if [ "$1" = list ] && [ "$2" = --json ]; then printf '%s' '${JSON.stringify({ dir: '/x', total: rows.length, rows })}'; else echo FLAT-LIST; fi`;
+const layeredStub = (rows: unknown[], total = rows.length) =>
+  `if [ "$1" = list ] && [ "$2" = --json ]; then printf '%s' '${JSON.stringify({ dir: '/x', total, rows })}'; else echo FLAT-LIST; fi`;
 
 describe('nb-session-start.sh layered variant (NB_PROJECT_SLUG)', () => {
   const rows = [
@@ -137,6 +139,19 @@ describe('nb-session-start.sh layered variant (NB_PROJECT_SLUG)', () => {
     const out = run('exit 3', { NB_PROJECT_SLUG: 'acme-app' });
     expect(out).toContain('WARNING: layered index unavailable');
     expect(out).toContain('`nb list` failed with exit 3');
+  });
+
+  test('a blank or whitespace-only NB_PROJECT_SLUG counts as unset', () => {
+    for (const blank of ['', '   ']) {
+      const out = run(layeredStub(rows), { NB_PROJECT_SLUG: blank });
+      expect(out).toContain('FLAT-LIST');
+      expect(out).not.toContain('### Project layer');
+    }
+  });
+
+  test('past the row limit, a line says how many shelves were not classified', () => {
+    const out = run(layeredStub(rows, rows.length + 5), { NB_PROJECT_SLUG: 'acme-app' });
+    expect(out).toContain('5 more shelf(s) were not classified');
   });
 
   test('unset NB_PROJECT_SLUG keeps the flat index', () => {
