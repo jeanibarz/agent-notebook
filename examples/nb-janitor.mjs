@@ -235,8 +235,17 @@ function readUsage(dir) {
         ok: status === 'ok',
         entries: entries.split(',').filter((e) => e !== ''),
         outcome,
-        evicted: evicted.split(':')[0] ?? '',
-        evictedScore: Number(evicted.split(':')[1] ?? 0),
+        // `evicted` is a comma list of `<id>:<score>` pairs (a lowered NB_MAX_LINES
+        // evicts many at once, #306); a `+<n>` token is the overflow count and
+        // carries no id. Keep every pair (#403).
+        evicted: evicted
+          .split(',')
+          .filter((p) => p !== '' && !p.startsWith('+'))
+          .map((p) => {
+            const [id = '', score] = p.split(':');
+            return { id, score: Number(score ?? 0) };
+          })
+          .filter((p) => p.id !== ''),
       });
     }
   } catch {
@@ -324,9 +333,9 @@ for (const r of usage) {
   const seen = (evictedBefore[r.shelf] ??= new Set());
   const loss = (lossByShelf[r.shelf] ??= { shelf: r.shelf, stillVoted: 0, relearned: 0 });
   if (inWindow && r.outcome === 'accepted' && r.entries.some((id) => seen.has(id))) loss.relearned++;
-  if (r.evicted !== '') {
-    if (inWindow && r.evictedScore > 1) loss.stillVoted++;
-    seen.add(r.evicted);
+  for (const ev of r.evicted) {
+    if (inWindow && ev.score > 1) loss.stillVoted++;
+    seen.add(ev.id);
   }
 }
 const lostLessons = Object.values(lossByShelf)
@@ -559,8 +568,11 @@ let upvotes = 0;
 let downvotes = 0;
 for (const r of usage) {
   if (now - r.t > DAYS * 86400000 || r.command !== 'vote') continue;
-  if (r.outcome === 'up') upvotes++;
-  else if (r.outcome === 'down') downvotes++;
+  // A batch vote logs ONE row listing every landed id: one vote per id, and at
+  // least one for a legacy row with no ids (matches `nb stats`, #373).
+  const n = Math.max(1, r.entries.length);
+  if (r.outcome === 'up') upvotes += n;
+  else if (r.outcome === 'down') downvotes += n;
 }
 const floorShelves = notebooks
   .map((n) => {

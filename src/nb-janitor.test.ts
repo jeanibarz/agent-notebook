@@ -642,3 +642,50 @@ describe('nb-janitor ignores a *.md whose stem is not a legal shelf name (issue 
     expect(withStray).not.toContain('review copy');
   });
 });
+
+// #403 — the janitor must read the usage rows the CLI itself writes: a comma
+// list in `evicted` (mass eviction after lowering NB_MAX_LINES) and one batch
+// vote row listing many ids. Rows are produced by the built CLI, not literals,
+// so the reader cannot silently fall behind the writer again.
+describe('nb-janitor — reads CLI-written batch rows (#403)', () => {
+  const cli = join(here, '..', 'dist', 'cli.js');
+  function nb(args: string[], extra: Record<string, string> = {}): string {
+    return execFileSync('node', [cli, ...args], {
+      env: { ...process.env, NB_DIR: dir, NB_SESSION: 'S1', ...extra },
+      encoding: 'utf-8',
+    });
+  }
+  function janitorJson(extra: Record<string, string> = {}): {
+    lostLessons: { shelf: string; stillVoted: number }[];
+    curation: { windowUpvotes: number; windowDownvotes: number };
+  } {
+    const out = execFileSync('node', [janitor, '--json'], { env: { ...process.env, NB_DIR: dir, ...extra }, encoding: 'utf-8' });
+    return JSON.parse(out);
+  }
+  function seedShelf(): string {
+    for (let i = 1; i <= 6; i++) nb(['add', 's', `lesson number ${i} about topic ${i}${i}${i}`]);
+    const shown = JSON.parse(nb(['show', 's', '--json'])) as { entries: { id: string }[] };
+    return shown.entries.map((e) => e.id).join(',');
+  }
+
+  test('a mass eviction of voted lessons is flagged and batch votes count per id', () => {
+    const ids = seedShelf();
+    nb(['vote', 's', ids, '+1']);
+    nb(['vote', 's', ids, '+1']);
+    nb(['add', 's', 'a brand new lesson that triggers the mass eviction'], { NB_MAX_LINES: '3' });
+    const j = janitorJson({ NB_MAX_LINES: '3' });
+    expect(j.curation.windowUpvotes).toBe(12);
+    expect(j.curation.windowDownvotes).toBe(0);
+    expect(j.lostLessons).toHaveLength(1);
+    expect(j.lostLessons[0]?.shelf).toBe('s');
+    expect(j.lostLessons[0]?.stillVoted).toBeGreaterThanOrEqual(2);
+  });
+
+  test('a single ordinary eviction of a voted lesson stays below the loss threshold', () => {
+    const ids = seedShelf();
+    nb(['vote', 's', ids, '+1']);
+    nb(['vote', 's', ids, '+1']);
+    nb(['add', 's', 'a brand new lesson that evicts exactly one'], { NB_MAX_LINES: '6' });
+    expect(janitorJson({ NB_MAX_LINES: '6' }).lostLessons).toEqual([]);
+  });
+});
