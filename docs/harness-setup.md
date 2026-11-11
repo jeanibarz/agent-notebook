@@ -151,7 +151,8 @@ To get **one commit per change** automatically, install the
 ```sh
 mkdir -p ~/.local/bin
 cp examples/nb-git-wrapper.mjs ~/.local/bin/nb-git-wrapper.mjs
-printf '#!/bin/sh\nexec node "$(dirname "$0")/nb-git-wrapper.mjs" "$@"\n' > ~/.local/bin/nb
+NB_GLOBAL_ROOT="$(npm root -g)"; [ -d "$NB_GLOBAL_ROOT" ] || NB_GLOBAL_ROOT=   # bake the root only if it exists
+printf '#!/bin/sh\nNODE_PATH="%s" exec node "$(dirname "$0")/nb-git-wrapper.mjs" "$@"\n' "$NB_GLOBAL_ROOT" > ~/.local/bin/nb
 chmod +x ~/.local/bin/nb   # keep the .mjs name: an extensionless copy fails on older Node (e.g. 18, 22.5)
 # ensure ~/.local/bin precedes npm's global bin on PATH, then:
 hash -r; nb add build-and-test "first versioned lesson"
