@@ -2529,6 +2529,13 @@ function renderStats(rep: StatsReport, shelf: string | undefined): string {
   const ring = rep.usageRing;
   const ringFull = ring.rows >= ring.cap ? '  FULL' : '';
   lines.push(`  usage ring: ${ring.rows}/${ring.cap} rows${ringFull}`);
+  if (ring.oldest !== undefined) {
+    // Issue #406: the log was trimmed to its row cap and no longer reaches back
+    // to the window start, so the per-day rates above divide by a longer span.
+    const ageDays = Math.max(0, (Date.parse(rep.generatedAt) - Date.parse(ring.oldest)) / 86_400_000);
+    const reach = ageDays >= 1 ? `${Math.floor(ageDays)}d` : 'under a day';
+    lines.push(`  usage log reaches back only ${reach} (oldest row ${ring.oldest}); rates for the ${rep.window} window are computed over a longer span than is recorded`);
+  }
   // Crash-recovery readout (issue #309): the two previously-silent signs a prior
   // nb died mid-write — stale locks stolen and leftover temps reaped — summed over
   // the window. Deployment-wide (like the usage ring), so it is not shelf-scoped.
