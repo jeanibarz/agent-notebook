@@ -3751,6 +3751,37 @@ describe('nb search — the demoted keyword fallback (issue #82)', () => {
     expect(r.err.toLowerCase()).toContain('coverage gap');
   });
 
+  test('an unmatched prefix logs no-shelf, says so, and raises no failed-search (#402)', async () => {
+    process.env.NB_SESSION = 'cli-noshelf';
+    await run(['add', 'build-and-test', 'run the build before vitest']);
+    const r = await run(['search', 'build', 'vitest']);
+    expect(r.code).toBe(0);
+    expect(r.err).toContain('no shelf name starts with "vitest"');
+    expect(r.err).toContain('nb search "build vitest"');
+    expect(r.err.toLowerCase()).not.toContain('recorded as a possible coverage gap');
+    const rows = parseUsage(dir).filter((x) => x.command === 'search');
+    expect(rows[rows.length - 1].outcome).toBe('no-shelf');
+    await run(['add', 'build-and-test', 'vitest needs a fresh build of dist first']);
+    const report = JSON.parse((await run(['stats', '--json'])).out);
+    expect(report.signals.some((x: { kind: string }) => x.kind === 'failed-search')).toBe(false);
+  });
+
+  test('a third search operand is rejected as bad_args (#402)', async () => {
+    const r = await run(['search', 'run', 'the', 'build']);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('unexpected extra argument "build"');
+  });
+
+  test('a genuine miss under a real prefix stays no-match and names the prefix (#402)', async () => {
+    await run(['add', 'review.security', 'unrelated lesson']);
+    const r = await run(['search', 'lock', 'review.']);
+    expect(r.code).toBe(0);
+    expect(r.err).toContain('starting with "review."');
+    expect(r.err.toLowerCase()).toContain('coverage gap');
+    const rows = parseUsage(dir).filter((x) => x.command === 'search');
+    expect(rows[rows.length - 1].outcome).toBe('no-match');
+  });
+
   test('--json emits the raw SearchResult', async () => {
     await run(['add', 'reviewer', 'run the build before vitest']);
     const r = await run(['search', 'vitest', '--json']);
