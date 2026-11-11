@@ -2751,6 +2751,52 @@ describe('usage log + stats', () => {
     expect(rep.anomalies.some((a) => a.kind === 'loop' && a.command === 'add')).toBe(true);
   });
 
+  describe('session-aware loop key and typo-proof went-silent (issue #372)', () => {
+    const base = Date.parse('2026-10-23T10:00:00Z');
+    // ts shelf command status ms session
+    const row = (i: number, session: string): string =>
+      `${new Date(base + i * 5000).toISOString()}\tp\tlist\tok\t2ms\t${session}`;
+    const loops = (rows: string[]) => {
+      process.env.NB_LOOP_N = '10';
+      process.env.NB_LOOP_WINDOW_S = '120';
+      writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+      return stats(dir, { now: base + 120_000 }).anomalies.filter((a) => a.kind === 'loop');
+    };
+
+    test('ten calls from ten different sessions are not a loop', () => {
+      expect(loops(Array.from({ length: 10 }, (_, i) => row(i, `agent-${i + 1}`)))).toEqual([]);
+    });
+
+    test('ten calls from one session still are', () => {
+      expect(loops(Array.from({ length: 10 }, (_, i) => row(i, 'agent-1')))).toHaveLength(1);
+    });
+
+    test('blank-session rows behave as before', () => {
+      expect(loops(Array.from({ length: 10 }, (_, i) => row(i, '')))).toHaveLength(1);
+    });
+
+    const silent = (lines: string[]) => {
+      const now = Date.parse('2026-10-23T10:00:00Z');
+      writeFileSync(join(dir, '.nb-usage.log'), lines.join('\n') + '\n', 'utf-8');
+      return stats(dir, { now, windowMs: 48 * 3600_000 }).anomalies.filter(
+        (a) => a.kind === 'went-silent',
+      );
+    };
+    const oldTs = new Date(Date.parse('2026-10-23T10:00:00Z') - 216 * 3600_000).toISOString();
+    // ts shelf command status ms session entries outcome collided evicted reason note errorClass
+    const typo = `${oldTs}\tp\tupvote\tfail\t1ms\t\t\t\t\t\t\t\tunknown_subcommand`;
+
+    test('a mistyped command seen only as unknown_subcommand is never went-silent', () => {
+      expect(silent([typo])).toEqual([]);
+    });
+
+    test('a real command with history that stops is still went-silent', () => {
+      const real = `${oldTs}\tp\tmerge\tok\t4ms`;
+      const found = silent([typo, real]);
+      expect(found.map((a) => a.command)).toEqual(['merge']);
+    });
+  });
+
   test('a retrospective vote-sweep across DISTINCT entries is not flagged as a loop', () => {
     // A retro rapidly votes many different lessons in one session. That is the
     // designed behavior, not a stuck agent — the loop key includes the entry, so
