@@ -147,6 +147,8 @@ GIT_LOCK_WAIT_S="${NB_BACKUP_GIT_LOCK_WAIT:-12}"
 case "$GIT_LOCK_WAIT_S" in ''|*[!0-9]*) GIT_LOCK_WAIT_S=12 ;; esac
 GIT_LOCK_STALE_S=30
 GIT_LOCK_HELD=0
+GIT_LOCK_FAIL=""       # why acquire_git_lock gave up: "busy" | "unwritable"
+GIT_LOCK_ELAPSED=0     # seconds actually spent waiting, for the "busy" message
 
 lock_mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 
@@ -159,14 +161,29 @@ release_git_lock() {
 trap release_git_lock EXIT
 
 acquire_git_lock() {
-    local waited=0 mt now aside
+    local waited=0 absent=0 mt now aside start
+    start="$(date +%s)"
     while :; do
         if mkdir "$GIT_LOCK" 2>/dev/null; then
             GIT_LOCK_HELD=1
             return 0
         fi
-        # Not EEXIST (unwritable store)? Waiting won't help — give up at once.
-        [ -d "$GIT_LOCK" ] || return 1
+        # mkdir failed but the lock directory is absent. Either the holder
+        # released it between our mkdir and this check (a real race — just retry,
+        # issue #371), or the store is unwritable and waiting won't help. Tell
+        # them apart by retrying: a released lock is free on the next mkdir, an
+        # unwritable store keeps failing, so give up only after 3 consecutive
+        # absent-and-failed attempts (the wrapper's errno check has no such window).
+        if [ ! -d "$GIT_LOCK" ]; then
+            absent=$((absent + 1))
+            if [ "$absent" -ge 3 ]; then
+                GIT_LOCK_FAIL=unwritable
+                return 1
+            fi
+            sleep 0.05 2>/dev/null || true
+            continue
+        fi
+        absent=0
         mt="$(lock_mtime "$GIT_LOCK")"
         now="$(date +%s)"
         if [ -n "$mt" ] && [ $((now - mt)) -gt "$GIT_LOCK_STALE_S" ]; then
@@ -179,7 +196,11 @@ acquire_git_lock() {
             # Retry the mkdir, but still count this pass toward the wait budget
             # below, so an undeletable stale lock can't spin us forever.
         fi
-        [ "$waited" -ge $((GIT_LOCK_WAIT_S * 5)) ] && return 1
+        if [ "$waited" -ge $((GIT_LOCK_WAIT_S * 5)) ]; then
+            GIT_LOCK_FAIL=busy
+            GIT_LOCK_ELAPSED=$(( $(date +%s) - start ))
+            return 1
+        fi
         sleep 0.2 2>/dev/null || sleep 1
         waited=$((waited + 1))
     done
@@ -210,8 +231,10 @@ if acquire_git_lock; then
         fi
     fi
     release_git_lock
+elif [ "$GIT_LOCK_FAIL" = unwritable ]; then
+    log "cannot create git lock ${GIT_LOCK} (notebooks directory not writable?); skipping straggler commit"
 else
-    log "git lock ${GIT_LOCK} busy after ${GIT_LOCK_WAIT_S}s; skipping straggler commit (will retry next run)"
+    log "git lock ${GIT_LOCK} busy after ${GIT_LOCK_ELAPSED}s; skipping straggler commit (will retry next run)"
 fi
 
 # 2) Push. No --force; a rejected push means someone pushed out of band — log

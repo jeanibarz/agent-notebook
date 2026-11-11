@@ -439,6 +439,76 @@ describe('nb-backup.sh serializes its commit on the wrapper\'s .nb-git.lock (iss
     expect(existsSync(gitLock())).toBe(false); // released after our section
   });
 
+  // A `mkdir` shim that fails for the lock path WITHOUT creating it for the first
+  // `failures` calls (-1 = always), then defers to the real mkdir. This is exactly
+  // what a backup sees when the holder releases between its failed mkdir and its
+  // existence check (issue #371) — deterministic, no timing involved.
+  const shimMkdir = (failures: number): string => {
+    const bin = mkdtempSync(join(tmpdir(), 'agent-notebook-backup-shim-'));
+    const real = execFileSync('bash', ['-c', 'command -v mkdir'], { encoding: 'utf-8' }).trim();
+    writeFileSync(
+      join(bin, 'mkdir'),
+      `#!/bin/bash
+for a in "$@"; do last="$a"; done
+if [ "$last" = "${gitLock()}" ]; then
+  n=$(cat "${bin}/count" 2>/dev/null || echo 0)
+  if [ "${failures}" -lt 0 ] || [ "$n" -lt "${failures}" ]; then
+    echo $((n + 1)) > "${bin}/count"
+    exit 1
+  fi
+fi
+exec "${real}" "$@"
+`,
+      { mode: 0o755 },
+    );
+    return bin;
+  };
+
+  test('a lock released between the failed mkdir and the existence check is retried, not given up on (issue #371)', () => {
+    writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
+    const bin = shimMkdir(2); // two "holder just released" misses, then free
+    try {
+      const r = spawnSync('bash', [script], {
+        env: envWith({ NB_BACKUP_GIT_LOCK_WAIT: '15', PATH: `${bin}:${process.env.PATH}` }),
+        encoding: 'utf-8',
+      });
+      expect(r.status).toBe(0);
+      expect(commitCount()).toBe(1);
+      expect(logText()).not.toContain('busy after');
+      expect(existsSync(gitLock())).toBe(false);
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  test('a lock dir that can never be created fails fast with an "unwritable" message, not a fake "busy after Ns"', () => {
+    writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
+    const bin = shimMkdir(-1);
+    try {
+      const t0 = Date.now();
+      const r = spawnSync('bash', [script], {
+        env: envWith({ NB_BACKUP_GIT_LOCK_WAIT: '15', PATH: `${bin}:${process.env.PATH}` }),
+        encoding: 'utf-8',
+        timeout: 10_000,
+      });
+      expect(r.status).toBe(0);
+      expect(Date.now() - t0).toBeLessThan(8_000); // did not sit out the 15 s budget
+      expect(commitCount()).toBe(0);
+      expect(logText()).toContain('not writable');
+      expect(logText()).not.toContain('busy after');
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  test('"busy after Ns" reports the time actually waited', () => {
+    writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
+    mkdirSync(gitLock());
+    const r = spawnSync('bash', [script], { env: envWith({ NB_BACKUP_GIT_LOCK_WAIT: '1' }), encoding: 'utf-8' });
+    expect(r.status).toBe(0);
+    expect(logText()).toMatch(/busy after [1-2]s;/);
+  });
+
   test('a stale lock (crashed holder) is reclaimed so the backup is never wedged', () => {
     writeFileSync(join(dir, 'shelf.md'), 'lesson\n', 'utf-8');
     mkdirSync(gitLock());
