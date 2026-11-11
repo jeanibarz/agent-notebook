@@ -242,6 +242,17 @@ versions are listed plainly.
   collide on `index.lock`. The lock is fail-open and guards no lesson write — a git or lock problem
   never fails or loses a lesson. One commit per change, with an accurate message.
 
+### Documentation
+- **A project / domain / global memory-layer convention for agents that work across several repos (#363).**
+  New [`docs/memory-layers.md`](docs/memory-layers.md) describes three layers read off the shelf name
+  (`<situation>@<slug>`, a bare `<situation>`, one bare global shelf), "project beats domain beats global"
+  as an instruction to the model, a "narrowest layer first, promote later with evidence" placement rule,
+  promotion with `nb move` (what a full target shelf evicts, and how to check first), one slug per repo, and
+  what `nb` deliberately does not do (no layer metadata, no `nb promote`, no scope filter). AGENTS.md section 4
+  and the README docs list link to it. The example `nb-session-start.sh` gains an optional layered index,
+  off unless `NB_PROJECT_SLUG` is set (`NB_GLOBAL_SHELF` names the global shelf); with it unset the hook
+  behaves exactly as before. No `nb` command, output or file format changes.
+
 ## [0.7.0] - 2026-11-06
 
 ### Added
