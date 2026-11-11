@@ -25,6 +25,8 @@ import {
   staleLockMs,
   stripControlChars,
   escapeDiskName,
+  dedupKey,
+  entryId,
 } from './notebook.js';
 
 export const DOCTOR_SCHEMA_VERSION = 1;
@@ -35,6 +37,7 @@ export type DoctorCode =
   | 'control-char'
   | 'case-collision'
   | 'lesson-too-long'
+  | 'duplicate-lesson'
   | 'shelf-over-cap'
   | 'empty-file'
   | 'leftover-temp'
@@ -94,6 +97,7 @@ export function doctor(dir: string): DoctorReport {
     let inMeta = true;
     let lessons = 0;
     let conflictSeen = false;
+    const seenKeys = new Set<string>();
     const lines = (raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw).split(/\r?\n/);
     lines.forEach((line, i) => {
       const n = i + 1;
@@ -115,6 +119,17 @@ export function doctor(dir: string): DoctorReport {
       const text = sanitizeLesson(tab === -1 ? line : line.slice(tab + 1));
       if (text === '') return; // readShelf drops an empty-text entry, so it is not a lesson
       lessons++;
+      // Two lines with one dedup key share one id, so no selector can pick either (issue #413).
+      const key = dedupKey(text);
+      if (seenKeys.has(key)) {
+        findings.push({
+          code: 'duplicate-lesson',
+          shelf,
+          line: n,
+          message: `repeats an earlier lesson (shared id ${entryId(text)}); no command can select either copy — delete one of the two lines by hand, keeping the higher-scored one`,
+        });
+      }
+      seenKeys.add(key);
       if (!SCORED_LINE_RE.test(line)) {
         findings.push({ code: 'bad-score', shelf, line: n, message: 'line has no valid `<score>\\t` prefix (the score is read leniently or as 0)' });
       }
