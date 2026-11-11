@@ -12,12 +12,12 @@ A **shelf** is one `<name>.md` notebook file: a group of lessons an agent needs 
 
 ```
 $ nb add build-and-test "run lint before claiming done"
-added — 1 lines
+added — 1 line
 
 $ nb show build-and-test
-3f9a2c  [+1]  run lint before claiming done
+acf179  [+1]  run lint before claiming done
 
-$ nb vote build-and-test 3f9a2c +1
+$ nb vote build-and-test acf179 +1
 +1 → [+2] run lint before claiming done
 ```
 
@@ -271,7 +271,7 @@ The description is capped like a lesson (rejected, not truncated, if too long), 
 
 ```
 $ printf '%s\n' 'run lint first' | nb add build-and-test -
-added — 1 lines
+added — 1 line
 ```
 
 It reads exactly one line: a single trailing newline is stripped, and **multi-line** input is refused (exit 1) rather than silently flattened into one run-together entry — one entry is one line. Because `-` means stdin, the one-character lesson `-` can't be stored through this form; use a non-dash quoted argument, or call the library's `addEntry` directly, if you ever need a literal hyphen. Everything else is unchanged — the piped line still goes through the same caps, dedup, and eviction as a quoted argument.
@@ -475,6 +475,7 @@ loopN=10            (default)
 loopWindowSec=120   (default)
 silentHours=48      (default)
 errMin=5            (default)
+addBurstN=15        (default)
 errRate=0.3         (default)
 coverageHi=0.5      (default)
 recallMissHi=0.2    (default)
