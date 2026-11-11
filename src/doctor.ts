@@ -11,7 +11,7 @@
  * `isLeftoverTemp`, `maxChars`/`maxLines`, `staleLockMs`) so a definition of
  * "broken" cannot drift between a command's guard and this report.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   isConflictMarker,
@@ -159,8 +159,17 @@ export function doctor(dir: string): DoctorReport {
 }
 
 /** Human render: one OK line, or one line per finding plus a total. */
-export function renderDoctor(rep: DoctorReport): string {
-  if (rep.findings.length === 0) return `nb doctor: OK — ${rep.shelves} shelves checked, no problems found`;
+export function renderDoctor(rep: DoctorReport, dir?: string): string {
+  const count = `${rep.shelves} ${rep.shelves === 1 ? 'shelf' : 'shelves'}`;
+  if (rep.findings.length === 0) {
+    // Zero shelves means nothing was checked (issue #381): say so, and whether the
+    // directory is missing (a likely mistyped NB_DIR) or merely holds no shelf.
+    if (rep.shelves === 0) {
+      const why = dir !== undefined && !existsSync(dir) ? 'the notebooks directory does not exist' : 'the notebooks directory holds no shelf';
+      return `nb doctor: OK — 0 shelves checked (${why}), no problems found`;
+    }
+    return `nb doctor: OK — ${count} checked, no problems found`;
+  }
   const rows = rep.findings.map((f) => `  ${f.code}  ${f.shelf}${f.line ? `:${f.line}` : ''}  ${f.message}`);
-  return [`nb doctor: ${rep.findings.length} problem(s) in ${rep.shelves} shelves`, ...rows].join('\n');
+  return [`nb doctor: ${rep.findings.length} problem(s) in ${count}`, ...rows].join('\n');
 }

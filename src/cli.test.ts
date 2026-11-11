@@ -4734,7 +4734,7 @@ describe('nb doctor (issue #338)', () => {
     await run(['add', 'alpha', 'a lesson']);
     const r = await run(['doctor', '--exit-code']);
     expect(r.code).toBe(0);
-    expect(r.out).toBe('nb doctor: OK — 1 shelves checked, no problems found\n');
+    expect(r.out).toBe('nb doctor: OK — 1 shelf checked, no problems found\n');
   });
 
   test('an empty/absent directory is OK', async () => {
@@ -4743,10 +4743,22 @@ describe('nb doctor (issue #338)', () => {
     expect(r.out).toContain('OK');
   });
 
-  test('--json on a clean directory emits {schemaVersion, findings: []}', async () => {
+  test('--json on a clean directory emits {schemaVersion, shelves, findings: []}', async () => {
     await run(['add', 'alpha', 'a lesson']);
     const r = await run(['doctor', '--json']);
-    expect(JSON.parse(r.out)).toEqual({ schemaVersion: 1, findings: [] });
+    expect(JSON.parse(r.out)).toEqual({ schemaVersion: 1, shelves: 1, findings: [] });
+  });
+
+  test('a shelf-less or nonexistent directory says nothing was checked, in both outputs, and still exits 0 (issue #381)', async () => {
+    const empty = await run(['doctor', '--exit-code']);
+    expect(empty.code).toBe(0);
+    expect(empty.out).toBe('nb doctor: OK — 0 shelves checked (the notebooks directory holds no shelf), no problems found\n');
+    expect(JSON.parse((await run(['doctor', '--json', '--exit-code'])).out)).toEqual({ schemaVersion: 1, shelves: 0, findings: [] });
+    rmSync(dir, { recursive: true, force: true });
+    const gone = await run(['doctor', '--exit-code']);
+    expect(gone.code).toBe(0);
+    expect(gone.out).toContain('0 shelves checked (the notebooks directory does not exist)');
+    expect(JSON.parse((await run(['doctor', '--json', '--exit-code'])).out).shelves).toBe(0);
   });
 
   test('conflict marker: reported once with its line; a mid-line ======= is not a marker', async () => {

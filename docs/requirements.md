@@ -748,8 +748,11 @@ it prints a one-line OK summary and exits `0`. Each finding has a stable `code` 
 `bad-score` (no valid `<score>\t` prefix), `control-char`, `lesson-too-long`, `shelf-over-cap`,
 `empty-file` (0 bytes), `case-collision`, `leftover-temp` (older than `NB_STALE_LOCK_MS`, so a live
 writer's temp is not reported), `stale-lock`, `unreadable` — a `shelf` and, for line-level
-findings, a 1-based `line`. `--json` emits `{schemaVersion, findings:[{code, shelf, line?, message}]}`
-(plus a `shelves` count); `--exit-code` exits `3` when any finding exists, otherwise the exit is `0`.
+findings, a 1-based `line`. `--json` emits `{schemaVersion, shelves, findings:[{code, shelf, line?, message}]}`
+(`shelves` is the number of shelf files examined, so `0` tells a gate nothing was checked);
+`--exit-code` exits `3` when any finding exists, otherwise the exit is `0` — including for a
+nonexistent or shelf-less directory, whose human line says so explicitly ("0 shelves checked
+(the notebooks directory does not exist | holds no shelf)"). The summary pluralizes ("1 shelf").
 The detectors are the ones the guards use (conflict markers, control characters, the temp
 predicate), so definitions cannot drift.
 *Proven by:* `cli.test.ts` → `describe('nb doctor (issue #338)')`.
