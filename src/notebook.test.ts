@@ -3003,6 +3003,56 @@ describe('usage log + stats', () => {
     // No stray temp file lingered: every writer's rename consumed its own temp.
     expect(readdirSync(dir).filter((f) => f.startsWith('.nb-usage.log.') && f.endsWith('.tmp'))).toEqual([]);
   }, 30_000);
+
+  test('a full ring with a missing sidecar appends in place until cap + slack, without a rewrite (issue #377)', () => {
+    const RING = 100;
+    process.env.NB_USAGE_RING = String(RING);
+    const usage = join(dir, '.nb-usage.log');
+    const seed = Array.from({ length: RING }, (_, i) => `${new Date(i * 1000).toISOString()}\tseed\tshow\tok\t1ms`);
+    writeFileSync(usage, seed.join('\n') + '\n', 'utf-8'); // exactly at the cap, no .count sidecar
+    fsHook.renames = [];
+    try {
+      logUsage(dir, 'p', 'add', true, 1); // exact path: must append, not compact
+      expect(fsHook.renames).toEqual([]);
+      const lines = readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '');
+      expect(lines.length).toBe(RING + 1);
+      expect(lines[0]).toBe(seed[0]); // the oldest row is still there: nothing was dropped
+    } finally {
+      fsHook.renames = null;
+    }
+  });
+
+  test('the exact path still compacts back to the hard cap once cap + slack is reached (issue #377)', () => {
+    const RING = 100;
+    process.env.NB_USAGE_RING = String(RING);
+    const usage = join(dir, '.nb-usage.log');
+    const total = RING + usageRingSlack();
+    const seed = Array.from({ length: total }, (_, i) => `${new Date(i * 1000).toISOString()}\tseed\tshow\tok\t1ms`);
+    writeFileSync(usage, seed.join('\n') + '\n', 'utf-8'); // at cap + slack, no sidecar
+    logUsage(dir, 'p', 'add', true, 1);
+    const lines = readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '');
+    expect(lines.length).toBe(RING);
+    expect(lines[lines.length - 1]).toContain('\tp\tadd\t'); // the newest row survives
+  });
+
+  test('cross-process: concurrent writers on a full ring each leave their row (issue #377) [timing]', async () => {
+    const RING = 100;
+    process.env.NB_USAGE_RING = String(RING);
+    const usage = join(dir, '.nb-usage.log');
+    const seed = Array.from({ length: RING }, (_, i) => `${new Date(i * 1000).toISOString()}\tseed\tshow\tok\t1ms`);
+    writeFileSync(usage, seed.join('\n') + '\n', 'utf-8'); // at the cap, no sidecar
+    const N = 12;
+    expect(N).toBeLessThan(usageRingSlack()); // the appends stay below the slack: no compaction may run
+    await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        execFileAsync(process.execPath, [CLI, 'show', 'race'], {
+          env: { ...process.env, NB_DIR: dir, NB_SESSION: `s377-${i}` },
+        }),
+      ),
+    );
+    const body = readFileSync(usage, 'utf-8');
+    for (let i = 0; i < N; i++) expect(body).toContain(`s377-${i}`);
+  }, 30_000);
 });
 
 describe('sparkline (issue #106)', () => {

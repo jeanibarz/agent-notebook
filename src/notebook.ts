@@ -2711,9 +2711,11 @@ export function logUsage(
     const existing = existsSync(file) ? readFileSync(file, 'utf-8') : '';
     const lines = existing.split('\n').filter((l) => l !== '');
 
-    if (lines.length < ring) {
-      // Still under the hard cap: append in place (no rewrite, no rename) and
-      // record the now-known count+size. Guard the trailing newline — a previous
+    if (lines.length < compactAt) {
+      // Still under cap + slack: append in place (no rewrite, no rename). This is
+      // the same threshold as the fast path — a stale sidecar on a full ring must
+      // not rewrite the log on every overlapping call and drop a concurrent
+      // writer's row (issue #377). Record the now-known count+size. Guard the trailing newline — a previous
       // writer may have crashed mid-row leaving no final `\n`, and a blind append
       // would glue our row onto theirs.
       const sep = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
