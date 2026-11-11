@@ -440,7 +440,7 @@ If a git-versioned notebook hits an unresolved `git merge`/`pull` conflict, its 
 The anomaly detection in `nb stats` (loop / went-silent / high-error-rate flags) is tunable via env vars — out-of-range values are clamped to the stated bounds, and an unset or unparseable value falls back to the default:
 
 - `NB_USAGE_RING` — how many recent calls are kept for `nb stats` to analyze (default `5000`, range `100`–`100000`).
-- `NB_LOOP_N` — a loop is this many or more calls of the same command on the same shelf (default `10`, range `2`–`1000`).
+- `NB_LOOP_N` — a loop is this many or more calls of the same command on the same shelf and, when the call logs a session, the same session (default `10`, range `2`–`1000`).
 - `NB_LOOP_WINDOW_S` — window those calls must fall within, in seconds (default `120`, range `5`–`86400`).
 - `NB_SILENT_H` — hours since a command's last call before it is flagged went-silent (default `48`, range `1`–`8760`).
 - `NB_ERR_MIN` — minimum calls before a command's error rate is judged (default `5`, range `1`–`10000`).
