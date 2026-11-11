@@ -157,6 +157,15 @@ Rules the tool enforces, so you don't have to guess:
   are needed together across small shelves.
 - Scope a shelf **to a project** with `@` (`shelf@project`): `build-and-test@my-repo`. It composes with a
   namespace: `review.tests@my-repo`.
+- **Layers (an optional convention).** If you run agents across several repos, read a
+  shelf's reach off its name: `<situation>@<slug>` is the **project** layer, a bare
+  `<situation>` the **domain** layer (true in any repo), and one bare shelf the
+  harness designates (default `global`) the **global** layer. On conflict, project
+  beats domain beats global. Write a new lesson to the narrowest shelf it is true
+  for, and promote it with `nb move` once there is evidence it holds more widely:
+  a lesson left too narrow costs one repo a rediscovery, while a premature
+  promotion can mislead every repo. `nb` does not know about layers; they are
+  naming rules, not a feature. See [docs/memory-layers.md](docs/memory-layers.md).
 
 ---
 
