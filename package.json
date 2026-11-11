@@ -40,7 +40,7 @@
   ],
   "scripts": {
     "build": "tsc && chmod +x dist/cli.js",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "pretest": "npm run build",
     "test": "node scripts/check-node-for-tests.mjs && vitest run",
     "test:coverage": "node scripts/check-node-for-tests.mjs && vitest run --coverage",

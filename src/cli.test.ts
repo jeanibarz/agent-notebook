@@ -69,9 +69,7 @@ async function run(
   let err = '';
   const origOut = process.stdout.write.bind(process.stdout);
   const origErr = process.stderr.write.bind(process.stderr);
-  // @ts-expect-error — test shim for capturing writes
   process.stdout.write = (s: string) => ((out += s), true);
-  // @ts-expect-error — test shim for capturing writes
   process.stderr.write = (s: string) => ((err += s), true);
   const reader = stdin === undefined ? undefined : async () => stdin;
   try {
@@ -753,7 +751,7 @@ describe('runNbCli', () => {
       const missing = needRow.filter((c) => !(c in KNOWN_FLAGS));
       expect(missing).toEqual([]);
       // And no phantom rows for commands that do not exist.
-      const phantom = Object.keys(KNOWN_FLAGS).filter((c) => !KNOWN_COMMANDS.includes(c));
+      const phantom = Object.keys(KNOWN_FLAGS).filter((c) => !(KNOWN_COMMANDS as readonly string[]).includes(c));
       expect(phantom).toEqual([]);
       // Anti-vacuous: the guard is meaningless if either list resolved empty.
       expect(needRow.length).toBeGreaterThan(0);
@@ -3314,7 +3312,6 @@ describe('settleCliExit', () => {
     const savedExit = process.exitCode;
     const origErr = process.stderr.write.bind(process.stderr);
     let err = '';
-    // @ts-expect-error — test shim for capturing writes
     process.stderr.write = (s: string) => ((err += s), true);
     try {
       await settleCliExit(result);
@@ -4208,7 +4205,7 @@ describe('closestCommand (did-you-mean, issue #171)', () => {
     const cliSrc = readFileSync(join(REPO_ROOT, 'src', 'cli.ts'), 'utf8');
     const dispatched = [...cliSrc.matchAll(/case\s+(['"`])([^'"`]+)\1\s*:/g)].map((m) => m[2]);
     expect(dispatched.length).toBeGreaterThan(0); // never pass vacuously
-    const known = new Set(KNOWN_COMMANDS);
+    const known = new Set<string>(KNOWN_COMMANDS);
     const missing = dispatched.filter((cmd) => !known.has(cmd));
     expect(missing).toEqual([]);
   });

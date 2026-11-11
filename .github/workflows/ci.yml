@@ -36,6 +36,11 @@ jobs:
 
       - run: npm ci
       - run: npm run build
+      # Type-check the test files and both vitest configs (tsconfig.test.json),
+      # which `tsc` in the build step excludes (issue #382). One leg is enough:
+      # the result does not depend on the OS, and TypeScript runs on Node 18 too.
+      - run: npm run typecheck
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22
       # vitest 5 imports `styleText` from node:util, which only exists on
       # Node 20.12+, so the suite cannot run on Node 18. The build step above
       # still verifies the package compiles on its minimum engine (>=18).
