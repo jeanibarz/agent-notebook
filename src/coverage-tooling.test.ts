@@ -22,6 +22,15 @@ describe('coverage tooling (#233)', () => {
     );
   });
 
+  // #379: the suites exec the built dist/cli.js, so every script that runs them
+  // must rebuild first (npm runs `pre<name>` automatically).
+  test.each(['test', 'test:fast', 'test:coverage'])(
+    'npm run %s builds dist/ first through a pre-hook',
+    (name) => {
+      expect(pkg().scripts[`pre${name}`]).toBe('npm run build');
+    },
+  );
+
   test('the V8 coverage provider is a DEV dependency, keeping the package zero-runtime-dep', () => {
     const p = pkg();
     expect(p.devDependencies?.['@vitest/coverage-v8']).toBeDefined();

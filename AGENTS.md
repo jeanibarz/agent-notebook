@@ -199,7 +199,9 @@ npm test           # vitest run — needs Node 20.12+ (see CONTRIBUTING.md)
 ```
 
 - The tests exec the built `dist/` output, so a stale build gives misleading
-  results — `npm test` runs the build first via its `pretest` hook.
+  results — `npm test`, `npm run test:fast` and `npm run test:coverage` run the
+  build first via `pre*` hooks. `npm run test:watch` does **not**: rebuild
+  (`npm run build`) yourself after editing `src/`.
 - Keep `docs/requirements.md` and `CHANGELOG.md` in sync with any user-facing
   change; the [PR template](.github/PULL_REQUEST_TEMPLATE.md) has the checklist.
 - **Every PR body is built from [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md)**,

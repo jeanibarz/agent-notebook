@@ -10,6 +10,7 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Fixed
+- **`npm run test:fast` and `npm run test:coverage` now build `dist/` first (#379).** Ten suites exec the built `dist/cli.js`, but only `npm test` rebuilt it, so the fast loop failed on a fresh clone and could pass green against a stale build. `pretest:fast` and `pretest:coverage` hooks run the build like `pretest` does; the script strings are unchanged. `test:watch` still does not build, and CONTRIBUTING and AGENTS now say so.
 - **`nb doctor --json` now includes the `shelves` count its spec promised (#381).** A gate pointed at an empty or mistyped notebooks directory could not be told from a clean one. The human line now says `0 shelves checked (the notebooks directory does not exist | holds no shelf)` and pluralizes (`1 shelf`). Exit codes and finding codes are unchanged (an empty directory still exits 0).
 
 ### Added

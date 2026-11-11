@@ -42,6 +42,8 @@
     "build": "tsc && chmod +x dist/cli.js",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "pretest": "npm run build",
+    "pretest:coverage": "npm run build",
+    "pretest:fast": "npm run build",
     "test": "node scripts/check-node-for-tests.mjs && vitest run",
     "test:coverage": "node scripts/check-node-for-tests.mjs && vitest run --coverage",
     "test:fast": "node scripts/check-node-for-tests.mjs && vitest run --config vitest.fast.config.ts",
