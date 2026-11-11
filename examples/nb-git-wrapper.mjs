@@ -335,6 +335,12 @@ async function main() {
     process.exit(1);
   }
   const mod = await import(pathToFileURL(entry).href);
+  // The CLI installs these only when it is the main module, so a wrapper that imports
+  // `runNbCli` must install them itself (issue #401): without them `nb show | head -1`
+  // dies with an EPIPE stack trace and a SIGTERM strands `.nb.lock`. Optional calls
+  // keep the wrapper working against an older installed package that lacks the exports.
+  mod.installPipeGuards?.();
+  mod.installSignalLockRelease?.();
   const argv = process.argv.slice(2);
   const dir = process.env.NB_DIR;
 
