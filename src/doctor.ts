@@ -24,6 +24,7 @@ import {
   sanitizeLesson,
   staleLockMs,
   stripControlChars,
+  escapeDiskName,
 } from './notebook.js';
 
 export const DOCTOR_SCHEMA_VERSION = 1;
@@ -182,6 +183,6 @@ export function renderDoctor(rep: DoctorReport, dir?: string): string {
     }
     return `nb doctor: OK — ${count} checked, no problems found`;
   }
-  const rows = rep.findings.map((f) => `  ${f.code}  ${f.shelf}${f.line ? `:${f.line}` : ''}  ${f.message}`);
+  const rows = rep.findings.map((f) => `  ${f.code}  ${escapeDiskName(f.shelf)}${f.line ? `:${f.line}` : ''}  ${escapeDiskName(f.message)}`);
   return [`nb doctor: ${rep.findings.length} problem(s) in ${count}`, ...rows].join('\n');
 }

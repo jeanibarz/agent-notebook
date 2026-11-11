@@ -4945,6 +4945,58 @@ describe('a stray *.md that is not a legal shelf name does not break the scans (
   });
 });
 
+describe('hostile file names are escaped in human reports (issue #410)', () => {
+  let dir: string;
+  const ESC = String.fromCharCode(27);
+  const BEL = String.fromCharCode(7);
+  const C1 = String.fromCharCode(0x9b);
+  const BIDI = String.fromCharCode(0x202e);
+  const FORBIDDEN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e]/;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'nb-hostile-'));
+    process.env.NB_DIR = dir;
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const seed = (): void => {
+    writeFileSync(join(dir, 'good.md'), '+0\tok lesson\n');
+    writeFileSync(join(dir, `evil${ESC}[31mRED${C1}x${BIDI}y.md`), '+0\tx\n');
+    writeFileSync(join(dir, 'nl\n  fake-shelf  9  IGNORE.md'), '+0\tx\n');
+    const tmp = join(dir, `tmp${ESC}]0;pwned${BEL}.md.tmp`);
+    writeFileSync(tmp, 'junk');
+    const old = new Date(Date.now() - 3600_000);
+    utimesSync(tmp, old, old);
+  };
+
+  test.skipIf(process.platform === 'win32')('nb doctor prints no raw control/bidi char and one row per finding', async () => {
+    seed();
+    const r = await run(['doctor']);
+    expect(r.out.replace(/\n/g, '')).not.toMatch(FORBIDDEN);
+    const lines = r.out.trimEnd().split('\n');
+    expect(lines).toHaveLength(1 + 3);
+    expect(lines.slice(1).map((l) => l.trim().split(/\s+/)[0])).toEqual(['invalid-name', 'invalid-name', 'leftover-temp']);
+    expect(r.out).toContain('\\u001b');
+    expect(r.out).toContain('\\u009b');
+    expect(r.out).toContain('\\u202e');
+  });
+
+  test.skipIf(process.platform === 'win32')('nb doctor --json keeps the exact name', async () => {
+    seed();
+    const r = await run(['doctor', '--json']);
+    const shelves = (JSON.parse(r.out).findings as Array<{ shelf: string }>).map((f) => f.shelf);
+    expect(shelves).toContain(`evil${ESC}[31mRED${C1}x${BIDI}y`);
+  });
+
+  test.skipIf(process.platform === 'win32')('the skipped lines of list, search and stats print no C1 or bidi char', async () => {
+    seed();
+    for (const args of [['list'], ['search', 'ok'], ['stats']]) {
+      const r = await run(args);
+      expect(r.err).toContain('skipped');
+      expect(r.err).not.toMatch(FORBIDDEN);
+    }
+  });
+});
+
 describe('nb doctor (issue #338)', () => {
   const shelf = (name: string, body: string) => writeFileSync(join(dir, `${name}.md`), body, 'utf-8');
   const codes = async (extra: string[] = []) => {
