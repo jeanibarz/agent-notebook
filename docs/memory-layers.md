@@ -138,7 +138,7 @@ nb stale code-review --limit 1    # the first row after the header is the lesson
 ```
 
 To see the effect without filling 50 lines, lower the cap with `NB_MAX_LINES`
-(see [A full shelf is the normal state](../README.md#a-full-shelf-is-the-normal-state) in the README). The parentheses run
+(see [the README](../README.md#nb-max-lines), which also covers `NB_DIR` and `NB_MAX_CHARS`). The parentheses run
 the block in a subshell, so the lowered cap does not leak into your shell:
 
 ```sh
