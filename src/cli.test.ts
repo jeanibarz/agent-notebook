@@ -1368,6 +1368,25 @@ describe('runNbCli', () => {
     expect(s.out).not.toContain('signals: none');
   });
 
+  test('the human stats table folds browse-without-use to one line per shelf; --json keeps every pair (issue #415)', async () => {
+    await run(['add', 'busy', 'x']);
+    await run(['add', 'quiet', 'y']);
+    for (const n of [1, 2, 3]) {
+      process.env.NB_SESSION = `sess-${n}`;
+      await run(['show', 'busy']);
+    }
+    process.env.NB_SESSION = 'sess-1';
+    await run(['show', 'quiet']);
+    const s = await run(['stats']);
+    const lines = s.out.split('\n').filter((l) => l.includes('[browse-without-use]'));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('shelf busy: shown without a vote in 3 sessions');
+    expect(lines[1]).toContain('shelf quiet: shown without a vote in 1 session ');
+    expect(s.out).not.toContain('session "sess-');
+    const rep = JSON.parse((await run(['stats', '--json'])).out);
+    expect(rep.signals.filter((x: { kind: string }) => x.kind === 'browse-without-use')).toHaveLength(4);
+  });
+
   test('stats --json carries the browse-without-use signal (issue #72)', async () => {
     process.env.NB_SESSION = 'sess-B';
     await run(['show', 'solo']); // browse with no vote

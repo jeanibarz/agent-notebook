@@ -1022,7 +1022,7 @@ signal SHALL count **each** still-voted entry in that row's `evicted` list, not 
 and **vote-reversal** (one entry id with an `up` vote in one session and a `down` vote in a
 **different** session → correct but mis-aimed). browse-without-use and vote-reversal are
 session-scoped and SHALL skip rows with a blank session ([FR-USAGE-002](#fr-usage-002):
-"co-access is then not computed"). The field is additive — the report from
+"co-access is then not computed"). The human report SHALL fold browse-without-use into one line per shelf carrying the session count (busiest first); `signals[]` in `--json` keeps every (session, shelf) pair (issue #415). The field is additive — the report from
 [FR-STATS-001](#fr-stats-001) and the issue-#40 inventory is otherwise unchanged. A fourth
 kind, **failed-search** (a `no-match` `search` followed by an `accepted` `add` in the same
 session → a coverage gap), was added with `nb search` — see [FR-SEARCH-002](#fr-search-002).
