@@ -443,6 +443,28 @@ describe('caps', () => {
     expect(texts).toEqual(['middle', 'newcomer', 'useful']);
   });
 
+  // Issue #414: docs/eviction-and-aging.md quotes this sequence. A run of
+  // unrelated adds DOES erode proven lessons that receive no further votes:
+  // each over-cap add evicts one line and docks the stalest survivor by one.
+  test('proven lessons with no further votes are eroded by a run of unrelated adds (#414)', async () => {
+    process.env.NB_MAX_LINES = '10';
+    const originals: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const t = `proven lesson number ${i} about topic${i}`;
+      originals.push(t);
+      await addEntry(dir, 'burst', t);
+      await vote(dir, 'burst', t, 1); // +1 -> +2
+      await vote(dir, 'burst', t, 1); // +2 -> +3
+    }
+    const survivors: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      await addEntry(dir, 'burst', `unrelated junk entry ${i} zzq${i}`);
+      const left = readEntries(dir, 'burst').filter((e) => originals.includes(e.text)).length;
+      survivors.push(left);
+    }
+    expect(survivors).toEqual([9, 9, 8, 8, 7, 7, 6, 6, 5, 5, 4, 4, 3, 3, 2, 2, 1, 1, 0, 0]);
+  });
+
   test('a downvoted line is evicted before useful ones', async () => {
     process.env.NB_MAX_LINES = '2';
     await addEntry(dir, 'r', 'harmful');
