@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS } from './cli.js';
+import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS, scopedHelp } from './cli.js';
 import { drainPendingRecovery, entryId, parseUsage, usageFile } from './notebook.js';
 import type { IntTunable, RateTunable } from './notebook.js';
 
@@ -4039,6 +4039,66 @@ describe('shelf terminology (role kept as a deprecated alias)', () => {
     // ...and failed-search is listed in the diagnostic-signals bullet itself, not only in the
     // `nb search` description where the token already appeared. Pin the specific entry text.
     expect(r.out).toContain('and failed-search (a search returned nothing');
+  });
+});
+
+// Issue #370: per-command help.
+describe('per-command help (issue #370)', () => {
+  const COMMANDS = KNOWN_COMMANDS.filter((c) => c !== 'help' && c !== 'version');
+
+  test('every KNOWN_COMMANDS entry yields non-empty scoped help that names it', () => {
+    for (const c of KNOWN_COMMANDS) {
+      const h = scopedHelp(c);
+      expect(h, c).toBeTruthy();
+      expect(h, c).toContain(`nb ${c}`);
+      expect(h!.length, c).toBeLessThan(15000);
+    }
+    expect(scopedHelp('nonsense')).toBeNull();
+  });
+
+  test.each(['--help', '-h'])('`nb <command> %s` exits 0, prints scoped usage and writes no shelf', async (flag) => {
+    for (const c of COMMANDS) {
+      const r = await run([c, 'shelf', flag]);
+      expect(r.code, c).toBe(0);
+      expect(r.out, c).toBe(scopedHelp(c) + '\n');
+      expect(r.err, c).toBe('');
+    }
+    expect(existsSync(join(dir, 'shelf.md'))).toBe(false);
+  });
+
+  test('`nb help <command>` matches `nb <command> --help`; unknown keeps the full help', async () => {
+    expect((await run(['help', 'vote'])).out).toBe((await run(['vote', '--help'])).out);
+    expect((await run(['help', 'nonsense'])).out).toBe((await run(['--help'])).out);
+    expect((await run(['help'])).out).toBe((await run(['--help'])).out);
+  });
+
+  test('`describe`/`add` with -h no longer store it; `--` still stores a literal -h', async () => {
+    await run(['add', 's', 'first']);
+    await run(['describe', 's', 'a description']);
+    await run(['describe', 's', '-h']);
+    await run(['add', 's', '-h']);
+    const text = readFileSync(join(dir, 's.md'), 'utf-8');
+    expect(text).toContain('# desc: a description');
+    expect(text).not.toMatch(/-h/);
+    expect((await run(['add', 's', '--', '-h'])).code).toBe(0);
+    expect(readFileSync(join(dir, 's.md'), 'utf-8')).toMatch(/-h/);
+  });
+
+  test('a -h that is a --note value is not a help request', async () => {
+    const r = await run(['add', 's', 'lesson one', '--note', '-h']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('added');
+  });
+
+  test('help requests are logged as `help`, not as an error against the command', async () => {
+    await run(['vote', '--help']);
+    const row = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').trimEnd().split('\n').pop()!.split('\t');
+    expect(row.slice(2, 4)).toEqual(['help', 'ok']);
+  });
+
+  test('a flag-shaped --help after `--` is a literal operand, not help', async () => {
+    const r = await run(['add', 's', '--', '--help']);
+    expect(r.out).toContain('added');
   });
 });
 

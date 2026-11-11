@@ -692,6 +692,56 @@ function assertOperandCount(cmd: string, args: string[]): void {
   );
 }
 
+/**
+ * Per-command help (issue #370): the usage line(s) for `cmd` plus the `notes:`
+ * bullets whose first line names it, sliced out of `HELP` so the scoped text can
+ * never drift from the full one. Aliases share their canonical command's lines
+ * (`ls`/`shelves`/`roles` → `list`; `help`/`version` → the `--help`/`--version`
+ * lines). Returns null for a word that is not a known command.
+ */
+export function scopedHelp(cmd: string): string | null {
+  if (!(KNOWN_COMMANDS as readonly string[]).includes(cmd)) return null;
+  const tokens = cmd === 'help' ? ['--help'] : cmd === 'version' ? ['--version']
+    : ['list', 'ls', 'shelves', 'roles'].includes(cmd) ? ['list', 'ls', 'shelves', 'roles'] : [cmd];
+  const usageStart = HELP.indexOf('usage:');
+  const notesStart = HELP.indexOf('notes:');
+  const docsStart = HELP.indexOf('\ndocs:');
+  const usage = HELP.slice(usageStart, notesStart).split('\n').filter((l) => {
+    const m = /^ {2}nb (\S+)/.exec(l);
+    return m !== null && tokens.includes(m[1]);
+  });
+  const bullets = HELP.slice(notesStart + 'notes:\n'.length, docsStart).split(/\n(?= {2}- )/);
+  const word = new RegExp(`(^|[^\\w-])${cmd}([^\\w-]|$)`);
+  const notes = bullets.filter((b) => word.test(b.split('\n')[0]!));
+  return [
+    `nb ${cmd} — usage:`,
+    ...usage,
+    ...(notes.length ? ['', 'notes:', ...notes] : []),
+    '',
+    'nb --help shows every command.',
+  ].join('\n');
+}
+
+/**
+ * Which command's help a call asks for, or undefined when it is not a help
+ * request (issue #370). `nb help <command>` and a `--help`/`-h` token after the
+ * command word (before a `--` terminator, and never as a value-flag's value)
+ * scope help to that command; `null` means the full help text.
+ */
+function helpRequest(argv: string[]): string | null | undefined {
+  const cmd = (argv[0] ?? '').trim();
+  const known = (KNOWN_COMMANDS as readonly string[]);
+  if (cmd === 'help') return known.includes((argv[1] ?? '').trim()) ? argv[1]!.trim() : null;
+  if (!known.includes(cmd) || cmd === 'version') return undefined;
+  for (let i = 1; i < argv.length; i++) {
+    const tok = argv[i]!;
+    if (tok === '--') break;
+    if (VALUE_FLAGS.has(tok)) { i++; continue; }
+    if (tok === '--help' || tok === '-h') return cmd;
+  }
+  return undefined;
+}
+
 export async function runNbCli(
   argv: string[],
   readStdin: () => Promise<string> = readStdinDefault,
@@ -710,9 +760,10 @@ export async function runNbCli(
   // is resolved inline here (not hoisted above these branches) so the `const dir
   // = notebooksDir()` below still marks the end of the pre-switch region the #131
   // HELP-drift guard scans.
-  if (cmd === '' || cmd === '--help' || cmd === '-h' || cmd === 'help') {
+  const scoped = helpRequest(argv);
+  if (cmd === '' || cmd === '--help' || cmd === '-h' || cmd === 'help' || scoped) {
     const t0 = Date.now();
-    process.stdout.write(HELP + '\n');
+    process.stdout.write((scoped ? scopedHelp(scoped)! : HELP) + '\n');
     logUsage(notebooksDir(), '-', 'help', true, Date.now() - t0);
     return 0;
   }
