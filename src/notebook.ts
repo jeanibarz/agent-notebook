@@ -449,6 +449,24 @@ export function stripControlChars(raw: string): string {
   return raw.replace(CONTROL_CHARS_RE, '');
 }
 
+const NAME_ESCAPE_RE = new RegExp(`${CONTROL_CHARS_RE.source}|[\\u0009-\\u000D\\u2028\\u2029]`, 'ug');
+
+/**
+ * Render a file name read from disk safely for a terminal row (issue #410): every
+ * character {@link stripControlChars} would drop, plus tab/newline/CR/VT/FF and the
+ * Unicode line separators, becomes a visible `\uXXXX` escape (`\u{XXXXX}` for the
+ * astral Tag block). The name stays recognisable and findable on disk, but can
+ * neither move the cursor/retitle the terminal nor forge an extra output row.
+ * Ordinary names (letters, digits, `. _ @ -`) pass through byte-identical.
+ */
+export function escapeDiskName(raw: string): string {
+  return raw.replace(NAME_ESCAPE_RE, (c) => {
+    const cp = c.codePointAt(0) as number;
+    const hex = cp.toString(16).padStart(4, '0');
+    return cp > 0xffff ? `\\u{${hex}}` : `\\u${hex}`;
+  });
+}
+
 /** {@link stripControlChars} that passes `null` through — for the optional description value. */
 function stripControlCharsNullable(raw: string | null): string | null {
   return raw === null ? null : stripControlChars(raw);
