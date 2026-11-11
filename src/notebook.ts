@@ -3728,13 +3728,19 @@ export function stats(
       else if (r.outcome === 'dedup-blocked') dedupBlocked++;
       else if (r.outcome === 'rejected-full') rejectedFull++;
     } else if (r.command === 'vote') {
+      // A batch vote (`nb vote <shelf> id1,id2 +1`) logs ONE row listing every
+      // landed id; count one vote per id (issue #373). A row with no ids (legacy)
+      // still counts once.
+      const ids = r.entries.length > 0 ? r.entries : [''];
       if (r.outcome === 'up') {
-        up++;
-        // Pushed (candidate serendipity) unless a search in THIS session returned
-        // this entry id — then the agent reached it by search, i.e. a pull.
-        const pulled = searchedBySession.get(r.session)?.has(r.entries[0] ?? '') ?? false;
-        if (!pulled) pushUp++;
-      } else if (r.outcome === 'down') down++;
+        for (const id of ids) {
+          up++;
+          // Pushed (candidate serendipity) unless a search in THIS session returned
+          // this entry id — then the agent reached it by search, i.e. a pull.
+          const pulled = id !== '' && (searchedBySession.get(r.session)?.has(id) ?? false);
+          if (!pulled) pushUp++;
+        }
+      } else if (r.outcome === 'down') down += ids.length;
     }
   }
   const addAttempts = accepted + dedupBlocked + rejectedFull;
