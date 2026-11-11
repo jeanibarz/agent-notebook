@@ -65,8 +65,18 @@ describe('docs/memory-layers.md (issue #363)', () => {
     for (const [, file, anchor] of withAnchor) {
       const text = file ? readFileSync(resolve(dirname(page), file), 'utf-8') : pageText;
       // A target is a heading (GitHub slug) or an explicit `<a id="...">` (requirements.md uses those).
+      // `#` lines inside fenced code blocks are comments, not headings, so drop the fences first.
+      const prose = text.replace(/^(```|~~~)[\s\S]*?^\1[^\n]*$/gm, '');
+      // GitHub suffixes a repeated heading's anchor with -1, -2, ... in document order.
+      const seen = new Map<string, number>();
+      const headingAnchors = [...prose.matchAll(/^#{1,6} +(.+?) *$/gm)].map((m) => {
+        const base = slug(m[1]);
+        const n = seen.get(base) ?? 0;
+        seen.set(base, n + 1);
+        return n === 0 ? base : `${base}-${n}`;
+      });
       const anchors = [
-        ...[...text.matchAll(/^#{1,6} +(.+?) *$/gm)].map((m) => slug(m[1])),
+        ...headingAnchors,
         ...[...text.matchAll(/<a id="([^"]+)"/g)].map((m) => m[1]),
       ];
       expect(anchors, `${file || 'memory-layers.md'}#${anchor} has no matching heading`).toContain(anchor);

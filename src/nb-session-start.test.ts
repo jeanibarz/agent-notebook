@@ -154,6 +154,14 @@ describe('nb-session-start.sh layered variant (NB_PROJECT_SLUG)', () => {
     expect(out).toContain('5 more shelf(s) were not classified');
   });
 
+  test('past the row limit, an empty project layer does not claim no shelf ends in the slug', () => {
+    // Only other-project shelves were fetched, but 5 more were cut off: the project's own
+    // shelf may be among them, so the loud "NONE end in @slug" note would be a false claim.
+    const out = run(layeredStub([row('code-review@acme-web')], 6), { NB_PROJECT_SLUG: 'acme-app' });
+    expect(out).toContain('5 more shelf(s) were not classified');
+    expect(out).not.toContain('NONE end in');
+  });
+
   test('unset NB_PROJECT_SLUG keeps the flat index', () => {
     const out = run(layeredStub(rows));
     expect(out).toContain('FLAT-LIST');
