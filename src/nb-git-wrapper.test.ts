@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 
 // Guards issue #244: nb-git-wrapper.mjs commits a notebook on every *mutating*
 // nb command, but its hard-coded MUTATING set once omitted `move` — a fully
@@ -209,4 +209,53 @@ describe('nb-git-wrapper installed outside the package (issue #376)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+// Issue #401: the CLI installs its broken-pipe and signal-lock-release guards only
+// when it is the main module, so the wrapper (which imports runNbCli) must install
+// them itself. These drive the real wrapper under a real pipe / real signal.
+describe('nb-git-wrapper process guards (issue #401)', () => {
+  test.skipIf(process.platform === 'win32')('`show | head -1` through the wrapper exits 0 with no EPIPE', () => {
+    // Output must exceed the ~64 KiB pipe buffer, or head closing early never
+    // produces EPIPE and the test would pass without the fix.
+    const lines: string[] = [];
+    for (let i = 0; i < 3000; i++) lines.push(`+1\t#${i} ${'x'.repeat(180)}`);
+    writeFileSync(join(nbDir, 'big.md'), lines.join('\n') + '\n');
+    const r = spawnSync(
+      'bash',
+      ['-c', `set -o pipefail; node ${JSON.stringify(wrapper)} show big | head -1`],
+      { env: { ...process.env, NB_DIR: nbDir }, encoding: 'utf-8', timeout: 20000 },
+    );
+    expect(r.stderr).not.toMatch(/EPIPE/);
+    expect(r.status).toBe(0);
+    expect(r.stdout.split('\n').filter(Boolean)).toHaveLength(1);
+  });
+
+  test.skipIf(process.platform === 'win32')('a SIGTERM while `.nb.lock` is held leaves no lock behind', async () => {
+    const lock = join(nbDir, '.nb.lock');
+    for (let trial = 0; trial < 5; trial++) {
+      const child = spawn('node', [wrapper, 'add', 'sig-shelf', `lesson ${trial}`], {
+        env: { ...process.env, NB_DIR: nbDir },
+        stdio: 'ignore',
+      });
+      const exited = new Promise<{ code: number | null; sig: NodeJS.Signals | null }>((resolve, reject) => {
+        child.on('exit', (code, sig) => resolve({ code, sig }));
+        child.on('error', reject);
+      });
+      // Send the signal the moment the lock appears (or give up once it exits).
+      let done = false;
+      void exited.then(() => {
+        done = true;
+      });
+      const deadline = Date.now() + 15000;
+      while (!done && !existsSync(lock) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      if (!done) child.kill('SIGTERM');
+      const { sig } = await exited;
+      // Without the handler the default disposition kills it outright (sig set).
+      expect(sig).toBeNull();
+      expect(existsSync(lock)).toBe(false);
+    }
+  }, 60000);
 });
