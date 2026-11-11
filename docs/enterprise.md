@@ -160,7 +160,10 @@ flowchart TB
 
 - **Audit trail.** With [git-versioning](harness-setup.md#git-versioning) on, the
   commit history *is* the audit log: who/what changed which lesson, when, as a
-  diff. Author identity is whatever git identity the wrapper runs under.
+  diff. Author identity is whatever git identity the wrapper runs under. Task attribution
+  needs the opt-in `NB_GIT_SESSION_TRAILER=1` (adds `Nb-Session: <id>` to each commit;
+  `git log --grep '^Nb-Session: <id>$'`); it is off by default since session ids then
+  enter history that may be pushed to a shared remote.
 - **Retention / right-to-delete.** Deleting a lesson is `nb rm` (one line gone) or
   deleting the file. To purge from history as well, it's an ordinary
   `git filter-repo` on a small text repo — no vendor involved.

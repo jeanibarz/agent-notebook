@@ -2056,6 +2056,7 @@ describe('runNbCli', () => {
           'NB_BIN',
           'NB_RETRO_TTL_DAYS',
           'NB_GIT_AUTOCOMMIT',
+          'NB_GIT_SESSION_TRAILER',
           'NB_BACKUP_PUSH_TIMEOUT',
           'NB_BACKUP_GIT_LOCK_WAIT',
         ];
@@ -2181,6 +2182,7 @@ describe('runNbCli', () => {
           'NB_BIN',
           'NB_RETRO_TTL_DAYS',
           'NB_GIT_AUTOCOMMIT',
+          'NB_GIT_SESSION_TRAILER',
           'NB_BACKUP_PUSH_TIMEOUT',
           'NB_BACKUP_GIT_LOCK_WAIT',
           'NB_MAX_LINE',

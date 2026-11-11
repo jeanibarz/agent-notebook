@@ -9,6 +9,10 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Added
+
+- `examples/nb-git-wrapper.mjs`: opt-in `NB_GIT_SESSION_TRAILER=1` adds a `Nb-Session: <NB_SESSION>` line to each auto-commit body so history shows which task changed a lesson (#409).
+
 ### Fixed
 
 - **A truncated `nb list` now says which notebooks it left out (#407).** The default 50-row cap drops the shelves with the fewest lessons, which are the newest ones, and the only hint was the `50 of 53` header. Without an explicit `--limit`, the output now ends with a flush-left `# 3 more notebooks not shown … nb list --limit 53` line, so the SessionStart hook carries it too. `--limit` and `--json` output are unchanged; AGENTS.md, the README, the getting-started guide and the hook hints no longer claim a bare `nb list` shows everything. See [FR-LIST-001](docs/requirements.md#fr-list-001).

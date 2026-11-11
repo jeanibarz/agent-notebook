@@ -173,3 +173,43 @@ describe('nb-git-wrapper default .gitignore seeding (issue #252)', () => {
     expect(seeded).toEqual(recipeGitignorePatterns());
   });
 });
+
+describe('nb-git-wrapper Nb-Session trailer (issue #409)', () => {
+  function runWith(extra: Record<string, string>, ...argv: string[]): void {
+    execFileSync(process.execPath, [wrapper, ...argv], {
+      env: cleanGitEnv({ NB_DIR: dir, NB_GIT_AUTOCOMMIT: '1', NB_SESSION: '', ...extra }),
+      encoding: 'utf-8',
+    });
+  }
+  const body = (rev = 'HEAD') => git('log', '-1', '--format=%B', rev);
+
+  test('opt-in adds an exact Nb-Session line; subject unchanged; grep does not match task-10', () => {
+    if (!gitAvailable) return;
+    initRepo();
+    runWith({ NB_GIT_SESSION_TRAILER: '1', NB_SESSION: 'task-1' }, 'add', 'demo', 'first lesson one');
+    runWith({ NB_GIT_SESSION_TRAILER: '1', NB_SESSION: 'task-10' }, 'add', 'demo', 'second lesson two');
+    expect(git('log', '--format=%s', '--grep', '^Nb-Session: task-1$')).toBe('nb add demo\n');
+    expect(git('log', '--format=%s', '--grep', '^Nb-Session: task-1$').split('\n').filter(Boolean)).toHaveLength(1);
+    expect(git('log', '-1', '--format=%s')).toBe('nb add demo\n');
+  });
+
+  test('without the opt-in, or with a blank session, the message is the bare subject', () => {
+    if (!gitAvailable) return;
+    initRepo();
+    runWith({ NB_SESSION: 'task-1' }, 'add', 'demo', 'first lesson one');
+    expect(body()).toBe('nb add demo\n\n');
+    runWith({ NB_GIT_SESSION_TRAILER: '1', NB_SESSION: '  ' }, 'add', 'demo', 'second lesson two');
+    expect(body()).toBe('nb add demo\n\n');
+    runWith({ NB_GIT_SESSION_TRAILER: '1' }, 'add', 'demo', 'third lesson three');
+    expect(body()).toBe('nb add demo\n\n');
+  });
+
+  test('a session with newline/control characters becomes one cleaned line equal to the usage log', () => {
+    if (!gitAvailable) return;
+    initRepo();
+    runWith({ NB_GIT_SESSION_TRAILER: '1', NB_SESSION: 'a\nb\u001b[31mc' }, 'add', 'demo', 'first lesson one');
+    expect(body().trim().split('\n')).toEqual(['nb add demo', '', 'Nb-Session: a b[31mc']);
+    const log = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
+    expect(log).toContain('a b[31mc');
+  });
+});
