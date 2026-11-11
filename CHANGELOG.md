@@ -10,6 +10,7 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Fixed
+- **`nb` now rejects surplus operands instead of silently dropping them (#378).** `nb add s run lint first` used to store `run` and exit 0; an unquoted `nb merge` replaced two lessons with one word, and a repeated `--note`/`--reason` was stored as the lesson or description. `add`, `merge`, `split`, `rm`, `vote`, `move` and `describe` now exit 1 with `bad_args` naming the first extra word and saying to quote the text as one argument; a repeated `--note`/`--reason` is refused too. `show` and `search` are unchanged, operands after `--` count but stay literal, and a trailing `--` on `vote` is still a downvote.
 - **`npm run test:fast` and `npm run test:coverage` now build `dist/` first (#379).** Ten suites exec the built `dist/cli.js`, but only `npm test` rebuilt it, so the fast loop failed on a fresh clone and could pass green against a stale build. `pretest:fast` and `pretest:coverage` hooks run the build like `pretest` does; the script strings are unchanged. `test:watch` still does not build, and CONTRIBUTING and AGENTS now say so.
 - **`nb doctor --json` now includes the `shelves` count its spec promised (#381).** A gate pointed at an empty or mistyped notebooks directory could not be told from a clean one. The human line now says `0 shelves checked (the notebooks directory does not exist | holds no shelf)` and pluralizes (`1 shelf`). Exit codes and finding codes are unchanged (an empty directory still exits 0).
 
