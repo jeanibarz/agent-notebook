@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, symlinkSync, chmodSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -152,5 +152,61 @@ describe('nb-git-wrapper MUTATING set (issue #244)', () => {
     // The real CLI wrote the lesson before any git call — a git failure loses nothing.
     expect(existsSync(join(nbDir, 'notes.md'))).toBe(true);
     expect(readFileSync(join(nbDir, 'notes.md'), 'utf-8')).toContain('a durable lesson');
+  });
+});
+
+describe('nb-git-wrapper installed outside the package (issue #376)', () => {
+  // The documented install copies the wrapper to ~/.local/bin, where normal module
+  // resolution cannot see a global npm install. Simulate that: a copy in a temp dir
+  // with a fake `npm` on PATH whose global root holds a symlink to this repo.
+  function installCopy(): { dir: string; env: NodeJS.ProcessEnv } {
+    const dir = mkdtempSync(join(tmpdir(), 'nb-wrapper-copy-'));
+    const globalRoot = join(dir, 'global', 'node_modules');
+    mkdirSync(globalRoot, { recursive: true });
+    symlinkSync(root, join(globalRoot, 'agent-notebook'), 'dir');
+    mkdirSync(join(dir, 'bin'));
+    const fakeNpm = join(dir, 'bin', 'npm');
+    writeFileSync(fakeNpm, `#!/bin/sh\necho "${globalRoot}"\n`);
+    chmodSync(fakeNpm, 0o755);
+    copyFileSync(wrapper, join(dir, 'nb-git-wrapper.mjs'));
+    writeFileSync(join(dir, 'nb'), '#!/bin/sh\nexec node "$(dirname "$0")/nb-git-wrapper.mjs" "$@"\n');
+    chmodSync(join(dir, 'nb'), 0o755);
+    return { dir, env: { PATH: `${join(dir, 'bin')}:${process.env.PATH}` } };
+  }
+
+  test.skipIf(process.platform === 'win32')('the documented shim + .mjs copy runs via the global npm root', () => {
+    const { dir, env } = installCopy();
+    try {
+      const r = spawnSync(join(dir, 'nb'), ['--version'], {
+        env: { ...process.env, NB_DIR: nbDir, ...env },
+        encoding: 'utf-8',
+        timeout: 20000,
+      });
+      expect(r.stderr).not.toContain('Cannot find module');
+      expect(r.status).toBe(0);
+      expect(r.stdout.trim()).toMatch(/\d+\.\d+\.\d+/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform === 'win32')('when the package cannot be found the message says what was searched', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'nb-wrapper-missing-'));
+    try {
+      mkdirSync(join(dir, 'bin'));
+      writeFileSync(join(dir, 'bin', 'npm'), `#!/bin/sh\necho "${join(dir, 'empty')}"\n`);
+      chmodSync(join(dir, 'bin', 'npm'), 0o755);
+      copyFileSync(wrapper, join(dir, 'nb-git-wrapper.mjs'));
+      const r = spawnSync('node', [join(dir, 'nb-git-wrapper.mjs'), '--version'], {
+        env: { ...process.env, NB_DIR: nbDir, PATH: `${join(dir, 'bin')}:${process.env.PATH}` },
+        encoding: 'utf-8',
+        timeout: 20000,
+      });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("searched the wrapper's own location");
+      expect(r.stderr).toContain(`the global npm root (${join(dir, 'empty')})`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
