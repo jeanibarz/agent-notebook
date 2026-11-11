@@ -59,6 +59,28 @@ describe('NB_* env-var documentation drift guard (issue #164)', () => {
     expect(undocumented, `undocumented NB_* env vars: ${undocumented.join(', ')}`).toEqual([]);
   });
 
+  // Issue #380: the spec's §7 table claims to list every variable, and the repo
+  // calls the spec its source of truth, so the README guard above stops one
+  // document short. Names only: defaults and ranges are not machine-checked.
+  test('every NB_* var read by shipping code is listed in the spec §7 configuration table', () => {
+    const spec = readFileSync(join(root, 'docs', 'requirements.md'), 'utf-8');
+    const start = spec.indexOf('\n## 7. Configuration');
+    expect(start, '§7 heading not found').toBeGreaterThan(-1);
+    const end = spec.indexOf('\n## ', start + 1);
+    const section = spec.slice(start, end === -1 ? undefined : end);
+    // Variables the code READS (`process.env.NB_X` or a tunable's `env: 'NB_X'`),
+    // not every NB_* token: the source also names example-tool knobs and a
+    // deliberate typo in messages, which the spec rightly keeps out of §7.
+    const read = new Set<string>();
+    for (const file of shippingSourceFiles()) {
+      for (const m of readFileSync(file, 'utf-8').matchAll(/(?:\benv\.|\benv: ')(NB_[A-Z_]+)/g)) read.add(m[1]);
+    }
+    expect(read.size, 'scan found no env reads').toBeGreaterThan(10);
+    const tokens = [...read].filter((t) => !ALLOW_LIST.has(t));
+    const missing = tokens.filter((t) => !section.includes('`' + t + '`')).sort();
+    expect(missing, `NB_* vars missing from docs/requirements.md §7: ${missing.join(', ')}`).toEqual([]);
+  });
+
   test('the three vars from issue #164 are documented by name', () => {
     const readme = readFileSync(join(root, 'README.md'), 'utf-8');
     for (const v of ['NB_ASCII', 'NB_STALE_LOCK_MS', 'NB_LOCK_GRACE_MS']) {

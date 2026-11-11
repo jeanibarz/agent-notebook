@@ -53,7 +53,8 @@ jobs:
         if: matrix.node-version != 18
 
       # Machine-readable result for triage: only uploaded when a test leg
-      # failed, and keyed per matrix leg so the six legs never collide on one
+      # failed, and keyed per matrix leg so the six test legs (Node 20/22/24 on both OSes; the
+      # Node 18 leg runs no suite) never collide on one
       # artifact name. `if-no-files-found: ignore` keeps the step green if a
       # pre-test step failed before junit.xml was written.
       - name: Upload JUnit test results
