@@ -49,7 +49,9 @@ full `npm test` (which includes the `[slow]` tests, as CI does) before pushing. 
 mark a new slow test for the fast-skip set, add ` [slow]` to its title.
 
 The tests exec the built `dist/` output, so a stale build gives misleading
-results — `npm test` runs the build first via its `pretest` hook.
+results — `npm test`, `npm run test:fast` and `npm run test:coverage` run the
+build first via `pre*` hooks. `npm run test:watch` does **not**: rebuild
+(`npm run build`) yourself after editing `src/`.
 
 **`npm test` needs Node 20.12 or newer.** Although the package itself runs on
 Node ≥ 18 (see `engines` in `package.json`), the test runner (vitest 5) imports
