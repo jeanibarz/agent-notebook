@@ -176,7 +176,9 @@ run the wrapper only where you want commits.
 If you want memory to survive a lost laptop — or to be *shared* to a team remote —
 schedule [`nb-backup.sh`](../examples/nb-backup.sh) to push the git history
 regularly. It commits any straggler first, then pushes; it is idempotent and
-safe to run often.
+safe to run often. If the store is mid-merge or mid-rebase (unmerged paths,
+`MERGE_HEAD`, `rebase-merge`/`rebase-apply`), it commits and pushes nothing,
+logs `MERGE IN PROGRESS`, and exits non-zero: resolve the conflict, then rerun.
 
 ```sh
 cd "$(nb path)"

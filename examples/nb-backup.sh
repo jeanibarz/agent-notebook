@@ -212,6 +212,27 @@ acquire_git_lock() {
 #    run (issue #274).
 ensure_gitignore
 if acquire_git_lock; then
+    # Never stage, commit or push a store that is mid-merge/rebase or holds
+    # unmerged paths: `git add -A` would mark conflicted files resolved, the
+    # commit would conclude the merge, and the push would publish conflict
+    # markers to every other clone (issue #399). Leave everything for a human.
+    INPROGRESS=""
+    if [ -n "$(git ls-files -u 2>/dev/null)" ]; then
+        INPROGRESS="unmerged paths"
+    else
+        for gp in MERGE_HEAD rebase-merge rebase-apply; do
+            gpath="$(git rev-parse --git-path "$gp" 2>/dev/null)" || continue
+            if [ -n "$gpath" ] && [ -e "$gpath" ]; then
+                INPROGRESS="$gp present"
+                break
+            fi
+        done
+    fi
+    if [ -n "$INPROGRESS" ]; then
+        log "MERGE IN PROGRESS (${INPROGRESS}) — resolve it, then rerun; commit and push skipped"
+        release_git_lock
+        exit 1
+    fi
     git add -A 2>>"$LOG_FILE"
     if ! git diff --cached --quiet; then
         if git commit --quiet -m "nb-backup ${DATESTAMP}" 2>>"$LOG_FILE"; then
