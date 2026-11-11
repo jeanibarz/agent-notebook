@@ -988,8 +988,12 @@ and `cli.test.ts` → `describe('split (issue #68)')` and
 <a id="fr-stats-001"></a>
 **FR-STATS-001 (Should).** `stats` SHALL roll up per-command calls/errors/p50/p95/last-used
 within a window (`parseWindowMs`, default 7d) and flag three anomalies: **loop**
-(≥`NB_LOOP_N` calls of one command on one shelf within `NB_LOOP_WINDOW_S`), **went-silent**
-(used historically, zero in-window, and last seen longer than `NB_SILENT_H` ago),
+(≥`NB_LOOP_N` calls of one command on one shelf within `NB_LOOP_WINDOW_S`; calls are
+grouped per session when the row's session is non-blank, so several agents each making one
+call are not one stuck agent, and blank-session rows are grouped together as before),
+**went-silent** (used historically, zero in-window, and last seen longer than `NB_SILENT_H`
+ago; rows with error class `unknown_subcommand` do not count as use, so a mistyped command
+name is never reported),
 **high-error-rate** (≥`NB_ERR_MIN` calls and ≥`NB_ERR_RATE` failures).
 
 <a id="fr-stats-002"></a>

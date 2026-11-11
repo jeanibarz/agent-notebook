@@ -3444,7 +3444,10 @@ export function stats(
     // hammering `search` with VARYING queries still trips the loop, exactly as
     // before #114. Only the serendipity computation reads a search row's entries.
     const target = r.command === 'search' ? '' : r.entries.slice().sort().join(',');
-    const k = `${r.role}\u0000${r.command}\u0000${target}`;
+    // Issue #372: a non-blank session is part of the key, so N agents each making
+    // one call inside the window are not reported as one stuck agent. Blank-session
+    // rows keep the original grouping.
+    const k = `${r.role}\u0000${r.command}\u0000${target}\u0000${r.session}`;
     const arr = byShelfCmd.get(k) ?? [];
     arr.push(Date.parse(r.ts));
     byShelfCmd.set(k, arr);
@@ -3470,6 +3473,9 @@ export function stats(
   const SILENT_MS = silentHours() * 3600_000;
   const lastSeen = new Map<string, number>();
   for (const r of all) {
+    // Issue #372: a mistyped command is logged under the typed token; it is not a
+    // real command that broke, so it never counts as "used historically".
+    if (r.errorClass === 'unknown_subcommand') continue;
     const t = Date.parse(r.ts);
     lastSeen.set(r.command, Math.max(lastSeen.get(r.command) ?? 0, t));
   }
