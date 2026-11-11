@@ -265,9 +265,23 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
     expect(json().crossShelfDups).toEqual([]);
   });
 
-  test('negative: a bare shelf never forms a group (one `@` shelf + the bare base shelf)', () => {
+  test('a copy in the bare base shelf counts as a holder: with one `@` shelf it is reported, and only the `@` copy is dropped', () => {
     shelf('orchestrator', [[1, 'Pin the base branch']]);
-    shelf('orchestrator@proj-a', [[1, 'Pin the base branch']]);
+    shelf('orchestrator@proj-a', [[4, 'pin the base branch!']]);
+    const [d] = json().crossShelfDups;
+    expect(d.shelves).toBe(2);
+    expect(d.sharedHolds).toBe(true);
+    expect(d.blocked).toBeNull();
+    expect(d.copies.map((c) => c.shelf)).toEqual(['orchestrator@proj-a', 'orchestrator']);
+    expect(d.commands).toEqual([`nb rm orchestrator@proj-a ${d.id} --reason obsolete --note duplicate`]);
+    for (const cmd of d.commands) nb(...cmd.split(' ').slice(1));
+    expect(json().crossShelfDups).toEqual([]);
+    expect(JSON.parse(nb('show', 'orchestrator', '--json')).entries.length).toBe(1);
+  });
+
+  test('negative: a bare shelf alone forms no group, and neither does a bare shelf of another base', () => {
+    shelf('orchestrator', [[1, 'Pin the base branch']]);
+    shelf('code-review@proj-a', [[1, 'Pin the base branch']]); // different base from the bare `orchestrator`
     expect(json().crossShelfDups).toEqual([]);
   });
 

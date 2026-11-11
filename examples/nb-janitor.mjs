@@ -33,7 +33,7 @@
 //                                      browse-without-use so the noisiest get a trigger
 //                                      first (`nb describe`). Browse rank needs NB_SESSION.
 //     8. Exact duplicates across    — the same lesson (equal `dedupKey`, nb's own normal form)
-//        shelves                       held by two or more `@` shelves that share a base name
+//        shelves                       held by two or more shelves that share a base name
 //                                      (`orchestrator@a`, `orchestrator@b`): `nb move` one copy
 //                                      to the shared `<base>` shelf, `nb rm` the others.
 //
@@ -603,11 +603,12 @@ const undescribedShelves = notebooks
   .sort((a, b) => b.browseWithoutUse - a.browseWithoutUse || a.shelf.localeCompare(b.shelf));
 const undescribed = { computed: undescribedComputed, shelves: undescribedShelves };
 
-// 8) exact duplicate lessons across `@` shelves that share a base name. "Exact" is
-//    nb's own rule (equal `dedupKey`: case, punctuation and spacing ignored), so there
-//    is no similarity guess and a lesson is never matched with its negation (fuzzy
-//    matching cannot promise that; see #286). Only `@` shelves take part: a bare shelf
-//    has no slug, so a copy of the lesson in it is not a project-specific duplicate.
+// 8) exact duplicate lessons across shelves that share a base name: the `@` shelves of
+//    that base and the bare `<base>` shelf itself. "Exact" is nb's own rule (equal
+//    `dedupKey`: case, punctuation and spacing ignored), so there is no similarity
+//    guess and a lesson is never matched with its negation (fuzzy matching cannot
+//    promise that; see #286). A bare shelf alone never forms a group: at least one
+//    `@` shelf of the base must hold the lesson too.
 //    Suggested fix: `nb move` the highest-scored copy (ties: shelf name) to the shared
 //    shelf named by the bare `<base>`, then `nb rm` the others. Moving to a sibling
 //    would be refused by nb (its target already holds the lesson). If `<base>` already
@@ -616,28 +617,32 @@ const undescribed = { computed: undescribedComputed, shelves: undescribedShelves
 const conflictedShelves = new Set(notebooks.filter((n) => n.lessons.some((e) => e.marker)).map((n) => n.shelf));
 const crossShelfDups = [];
 for (const base of sortedBases) {
-  const members = scopedByBase.get(base);
-  if (members.length < 2) continue;
+  // The `@` shelves of this base, plus the bare `<base>` shelf when it exists: a copy already in the
+  // shared shelf counts as a holder too (then only the `@` copies are left to drop).
+  const holderShelves = [...scopedByBase.get(base).map((m) => m.shelf), ...(shelfKeys.has(base) ? [base] : [])];
   const holders = new Map(); // dedupKey → [{ shelf, id, score, text }]
-  for (const m of members)
-    for (const [key, v] of shelfKeys.get(m.shelf)) {
+  for (const shelf of holderShelves)
+    for (const [key, v] of shelfKeys.get(shelf)) {
       if (!holders.has(key)) holders.set(key, []);
-      holders.get(key).push({ shelf: m.shelf, ...v });
+      holders.get(key).push({ shelf, ...v });
     }
   for (const [key, copies] of holders) {
     if (copies.length < 2) continue;
     copies.sort((a, b) => b.score - a.score || byName(a.shelf, b.shelf));
     const keep = copies[0];
     const sharedHolds = shelfKeys.get(base)?.has(key) ?? false;
-    const rmTargets = sharedHolds ? copies : copies.slice(1);
+    const rmTargets = sharedHolds ? copies.filter((c) => c.shelf !== base) : copies.slice(1);
     // nb refuses to move into the bare `<base>` shelf when it holds a merge-conflict marker, or when
     // another shelf differs from it only by case (#337). Then no command is printed: dropping the copies
-    // without the move would lose the lesson, and the move would only be refused.
-    const blocked = conflictedShelves.has(base)
-      ? 'conflict'
-      : notebooks.some((n) => n.shelf !== base && n.shelf.toLowerCase() === base.toLowerCase())
-        ? 'case-variant'
-        : null;
+    // without the move would lose the lesson, and the move would only be refused. (Not needed when the
+    // shared shelf already holds the lesson: there is no move, only removals from the `@` shelves.)
+    const blocked = sharedHolds
+      ? null
+      : conflictedShelves.has(base)
+        ? 'conflict'
+        : notebooks.some((n) => n.shelf !== base && n.shelf.toLowerCase() === base.toLowerCase())
+          ? 'case-variant'
+          : null;
     crossShelfDups.push({
       base,
       key,
@@ -847,7 +852,7 @@ else {
 }
 
 H('8. Exact duplicate lessons across shelves that share a base name');
-if (crossShelfDups.length === 0) out.push('  ✅ no lesson appears in more than one `@` shelf of the same base name.');
+if (crossShelfDups.length === 0) out.push('  ✅ no lesson appears in more than one shelf of the same base name.');
 else {
   for (const d of crossShelfDups.slice(0, COACCESS_MAX_ROWS)) {
     out.push(

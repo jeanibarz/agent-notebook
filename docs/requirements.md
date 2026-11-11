@@ -1339,17 +1339,18 @@ is the longer one with one or more leading parts dropped, anchored on `-` (`app`
 are equal ignoring case are a case collision, not drift. Each entry lists the lessons held
 under both, and the report suggests `nb move <short-shelf> <long-shelf> <id>`;
 (b) **exact duplicate lessons across shelves**, in section 8 and as `crossShelfDups`: a
-lesson held by two or more `@` shelves that share a base, where "the same lesson" means an
+lesson held by two or more shelves that share a base (the `@` shelves of that base and the bare
+`<base>` shelf itself; a bare shelf alone never forms a group), where "the same lesson" means an
 equal `dedupKey` (the normal form `nb` itself uses to refuse an exact duplicate, so no
 similarity guess and no lesson is matched with its negation). The report says "appears in N
 shelves", names the highest-scored copy (ties broken by shelf name), and suggests
 `nb move <that-shelf> <base> <id>` followed by `nb rm <other-shelf> <id> --reason obsolete --note duplicate`
 (`duplicate` is a `merge` reason code, not an `rm` one). If the bare `<base>` shelf already
-holds the lesson, only the `nb rm` lines are suggested, because `nb move` refuses a target
-that holds an equal lesson. Bare shelves (no `@`), bases that differ by case, shelves holding git
+holds the lesson, only `nb rm` lines for the `@` copies are suggested, because `nb move` refuses a target
+that holds an equal lesson. Bases that differ by case, shelves holding git
 merge-conflict markers (`nb` refuses to rewrite them) and lessons whose normal form is empty never form a group.
-When the bare `<base>` shelf holds conflict markers, or another shelf differs from it only by case
-(`nb` refuses both as a move target), the group is still reported but with `blocked` set and no commands.
+When the move is needed but the bare `<base>` shelf holds conflict markers, or another shelf differs
+from it only by case (`nb` refuses both as a move target), the group is still reported but with `blocked` set and no commands.
 The script mirrors `sanitizeLesson` + `dedupKey` + `entryId` and `readShelf`'s parsing (leading BOM,
 CRLF, leading `# key:` metadata lines) because it ships dependency-free and cannot import them, so the
 same key and id are printed as `nb show --json` shows. `--json` SHALL be written in full before the
