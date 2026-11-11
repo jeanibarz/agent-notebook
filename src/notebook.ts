@@ -416,10 +416,12 @@ function writeUsageState(dir: string, rows: number, bytes: number): void {
  * re-formed); bidi embedding/override/isolate marks (U+202A–202E, U+2066–2069)
  * that make a line read differently from what it contains; and invisible
  * zero-width characters (U+200B, U+2060, U+FEFF) that defeat the exact-duplicate
- * check. U+200D (ZWJ) and the variation selectors are deliberately KEPT so emoji
+ * check; the soft hyphen (U+00AD); and the Unicode Tag block (U+E0000–E007F),
+ * invisible in a terminal but readable by a model (issue #374; the `u` flag is
+ * what lets the astral range match). U+200D (ZWJ) and the variation selectors are deliberately KEPT so emoji
  * ZWJ sequences survive (issue #335).
  */
-const CONTROL_CHARS_RE = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g;
+const CONTROL_CHARS_RE = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u00AD\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/ug;
 
 /**
  * Drop the terminal-manipulating / invisible characters ({@link CONTROL_CHARS_RE})

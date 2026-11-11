@@ -170,7 +170,7 @@ whitespace to one space, and trim — and SHALL NOT truncate. The stripped class
 C0 controls other than the whitespace ones it normalises (tab, LF, VT `U+000B`, FF `U+000C`, CR) (so ESC `U+001B`,
 NUL `U+0000` and BEL `U+0007`); DEL (`U+007F`); C1 controls (`U+0080–U+009F`); bidi
 embedding/override/isolate marks (`U+202A–U+202E`, `U+2066–U+2069`); and invisible
-zero-width characters (`U+200B`, `U+2060`, `U+FEFF`). It SHALL KEEP `U+200D` (ZWJ) and
+zero-width characters (`U+200B`, `U+2060`, `U+FEFF`); the soft hyphen (`U+00AD`); and the Unicode Tag block (`U+E0000–U+E007F`). It SHALL KEEP `U+200D` (ZWJ) and
 the variation selectors so emoji ZWJ sequences survive. Because stored data may
 predate this rule, the render paths (`render`, `list`, `search`, `show --json`, and
 the `show`/`describe`/`list`/`search` text output) SHALL also strip these classes, so

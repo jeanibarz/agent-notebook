@@ -124,6 +124,7 @@ import {
   render,
   renderEntries,
   sanitizeLesson,
+  stripControlChars,
   asciiMode,
   search,
   setDescription,
@@ -937,10 +938,24 @@ describe('serialization round-trip', () => {
     const clean = sanitizeLesson(evil);
     expect(clean).toBe('a[31mred[0mbcdefghij');
     // No raw control / bidi / zero-width bytes survive.
-    expect(clean).not.toMatch(/[\u0000-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/);
+    expect(clean).not.toMatch(/[\u0000-\u001F\u007F-\u009F\u00AD\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/u);
     // Emoji ZWJ sequence (ZWJ U+200D) and a variation selector are preserved.
     const family = '\u{1F469}\u200D\u{1F469}\u200D\u{1F467}';
     expect(sanitizeLesson(`keep ${family} 👍🏽 café 漢字`)).toBe(`keep ${family} 👍🏽 café 漢字`);
+  });
+
+  test('Unicode Tag characters and the soft hyphen are stripped; ZWJ, CJK and RTL text survive (issue #374)', async () => {
+    const tags = '\u{E0049}\u{E0067}\u{E007F}';
+    expect(sanitizeLesson(`visible ${tags}end`)).toBe('visible end');
+    expect(sanitizeLesson('co\u00ADoperate')).toBe('cooperate');
+    expect(stripControlChars(`a${tags}b`)).toBe('ab');
+    const keep = '\u{1F469}\u200D\u{1F467} 漢字 \u05E9\u05DC\u05D5\u05DD \u200F';
+    expect(sanitizeLesson(keep)).toBe(keep);
+    expect((await addEntry(dir, 't', `x${tags}y`)).added).toBe(true);
+    expect(readEntries(dir, 't')[0].text).toBe('xy');
+    writeFileSync(join(dir, 'tagold.md'), `+1\tlegacy${tags} line\n`, 'utf-8');
+    expect(render(dir, 'tagold')).toContain('legacy line');
+    expect(render(dir, 'tagold')).not.toMatch(/[\u{E0000}-\u{E007F}]/u);
   });
 
   test('VT and FF stay whitespace: they become a space, not a deletion (issue #335)', () => {
@@ -963,7 +978,7 @@ describe('serialization round-trip', () => {
     await setDescription(dir, 's', 'desc \u001b[31mred\u0000');
     // A pre-existing file that already holds an ESC byte (stored before the rule).
     writeFileSync(join(dir, 'old.md'), '+1\tlegacy \u001b[31mred\u001b[0m line\n', 'utf-8');
-    const bad = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/;
+    const bad = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u00AD\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/u;
     expect(render(dir, 's')).not.toMatch(bad);
     expect(renderEntries('s', readEntries(dir, 's'))).not.toMatch(bad);
     expect(render(dir, 'old')).not.toMatch(bad);
