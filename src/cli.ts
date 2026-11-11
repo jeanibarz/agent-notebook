@@ -2469,9 +2469,23 @@ function renderStats(rep: StatsReport, shelf: string | undefined): string {
   // section; each line names the shelf (and entry/session where relevant).
   if (rep.signals.length > 0) {
     lines.push('  signals:');
+    // browse-without-use fires once per (session, shelf) pair (issue #415), so
+    // the text report folds it into one line per shelf with a session count,
+    // busiest first. `--json` keeps every pair. Other kinds print as before.
+    const browse = new Map<string, number>();
     for (const s of rep.signals) {
+      if (s.kind === 'browse-without-use') {
+        browse.set(s.shelf, (browse.get(s.shelf) ?? 0) + 1);
+        continue;
+      }
       const where = s.entry ? ` entry ${s.entry}` : s.session ? ` session "${s.session}"` : '';
       lines.push(`    [${s.kind}] shelf ${s.shelf}${where}: ${s.detail}`);
+    }
+    const folded = [...browse].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    for (const [shelf, n] of folded) {
+      lines.push(
+        `    [browse-without-use] shelf ${shelf}: shown without a vote in ${n} session${n === 1 ? '' : 's'} — the notebook's description may over-promise`,
+      );
     }
   } else {
     lines.push('  signals: none');
