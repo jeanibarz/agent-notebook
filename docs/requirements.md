@@ -1348,8 +1348,10 @@ shelves", names the highest-scored copy (ties broken by shelf name), and suggest
 holds the lesson, only the `nb rm` lines are suggested, because `nb move` refuses a target
 that holds an equal lesson. Bare shelves (no `@`), bases that differ by case, git
 merge-conflict marker lines and lessons whose normal form is empty never form a group.
-The script mirrors `sanitizeLesson` + `dedupKey` + `entryId` (it ships dependency-free and
-cannot import them), so the same key and id are printed as `nb show --json` shows.
+The script mirrors `sanitizeLesson` + `dedupKey` + `entryId` and `readShelf`'s parsing (leading BOM,
+CRLF, leading `# key:` metadata lines) because it ships dependency-free and cannot import them, so the
+same key and id are printed as `nb show --json` shows. `--json` SHALL be written in full before the
+process exits, even when piped.
 **Rationale:** the `shelf@project` convention (AGENTS.md section 4) fragments a project's memory when
 one repo is named by two slugs, and hides a lesson that several project shelves repeat
 (a cue that it is not specific to one project). Section 2's same-scope rule and section 3's

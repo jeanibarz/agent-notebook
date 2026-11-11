@@ -111,6 +111,8 @@ const USAGE_RING = (() => {
 const CONTROL_CHARS_RE = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g;
 // A git merge-conflict marker line (nb refuses to rewrite a shelf holding one): its text
 // ("<<<<<<< HEAD", "=======") is not a lesson, so it never counts as a duplicate.
+// nb's metadata-line shape (`# key: value`); only the leading run of these is metadata.
+const META_RE = /^#\s*([a-z][a-z0-9_-]*):\s?(.*)$/;
 const CONFLICT_MARKER_RE = /^(?:<<<<<<<|>>>>>>>)(?: |$)|^=======$/;
 function dedupKey(raw) {
   return raw
@@ -139,24 +141,30 @@ function readNotebooks(dir) {
     let lessons = [];
     let described = false; // has an explicit `# desc:` trigger line (vs an auto-fallback)
     try {
+      // Parse like nb's readShelf: strip one leading BOM (U+FEFF) and split on `\r?\n` so a BOM-adding
+      // editor or a CRLF checkout reads like a plain file, and treat only the LEADING run of `# key:` lines
+      // as metadata (a later `#` line is a lesson to nb). Otherwise a BOM-prefixed `# desc:` would be read
+      // as a lesson here, and section 8 would print an id nb does not know.
       const raw = readFileSync(join(dir, f), 'utf-8');
+      const rawLines = (raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw).split(/\r?\n/);
       // A `# desc:` line in the leading metadata block is the shelf's trigger —
       // "the situation in which you should open me". Its presence (not its text)
       // is what section 7 ranks on, so a plain boolean is enough.
-      described = raw.split('\n').some((l) => /^#\s*desc:/.test(l));
-      lessons = raw
-        .split('\n')
-        .filter((l) => l.trim() !== '' && !l.startsWith('#')) // skip the `# key:` metadata block
-        .map((l) => {
-          const tab = l.indexOf('\t');
-          const text = tab === -1 ? l : l.slice(tab + 1);
-          const score = tab === -1 ? 0 : Number.parseInt(l.slice(0, tab), 10) || 0;
-          // Delete nb's control/zero-width set BEFORE collapsing whitespace, as nb's sanitizeLesson does:
-          // `\s` itself matches U+FEFF, so collapsing first would turn it into a space and give the
-          // lesson a different dedupKey/id here than in nb.
-          return { score, text: text.replace(CONTROL_CHARS_RE, '').replace(/\s+/g, ' ').trim(), marker: CONFLICT_MARKER_RE.test(l) };
-        })
-        .filter((e) => e.text !== '');
+      described = rawLines.some((l) => /^#\s*desc:/.test(l));
+      let inMeta = true;
+      for (const l of rawLines) {
+        if (inMeta && META_RE.test(l)) continue;
+        inMeta = false;
+        if (l.trim() === '') continue;
+        const tab = l.indexOf('\t');
+        const text = tab === -1 ? l : l.slice(tab + 1);
+        const score = tab === -1 ? 0 : Number.parseInt(l.slice(0, tab), 10) || 0;
+        // Delete nb's control/zero-width set BEFORE collapsing whitespace, as nb's sanitizeLesson does:
+        // `\s` itself matches U+FEFF, so collapsing first would turn it into a space and give the
+        // lesson a different dedupKey/id here than in nb.
+        const clean = text.replace(CONTROL_CHARS_RE, '').replace(/\s+/g, ' ').trim();
+        if (clean !== '') lessons.push({ score, text: clean, marker: CONFLICT_MARKER_RE.test(l) });
+      }
     } catch {
       /* unreadable → report as empty rather than crash the whole scan */
     }
@@ -655,7 +663,10 @@ const report = {
 };
 
 if (JSON_OUT) {
-  process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+  // Wait for the write to drain before exiting: a pipe write is asynchronous on macOS (and Windows), so an
+  // immediate process.exit() cut a report larger than the first pipe chunk (8 KB) off mid-string and the
+  // consumer's JSON.parse failed.
+  await new Promise((resolve) => process.stdout.write(JSON.stringify(report, null, 2) + '\n', resolve));
   process.exit(0);
 }
 

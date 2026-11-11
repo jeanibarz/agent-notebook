@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync, writeSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -291,7 +291,6 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
   });
 
   test('the key and id match what the package computes from the file (control/zero-width chars are deleted, not spaced)', () => {
-    try {
     const samples = [
       'Plain lesson',
       'MiXeD   case,  punctuation; and spacing!',
@@ -302,12 +301,10 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
       '  leading and trailing  ',
     ];
     samples.forEach((text, i) => {
-      // A tab-less line is also valid input for nb (score 0); `sample 2` exercises the tab inside the text.
       shelf(`parity${i}@one`, [[1, text]]);
       shelf(`parity${i}@two`, [[1, text]]);
     });
     const groups = json().crossShelfDups;
-    console.log('DEBUG362 files=' + JSON.stringify(readdirSync(dir).sort()) + ' bases=' + JSON.stringify(groups.map((g) => g.base)));
     expect(groups.length).toBe(samples.length);
     samples.forEach((_, i) => {
       const d = groups.find((g) => g.base === `parity${i}`)!;
@@ -316,10 +313,6 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
       expect(d.id).toBe(shown.id);
       nb('vote', `parity${i}@one`, shown.id, '+1'); // the id the janitor prints is one nb accepts
     });
-    } catch (e) {
-      writeSync(1, 'DEBUG362ERR ' + String((e as Error).stack).replace(/\n/g, ' | ').slice(0, 1500) + '\n');
-      throw e;
-    }
   });
 
   test('a lesson with an invisible character still matches its plain twin (what nb itself would refuse as a duplicate)', () => {
@@ -329,6 +322,38 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
     expect(groups.length).toBe(1);
     const [d] = groups;
     for (const cmd of d.commands) nb(...cmd.split(' ').slice(1)); // the id it prints is one nb resolves
+  });
+
+  test('a BOM-prefixed shelf or a CRLF shelf parses like nb does: the description is not a lesson, and the printed ids resolve', () => {
+    // A BOM-adding editor makes the first line `\uFEFF# desc: …`; nb reads that as the description.
+    writeFileSync(join(dir, 'rev@a.md'), '\uFEFF# desc: when reviewing code\n+1\tlesson one\n', 'utf-8');
+    writeFileSync(join(dir, 'rev@b.md'), '\uFEFF# desc: when reviewing code\n+2\tlesson two\n', 'utf-8');
+    expect(json().crossShelfDups).toEqual([]); // the shared description is not a duplicate lesson
+    // CRLF checkout (git autocrlf): the trailing \r must not change the key or the id.
+    writeFileSync(join(dir, 'crlf@a.md'), '# desc: d\r\n+3\tShared CRLF lesson\r\n', 'utf-8');
+    writeFileSync(join(dir, 'crlf@b.md'), '# desc: d\r\n+1\tshared crlf lesson\r\n', 'utf-8');
+    const groups = json().crossShelfDups;
+    expect(groups.map((g) => g.base)).toEqual(['crlf']);
+    for (const cmd of groups[0].commands) nb(...cmd.split(' ').slice(1));
+  });
+
+  test('a BOM before `# desc:` still counts as described in section 7 (same reader)', () => {
+    writeFileSync(join(dir, 'rev@a.md'), '\uFEFF# desc: when reviewing code\n+1\tlesson one\n', 'utf-8');
+    expect((JSON.parse(execFileSync('node', [janitor, '--json'], { env: env(), encoding: 'utf-8' })) as { undescribed: { shelves: unknown[] } }).undescribed.shelves).toEqual([]);
+  });
+
+  test('a large --json report arrives whole through a pipe (the janitor must not exit before stdout drains)', () => {
+    // ~200 duplicate groups ≈ 100 KB of JSON, far past one 8 KB pipe chunk. On macOS a process.exit() right
+    // after stdout.write() used to truncate it mid-string, so JSON.parse failed.
+    for (const base of ['w', 'x', 'y', 'z'])
+      for (const slug of ['a', 'b'])
+        shelf(
+          `${base}@${slug}`,
+          Array.from({ length: 50 }, (_, i): [number, string] => [1, `${base} shared lesson number ${i} about builds`]),
+        );
+    const raw = execFileSync('node', [janitor, '--json'], { env: env(), encoding: 'utf-8', maxBuffer: 16 * 1024 * 1024 });
+    expect(raw.length).toBeGreaterThan(64 * 1024);
+    expect((JSON.parse(raw) as Report).crossShelfDups.length).toBe(200);
   });
 
   test('is deterministic: the same store prints the same bytes whatever order the files were created in', () => {
