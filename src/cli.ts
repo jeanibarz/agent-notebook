@@ -1606,12 +1606,14 @@ export async function runNbCli(
         const { value: limitRaw, rest: listRest } = extractOption(flagArgs, '--limit');
         const listArgs = listRest.concat(operands);
         let limit = LIST_DEFAULT_LIMIT;
+        let explicitLimitGiven = false;
         if (limitRaw !== undefined) {
           // Forgiving like `stats --since`: an unparseable --limit warns on
           // stderr (stdout/JSON stays clean) and falls back to the default,
           // rather than rejecting — the least-surprising path.
           if (/^\d+$/.test(limitRaw.trim())) {
             limit = Number.parseInt(limitRaw, 10);
+            explicitLimitGiven = true;
           } else {
             warnDefaultedFlag(
               json,
@@ -1634,7 +1636,7 @@ export async function runNbCli(
           );
           process.stderr.write(renderConflicts('list', listing.conflicts));
         } else {
-          const { out, err } = renderList(dir, prefix, limit);
+          const { out, err } = renderList(dir, prefix, limit, explicitLimitGiven);
           if (out) process.stdout.write(out);
           if (err) process.stderr.write(err);
         }
@@ -2267,7 +2269,12 @@ function truncateCol(text: string, width: number = DESC_COL_WIDTH): string {
  * match is shown, or `shown of total` when `--limit` truncated the list. A long
  * description/trigger is bounded by `truncateCol` so it can't wrap the row.
  */
-function renderList(dir: string, prefix: string | undefined, limit: number): { out: string; err: string } {
+function renderList(
+  dir: string,
+  prefix: string | undefined,
+  limit: number,
+  explicitLimit = false,
+): { out: string; err: string } {
   const listing = listNotebooks(dir, { prefix, limit });
   // Report any shelf skipped for an unreadable file (issue #332) on stderr, so
   // the success path still lists every healthy shelf but never hides the loss.
@@ -2294,6 +2301,18 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
     const trigger = r.desc ?? r.auto; // explicit description, else the (auto) top lesson
     const descPart = trigger ? `  ${truncateCol(trigger)}${r.desc === null ? '  (auto)' : ''}` : '';
     lines.push(`  ${r.shelf.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`);
+  }
+  // A default-capped list drops the shelves with the FEWEST lessons — which are
+  // the newest ones — so say so (issue #407). Flush-left and `#`-led, like
+  // `nb show`'s footer, so consumers that read the indented rows are unaffected;
+  // an explicit `--limit` is the caller's own choice and prints no footer.
+  if (!explicitLimit && shown < listing.total) {
+    const left = listing.total - shown;
+    const scope = prefix ? ` ${prefix}` : '';
+    lines.push(
+      `# ${left} more notebook${left === 1 ? '' : 's'} not shown (the fewest lessons, usually the newest) — ` +
+        `nb list${scope} --limit ${listing.total}`,
+    );
   }
   return { out: lines.join('\n') + '\n', err: skipErr };
 }

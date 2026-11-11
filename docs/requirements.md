@@ -494,7 +494,7 @@ same way.
 notebook index — one `NotebookSummary {shelf, role, lessons, desc, auto}` per notebook (`role` is a deprecated copy of `shelf`, filled from the same value) —
 ordered **richest-first** (descending `lessons`), ties broken by `shelf` name
 ascending. `nb list` SHALL render it as a header line plus one aligned row per
-notebook (name, lesson count, description); `ls`, `shelves` and the deprecated `roles` are aliases.
+notebook (name, lesson count, description); `ls`, `shelves` and the deprecated `roles` are aliases. When the default 50-row cap (no explicit `--limit`) leaves notebooks out, the output SHALL end with one flush-left `#` footer giving the number not shown and an `nb list [prefix] --limit <total>` command that lists them (issue #407); an explicit `--limit` and `--json` output are unchanged.
 **Rationale:** Level 1 of progressive disclosure for epic [#73](https://github.com/jeanibarz/agent-notebook/issues/73) — the always-readable index an agent consults to decide *which* notebook to open without reading any notebook's lessons. More lessons ⇒ more worth reusing, so it leads.
 *Proven by:* `notebook.test.ts` → "listNotebooks — the notebook index (issue #71)"; `cli.test.ts` → "list / ls / shelves — the notebook index (issue #71)".
 

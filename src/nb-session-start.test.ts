@@ -103,7 +103,7 @@ describe('nb-session-start.sh layered variant (NB_PROJECT_SLUG)', () => {
     expect(domainText).toContain('code-review  1  auto text of code-review');
     expect(domainText).toContain('release-notes  3  writing release notes');
     expect(out.slice(global)).toContain('  global  1  auto text of global');
-    expect(out).toContain('2 shelf(s) for other projects hidden (slug: acme-app); `nb list` shows all');
+    expect(out).toContain('2 shelf(s) for other projects hidden (slug: acme-app); `nb list --limit 1000` shows all');
     expect(out).toContain('Precedence if lessons conflict: project > domain > global.');
     expect(out).not.toContain('FLAT-LIST');
   });
@@ -166,5 +166,22 @@ describe('nb-session-start.sh layered variant (NB_PROJECT_SLUG)', () => {
     const out = run(layeredStub(rows));
     expect(out).toContain('FLAT-LIST');
     expect(out).not.toContain('### Project layer');
+  });
+});
+
+// Issue #407: the default path prints a bare `nb list`, which caps at 50 rows;
+// the footer it prints must reach the agent through the hook.
+describe('nb-session-start.sh default path with a truncated index (issue #407)', () => {
+  test('a 53-shelf store → the hook output carries the not-shown hint', () => {
+    for (let i = 1; i <= 53; i++) {
+      writeFileSync(join(dir, `old-${String(i).padStart(2, '0')}.md`), '+1\ta\n+1\tb\n');
+    }
+    const cli = join(here, '..', 'dist', 'cli.js');
+    const env: NodeJS.ProcessEnv = { ...process.env, NB_BIN: cli, NB_DIR: dir };
+    for (const k of ['NB_PROJECT_SLUG', 'NB_GLOBAL_SHELF']) delete env[k];
+    const out = execFileSync('bash', [hook], { env, encoding: 'utf-8' });
+    expect(out).toContain('50 of 53');
+    expect(out).toContain('# 3 more notebooks not shown');
+    expect(out).toContain('nb list --limit 53');
   });
 });
