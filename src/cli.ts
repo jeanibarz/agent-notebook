@@ -747,6 +747,23 @@ function helpRequest(argv: string[]): string | null | undefined {
   return undefined;
 }
 
+/**
+ * Non-blocking new-shelf advisory (issues #354, #404) printed by `add`, `move`
+ * (to its target) and `describe`. stderr, so stdout stays pipe-clean; the exit
+ * code is unchanged. `consolidateId` is the lesson a `nb move` suggestion would
+ * carry; absent (describe) means the new shelf has no lesson to move.
+ */
+function writeCreatedNote(shelf: string, sim: string[], consolidateId?: string): void {
+  process.stderr.write(
+    `note: created new shelf "${shelf}"` +
+      (sim.length > 0
+        ? `; existing shelves with overlapping names: ${sim.join(', ')}` +
+          (consolidateId ? ` — if it is the same subject, consolidate with: nb move ${shelf} ${sim[0]} ${consolidateId}` : '')
+        : '') +
+      '\n',
+  );
+}
+
 export async function runNbCli(
   argv: string[],
   readStdin: () => Promise<string> = readStdinDefault,
@@ -1061,16 +1078,7 @@ export async function runNbCli(
           // Non-blocking new-shelf advisory (issue #354): the one outcome of
           // `add` the agent is not otherwise told about. stderr, so stdout stays
           // pipe-clean; the exit code is unchanged.
-          if (r.created) {
-            const sim = r.similarShelves ?? [];
-            process.stderr.write(
-              `note: created new shelf "${shelf}"` +
-                (sim.length > 0
-                  ? `; existing shelves with overlapping names: ${sim.join(', ')} — if it is the same subject, consolidate with: nb move ${shelf} ${sim[0]} ${r.id}`
-                  : '') +
-                '\n',
-            );
-          }
+          if (r.created) writeCreatedNote(shelf, r.similarShelves ?? [], r.id);
         }
         break;
       }
@@ -1264,6 +1272,7 @@ export async function runNbCli(
           if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest in "${to}" −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
           process.stdout.write('\n');
         }
+        if (r.created) writeCreatedNote(to, r.similarShelves ?? [], r.id);
         break;
       }
       case 'describe': {
@@ -1298,6 +1307,7 @@ export async function runNbCli(
           if (json) process.stdout.write(JSON.stringify(r) + '\n');
           else if (r.desc === null) process.stdout.write(`description cleared for shelf "${shelf}"\n`);
           else process.stdout.write(`description set for shelf "${shelf}": ${r.desc}\n`);
+          if (r.created) writeCreatedNote(shelf, r.similarShelves ?? []);
         } else {
           const descRaw = getDescription(dir, shelf);
           const desc = descRaw === null ? null : stripControlChars(descRaw);

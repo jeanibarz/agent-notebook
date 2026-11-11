@@ -3548,7 +3548,7 @@ describe('nb describe (issue #70)', () => {
   test('--json emits a structured result for both set and read', async () => {
     const set = await run(['describe', 'patcher', 'json trigger', '--json']);
     expect(set.code).toBe(0);
-    expect(JSON.parse(set.out)).toEqual({ role: 'patcher', shelf: 'patcher', desc: 'json trigger', set: true });
+    expect(JSON.parse(set.out)).toEqual({ role: 'patcher', shelf: 'patcher', desc: 'json trigger', set: true, created: true }); // fresh shelf (#404)
     const get = await run(['describe', 'patcher', '--json']);
     expect(JSON.parse(get.out)).toEqual({ role: 'patcher', shelf: 'patcher', desc: 'json trigger', set: false });
   });
@@ -3606,7 +3606,7 @@ describe('nb describe (issue #70)', () => {
       const r = await run(['describe', 'patcher', '-'], 'my trigger');
       expect(r.code).toBe(0);
       expect(r.out).toContain('description set for shelf "patcher": my trigger');
-      expect(r.err).toBe('');
+      expect(r.err).toBe('note: created new shelf "patcher"\n'); // fresh shelf (#404)
       expect((await run(['describe', 'patcher'])).out).toBe('my trigger\n'); // stored verbatim
     });
 
@@ -3640,7 +3640,7 @@ describe('nb describe (issue #70)', () => {
       // --json is stripped before positional parsing, so `-` is still args[2].
       const r = await run(['describe', 'patcher', '-', '--json'], 'json piped\n');
       expect(r.code).toBe(0);
-      expect(JSON.parse(r.out)).toEqual({ role: 'patcher', shelf: 'patcher', desc: 'json piped', set: true });
+      expect(JSON.parse(r.out)).toEqual({ role: 'patcher', shelf: 'patcher', desc: 'json piped', set: true, created: true }); // fresh shelf (#404)
     });
 
     test('empty stdin clears the description (an empty operand, same as `""`)', async () => {
@@ -5118,5 +5118,64 @@ describe('surplus operands are rejected, not silently dropped (issue #378)', () 
     const r = await run(['add', 's', 'run', 'lint', '--json']);
     expect(r.code).toBe(1);
     expect(JSON.parse(r.out)).toMatchObject({ ok: false, error: { class: 'bad_args' } });
+  });
+});
+
+describe('created-shelf note (issue #404)', () => {
+  test('move into a never-created target notes it on stderr, naming overlapping shelves', async () => {
+    await run(['add', 'build-and-test', 'run npm run build before vitest']);
+    await run(['add', 'release-notes', 'changelog entry goes under Unreleased first']);
+    const r = await run(['move', 'release-notes', 'build-and-tets', 'changelog entry']);
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/^moved \[\+1\] changelog entry/);
+    expect(r.err).toMatch(/^note: created new shelf "build-and-tets"; existing shelves with overlapping names: build-and-test — .*nb move build-and-tets build-and-test [0-9a-f]{6}\n$/);
+    await run(['add', 'flaky-ci-debugging', 'rerun with --verbose']);
+    await run(['add', 'src-lesson', 'pin the runner image']);
+    const o = await run(['move', 'src-lesson', 'ci-debugging-tips', 'pin the runner']);
+    expect(o.err).toMatch(/created new shelf "ci-debugging-tips"; existing shelves with overlapping names: flaky-ci-debugging — .*nb move ci-debugging-tips flaky-ci-debugging [0-9a-f]{6}\n/);
+  });
+
+  test('move into an existing shelf, or refused as a duplicate, prints no note', async () => {
+    await run(['add', 'a', 'same lesson here']);
+    await run(['add', 'b', 'same lesson here']);
+    await run(['add', 'c', 'other lesson']);
+    expect((await run(['move', 'c', 'b', 'other lesson'])).err).toBe('');
+    const dup = await run(['move', 'a', 'b', 'same lesson']);
+    expect(dup.out).toMatch(/^skipped/);
+    expect(dup.err).toBe('');
+  });
+
+  test('move --json carries created only in the creating case', async () => {
+    await run(['add', 'a', 'one lesson']);
+    await run(['add', 'a', 'two lesson']);
+    const j1 = JSON.parse((await run(['move', '--json', 'a', 'fresh', 'one lesson'])).out);
+    expect(j1.created).toBe(true);
+    const j2 = JSON.parse((await run(['move', '--json', 'a', 'fresh', 'two lesson'])).out);
+    expect('created' in j2).toBe(false);
+    expect('similarShelves' in j2).toBe(false);
+  });
+
+  test('describe on a never-created shelf notes it; existing shelf and clearing do not', async () => {
+    await run(['add', 'build-and-test', 'a lesson']);
+    const r = await run(['describe', 'build-and-tsst', 'open when building']);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('description set for shelf "build-and-tsst": open when building\n');
+    expect(r.err).toBe('note: created new shelf "build-and-tsst"; existing shelves with overlapping names: build-and-test\n'); // no `nb move` hint: no lesson to move
+    expect((await run(['describe', 'build-and-tsst', 'reworded'])).err).toBe('');
+    expect((await run(['describe', 'build-and-test', 'when building'])).err).toBe('');
+    expect((await run(['describe', 'build-and-tsst', ''])).err).toBe('');
+    // clearing a shelf that never existed creates nothing and says nothing
+    expect((await run(['describe', 'ghost-shelf', ''])).err).toBe('');
+    const names = await run(['describe', 'ci-debugging-tips', 'x']);
+    expect(names.err).toBe('note: created new shelf "ci-debugging-tips"\n');
+    const named = await run(['describe', 'tips-ci-debugging', 'y']);
+    expect(named.err).toBe('note: created new shelf "tips-ci-debugging"; existing shelves with overlapping names: ci-debugging-tips\n');
+  });
+
+  test('describe --json carries created (+ similarShelves) only when creating', async () => {
+    const j = JSON.parse((await run(['describe', '--json', 'fresh-shelf', 'trigger'])).out);
+    expect(j).toMatchObject({ shelf: 'fresh-shelf', set: true, created: true });
+    const j2 = JSON.parse((await run(['describe', '--json', 'fresh-shelf', 'trigger two'])).out);
+    expect('created' in j2).toBe(false);
   });
 });

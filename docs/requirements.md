@@ -373,7 +373,8 @@ selected entry and return its text and score. An empty notebook SHALL throw.
 **FR-MOVE-001 (Must).** `move(dir, fromShelf, toShelf, selector)` SHALL remove the
 uniquely selected entry from `fromShelf` and insert it into `toShelf` **with its score
 carried over unchanged**, returning `{ reason, text, score, id, fromSize, toSize,
-evicted, collidedId? }`. The inserted entry SHALL be treated as a newcomer for the
+evicted, collidedId?, created?, similarShelves? }` (`created`/`similarShelves` per
+[FR-NOTE-001](#fr-note-001)). The inserted entry SHALL be treated as a newcomer for the
 `maxLines` cap — a *touch* (so it lands at the fresh end, [DP-3](#dp-3)) and *protected*
 like any newcomer ([FR-ADD-006](#fr-add-006)), so a full target ages/evicts its stalest
 *other* line and never drops the lesson just moved. This is the
@@ -1251,6 +1252,18 @@ valid object).
 
 ### 4.13 Notebook descriptions & metadata
 
+<a id="fr-note-001"></a>
+**FR-NOTE-001 (Should).** A mutation that creates a shelf SHALL say so on stderr:
+`nb add` (the shelf), `nb move` (the target shelf, only when the move is written, not
+when refused as a duplicate) and `nb describe` (only for a non-empty description on a
+shelf that did not exist) SHALL print `note: created new shelf "<name>"`, followed by
+the existing shelves sharing at least two name words with it when there are any. The
+`--json` result SHALL carry `created: true` (and `similarShelves` when non-empty) only
+in the creating case. Exit code and stdout are unchanged.
+**Rationale:** shelf matching is exact, so a mistyped shelf silently starts an orphan;
+`move` targets and `describe` can mistype the same way `add` can (issues #354, #404).
+*Proven by:* `cli.test.ts` → `describe('created-shelf note (issue #404)')`.
+
 <a id="fr-desc-001"></a>
 **FR-DESC-001 (Should).** A notebook file MAY begin with a **metadata** block: a
 leading run of `# key: value` comment lines matching `^#\s*([a-z][a-z0-9_-]*):\s?(.*)$`.
@@ -1274,7 +1287,9 @@ comment lines in the *file*, not a field on a lesson.
 **FR-DESC-002 (Should).** `nb describe <shelf> "<text>"` SHALL set the notebook's
 one-line **description** (the `# desc:` metadata value); `nb describe <shelf>` with no
 text SHALL print the current description (bare, pipe-friendly) or warn on stderr and
-exit 0 when none is set. `setDescription`/`getDescription` are the library form.
+exit 0 when none is set. `setDescription`/`getDescription` are the library form; a
+non-empty text on a never-created shelf creates it and adds `created`/`similarShelves`
+to the result ([FR-NOTE-001](#fr-note-001)).
 An empty (post-sanitize) text SHALL clear the description. The `[--reason] [--note]`
 flags ([FR-CLI-001](#fr-cli-001)) SHALL be stripped before the text operand is read, so
 an option placed before the text is never silently stored as the description ([DP-5](#dp-5)).

@@ -1703,6 +1703,10 @@ export interface MoveResult {
   decayed: Entry | null;
   /** For `duplicate`: the id of the existing target entry that blocked the move. */
   collidedId?: string;
+  /** For a `moved` result: true when this move created the target shelf (it did not exist before). Absent otherwise. */
+  created?: true;
+  /** When `created`: up to 3 existing shelves sharing at least two name words with the new target (absent when none). */
+  similarShelves?: string[];
 }
 
 /**
@@ -1744,6 +1748,10 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
     const targetRead = readShelf(dir, toShelf);
     assertNotConflicted(toShelf, targetRead.conflict);
     const target = targetRead.entries;
+    // Creating the target is the outcome of `move` the caller is not otherwise
+    // told about (issue #404). Decide before the write, which creates the file.
+    const created = !notebookExists(dir, toShelf);
+    const similar = created ? overlappingShelves(dir, toShelf) : [];
     const key = dedupKey(moving.text);
     const collider = target.find((e) => dedupKey(e.text) === key);
     if (collider) {
@@ -1783,6 +1791,8 @@ export function move(dir: string, fromShelf: string, toShelf: string, selector: 
       evicted: evicted[0] ?? null,
       evictedAll: evicted,
       decayed,
+      ...(created ? { created: true as const } : {}),
+      ...(similar.length > 0 ? { similarShelves: similar } : {}),
     };
   });
 }
@@ -1816,6 +1826,10 @@ export interface DescribeResult {
   desc: string | null;
   /** True when this call wrote a new description; false for a read-only query. */
   set: boolean;
+  /** True when this call created the shelf (a non-empty description on a shelf that did not exist). Absent otherwise. */
+  created?: true;
+  /** When `created`: up to 3 existing shelves sharing at least two name words with the new one (absent when none). */
+  similarShelves?: string[];
 }
 
 /**
@@ -1847,9 +1861,19 @@ export function setDescription(dir: string, shelf: string, text: string): Promis
     assertNoCaseVariant(dir, shelf);
     const { metaLines, entries, conflict } = readShelf(dir, shelf);
     assertNotConflicted(shelf, conflict);
+    // A non-empty description on a never-created shelf creates it (issue #404).
+    const created = clean !== '' && !notebookExists(dir, shelf);
+    const similar = created ? overlappingShelves(dir, shelf) : [];
     const meta = setMetaValue(metaLines, DESC_KEY, clean);
     writeEntries(dir, shelf, entries, meta);
-    return { role: shelf, shelf, desc: clean === '' ? null : clean, set: true };
+    return {
+      role: shelf,
+      shelf,
+      desc: clean === '' ? null : clean,
+      set: true,
+      ...(created ? { created: true as const } : {}),
+      ...(similar.length > 0 ? { similarShelves: similar } : {}),
+    };
   });
 }
 
