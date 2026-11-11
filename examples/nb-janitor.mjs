@@ -108,7 +108,7 @@ const USAGE_RING = (() => {
 // The control/zero-width set is DELETED first (as nb does on write), not turned
 // into a space the way the punctuation rule would, or a lesson holding one would
 // get a different key here than in nb.
-const CONTROL_CHARS_RE = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g;
+const CONTROL_CHARS_RE = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u00AD\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/ug;
 // A git merge-conflict marker line (nb refuses to rewrite a shelf holding one): its text
 // ("<<<<<<< HEAD", "=======") is not a lesson, so it never counts as a duplicate.
 // nb's metadata-line shape (`# key: value`); only the leading run of these is metadata.

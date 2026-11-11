@@ -4454,7 +4454,7 @@ describe('stats names a shelf that does not exist (issue #341)', () => {
 // before the sanitizer existed.
 describe('printed output carries no raw control bytes (issue #335)', () => {
   // eslint-disable-next-line no-control-regex
-  const bad = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/;
+  const bad = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u00AD\u200B\u202A-\u202E\u2060\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/u;
 
   test('show/list/search never print an ESC, even for a pre-existing shelf file', async () => {
     await run(['add', 's', 'ansi \u001b[31mred\u001b[0m \u001b]0;title\u0007 injected']);
@@ -4794,6 +4794,12 @@ describe('nb doctor (issue #338)', () => {
 
   test('control-char: an escape or bidi override is flagged with its line', async () => {
     shelf('a', '+1\tclean\n+1\tbad \u001b[31mred\n+1\tbidi ‮ text\n');
+    const { findings } = await codes();
+    expect(findings.filter((f) => f.code === 'control-char').map((f) => f.line)).toEqual([2, 3]);
+  });
+
+  test('control-char: a Unicode Tag character or soft hyphen is flagged (issue #374)', async () => {
+    shelf('a', '+1\tclean\n+1\ttag \u{E0049} here\n+1\tsoft\u00ADhyphen\n');
     const { findings } = await codes();
     expect(findings.filter((f) => f.code === 'control-char').map((f) => f.line)).toEqual([2, 3]);
   });
