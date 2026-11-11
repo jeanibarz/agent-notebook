@@ -31,6 +31,12 @@ versions are listed plainly.
   unchanged). A new `add-burst` signal flags a session that accepted more than `NB_ADD_BURST_N` (default 15) adds
   into one shelf. Docs now say the first remedy for a short window is fewer adds per session.
 
+### Changed
+- **`nb-janitor` section 8 counts a copy in the bare `<base>` shelf as a duplicate holder (#362).**
+  A lesson in `code-review` and in `code-review@my-repo` is now reported (previously only two or more
+  `@` shelves were). The bare shelf is the shared one, so the suggestion is only `nb rm` for the `@` copies.
+  The "blocked move target" note no longer appears when no move is needed.
+
 ### Fixed
 - **`nb-janitor --json` is no longer cut off when piped, and the janitor reads shelves the way `nb` does (#362).**
   The `--json` path called `process.exit()` straight after writing, and a pipe write is asynchronous on
