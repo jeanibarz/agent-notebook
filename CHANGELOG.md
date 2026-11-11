@@ -9,6 +9,9 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Fixed
+- **`nb doctor --json` now includes the `shelves` count its spec promised (#381).** A gate pointed at an empty or mistyped notebooks directory could not be told from a clean one. The human line now says `0 shelves checked (the notebooks directory does not exist | holds no shelf)` and pluralizes (`1 shelf`). Exit codes and finding codes are unchanged (an empty directory still exits 0).
+
 ### Added
 - **`npm run typecheck` now type-checks the test files and both vitest configs (#382).** A new `tsconfig.test.json` (extends the build config, `noEmit`, `rootDir` at the repo root) covers `src/**/*.test.ts` and `vitest*.config.ts`, which the build's `tsconfig.json` excludes; `typecheck` runs both projects and one CI leg runs it. The 26 errors it surfaced are fixed: nine stale `UsageRow` fixtures now go through one typed `usageRow()` helper, five `@ts-expect-error` directives that asserted nothing are removed, and a declaration file types `scripts/check-node-for-tests.mjs`. `dist/` and the published package are unchanged.
 - **`nb-janitor` reports slug drift and exact duplicate lessons across `shelf@project` shelves (#362).**

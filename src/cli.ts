@@ -1391,8 +1391,8 @@ export async function runNbCli(
         // Like `stats --exit-code`, the gate is opt-in: without the flag the
         // command exits 0 even with findings.
         const rep = doctor(dir);
-        if (json) process.stdout.write(JSON.stringify({ schemaVersion: rep.schemaVersion, findings: rep.findings }) + '\n');
-        else process.stdout.write(renderDoctor(rep) + '\n');
+        if (json) process.stdout.write(JSON.stringify({ schemaVersion: rep.schemaVersion, shelves: rep.shelves, findings: rep.findings }) + '\n');
+        else process.stdout.write(renderDoctor(rep, dir) + '\n');
         ok = true;
         if (flagArgs.slice(1).includes('--exit-code') && rep.findings.length > 0) return 3;
         break;
