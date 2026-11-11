@@ -146,6 +146,21 @@ import {
   withLock,
   resolveIntEnv,
 } from './notebook.js';
+import type { UsageRow } from './notebook.js';
+
+/**
+ * A complete `UsageRow` with every column at its empty value, overridden by `over`.
+ * Fixtures built through this helper break at type-check time (tsconfig.test.json)
+ * when `UsageRow` gains a required column, instead of silently going stale.
+ */
+function usageRow(over: Partial<UsageRow> = {}): UsageRow {
+  return {
+    ts: 't', role: 'r', command: 'add', ok: true, ms: 1, session: '', entries: [],
+    outcome: '', collided: '', evicted: '', reason: '', note: '',
+    errorClass: '', decayed: '', recovered: '', misses: 0,
+    ...over,
+  };
+}
 import { runNbCli } from './cli.js';
 
 let dir: string;
@@ -3456,7 +3471,7 @@ describe('zero-engagement root-cause diagnosis (issue #105)', () => {
     // storedLessons = 0 isolates blank-session from injection-hook (which needs
     // lessons to surface); the overlap of the two is pinned by its own test below.
     const d = diagnoseEngagement(
-      [{ ts: 't', role: 'r', command: 'add', ok: true, ms: 1, session: '', entries: [], outcome: 'accepted', collided: '', evicted: '', reason: '', note: '' }],
+      [usageRow({ command: 'add', session: '', outcome: 'accepted' })],
       0,
     );
     expect(d.blankSessionCalls).toBe(1);
@@ -3465,7 +3480,7 @@ describe('zero-engagement root-cause diagnosis (issue #105)', () => {
 
   test('a deliberate read (show) in a session with no vote is retrospective-not-landing (AC2)', () => {
     const d = diagnoseEngagement(
-      [{ ts: 't', role: 'r', command: 'show', ok: true, ms: 1, session: 's1', entries: [], outcome: '', collided: '', evicted: '', reason: '', note: '' }],
+      [usageRow({ command: 'show', session: 's1', outcome: '' })],
       3,
     );
     expect(d.readOnlySessions).toBe(1);
@@ -3491,7 +3506,7 @@ describe('zero-engagement root-cause diagnosis (issue #105)', () => {
     // injection-hook OFF, and list excluded from deliberate reads keeps
     // retrospective OFF — so no cause fires (don't double-count the hook's list).
     const d = diagnoseEngagement(
-      [{ ts: 't', role: 'r', command: 'list', ok: true, ms: 1, session: 's1', entries: [], outcome: '', collided: '', evicted: '', reason: '', note: '' }],
+      [usageRow({ command: 'list', session: 's1', outcome: '' })],
       5,
     );
     expect(d.reads).toBe(1); // list counts as a read → injection-hook off
@@ -3501,7 +3516,7 @@ describe('zero-engagement root-cause diagnosis (issue #105)', () => {
 
   test('search counts as a deliberate read (retrospective cause)', () => {
     const d = diagnoseEngagement(
-      [{ ts: 't', role: 'r', command: 'search', ok: true, ms: 1, session: 's1', entries: [], outcome: 'no-match', collided: '', evicted: '', reason: '', note: 'q' }],
+      [usageRow({ command: 'search', session: 's1', outcome: 'no-match', note: 'q' })],
       3,
     );
     expect(d.readOnlySessions).toBe(1);
@@ -3512,7 +3527,7 @@ describe('zero-engagement root-cause diagnosis (issue #105)', () => {
     // Pins the `r.session !== ''` guard on the deliberate-read branch: a blank
     // show is a blank-session cause, never a retrospective one.
     const d = diagnoseEngagement(
-      [{ ts: 't', role: 'r', command: 'show', ok: true, ms: 1, session: '', entries: [], outcome: '', collided: '', evicted: '', reason: '', note: '' }],
+      [usageRow({ command: 'show', session: '', outcome: '' })],
       3,
     );
     expect(d.readOnlySessions).toBe(0);
@@ -3523,9 +3538,9 @@ describe('zero-engagement root-cause diagnosis (issue #105)', () => {
   test('two distinct deliberate-read sessions count as two read-only sessions, not more', () => {
     const d = diagnoseEngagement(
       [
-        { ts: 't', role: 'r', command: 'show', ok: true, ms: 1, session: 's1', entries: [], outcome: '', collided: '', evicted: '', reason: '', note: '' },
-        { ts: 't', role: 'r', command: 'search', ok: true, ms: 1, session: 's1', entries: [], outcome: 'no-match', collided: '', evicted: '', reason: '', note: '' },
-        { ts: 't', role: 'r', command: 'show', ok: true, ms: 1, session: 's2', entries: [], outcome: '', collided: '', evicted: '', reason: '', note: '' },
+        usageRow({ command: 'show', session: 's1', outcome: '' }),
+        usageRow({ command: 'search', session: 's1', outcome: 'no-match' }),
+        usageRow({ command: 'show', session: 's2', outcome: '' }),
       ],
       3,
     );
@@ -3536,7 +3551,7 @@ describe('zero-engagement root-cause diagnosis (issue #105)', () => {
     // Overlap: a session-less `add` (no read) with a non-empty notebook — the
     // operator has two real problems; both lines show, blank-session first.
     const d = diagnoseEngagement(
-      [{ ts: 't', role: 'r', command: 'add', ok: true, ms: 1, session: '', entries: [], outcome: 'accepted', collided: '', evicted: '', reason: '', note: '' }],
+      [usageRow({ command: 'add', session: '', outcome: 'accepted' })],
       5,
     );
     expect(d.causes).toEqual(['blank-session', 'injection-hook']);
@@ -3798,7 +3813,7 @@ describe('locking (mkdir spinlock)', () => {
 
   test('cross-process: concurrent `nb add` invocations on one shelf all land (no lost update) [timing]', async () => {
     const N = 8; // small, deterministic; ~N*20ms serialization ≪ each child's acquire budget
-    const env = { ...process.env, NB_DIR: dir };
+    const env: NodeJS.ProcessEnv = { ...process.env, NB_DIR: dir };
     delete env.NB_MAX_LINES; // keep the default cap (50); N is well under it, so none is evicted
     // Fire N separate processes at the same shelf simultaneously. Without the
     // lock each reads the same base file and its atomic rename clobbers the
@@ -3825,7 +3840,7 @@ describe('locking (mkdir spinlock)', () => {
     // writer's content (an overlap degrades to a lost update, never corruption),
     // and every writer's temp is consumed by its own rename.
     const N = 10;
-    const env = { ...process.env, NB_DIR: dir, NB_STALE_LOCK_MS: '100', NB_LOCK_GRACE_MS: '2000' };
+    const env: NodeJS.ProcessEnv = { ...process.env, NB_DIR: dir, NB_STALE_LOCK_MS: '100', NB_LOCK_GRACE_MS: '2000' };
     delete env.NB_MAX_LINES; // default cap (50) >> N, so nothing is evicted
     const lessons = Array.from({ length: N }, (_, i) => `issue 270 overlap lesson number ${i}`);
     await Promise.all(
@@ -5146,9 +5161,7 @@ describe('single-pass shelf read — list/search/show read each file once (issue
     const origOut = process.stdout.write.bind(process.stdout);
     const origErr = process.stderr.write.bind(process.stderr);
     process.env.NB_DIR = dir;
-    // @ts-expect-error — test shim swallowing the command's writes
     process.stdout.write = () => true;
-    // @ts-expect-error — test shim swallowing the command's writes
     process.stderr.write = () => true;
     try {
       const { result, reads } = await withReadSpy(() => runNbCli(['show', 'alpha']));

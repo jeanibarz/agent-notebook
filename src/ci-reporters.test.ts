@@ -2,7 +2,7 @@ import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import vitestConfig, { resolveReporters } from '../vitest.config';
+import vitestConfig, { resolveReporters } from '../vitest.config.js';
 
 // Drift guard for issue #248: a failing PR CI matrix leg must surface a
 // machine-readable failing-test identity instead of forcing a raw-log scroll.

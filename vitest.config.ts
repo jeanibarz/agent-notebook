@@ -125,6 +125,7 @@ export default defineConfig({
           include: ['src/**/*.test.ts'],
           // Everything EXCEPT the [timing] tests: the full logic/property suite,
           // run with Vitest's normal parallel pool and no retry.
+          // @ts-expect-error — vitest's project types omit `testNamePattern`, but it is honoured per project at runtime (the unit/timing split depends on it)
           testNamePattern: `^(?!.*${TIMING_TAG}).*$`,
         },
       },
@@ -134,6 +135,7 @@ export default defineConfig({
           // Only the files that hold [timing] tests, so this project does not
           // re-transform the whole tree just to run a few tests.
           include: ['src/notebook.test.ts', 'src/timing-retry.test.ts'],
+          // @ts-expect-error — same: accepted per project at runtime, missing from the types
           testNamePattern: TIMING_TAG,
           // Re-run a wall-clock test that lost a scheduling race; a real,
           // repeatable failure still fails every attempt (issue #249).

@@ -27,7 +27,7 @@ this.
 
 ```
 npm install
-npm run typecheck   # tsc --noEmit — fast type check, no build output
+npm run typecheck   # tsc --noEmit over src/ AND the tests + vitest configs — no build output
 npm run build       # tsc, then chmod +x dist/cli.js
 npm test            # the full gate: build, then vitest run (every suite)
 npm run test:fast   # inner loop: the full suite minus the slow property/fuzz tests
@@ -35,7 +35,11 @@ npm run test:fast   # inner loop: the full suite minus the slow property/fuzz te
 
 `npm run typecheck` is the quickest inner-loop check: it reports type errors
 without emitting `dist/` or touching the `chmod` step, so a type-only failure
-surfaces on its own.
+surfaces on its own. It runs `tsc` twice: once over the shipped source (`tsconfig.json`,
+the same project `npm run build` compiles) and once over the test files and both
+vitest configs (`tsconfig.test.json`, which never emits). Vitest strips types without
+checking them, so this second pass is what catches a test fixture that has fallen
+behind an exported type. CI runs it on one matrix leg.
 
 `npm run test:fast` is the fast test loop while iterating. It runs the same
 suites but skips the handful of randomized property/fuzz tests — tagged ` [slow]`

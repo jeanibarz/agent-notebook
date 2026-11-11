@@ -2,7 +2,7 @@ import { describe, test, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import vitestConfig from '../vitest.config';
+import vitestConfig from '../vitest.config.js';
 
 /**
  * Drift guard for the issue #249 project split (vitest.config.ts).

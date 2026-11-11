@@ -34,7 +34,7 @@ describe('docs/memory-layers.md (issue #363)', () => {
     // `nb` would write to the default store under THIS home, never the developer's.
     const home = join(tmp, 'home');
     mkdirSync(home);
-    const env = { ...process.env, HOME: home, USERPROFILE: home, PATH: `${join(tmp, 'bin')}:${process.env.PATH}` };
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, PATH: `${join(tmp, 'bin')}:${process.env.PATH}` };
     delete env.NB_DIR;
     delete env.NB_MAX_LINES;
     const r = spawnSync('bash', ['-e', '-c', blocks.join('\n')], {
