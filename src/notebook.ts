@@ -2429,7 +2429,7 @@ export interface UsageRow {
   session: string;
   /** Stable id(s) of the entry/entries the call touched — or, for a `search`, the ids it SURFACED (issue #114, for serendipity provenance); `[]` when none. */
   entries: string[];
-  /** Outcome token: `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` (add), `up`/`down` (vote), `removed` (rm), `merged` (merge), `split` (split), `moved`/`move-blocked` (move; `move-blocked` = the target already held a near-duplicate), `match`/`no-match`/`no-terms` (search, with the query in `note` and, for a `match`, the surfaced ids in `entries` — issue #114; `no-terms` = the query had no searchable tokens, so it is NOT a coverage gap); `''` otherwise. */
+  /** Outcome token: `accepted`/`dedup-blocked`/`rejected-full`/`empty`/`too-long` (add), `up`/`down` (vote), `removed` (rm), `merged` (merge), `split` (split), `moved`/`move-blocked` (move; `move-blocked` = the target already held a near-duplicate), `match`/`no-match`/`no-terms`/`no-shelf` (search, with the query in `note` and, for a `match`, the surfaced ids in `entries` — issue #114; `no-terms` = the query had no searchable tokens, so it is NOT a coverage gap; `no-shelf` = the prefix operand matched no shelf name, so nothing was searched and it is NOT a coverage gap either); `''` otherwise. */
   outcome: string;
   /** For a `dedup-blocked` add: the id of the existing entry that blocked it; `''` otherwise. */
   collided: string;

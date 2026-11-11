@@ -672,7 +672,9 @@ function assertKnownFlags(cmd: string, head: string[]): void {
  * Max tokens (command word included) each command reads. A longer argv means
  * the caller left a multi-word lesson/description unquoted, and the fixed
  * positional reads would silently store only its first word (issue #378).
- * `show`, `search` and the read commands are deliberately absent.
+ * `show` and the read commands are deliberately absent, and so is `search`: it
+ * builds its own operand list (it extracts `--any`/`--limit` itself) and applies
+ * the same check there, capped at `SEARCH_MAX_ARGS` (issue #402).
  */
 const MAX_ARGS: Record<string, number> = {
   add: 3,
@@ -684,8 +686,10 @@ const MAX_ARGS: Record<string, number> = {
   describe: 3,
 };
 
-function assertOperandCount(cmd: string, args: string[]): void {
-  const max = MAX_ARGS[cmd];
+/** `search <query> [prefix]`: command word + query + optional prefix. */
+const SEARCH_MAX_ARGS = 3;
+
+function assertOperandCount(cmd: string, args: string[], max: number | undefined = MAX_ARGS[cmd]): void {
   if (max === undefined || args.length <= max) return;
   throw new NbError(
     'bad_args',
@@ -1330,8 +1334,14 @@ export async function runNbCli(
             );
           }
         }
+        assertOperandCount('search', searchArgs, SEARCH_MAX_ARGS);
         const query = need(searchArgs[1], 'query');
         const prefix = searchArgs[2]; // optional positional prefix (undefined → all notebooks)
+        // A prefix that no shelf name starts with scans nothing, which is not a coverage
+        // gap (issue #402): usually the caller dropped the quotes around a multi-word
+        // query. Detect it here so it is logged as `no-shelf`, not `no-match`.
+        const noShelf =
+          prefix !== undefined && !listShelves(dir).some((r) => r.startsWith(prefix));
         const result = search(dir, query, { prefix, any, limit });
         // Log the search so the `failed-search → add` gap-sensor can read it back:
         // outcome `match`/`no-match` plus the query in `note` (no new log column).
@@ -1354,7 +1364,9 @@ export async function runNbCli(
               ? 'match'
               : result.skipped.length > 0
                 ? 'skipped'
-                : 'no-match';
+                : noShelf
+                  ? 'no-shelf'
+                  : 'no-match';
         meta.note = query;
         // Record WHICH entry ids this search surfaced (issue #114 — surfacing
         // provenance). Reuses the existing `entries` column (no new column), so a
@@ -1380,7 +1392,7 @@ export async function runNbCli(
           // Same stderr warning as the text path (issue #333); stdout stays JSON.
           process.stderr.write(renderConflicts('search', result.conflicts));
         } else {
-          const { out, err } = renderSearch(query, any, result);
+          const { out, err } = renderSearch(query, any, result, prefix, noShelf);
           if (out) process.stdout.write(out);
           if (err) process.stderr.write(err);
         }
@@ -2286,7 +2298,13 @@ function renderList(dir: string, prefix: string | undefined, limit: number): { o
  * `(description match)` tag when only the description matched) followed by one
  * indented `<id>  [score]  <text>` line per hit — the id so the agent can `vote` it.
  */
-function renderSearch(query: string, any: boolean, result: SearchResult): { out: string; err: string } {
+function renderSearch(
+  query: string,
+  any: boolean,
+  result: SearchResult,
+  prefix?: string,
+  noShelf = false,
+): { out: string; err: string } {
   const mode = any ? 'OR' : 'AND';
   // Name any shelf skipped for an unreadable file (issue #332) — a search over a
   // damaged store still returns every healthy hit, but never silently drops one.
@@ -2299,6 +2317,16 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
       ? ` — note: ${result.skipped.length} shelf${result.skipped.length === 1 ? '' : 's'} could not be read and ` +
         `weren't searched (see above)\n`
       : '';
+  const scope = prefix !== undefined ? ` in shelves starting with "${prefix}"` : '';
+  if (result.groups.length === 0 && noShelf && result.terms.length > 0) {
+    return {
+      out: '',
+      err:
+        skipErr +
+        `nb search: no shelf name starts with "${prefix}", so nothing was searched (not a coverage gap). ` +
+        `To search every shelf for several words, quote them as one query: nb search "${query} ${prefix}"\n`,
+    };
+  }
   if (result.groups.length === 0) {
     // Three distinct empty renders, only ONE of which is the logged coverage gap.
     // Key the gap message on `result.total` (the FULL pre-limit count), NOT on the
@@ -2310,8 +2338,8 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
         ? `nb search: no searchable terms in "${query}"\n`
         : result.total === 0
           ? skippedNote
-            ? `no lessons match "${query}" (${mode}) in the readable shelves${skippedNote}`
-            : `no lessons match "${query}" (${mode}) — search is the secondary path (lessons are surfaced to you, ` +
+            ? `no lessons match "${query}" (${mode})${scope} in the readable shelves${skippedNote}`
+            : `no lessons match "${query}" (${mode})${scope} — search is the secondary path (lessons are surfaced to you, ` +
               `not searched); this miss was recorded as a possible coverage gap\n`
           : `${result.total} notebook${result.total === 1 ? '' : 's'} match "${query}" (${mode}) but --limit hid them all — ` +
             `raise --limit to see them (this was a match, not a coverage gap)\n`;

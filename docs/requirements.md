@@ -1328,7 +1328,7 @@ and `cli.test.ts` → `describe('nb search …')`.
 
 <a id="fr-search-002"></a>
 **FR-SEARCH-002 (Should).** The CLI SHALL log each `search` to the usage ring
-([FR-USAGE-002](#fr-usage-002)) with outcome `match` or `no-match`, the query in the
+([FR-USAGE-002](#fr-usage-002)) with outcome `match`, `no-match`, `no-terms`, `skipped` or `no-shelf`, the query in the
 `note` field, and — since [#114](https://github.com/jeanibarz/agent-notebook/issues/114)
 — the **entry ids it surfaced** in the `entries` field (all reusing existing columns — no
 new column), under `shelf` `-` since it spans notebooks. Both the `match`/`no-match`
@@ -1346,7 +1346,7 @@ labelled by the agent's own query (one signal per session + added-entry; a blank
 is skipped, and a terms-less query logs `no-terms`, never `no-match`, so it cannot be a
 false gap; likewise a `no-match` that exists only because a shelf was skipped as
 unreadable ([FR-LIST-006](#fr-list-006)) logs `skipped`, never `no-match`, so a damaged store
-cannot masquerade as a coverage gap and prompt a spurious `add`). Because the `search` row is logged under shelf `-` (it spans notebooks), the
+cannot masquerade as a coverage gap and prompt a spurious `add`; and a prefix operand that matches no shelf name logs `no-shelf`, because nothing was searched — usually the caller left a multi-word query unquoted, and `search` rejects more than `<query> [prefix]` operands with `bad_args`, as [#378](https://github.com/jeanibarz/agent-notebook/issues/378) does for the mutating commands). Because the `search` row is logged under shelf `-` (it spans notebooks), the
 signal is observable only in an **unscoped** `stats` report — `nb stats <shelf>` filters to
 one shelf and cannot pair the cross-notebook search with the add. **Rationale:** This is the
 `failed-search → add` gap-sensor — the coverage signal deferred from #72. A search that
