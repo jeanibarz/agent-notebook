@@ -4890,3 +4890,69 @@ describe('nb doctor (issue #338)', () => {
     expect(r.code).not.toBe(0);
   });
 });
+
+describe('surplus operands are rejected, not silently dropped (issue #378)', () => {
+  const stored = (shelfName: string): string => {
+    const f = join(dir, `${shelfName}.md`);
+    return existsSync(f) ? readFileSync(f, 'utf-8') : '';
+  };
+
+  test('an unquoted lesson is refused naming the surplus word, and nothing is written', async () => {
+    const r = await run(['add', 's', 'run', 'lint', 'first']);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('unexpected extra argument "lint"');
+    expect(r.err).toContain('quote');
+    expect(stored('s')).toBe('');
+  });
+
+  test.each([
+    ['merge', ['merge', 's', 'a', 'b', 'merged', 'text']],
+    ['split', ['split', 's', 'a', 'x', 'y', 'z']],
+    ['describe', ['describe', 's', 'two', 'words']],
+    ['rm', ['rm', 's', 'two', 'words']],
+    ['vote', ['vote', 's', 'id', '+1', 'extra']],
+    ['move', ['move', 's', 't', 'id', 'extra']],
+  ])('%s rejects a surplus operand and leaves the shelf untouched', async (_n, argv) => {
+    await run(['add', 's', 'alpha lesson']);
+    await run(['add', 's', 'beta lesson']);
+    const before = stored('s');
+    const r = await run(argv);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('unexpected extra argument');
+    expect(stored('s')).toBe(before);
+  });
+
+  test('a repeated --note or --reason is refused and stores nothing', async () => {
+    const a = await run(['add', 't', '--note', 'a', '--note', 'b', 'real lesson']);
+    expect(a.code).toBe(1);
+    expect(a.err).toContain('--note given more than once');
+    expect(stored('t')).toBe('');
+    const d = await run(['describe', 's', '--reason', 'a', '--reason', 'b', 'text']);
+    expect(d.code).toBe(1);
+    expect(d.err).toContain('--reason given more than once');
+  });
+
+  test('operands after -- are counted but stay literal', async () => {
+    const ok = await run(['add', 's', '--', '--json']);
+    expect(ok.code).toBe(0);
+    expect(stored('s')).toContain('--json');
+    const bad = await run(['add', 's', '--', 'one', 'two']);
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain('unexpected extra argument "two"');
+  });
+
+  test('a trailing -- on vote is still a downvote; show and search keep their multi-operand forms', async () => {
+    await run(['add', 's', 'alpha lesson']);
+    const id = entryId('alpha lesson');
+    expect((await run(['vote', 's', id, '--'])).code).toBe(0);
+    await run(['add', 'u', 'other lesson']);
+    expect((await run(['show', 's', 'u'])).code).toBe(0);
+    expect((await run(['search', 'alpha', 's'])).code).toBe(0);
+  });
+
+  test('--json rejection is a structured bad_args object and exit 1', async () => {
+    const r = await run(['add', 's', 'run', 'lint', '--json']);
+    expect(r.code).toBe(1);
+    expect(JSON.parse(r.out)).toMatchObject({ ok: false, error: { class: 'bad_args' } });
+  });
+});

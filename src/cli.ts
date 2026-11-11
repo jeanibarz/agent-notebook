@@ -667,6 +667,31 @@ function assertKnownFlags(cmd: string, head: string[]): void {
   }
 }
 
+/**
+ * Max tokens (command word included) each command reads. A longer argv means
+ * the caller left a multi-word lesson/description unquoted, and the fixed
+ * positional reads would silently store only its first word (issue #378).
+ * `show`, `search` and the read commands are deliberately absent.
+ */
+const MAX_ARGS: Record<string, number> = {
+  add: 3,
+  merge: 5,
+  split: 5,
+  rm: 3,
+  vote: 4,
+  move: 4,
+  describe: 3,
+};
+
+function assertOperandCount(cmd: string, args: string[]): void {
+  const max = MAX_ARGS[cmd];
+  if (max === undefined || args.length <= max) return;
+  throw new NbError(
+    'bad_args',
+    `unexpected extra argument "${args[max]}" for \`nb ${cmd}\` — quote multi-word text as one argument`,
+  );
+}
+
 export async function runNbCli(
   argv: string[],
   readStdin: () => Promise<string> = readStdinDefault,
@@ -757,6 +782,11 @@ export async function runNbCli(
       // becomes a handled exit-1 error, not an uncaught rejection.
       ({ value: reasonArg, rest: args } = extractOption(args, '--reason'));
       ({ value: noteArg, rest: args } = extractOption(args, '--note'));
+      // `extractOption` removes only the FIRST occurrence; a repeat would stay in
+      // the positional list and be stored as a lesson/description (issue #378).
+      for (const flag of ['--reason', '--note']) {
+        if (args.includes(flag)) throw new NbError('bad_args', `${flag} given more than once for \`nb ${cmd}\` — pass it once`);
+      }
     }
     // `flagArgs` is the flag-eligible region: the command plus the pre-`--`
     // positionals, with the global `--json`/`--reason`/`--note` already removed.
@@ -771,6 +801,7 @@ export async function runNbCli(
     // untouched. A no-op when no `--` terminator was present (`operands` is
     // empty), keeping every existing path byte-for-byte unchanged.
     args = args.concat(operands);
+    assertOperandCount(cmd, args);
     switch (cmd) {
       case 'show': {
         // Resolve EVERY shelf positional from the --json-stripped args so
