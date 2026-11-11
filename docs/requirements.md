@@ -752,7 +752,7 @@ and `describe('nb stale — cull candidates (issue #240)')`.
 **FR-CLI-011 (Should).** `nb doctor [--json] [--exit-code]` SHALL be a strictly read-only
 check of the notebooks directory: it SHALL take no lock and write no shelf. On a clean directory
 it prints a one-line OK summary and exits `0`. Each finding has a stable `code` — `conflict-marker`,
-`bad-score` (no valid `<score>\t` prefix), `control-char`, `lesson-too-long`, `shelf-over-cap`,
+`bad-score` (no valid `<score>\t` prefix), `control-char`, `lesson-too-long`, `duplicate-lesson` (a later line whose dedup key repeats an earlier one in the same shelf, so both share one id and no selector can pick either; one finding per later copy, [FR-SEL-002](#fr-sel-002)), `shelf-over-cap`,
 `empty-file` (0 bytes), `case-collision`, `leftover-temp` (older than `NB_STALE_LOCK_MS`, so a live
 writer's temp is not reported), `stale-lock`, `unreadable`, `invalid-name` (a `*.md` whose stem is not a legal shelf name, [FR-LIST-006](#fr-list-006)) — a `shelf` and, for line-level
 findings, a 1-based `line`. `--json` emits `{schemaVersion, shelves, findings:[{code, shelf, line?, message}]}`

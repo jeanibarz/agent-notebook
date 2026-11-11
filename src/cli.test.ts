@@ -5035,6 +5035,22 @@ describe('nb doctor (issue #338)', () => {
     expect(JSON.parse((await run(['doctor', '--json', '--exit-code'])).out).shelves).toBe(0);
   });
 
+  test('duplicate-lesson: one finding per later copy, with line and shared id; json matches; exit 3 (issue #413)', async () => {
+    shelf('s', '+3\tPin the toolchain version in CI\n+1\tUse --frozen-lockfile in CI\n+1\tPin the toolchain version in CI\n+0\tPin the toolchain version in CI\n');
+    const { r, findings } = await codes(['--exit-code']);
+    expect(r.code).toBe(3);
+    expect(findings.filter((f) => f.code === 'duplicate-lesson').map((f) => [f.shelf, f.line])).toEqual([['s', 3], ['s', 4]]);
+    const human = await run(['doctor']);
+    expect(human.out).toMatch(/duplicate-lesson {2}s:3 .*shared id [0-9a-f]{6}/);
+  });
+
+  test('duplicate-lesson: distinct lessons in one shelf, and the same text in two shelves, are clean (issue #413)', async () => {
+    shelf('a', '+1\tone\n+1\ttwo\n');
+    shelf('b', '+1\tone\n');
+    const { findings } = await codes();
+    expect(findings).toEqual([]);
+  });
+
   test('conflict marker: reported once with its line; a mid-line ======= is not a marker', async () => {
     shelf('a', '# desc: d\n+1\tfine ======= ok\n<<<<<<< HEAD\n+1\tx\n=======\n+1\ty\n>>>>>>> other\n');
     const { findings } = await codes();
