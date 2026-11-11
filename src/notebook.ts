@@ -2512,7 +2512,25 @@ export function normalizeReason(
  * so it is left byte-identical.
  */
 function sanitizeUsageField(raw: string): string {
-  return raw.replace(/[\t\r\n]+/g, ' ');
+  // Also drop terminal-manipulating control characters (issue #375): `nb stats`
+  // renders these fields, so an ESC/BEL in a command, session or note must never
+  // be stored. A well-formed field has none, so it stays byte-identical.
+  return stripControlChars(raw.replace(/[\t\r\n]+/g, ' '));
+}
+
+/**
+ * The usage-log `shelf` column (issue #375). The CLI records its first operand
+ * before validating it, so a forgotten shelf (`nb add "<lesson>"`) would write the
+ * lesson text into the log. Only a syntactically valid shelf name is recorded; any
+ * other operand becomes `-`. A valid-but-mistyped name stays visible.
+ */
+function usageShelfField(shelf: string): string {
+  try {
+    assertSafeShelf(shelf);
+    return shelf;
+  } catch {
+    return '-';
+  }
 }
 
 /**
@@ -2675,7 +2693,7 @@ export function logUsage(
     // reader and old rows are unchanged.
     const misses = meta.misses && meta.misses > 0 ? String(Math.round(meta.misses)) : '';
     const line =
-      `${new Date().toISOString()}\t${sanitizeUsageField(shelf)}\t${sanitizeUsageField(command)}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
+      `${new Date().toISOString()}\t${usageShelfField(shelf)}\t${capNote(sanitizeUsageField(command))}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
       `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}\t${decayed}\t${recovered}\t${misses}`;
     const ring = usageRing();
     const compactAt = ring + usageRingSlack();

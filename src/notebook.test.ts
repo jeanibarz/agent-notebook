@@ -2573,7 +2573,7 @@ describe('usage log + stats', () => {
     expect(rows.length).toBe(1); // the CR/LF did not spawn extra rows
     const cols = rows[0].split('\t');
     expect(cols.length).toBe(16); // five base + five richer + two reason columns + errorClass + decayed + recovered + misses, all tabs collapsed
-    expect(cols[1]).toBe('evil role drop table'); // shelf: tab+CR+LF all collapsed to single spaces
+    expect(cols[1]).toBe('-'); // shelf: not a valid name (issue #375), so never logged raw
     // stats still parses it as one call attributed to the sanitized command.
     const rep = stats(dir, { now: Date.now() });
     expect(rep.totalCalls).toBe(1);
@@ -2605,6 +2605,32 @@ describe('usage log + stats', () => {
     logUsage(dir, 'p', 'show', true, 1, { session: 'task-42' });
     const cols = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').trimEnd().split('\t');
     expect(cols[5]).toBe('task-42'); // a sub-cap value is untouched
+  });
+
+  test('logs an invalid shelf operand as "-" and a valid (even mistyped) name verbatim (issue #375)', () => {
+    logUsage(dir, 'this is a lesson I typed but forgot the shelf name', 'add', false, 1);
+    logUsage(dir, 'patchr', 'show', true, 1);
+    const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
+    const rows = raw.trimEnd().split('\n').map((l) => l.split('\t'));
+    expect(rows[0][1]).toBe('-');
+    expect(rows[1][1]).toBe('patchr');
+    expect(raw).not.toContain('forgot the shelf');
+  });
+
+  test('caps an over-long command and an over-long shelf operand (issue #375)', () => {
+    logUsage(dir, 'p', 'c'.repeat(100_000), false, 1);
+    logUsage(dir, 'x'.repeat(100_000), 'show', false, 1);
+    const rows = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').trimEnd().split('\n').map((l) => l.split('\t'));
+    expect(rows[0][2].length).toBe(maxChars());
+    expect(rows[1][1]).toBe('-'); // over MAX_SHELF_LEN is not a valid name
+  });
+
+  test('strips control characters from every column of a newly written row (issue #375)', () => {
+    logUsage(dir, 'p', 'bad\x1b[5mcmd', false, 1, { session: '\x1b[31mRED\x1b]0;pwn\x07', note: 'n\x1bote' });
+    const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
+    // eslint-disable-next-line no-control-regex
+    expect(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/.test(raw)).toBe(false);
+    expect(raw).toContain('bad[5mcmd');
   });
 
   test('a pathological session never makes logUsage throw (issue #202)', () => {

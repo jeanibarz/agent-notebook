@@ -2448,7 +2448,10 @@ function renderStats(rep: StatsReport, shelf: string | undefined): string {
     `  crash recovery: ${cr.lockSteals} stale lock${cr.lockSteals === 1 ? '' : 's'} stolen, ` +
       `${cr.tempReaps} leftover temp${cr.tempReaps === 1 ? '' : 's'} reaped (window)${crMark}`,
   );
-  return lines.join('\n');
+  // Log-derived strings (command, shelf, session, note) are caller-influenced and an
+  // older `nb` may have stored control characters (issue #375): strip them from the
+  // whole rendering. Newlines are kept.
+  return stripControlChars(lines.join('\n'));
 }
 
 // Settle the process exit status from the `runNbCli` promise. On resolve, the

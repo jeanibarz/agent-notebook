@@ -82,6 +82,23 @@ async function run(
 }
 
 describe('runNbCli', () => {
+  test('a forgotten shelf never writes the lesson text into the usage log (issue #375)', async () => {
+    const r = await run(['add', 'a lesson I typed but forgot the shelf name']);
+    expect(r.code).toBe(1);
+    const raw = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
+    expect(raw).not.toContain('forgot the shelf');
+    expect(raw.trimEnd().split('\t').slice(1, 3)).toEqual(['-', 'add']);
+  });
+
+  test('nb stats prints no control characters from a legacy usage row (issue #375)', async () => {
+    const ts = new Date().toISOString();
+    writeFileSync(join(dir, '.nb-usage.log'), `${ts}\tp\tbad\x1b[5mcmd\terr\t1ms\t\x1b[31mRED\x07\n`);
+    const r = await run(['stats']);
+    expect(r.out).toContain('bad[5mcmd');
+    // eslint-disable-next-line no-control-regex
+    expect(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/.test(r.out)).toBe(false);
+  });
+
   test('--help and no-args print usage and exit 0', async () => {
     expect((await run(['--help'])).code).toBe(0);
     const r = await run([]);

@@ -885,8 +885,13 @@ dropped). The row's first five columns SHALL be
 columns of [FR-USAGE-002](#fr-usage-002) and the two reason columns of
 [FR-USAGE-003](#fr-usage-003). A failure to log SHALL NOT fail the
 operation (so `--help`/`--version` still succeed on a read-only `NB_DIR`), and every
-field SHALL be sanitized (tab/CR/LF collapsed to spaces) so a value cannot inject an
-extra column or row.
+field SHALL be sanitized (tab/CR/LF collapsed to spaces, other control characters such
+as ESC/BEL dropped) so a value cannot inject an extra column or row or reach a terminal.
+The `shelf` column SHALL record only a syntactically valid shelf name (anything else,
+e.g. a lesson typed in the shelf position, is logged as `-`), and the `shelf` and
+`command` columns SHALL be capped to the same per-field length as `note`/`session`
+(issue #375). `nb stats` SHALL strip control characters from log-derived output, so a
+row written by an older `nb` cannot emit an escape sequence either.
 **Rationale:** Monitoring must itself be bounded and must never break a real call;
 the "every call appends one row" invariant is what lets `nb stats` see the classic
 integration-not-wired symptom of a harness that only ever calls `--help`.
