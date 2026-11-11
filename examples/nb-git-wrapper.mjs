@@ -11,8 +11,11 @@
 //
 // HOW TO USE IT (pick one)
 //   • Put it first on PATH as `nb` (shadowing the global `nb`):
-//       mkdir -p ~/.local/bin && cp nb-git-wrapper.mjs ~/.local/bin/nb
+//       mkdir -p ~/.local/bin && cp nb-git-wrapper.mjs ~/.local/bin/nb-git-wrapper.mjs
+//       printf '#!/bin/sh\nexec node "$(dirname "$0")/nb-git-wrapper.mjs" "$@"\n' > ~/.local/bin/nb
 //       chmod +x ~/.local/bin/nb         # ensure ~/.local/bin precedes npm's bin
+//     (Keep the .mjs name: older Node (e.g. 18, 22.5) cannot run an extensionless
+//     ES module and stops at its first `import`. The shim works on all.)
 //   • Or keep the real `nb` as-is and call this explicitly where you want commits.
 //
 //   Then make NB_DIR a repo once:  (cd "$(nb path)" && git init)
@@ -47,7 +50,7 @@
 //   written first and is never delayed or lost by a git concern.
 
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, writeFileSync, mkdirSync, rmdirSync, rmSync, renameSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -103,13 +106,47 @@ function notebooksDir() {
   return fromEnv && fromEnv.trim() !== '' ? expandHome(fromEnv) : join(homedir(), '.agent-notebook', 'notebooks');
 }
 
+/** The global npm package root (`npm root -g`), or null if npm cannot report it. */
+function globalNpmRoot() {
+  try {
+    const out = execFileSync('npm', ['root', '-g'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      shell: process.platform === 'win32', // npm is npm.cmd on Windows
+    }).trim();
+    return out === '' ? null : out;
+  } catch {
+    return null;
+  }
+}
+
 /** Resolve the installed `agent-notebook` package's compiled CLI entry. */
 function resolveNbCliEntry() {
   const require = createRequire(import.meta.url);
   // The package only publishes its main export (dist/notebook.js); the CLI is its
   // sibling dist/cli.js. Resolve main, then import cli.js by absolute path, which
   // bypasses the package `exports` restriction.
-  const main = require.resolve('agent-notebook');
+  let main;
+  const searched = [`the wrapper's own location (${dirname(fileURLToPath(import.meta.url))})`];
+  try {
+    main = require.resolve('agent-notebook');
+  } catch {
+    // A copy in ~/.local/bin cannot see a global install by normal resolution, so
+    // fall back to the global npm root (one subprocess, only on this failure path).
+    const globalRoot = globalNpmRoot();
+    if (globalRoot) {
+      searched.push(`the global npm root (${globalRoot})`);
+      try {
+        main = require.resolve('agent-notebook', { paths: [globalRoot] });
+      } catch {
+        /* fall through to the not-found error below */
+      }
+    } else {
+      searched.push('the global npm root (`npm root -g` failed)');
+    }
+  }
+  if (!main) throw new Error(`Cannot find module 'agent-notebook'; searched ${searched.join(' and ')}`);
   const entry = join(dirname(main), 'cli.js');
   if (!existsSync(entry)) throw new Error(`agent-notebook CLI not found at ${entry}`);
   return entry;

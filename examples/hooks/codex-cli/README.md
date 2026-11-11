@@ -28,7 +28,9 @@ Independent of the harness, the [`nb-git-wrapper.mjs`](../../nb-git-wrapper.mjs)
 gives you a commit per notebook change. Install it first on `PATH` as `nb`:
 
 ```sh
-cp ../../nb-git-wrapper.mjs ~/.local/bin/nb && chmod +x ~/.local/bin/nb
+cp ../../nb-git-wrapper.mjs ~/.local/bin/nb-git-wrapper.mjs
+printf '#!/bin/sh\nexec node "$(dirname "$0")/nb-git-wrapper.mjs" "$@"\n' > ~/.local/bin/nb
+chmod +x ~/.local/bin/nb   # keep the .mjs name: an extensionless copy fails on older Node (e.g. 18, 22.5)
 (cd "$(nb path)" && git init)          # make NB_DIR a repo once
 ```
 
