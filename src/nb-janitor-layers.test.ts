@@ -46,6 +46,7 @@ type Dup = {
   keep: string;
   sharedShelf: string;
   sharedHolds: boolean;
+  blocked: 'conflict' | 'case-variant' | null;
   commands: string[];
 };
 type Report = { slugVariants: Variant[]; crossShelfDups: Dup[]; shelfDups: unknown[] };
@@ -303,6 +304,22 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
     const script = `node ${JSON.stringify(janitor)} --json | head -c 100 >/dev/null; echo "exit=\${PIPESTATUS[0]}"`;
     const out = execFileSync('bash', ['-c', script], { env: env(), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
     expect(out.trim()).toBe('exit=0');
+  });
+
+  test('no command is suggested when nb would refuse the shared `<base>` shelf (conflict markers, or a case variant of it)', () => {
+    shelf('o', [[1, 'other'], '<<<<<<< HEAD', '=======', '>>>>>>> b']);
+    shelf('o@a', [[3, 'Pin the base']]);
+    shelf('o@b', [[1, 'pin the base']]);
+    const [c] = json().crossShelfDups;
+    expect(c.blocked).toBe('conflict');
+    expect(c.commands).toEqual([]);
+    expect(section(human(), 8)).toContain('holds git merge-conflict markers');
+    rmSync(join(dir, 'o.md'));
+    shelf('O', [[1, 'other']]);
+    const [v] = json().crossShelfDups;
+    expect(v.blocked).toBe('case-variant');
+    expect(v.commands).toEqual([]);
+    expect(section(human(), 8)).toContain('differs only by case');
   });
 
   test('the key and id match what the package computes from the file (control/zero-width chars are deleted, not spaced)', () => {

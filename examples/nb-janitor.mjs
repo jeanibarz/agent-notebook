@@ -613,6 +613,7 @@ const undescribed = { computed: undescribedComputed, shelves: undescribedShelves
 //    would be refused by nb (its target already holds the lesson). If `<base>` already
 //    holds the lesson, only the `rm`s remain. (`duplicate` is a `nb merge` reason
 //    code, not an `rm` one, so the rm carries it as `--note`.)
+const conflictedShelves = new Set(notebooks.filter((n) => n.lessons.some((e) => e.marker)).map((n) => n.shelf));
 const crossShelfDups = [];
 for (const base of sortedBases) {
   const members = scopedByBase.get(base);
@@ -629,6 +630,14 @@ for (const base of sortedBases) {
     const keep = copies[0];
     const sharedHolds = shelfKeys.get(base)?.has(key) ?? false;
     const rmTargets = sharedHolds ? copies : copies.slice(1);
+    // nb refuses to move into the bare `<base>` shelf when it holds a merge-conflict marker, or when
+    // another shelf differs from it only by case (#337). Then no command is printed: dropping the copies
+    // without the move would lose the lesson, and the move would only be refused.
+    const blocked = conflictedShelves.has(base)
+      ? 'conflict'
+      : notebooks.some((n) => n.shelf !== base && n.shelf.toLowerCase() === base.toLowerCase())
+        ? 'case-variant'
+        : null;
     crossShelfDups.push({
       base,
       key,
@@ -639,10 +648,13 @@ for (const base of sortedBases) {
       keep: keep.shelf,
       sharedShelf: base,
       sharedHolds,
-      commands: [
-        ...(sharedHolds ? [] : [`nb move ${keep.shelf} ${base} ${keep.id}`]),
-        ...rmTargets.map((c) => `nb rm ${c.shelf} ${keep.id} --reason obsolete --note duplicate`),
-      ],
+      blocked,
+      commands: blocked
+        ? []
+        : [
+            ...(sharedHolds ? [] : [`nb move ${keep.shelf} ${base} ${keep.id}`]),
+            ...rmTargets.map((c) => `nb rm ${c.shelf} ${keep.id} --reason obsolete --note duplicate`),
+          ],
     });
   }
 }
@@ -842,6 +854,15 @@ else {
       `  ⚠️  "${d.text}" appears in ${d.shelves} shelves: ` +
         `${d.copies.map((c) => `${c.shelf} (${c.score >= 0 ? '+' : ''}${c.score})`).join(', ')}.`,
     );
+    if (d.blocked) {
+      out.push(
+        `      → no command suggested: the shared "${d.sharedShelf}" shelf ` +
+          (d.blocked === 'conflict'
+            ? 'holds git merge-conflict markers (resolve the merge in its file first).'
+            : 'differs only by case from another shelf, which nb refuses (pick one spelling first).'),
+      );
+      continue;
+    }
     out.push(
       d.sharedHolds
         ? `      → "${d.sharedShelf}" already holds it, so keep that copy and drop the others:`
