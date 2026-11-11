@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import {
   isConflictMarker,
   isLeftoverTemp,
+  isValidShelfName,
   isMetaLine,
   listShelves,
   maxChars,
@@ -37,7 +38,8 @@ export type DoctorCode =
   | 'empty-file'
   | 'leftover-temp'
   | 'stale-lock'
-  | 'unreadable';
+  | 'unreadable'
+  | 'invalid-name';
 
 export interface DoctorFinding {
   code: DoctorCode;
@@ -65,6 +67,16 @@ export function doctor(dir: string): DoctorReport {
   const maxLen = maxChars();
 
   for (const shelf of shelves) {
+    // A `*.md` whose stem is not a legal shelf name (`review copy.md`, issue #369):
+    // every scan skips it, so name it here instead of grading it as a shelf.
+    if (!isValidShelfName(shelf)) {
+      findings.push({
+        code: 'invalid-name',
+        shelf,
+        message: `${JSON.stringify(`${shelf}.md`)} is not a valid shelf name (allowed: letters, digits, . _ @ -); rename or remove it`,
+      });
+      continue;
+    }
     let raw: string;
     try {
       raw = readFileSync(join(dir, `${shelf}.md`), 'utf-8');

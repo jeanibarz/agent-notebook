@@ -4800,6 +4800,56 @@ describe('a git merge-conflicted shelf warns on reads and refuses mutations (iss
   });
 });
 
+describe('a stray *.md that is not a legal shelf name does not break the scans (issue #369)', () => {
+  const stray = 'review copy';
+  const seed = async () => {
+    await run(['add', 'build', 'build before test']);
+    writeFileSync(join(dir, `${stray}.md`), 'x\n', 'utf-8');
+  };
+
+  test.each([['list'], ['shelves'], ['stats'], ['search', 'build']])(
+    'nb %s succeeds for the valid shelves and names the stray file on stderr',
+    async (...argv) => {
+      await seed();
+      const r = await run(argv);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('build');
+      expect(r.err).toContain('skipped "review copy.md"');
+      expect(r.err).toContain('not a valid shelf name');
+    },
+  );
+
+  test('--json carries the file in the skipped channel with a distinct code', async () => {
+    await seed();
+    const r = await run(['list', '--json']);
+    expect(r.code).toBe(0);
+    const parsed = JSON.parse(r.out);
+    expect(parsed.rows.map((x: { shelf: string }) => x.shelf)).toEqual(['build']);
+    expect(parsed.skipped).toEqual([{ shelf: stray, code: 'INVALID_NAME' }]);
+  });
+
+  test('nb doctor reports invalid-name and --exit-code exits 3', async () => {
+    await seed();
+    const r = await run(['doctor', '--json', '--exit-code']);
+    expect(r.code).toBe(3);
+    const findings = JSON.parse(r.out).findings as Array<{ code: string; shelf: string }>;
+    expect(findings.filter((f) => f.shelf === stray).map((f) => f.code)).toEqual(['invalid-name']);
+  });
+
+  test('addressing the invalid name directly is still a bad_args error', async () => {
+    await seed();
+    const r = await run(['show', stray]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('invalid shelf name');
+  });
+
+  test('a stray file does not break a scoped stats run or the zero-engagement lesson total', async () => {
+    await seed();
+    const r = await run(['stats', 'build']);
+    expect(r.code).toBe(0);
+  });
+});
+
 describe('nb doctor (issue #338)', () => {
   const shelf = (name: string, body: string) => writeFileSync(join(dir, `${name}.md`), body, 'utf-8');
   const codes = async (extra: string[] = []) => {

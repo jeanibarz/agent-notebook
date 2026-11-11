@@ -53,6 +53,7 @@ import {
   getMetaValue,
   isValidWindow,
   listNotebooks,
+  INVALID_NAME_CODE,
   listShelves,
   LOCK_GRACE_MS,
   lockGraceMs,
@@ -2346,10 +2347,13 @@ function renderSearch(query: string, any: boolean, result: SearchResult): { out:
  */
 function renderSkipped(cmd: string, skipped: SkippedShelf[]): string {
   return skipped
-    .map(
-      (s) =>
-        `nb ${cmd}: skipped shelf "${s.shelf}" — could not read ${s.shelf}.md (${s.code}); ` +
-        `fix the file (permissions, or remove a directory named ${s.shelf}.md) to include it again\n`,
+    .map((s) =>
+      s.code === INVALID_NAME_CODE
+        ? // A stray file, not a shelf (issue #369). JSON.stringify keeps a hostile stem on one line.
+          `nb ${cmd}: skipped ${JSON.stringify(`${s.shelf}.md`)} — not a valid shelf name ` +
+          `(allowed: letters, digits, . _ @ -); rename or remove the file\n`
+        : `nb ${cmd}: skipped shelf "${s.shelf}" — could not read ${s.shelf}.md (${s.code}); ` +
+          `fix the file (permissions, or remove a directory named ${s.shelf}.md) to include it again\n`,
     )
     .join('');
 }

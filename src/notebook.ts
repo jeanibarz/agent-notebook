@@ -287,6 +287,22 @@ export function assertSafeShelf(shelf: string): void {
   }
 }
 
+/**
+ * Non-throwing `assertSafeShelf`: whether `name` could be a shelf. Used by the
+ * directory scans to tell a stray `review copy.md` (a file manager, sync tool or
+ * editor dropped it) from a real shelf, without turning it into a thrown error
+ * that no scan can survive (issue #369).
+ */
+export function isValidShelfName(name: string): boolean {
+  try {
+    assertSafeShelf(name);
+    return true;
+  } catch (err) {
+    if (err instanceof NbError) return false;
+    throw err;
+  }
+}
+
 /** @deprecated use assertSafeShelf — same function, kept so existing callers keep working. */
 export const assertSafeRole = assertSafeShelf;
 
@@ -2056,13 +2072,20 @@ export interface NotebookSummary {
  * never invents a non-errno token. Surfaced so one unreadable file cannot
  * silently vanish from the index: `nb list`/`nb search`/`nb stats` report it on
  * stderr and in `--json`, while still succeeding for every healthy shelf.
+ *
+ * One non-errno code exists: {@link INVALID_NAME_CODE} marks a `*.md` file whose
+ * stem is not a legal shelf name (`review copy.md`, issue #369). It is never
+ * read at all — it is not a shelf — and is reported the same way.
  */
 export interface SkippedShelf {
-  /** The shelf whose `<shelf>.md` failed to read. */
+  /** The shelf whose `<shelf>.md` failed to read (or the stem of a file that is not a legal shelf name). */
   shelf: string;
-  /** The errno code of the read failure (`EACCES`, `EISDIR`, `EIO`, …). */
+  /** The errno code of the read failure (`EACCES`, `EISDIR`, `EIO`, …), or {@link INVALID_NAME_CODE}. */
   code: string;
 }
+
+/** The {@link SkippedShelf} code for a `*.md` file whose stem fails shelf-name validation (issue #369). */
+export const INVALID_NAME_CODE = 'INVALID_NAME';
 
 /**
  * A shelf whose file holds an unresolved git merge-conflict marker (issue #333).
@@ -2088,6 +2111,9 @@ export interface ConflictShelf {
  * directly, so an explicitly named bad shelf still fails loudly.
  */
 function skipUnreadable<T>(shelf: string, fn: () => T): { value?: T; error?: SkippedShelf } {
+  // A stray `review copy.md` lists as a shelf stem but is not one: `fn` would throw
+  // a codeless `bad_args` and abort the whole scan (issue #369). Skip it by name.
+  if (!isValidShelfName(shelf)) return { error: { shelf, code: INVALID_NAME_CODE } };
   try {
     return { value: fn() };
   } catch (err) {
@@ -3310,7 +3336,7 @@ export function diagnoseEngagement(recent: UsageRow[], storedLessons: number): E
  */
 function globalStoredLessons(dir: string, notebooks: NotebookStat[], scope: string | undefined): number {
   if (!scope) return notebooks.reduce((sum, n) => sum + n.lines, 0);
-  return listShelves(dir).reduce((sum, shelf) => sum + readEntries(dir, shelf).length, 0);
+  return listShelves(dir).filter(isValidShelfName).reduce((sum, shelf) => sum + readEntries(dir, shelf).length, 0);
 }
 
 /**
