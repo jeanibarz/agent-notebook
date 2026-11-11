@@ -582,6 +582,12 @@ output stays byte-identical. A prefix or search scope whose only match is a skip
 SHALL report that the matching shelf was unreadable, not "no match". A single-shelf command that names the bad shelf explicitly
 (e.g. `nb show <bad-shelf>`) SHALL still fail loudly — the resilience applies only to
 scans, so an error for an explicitly requested shelf is never hidden.
+A `*.md` file whose stem is not a legal shelf name (`review copy.md`, `résumé.md`, left by a
+file manager, sync tool or editor) is not a shelf: the same scans SHALL skip it the same way
+(`skipped` carries `{shelf: <stem>, code: "INVALID_NAME"}`, the stderr line says the name is
+invalid and to rename or remove the file), and `nb doctor` SHALL report it as an
+`invalid-name` finding. Addressing such a name directly (`nb show "review copy"`) stays a
+`bad_args` error.
 **Rationale:** One unreadable file (a stray directory, a permissions slip from a `sudo`
 run) previously turned every accumulated lesson into "nb failed" for `nb list`,
 `nb search`, and the session-start index agents use to decide which shelves to open
@@ -747,7 +753,7 @@ check of the notebooks directory: it SHALL take no lock and write no shelf. On a
 it prints a one-line OK summary and exits `0`. Each finding has a stable `code` — `conflict-marker`,
 `bad-score` (no valid `<score>\t` prefix), `control-char`, `lesson-too-long`, `shelf-over-cap`,
 `empty-file` (0 bytes), `case-collision`, `leftover-temp` (older than `NB_STALE_LOCK_MS`, so a live
-writer's temp is not reported), `stale-lock`, `unreadable` — a `shelf` and, for line-level
+writer's temp is not reported), `stale-lock`, `unreadable`, `invalid-name` (a `*.md` whose stem is not a legal shelf name, [FR-LIST-006](#fr-list-006)) — a `shelf` and, for line-level
 findings, a 1-based `line`. `--json` emits `{schemaVersion, shelves, findings:[{code, shelf, line?, message}]}`
 (`shelves` is the number of shelf files examined, so `0` tells a gate nothing was checked);
 `--exit-code` exits `3` when any finding exists, otherwise the exit is `0` — including for a

@@ -129,10 +129,14 @@ const lessonId = (raw) => createHash('sha1').update(dedupKey(raw)).digest('hex')
 const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 // ---- read the store (mirrors the package's file conventions) --------------
+const SAFE_SHELF = /^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$/;
 function readNotebooks(dir) {
   let files = [];
   try {
-    files = readdirSync(dir).filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md');
+    // Same name rule as nb's assertSafeShelf: a stray `review copy.md` is not a shelf (issue #369).
+    files = readdirSync(dir).filter(
+      (f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md' && SAFE_SHELF.test(f.slice(0, -3)) && !f.includes('..'),
+    );
   } catch {
     return [];
   }

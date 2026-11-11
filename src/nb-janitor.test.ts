@@ -631,3 +631,14 @@ describe('nb-janitor — --days window vs usage-ring span (#275)', () => {
     expect(run(['--days', '30'], '100')).toContain('under a day');
   });
 });
+
+describe('nb-janitor ignores a *.md whose stem is not a legal shelf name (issue #369)', () => {
+  test('a stray `review copy.md` is not counted as a shelf', () => {
+    writeFileSync(join(dir, 'build.md'), '1\ta lesson\n', 'utf-8');
+    const base = JSON.stringify(JSON.parse(execFileSync('node', [janitor, '--json'], { env: { ...process.env, NB_DIR: dir }, encoding: 'utf-8' })));
+    writeFileSync(join(dir, 'review copy.md'), '1\tstray\n', 'utf-8');
+    const withStray = JSON.stringify(JSON.parse(execFileSync('node', [janitor, '--json'], { env: { ...process.env, NB_DIR: dir }, encoding: 'utf-8' })));
+    expect(withStray).toBe(base);
+    expect(withStray).not.toContain('review copy');
+  });
+});
