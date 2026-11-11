@@ -2367,6 +2367,30 @@ describe('runNbCli', () => {
       expect(lines[2]).not.toContain('(auto)');
     });
 
+    test('a default-capped list ends with a flush-left footer naming what was left out (issue #407)', async () => {
+      for (let i = 1; i <= 53; i++) {
+        const n = String(i).padStart(2, '0');
+        writeFileSync(join(dir, `old-${n}.md`), '+1\\ta\n+1\\tb\n');
+      }
+      await run(['add', 'brand-new', 'the newest lesson']);
+      const r = await run(['list']);
+      const lines = r.out.trimEnd().split('\n');
+      expect(lines[0]).toBe(`agent-notebook notebooks — 50 of 54 in ${dir}`);
+      expect(lines).toHaveLength(52);
+      expect(lines[51]).toBe('# 4 more notebooks not shown (the fewest lessons, usually the newest) — nb list --limit 54');
+      expect(r.out).not.toContain('brand-new');
+      // the advertised command lists them, with no footer
+      const all = await run(['list', '--limit', '54']);
+      expect(all.out).toContain('brand-new');
+      expect(all.out).not.toMatch(/^#/m);
+      // an explicit --limit that truncates prints no footer; --json is unchanged
+      expect((await run(['list', '--limit', '5'])).out).not.toMatch(/^#/m);
+      expect(JSON.parse((await run(['list', '--json'])).out).total).toBe(54);
+      // a prefix that matches fewer than the cap: no footer
+      const r50 = await run(['list', 'old-0']);
+      expect(r50.out).not.toMatch(/^#/m);
+    });
+
     test('ties in lesson count are broken by name, ascending', async () => {
       await run(['add', 'planner', 'x']);
       await run(['add', 'patcher', 'y']);

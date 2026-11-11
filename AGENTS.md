@@ -27,7 +27,7 @@ in — the lowest-scored line is evicted and the stalest one ages a point, so a
 once-useful lesson that goes quiet eventually makes way (see
 [docs/eviction-and-aging.md](docs/eviction-and-aging.md)). A full shelf is the
 normal state: do not divide a shelf into two shelves because it is full. There is one file
-per shelf, and `nb list` shows the whole set —
+per shelf, and `nb list` shows the richest 50 and says how to see the rest —
 each with a one-line description of *when to open it* — so you can see what
 experience exists and open what fits, without having to name it in a search.
 There is no server, no embedding, no network call: every `nb` command is a fast
@@ -51,13 +51,14 @@ flowchart LR
 
 ### ① At the start of a task — **list what's there**
 
-Run `nb list` before you plan. It prints every notebook with its one-line
+Run `nb list` before you plan. It prints the 50 richest notebooks (a final `#` line
+names any left out and the `--limit` that shows them) with their one-line
 description — a trigger that says "open me when you're doing X." Reading the whole
 index is how a lesson you would never think to search for still reaches you: you
 meet its notebook's trigger unbidden.
 
 ```sh
-nb list                    # the index: every notebook, its lesson count, its description
+nb list                    # the index: the richest 50 notebooks, their lesson count, its description
 nb list "<prefix>."        # scoped to a namespace, e.g. nb list review.
 ```
 
@@ -172,7 +173,7 @@ Rules the tool enforces, so you don't have to guess:
 ## 5. The whole contract on one card
 
 ```
-START       nb list                  # see every notebook + its "open me when…" description
+START       nb list                  # see the notebooks + its "open me when…" description
 OPEN        nb show <shelf>           # open the one(s) whose description fits your task
             nb search <kw>           # only for a known-item lookup (secondary)
 SUBAGENT    point it at this contract # it runs nb list & opens notebooks for its own task

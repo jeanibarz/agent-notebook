@@ -189,7 +189,7 @@ You need [Node.js](https://nodejs.org) 18 or newer. Then:
 npm install -g agent-notebook      # installs the `nb` command
 
 nb add build-and-test "run the build before the tests"
-nb list                            # the index: every notebook + its description
+nb list                            # the index: richest 50 notebooks + description (a # footer names the rest)
 nb show build-and-test             # each line starts with a short id, e.g.  40091e  [+1]  run the build…
 nb vote build-and-test 40091e +1   # vote by that id — a unique snippet ("run the build") works too
 ```

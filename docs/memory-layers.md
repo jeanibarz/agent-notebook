@@ -214,7 +214,7 @@ precedence and placement rule. The global shelf is `global` unless you set
 `NB_GLOBAL_SHELF`. Other behavior, so it is safe to adopt:
 
 - It ends with a line such as `1 shelf(s) for other projects hidden (slug:
-  acme-app); nb list shows all`, so a hidden shelf never looks like a missing one.
+  acme-app); nb list --limit 1000 shows all`, so a hidden shelf never looks like a missing one.
 - If other projects' shelves are hidden and none end in `@<your-slug>`, it prints
   a NOTE telling you to check the slug, instead of a quietly empty project section.
 - If `nb list --json` fails or is not JSON, it falls back to the flat index with

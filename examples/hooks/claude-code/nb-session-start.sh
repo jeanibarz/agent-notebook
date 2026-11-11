@@ -15,7 +15,7 @@
 # of one flat list. See docs/memory-layers.md. With NB_PROJECT_SLUG unset (the
 # default) this script behaves exactly as described above. Even in the layered
 # variant the hook only sorts and hides rows of the INDEX; it never opens a shelf
-# for the agent, and `nb list` still shows everything.
+# for the agent, and `nb list --limit 1000` still shows everything.
 set -uo pipefail
 
 NB="${NB_BIN:-nb}"   # point NB_BIN at the git-versioning wrapper if you use one
@@ -83,11 +83,11 @@ layered_index() {
     console.log("");
     const unread = (data.total || 0) - data.rows.length;
     if (unread > 0)
-      console.log("  (" + unread + " more shelf(s) were not classified, and a shelf for this project may be among them; `nb list` shows all)");
+      console.log("  (" + unread + " more shelf(s) were not classified, and a shelf for this project may be among them; `nb list --limit 1000` shows all)");
     if (hidden > 0 && layers.project.length === 0 && unread === 0)
-      console.log("  (NOTE: " + hidden + " shelf(s) for other projects hidden and NONE end in @" + slug + " — if that slug is wrong, run `nb list` to see them all)");
+      console.log("  (NOTE: " + hidden + " shelf(s) for other projects hidden and NONE end in @" + slug + " — if that slug is wrong, run `nb list --limit 1000` to see them all)");
     else
-      console.log("  (" + hidden + " shelf(s) for other projects hidden (slug: " + slug + "); `nb list` shows all)");
+      console.log("  (" + hidden + " shelf(s) for other projects hidden (slug: " + slug + "); `nb list --limit 1000` shows all)");
   ' || return 1
 }
 
