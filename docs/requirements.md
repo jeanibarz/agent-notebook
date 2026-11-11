@@ -1398,7 +1398,7 @@ operation; a lesson SHALL never exceed `maxChars`; the usage log SHALL never exc
 
 <a id="nfr-port-001"></a>
 **NFR-PORT-001 (Must).** The tool SHALL run on Node.js ≥ 18 as an ESM package with no
-runtime dependencies. CI exercises Linux and macOS on Node 18/20/22; macOS is a
+runtime dependencies. CI exercises Linux and macOS on Node 18/20/22/24; macOS is a
 supported target (no Linux-specific syscalls) and is covered by CI. Because the test
 runner (Vitest) itself needs Node 20.12+ ([the guard](../scripts/check-node-for-tests.mjs)),
 the Node-18 leg runs a dependency-free runtime smoke of the built CLI
@@ -1484,6 +1484,9 @@ to the default (integer vars also fall back on a non-numeric string).
 | `NB_ERR_MIN` | 5 | 1–10000 | High-error-rate anomaly: min calls. |
 | `NB_ADD_BURST_N` | 15 | 1–100000 | `add-burst` signal ([FR-STATS-010](#fr-stats-010)): a session with more than this many accepted adds to one shelf. |
 | `NB_ERR_RATE` | 0.3 | 0–1 | High-error-rate anomaly: min failure fraction. |
+| `NB_ASCII` | _(unset → locale decides)_ | — | Force the activity sparkline's glyph ramp to ASCII (truthy) or Unicode (`''`, `0`, `false`, `no`, `off`); unset, the locale decides. |
+| `NB_STALE_LOCK_MS` | 10000 | 100–600000 | `.nb.lock` age (ms) past which a lock is treated as abandoned by a crashed `nb` and stolen. |
+| `NB_LOCK_GRACE_MS` | 2000 | 0–600000 | Extra wait past `NB_STALE_LOCK_MS` to notice and steal an abandoned lock before failing with `notebook is locked`. |
 | `NB_COVERAGE_HI` | 0.5 | 0–1 | Surfacing readout ([FR-STATS-004](#fr-stats-004)): coverage ≥ this reads as novel-adds HIGH. |
 | `NB_RECALL_MISS_HI` | 0.2 | 0–1 | Surfacing readout ([FR-STATS-004](#fr-stats-004)): recall-miss ≥ this reads as dedup-blocks HIGH. |
 

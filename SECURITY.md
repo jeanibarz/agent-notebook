@@ -3,13 +3,13 @@
 ## Supported Versions
 
 `agent-notebook` is published to npm from a single maintained release line.
-Security fixes land on the latest `0.5.x` release; please upgrade to the newest
-published version before reporting, in case the issue is already fixed.
+Security fixes land on the latest published release; please upgrade to it
+before reporting, in case the issue is already fixed.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.5.x   | :white_check_mark: |
-| < 0.5   | :x:                |
+| Version                | Supported          |
+| ---------------------- | ------------------ |
+| Latest published release | :white_check_mark: |
+| Any earlier release    | :x:                |
 
 ## Reporting a Vulnerability
 
