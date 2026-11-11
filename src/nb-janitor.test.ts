@@ -289,6 +289,15 @@ describe('nb-janitor section 2 — scope-aware shelf-name dedup', () => {
     expect(dups[0].sim).toBeGreaterThanOrEqual(0.8);
   });
 
+  test('the typo-pair remedy is a score-preserving `nb move`, never a re-add (#408)', () => {
+    mkShelf('build-and-test');
+    mkShelf('build-and-tests');
+    const human = runHuman();
+    expect(human).toContain('nb move build-and-tests build-and-test <id>');
+    expect(human).toContain('nb describe');
+    expect(human).not.toMatch(/re-add/);
+  });
+
   test('a role typo within the same project scope is still flagged', () => {
     mkShelf('orchestrator@proj');
     mkShelf('orchestratr@proj'); // dropped an 'o' — a typo split

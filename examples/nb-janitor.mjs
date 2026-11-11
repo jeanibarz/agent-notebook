@@ -743,7 +743,10 @@ if (shelfDups.length === 0 && slugVariants.length === 0) out.push('  ✅ no susp
 else {
   for (const d of shelfDups) {
     out.push(`  ⚠️  "${d.a}" ~ "${d.b}" (name similarity ${d.sim}) — likely the same shelf, split in two.`);
-    out.push(`      → consolidate: re-add ${d.b}'s lessons under "${d.a}" (or vice-versa), then retire the orphan.`);
+    out.push(
+      `      → consolidate a lesson at a time, keeping its score: nb move ${d.b} ${d.a} <id>  (ids: nb show ${d.b}; swap the two names to keep ${d.b} instead). ` +
+        `A shelf with no description disappears with its last lesson; one with a description also needs nb describe <emptied-shelf> "".`,
+    );
   }
   for (const v of slugVariants.slice(0, COACCESS_MAX_ROWS)) {
     out.push(
