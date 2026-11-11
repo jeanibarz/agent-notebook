@@ -1002,6 +1002,11 @@ call are not one stuck agent, and blank-session rows are grouped together as bef
 ago; rows with error class `unknown_subcommand` do not count as use, so a mistyped command
 name is never reported),
 **high-error-rate** (≥`NB_ERR_MIN` calls and ≥`NB_ERR_RATE` failures).
+The **high-error-rate** detail names the causes of the flagged command's error rows with the
+same rule as the per-command error-cause readout: the row's error class, else `too_long` when a
+row without a class recorded the `too-long` outcome, else `unclassified` — so the two lines
+report the same split for the same rows (issue #418).
+*Proven by:* `notebook.test.ts` → `the high-error-rate detail and the error-causes readout agree on a mixed-age log (issue #418)`.
 
 <a id="fr-stats-002"></a>
 **FR-STATS-002 (Should).** A malformed anomaly-tuning value SHALL fall back to the

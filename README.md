@@ -431,7 +431,7 @@ With this, `nb stats` breaks a `high-error-rate` anomaly down by class, naming t
 [high-error-rate] add: 41% errors over 250 calls — too_long 78%, bad_args 14%, other 8%
 ```
 
-Percentages are of the command's error total, rounded (so they need not sum to exactly 100%), most-common first. Rows written before this change carry no class and are bucketed as `unclassified` (kept distinct from a genuine `other`, so a freshly-upgraded window reads honestly rather than as a misleading "other 100%").
+Percentages are of the command's error total, rounded (so they need not sum to exactly 100%), most-common first. Rows written before this change carry no class and are bucketed as `unclassified` (kept distinct from a genuine `other`, so a freshly-upgraded window reads honestly rather than as a misleading "other 100%"). One exception: an over-length `add` from before the change still recorded its `too-long` outcome, so it is counted as `too_long` — the same rule the `error causes:` block uses, so the two lines give the same split.
 
 If a git-versioned notebook hits an unresolved `git merge`/`pull` conflict, its `<<<<<<<`, `=======` and `>>>>>>>` marker lines stay in `<shelf>.md` until you resolve them. `nb` recognizes those shapes: `show`, `list`, `search` and `stale` still read the shelf (printing a one-line stderr warning naming the shelf and marker) so nothing is silently dropped, but **every mutation** (`add`, `vote`, `merge`, `split`, `rm`, `move`, `describe`) refuses with exit 1 and a `corrupt` error, leaving the file byte-identical — so a stray write can never bake the markers in as lessons. Run `git merge`/fix the file and `nb` reads and writes it normally again.
 
