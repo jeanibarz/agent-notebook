@@ -2665,6 +2665,28 @@ describe('usage log + stats', () => {
     expect(narrow.usageRing).toEqual({ rows: 5, cap: 5000 });
   });
 
+  test('flags a full ring whose oldest row is newer than the window start (issue #406)', () => {
+    process.env.NB_USAGE_RING = '100';
+    const now = Date.now();
+    const lines: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      lines.push(`${new Date(now - 2 * 86_400_000 + i * 1000).toISOString()}\ts\tshow\tok\t1`);
+    }
+    writeFileSync(join(dir, '.nb-usage.log'), lines.join('\n') + '\n');
+    const wide = stats(dir, { now, windowMs: 30 * 86_400_000 });
+    expect(wide.usageRing).toEqual({
+      rows: 100,
+      cap: 100,
+      oldest: new Date(now - 2 * 86_400_000).toISOString(),
+      coversWindow: false,
+    });
+    // Window inside the retained span: exactly today's shape.
+    expect(stats(dir, { now, windowMs: 86_400_000 }).usageRing).toEqual({ rows: 100, cap: 100 });
+    // Below capacity: never flagged, even though the window outruns the log.
+    process.env.NB_USAGE_RING = '200';
+    expect(stats(dir, { now, windowMs: 30 * 86_400_000 }).usageRing).toEqual({ rows: 100, cap: 200 });
+  });
+
   test('usage-ring cap tracks NB_USAGE_RING (issue #206)', () => {
     process.env.NB_USAGE_RING = '100';
     logUsage(dir, 'p', 'show', true, 1);

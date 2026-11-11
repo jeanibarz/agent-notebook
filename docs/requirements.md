@@ -1141,6 +1141,11 @@ so it is NOT the windowed `totalCalls` — read from the same `parseUsage` the r
 already performs (no second ring read). Additive to the report: `STATS_SCHEMA_VERSION`
 SHALL NOT bump ([#172](#fr-stats-001) additive-field policy), every prior field is
 unchanged, and it adds no field to a lesson ([NG-004](#ng-004)).
+When the ring is at capacity and its oldest retained row is newer than the window start
+(the log no longer reaches back to `--since`; issue #406), `usageRing` SHALL additionally
+carry `oldest` (that row's ISO timestamp) and `coversWindow: false`, and the table SHALL
+print one extra line under the ring line stating how far back the log reaches; otherwise
+`usageRing` is exactly `{ rows, cap }` and the text output is unchanged.
 **Rationale:** The notebook inventory (issue #40) made per-shelf cap pressure visible,
 but the usage ring — whose fill decides when the oldest monitoring history is dropped —
 had no such readout; "why did my window lose older data?" otherwise needs reading the

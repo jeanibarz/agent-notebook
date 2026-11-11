@@ -1075,6 +1075,25 @@ describe('runNbCli', () => {
     expect(s.out).toContain('usage ring: 3/5000 rows');
   });
 
+  test('stats prints one coverage line when --since outruns a full ring, and none otherwise (issue #406)', async () => {
+    process.env.NB_USAGE_RING = '100';
+    const now = Date.now();
+    const rows = Array.from({ length: 100 }, (_, i) =>
+      `${new Date(now - 2 * 86_400_000 + i * 1000).toISOString()}\tpatcher\tshow\tok\t1ms`,
+    );
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const wide = await run(['stats', '--since', '30d']);
+    expect(wide.out.match(/usage log reaches back only/g)).toHaveLength(1);
+    expect(wide.out).toContain('reaches back only 2d');
+    const j = JSON.parse((await run(['stats', '--since', '30d', '--json'])).out);
+    expect(j.usageRing.coversWindow).toBe(false);
+    expect(typeof j.usageRing.oldest).toBe('string');
+    const narrow = await run(['stats', '--since', '1d']);
+    expect(narrow.out).not.toContain('usage log reaches back');
+    // each prior stats call appended its own row, so only the keys are pinned
+    expect(Object.keys(JSON.parse((await run(['stats', '--since', '1d', '--json'])).out).usageRing)).toEqual(['rows', 'cap']);
+  });
+
   test('a clean ring reports zero crash recovery, shown not omitted, with no warning marker (issue #309)', async () => {
     await run(['add', 'patcher', 'a lesson with no crash in sight']);
     const s = await run(['stats']);

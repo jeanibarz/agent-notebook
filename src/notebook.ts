@@ -3172,8 +3172,15 @@ export interface StatsReport {
    * pressure (issue #40). Read from the `parseUsage` the report already does, so
    * it costs no extra ring read. Additive — every field above is unchanged, and
    * `STATS_SCHEMA_VERSION` does not bump (#172 additive-field policy).
+   *
+   * `oldest` (ISO timestamp of the oldest retained row) and `coversWindow: false`
+   * are present ONLY when the ring is at capacity and that row is newer than the
+   * window start (issue #406): the log no longer reaches back as far as the
+   * requested `--since`, so the per-day add rates and retention estimates are
+   * computed over a longer span than is recorded. Otherwise the shape is exactly
+   * `{ rows, cap }`.
    */
-  usageRing: { rows: number; cap: number };
+  usageRing: { rows: number; cap: number; oldest?: string; coversWindow?: false };
   /**
    * Crash-recovery readout (issue #309): how many times, in the window, a `nb`
    * mutation found and cleaned up evidence that a PREVIOUS `nb` died mid-write —
@@ -3931,6 +3938,22 @@ export function stats(
     crashTempReaps += Number.parseInt(t ?? '', 10) || 0;
   }
 
+  // Window-coverage note (issue #406): same condition as nb-janitor's #275 guard —
+  // ring at capacity AND the oldest retained row newer than the window start.
+  const ringCap = usageRing();
+  const ringReport: StatsReport['usageRing'] = { rows: parsed.length, cap: ringCap };
+  if (parsed.length >= ringCap) {
+    let oldest: number | null = null;
+    for (const r of parsed) {
+      const t = Date.parse(r.ts);
+      if (Number.isFinite(t) && (oldest === null || t < oldest)) oldest = t;
+    }
+    if (oldest !== null && oldest > now - windowMs) {
+      ringReport.oldest = new Date(oldest).toISOString();
+      ringReport.coversWindow = false;
+    }
+  }
+
   return {
     schemaVersion: STATS_SCHEMA_VERSION,
     window,
@@ -3951,7 +3974,7 @@ export function stats(
     // windowed `recent`/`totalCalls`, so it reads as "how full is the log" rather
     // than "how busy was the window". Reuses the `parsed` array already read — no
     // second ring scan (the #206 risk note).
-    usageRing: { rows: parsed.length, cap: usageRing() },
+    usageRing: ringReport,
     // Crash-recovery readout (issue #309): deployment-wide, window-scoped counts
     // of the two silent recovery events, so "are agents crashing mid-write?" is
     // answerable from `nb stats`. Shown even at {0,0} (healthy) — see the field doc.
