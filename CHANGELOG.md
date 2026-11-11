@@ -10,6 +10,14 @@ versions are listed plainly.
 ## [Unreleased]
 
 ### Added
+- **`nb-janitor` reports slug drift and exact duplicate lessons across `shelf@project` shelves (#362).**
+  Two new read-only signals in the example janitor (`examples/nb-janitor.mjs`; no change to any `nb`
+  command, its output or the shelf file format). Section 2 now also flags *possible slug drift*: one base
+  name under two slugs where the shorter is the longer with a leading part dropped (`code-review@app` and
+  `code-review@acme-app`), with the `nb move` that would fold them. A new section 8 lists a lesson that
+  two or more `@` shelves of the same base hold, by `nb`'s own exact-duplicate rule (the `dedupKey`), with
+  the highest-scored copy and the `nb move` / `nb rm` to keep one. Both appear in the human report and in
+  `--json` (`slugVariants`, `crossShelfDups`). See [FR-JANITOR-001](docs/requirements.md#fr-janitor-001).
 - **`nb doctor` reports the structural problems the other commands tolerate silently (#338).**
   A read-only scan (no lock, no writes) of the notebooks directory listing, per shelf and line, git
   merge-conflict markers, lines without a valid `<score>\t` prefix, control/bidi characters, lessons over
@@ -24,6 +32,13 @@ versions are listed plainly.
   into one shelf. Docs now say the first remedy for a short window is fewer adds per session.
 
 ### Fixed
+- **`nb-janitor --json` is no longer cut off when piped, and the janitor reads shelves the way `nb` does (#362).**
+  The `--json` path called `process.exit()` straight after writing, and a pipe write is asynchronous on
+  macOS, so a report larger than the first 8 KB chunk reached the consumer truncated and `JSON.parse` failed;
+  it now waits for the write to drain. The shelf reader also now strips a leading byte-order mark, accepts CRLF
+  line endings, deletes control and zero-width characters before collapsing whitespace, and treats only the
+  leading `# key:` lines as metadata, as `nb` does; a closed pipe (`| head`) still exits 0. Before, a BOM-prefixed `# desc:` line counted as a lesson
+  (and the shelf as undescribed in section 7).
 - **A new shelf whose name differs only by case from an existing one is refused (#337).**
   `Foo.md` and `foo.md` coexist on Linux but are one file on default macOS/Windows filesystems, so a git-synced
   notebook could not be checked out cleanly, or a write to `foo` landed in `Foo`. `nb add`, `nb move` (target)
