@@ -17,7 +17,7 @@ const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 // throws. Everything delegates to the real fs; when `events` is null and
 // `failDirFsync` is false (the default, reset in afterEach) behavior is identical
 // to the unwrapped module, so every other test is unaffected.
-const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null, failReadOnceCode: null as string | null, failCodelessRead: false }));
+const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null, failReadOnceCode: null as string | null, failCodelessRead: false, failReaddirCode: null as string | null }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
@@ -37,6 +37,16 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       return actual.readFileSync(path, opts as never);
     }) as typeof actual.readFileSync,
+    readdirSync: ((path: Parameters<typeof actual.readdirSync>[0], opts?: Parameters<typeof actual.readdirSync>[1]) => {
+      // Opt-in fault injection for the notebooks-directory listing (issue #383):
+      // a non-empty string throws with that errno `code`; the empty string throws
+      // a codeless TypeError (a bug, not a filesystem failure).
+      if (fsHook.failReaddirCode !== null) {
+        if (fsHook.failReaddirCode === '') throw new TypeError('simulated bug in readdir (no errno)');
+        throw Object.assign(new Error(`${fsHook.failReaddirCode}: injected readdir failure for ${path}`), { code: fsHook.failReaddirCode });
+      }
+      return actual.readdirSync(path, opts as never);
+    }) as typeof actual.readdirSync,
     fsyncSync: (fd: number) => {
       const isDir = actual.fstatSync(fd).isDirectory();
       fsHook.events?.push(isDir ? 'fsync-dir' : 'fsync-body');
@@ -182,6 +192,7 @@ afterEach(() => {
   fsHook.failLockMkdirCode = null; // clear lock-mkdir fault injection (issue #263) so it can never leak into another test
   fsHook.failReadOnceCode = null; // clear one-shot read fault injection (issue #300)
   fsHook.failCodelessRead = false; // clear codeless-throw fault injection (issue #332)
+  fsHook.failReaddirCode = null; // clear readdir fault injection (issue #383)
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -2484,6 +2495,41 @@ describe('listShelves', () => {
     writeFileSync(join(dir, 'Readme.md'), 'mixed-case readme\n', 'utf-8');
     writeFileSync(join(dir, 'reviewer.md'), '+1\treal notebook\n', 'utf-8');
     expect(listShelves(dir)).toEqual(['reviewer']);
+  });
+
+  describe('only a missing directory is an empty store (issue #383)', () => {
+    test('a missing directory yields [] (a clean machine)', () => {
+      expect(listShelves(join(dir, 'does-not-exist'))).toEqual([]);
+    });
+
+    test('an empty readable directory yields []', () => {
+      expect(listShelves(dir)).toEqual([]);
+    });
+
+    test('a regular file where the directory should be throws ENOTDIR, naming the path', () => {
+      const file = join(dir, 'not-a-dir');
+      writeFileSync(file, 'x', 'utf-8');
+      let caught: unknown;
+      try {
+        listShelves(file);
+      } catch (e) {
+        caught = e;
+      }
+      expect((caught as NodeJS.ErrnoException).code).toBe('ENOTDIR');
+      expect((caught as Error).message).toBe(`cannot read notebooks directory ${JSON.stringify(file)} (ENOTDIR)`);
+    });
+
+    test.each(['EACCES', 'EIO'])('a %s listing failure throws with that code instead of returning []', (code) => {
+      writeFileSync(join(dir, 'tips.md'), '+1\ta lesson\n', 'utf-8');
+      fsHook.failReaddirCode = code;
+      expect(() => listShelves(dir)).toThrow(expect.objectContaining({ code, message: expect.stringContaining(`(${code})`) }));
+    });
+
+    test('a codeless throw propagates unchanged, not relabeled as a filesystem error', () => {
+      fsHook.failReaddirCode = '';
+      expect(() => listShelves(dir)).toThrow(TypeError);
+      expect(() => listShelves(dir)).toThrow('simulated bug in readdir (no errno)');
+    });
   });
 });
 

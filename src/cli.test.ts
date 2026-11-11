@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -2445,6 +2445,72 @@ describe('runNbCli', () => {
         expect(r.err).toContain('no readable notebooks matching "weird"');
         expect(r.err).not.toContain('no notebooks matching "weird" — run');
       });
+    });
+
+    describe('an unreadable notebooks directory is not an empty store (issue #383)', () => {
+      // Only a missing NB_DIR (ENOENT) means "no notebooks yet". A directory that
+      // exists but cannot be listed must fail loudly, so a session-start hook can
+      // tell "nb list failed" apart from "the store is empty".
+      const EMPTY = 'no notebooks yet';
+
+      test('a missing directory still reports "no notebooks yet" and exits 0', async () => {
+        process.env.NB_DIR = join(dir, 'missing');
+        const r = await run(['list']);
+        expect(r.code).toBe(0);
+        expect(r.err).toContain(EMPTY);
+      });
+
+      test('an empty readable directory still reports "no notebooks yet" and exits 0', async () => {
+        const r = await run(['list']);
+        expect(r.code).toBe(0);
+        expect(r.err).toContain(EMPTY);
+      });
+
+      test('a regular file where the directory should be: list/search/stats exit 1 naming ENOTDIR', async () => {
+        const file = join(dir, 'not-a-dir');
+        writeFileSync(file, 'x', 'utf-8');
+        process.env.NB_DIR = file;
+        for (const argv of [['list'], ['search', 'lint'], ['stats']]) {
+          const r = await run(argv);
+          expect(r.code, argv.join(' ')).toBe(1);
+          expect(r.err).toBe(`nb ${argv[0]}: cannot read notebooks directory ${JSON.stringify(file)} (ENOTDIR)\n`);
+          expect(r.err).not.toContain(EMPTY);
+        }
+      });
+
+      test('--json list carries a structured error naming the errno', async () => {
+        const file = join(dir, 'not-a-dir');
+        writeFileSync(file, 'x', 'utf-8');
+        process.env.NB_DIR = file;
+        const r = await run(['list', '--json']);
+        expect(r.code).toBe(1);
+        const parsed = JSON.parse(r.out);
+        expect(parsed.ok).toBe(false);
+        expect(parsed.command).toBe('list');
+        expect(parsed.error.message).toContain('(ENOTDIR)');
+      });
+
+      // Root reads a chmod 000 directory anyway, so the permission case only
+      // reproduces for an unprivileged user.
+      test.skipIf(process.getuid?.() === 0 || process.platform === 'win32')(
+        'a directory without read permission: list exits 1 naming EACCES',
+        async () => {
+          writeFileSync(join(dir, 'tips.md'), '+1\trun lint before claiming done\n', 'utf-8');
+          const locked = join(dir, 'locked');
+          mkdirSync(locked);
+          chmodSync(locked, 0o000);
+          process.env.NB_DIR = locked;
+          try {
+            const r = await run(['list']);
+            expect(r.code).toBe(1);
+            expect(r.err).toContain('cannot read notebooks directory');
+            expect(r.err).toContain('(EACCES)');
+            expect(r.err).not.toContain(EMPTY);
+          } finally {
+            chmodSync(locked, 0o700);
+          }
+        },
+      );
     });
 
     describe('one unreadable shelf does not abort the stats inventory (issue #332)', () => {

@@ -589,6 +589,21 @@ run) previously turned every accumulated lesson into "nb failed" for `nb list`,
 memory and keeps the failure actionable.
 *Proven by:* `notebook.test.ts` → `describe('one unreadable shelf does not abort list/search (issue #332)')` and `describe('one unreadable shelf does not abort the stats inventory (issue #332)')`; `cli.test.ts` → the `list …` / `nb search …` / `nb stats …` "issue #332" cases.
 
+<a id="fr-list-007"></a>
+**FR-LIST-007 (Should).** Only a missing notebooks directory (`ENOENT`) SHALL count as an
+empty store. When the directory exists but cannot be listed (e.g. `EACCES`, `EIO`, or
+`ENOTDIR` for a regular file where the directory should be), `listShelves` SHALL throw an
+error that names the directory and the errno and keeps the errno as its `code`, so `nb
+list`, `nb search` and `nb stats` print one stderr line `nb <cmd>: cannot read notebooks
+directory "<dir>" (<code>)`, exit `1`, and under `--json` emit the structured error object
+of the CLI error path (`{ok:false, command, error:{class, message}}`). A throw with no errno
+`code` SHALL propagate unchanged, as in [FR-LIST-006](#fr-list-006). A missing directory and
+an empty readable directory SHALL still print "no notebooks yet" and exit `0`.
+**Rationale:** A harness that injects `nb list` at session start must be able to tell "`nb`
+failed" from "the store is empty". Before, any listing failure returned `[]`, so a store
+`nb` could not read looked empty and the session ran with no memory and no warning (#383).
+*Proven by:* `notebook.test.ts` → `describe('only a missing directory is an empty store (issue #383)')`; `cli.test.ts` → `describe('an unreadable notebooks directory is not an empty store (issue #383)')`.
+
 ### 4.10 CLI contract
 
 <a id="fr-cli-001"></a>
