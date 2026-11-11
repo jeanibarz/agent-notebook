@@ -193,7 +193,7 @@ Prefer installing the script instead of sourcing it each shell start? The emitte
 
 Every command that acts on one entry — `vote`, `rm`, `merge`, `split`, `move` — takes a **selector** that is either:
 
-- an **`id`** — the short stable code at the start of each `nb show` line (e.g. `acf179`), or a unique prefix of it; or
+- an **`id`** — the short stable code at the start of each `nb show` line (e.g. `acf179`), or a unique prefix of it (a short prefix made of digits or a-f, like `18` or `add`, is refused as ambiguous when it is also text in another lesson — use the full id); or
 - a **`query`** — any unique text substring of the lesson (e.g. `lint before`).
 
 Either way the selector must match **exactly one** entry. If it matches none, or more than one, the command changes nothing and lists the candidates so you can pick the one you mean.

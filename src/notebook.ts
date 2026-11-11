@@ -1440,7 +1440,9 @@ function listHint(items: Entry[], cap = 10): string {
 /**
  * Resolve a selector to a FILE-ORDER index, acting ONLY on a unique match so a
  * vote/rm/merge never lands on the wrong lesson. Order: (1) if the selector is a
- * hex token that UNIQUELY identifies one entry id (exact or prefix), use it;
+ * hex token that UNIQUELY identifies one entry id (exact or prefix), use it —
+ * unless it is a shorter-than-full prefix that is also a text substring of a
+ * different entry, which is refused as ambiguous (a full 6-hex id always wins);
  * (2) otherwise a case-insensitive text substring, if it uniquely matches one
  * entry. A hex selector that matches zero OR several ids falls through to the
  * substring step (so hex-looking words like "add"/"cafe" resolve as text). If
@@ -1454,7 +1456,23 @@ function selectIndex(entries: Entry[], selector: string): number {
   if (/^[0-9a-f]+$/i.test(sel)) {
     const low = sel.toLowerCase();
     const byId = entries.map((e, i) => ({ e, i })).filter((x) => entryId(x.e.text).startsWith(low));
-    if (byId.length === 1) return byId[0].i;
+    if (byId.length === 1) {
+      // A full 6-hex id is unambiguous whatever other lessons' texts contain. A
+      // SHORTER prefix is also read as text by a caller who meant a word ("18",
+      // "404", "add"): if it is a substring of a DIFFERENT entry, refuse rather
+      // than silently act on the id hit (issue #412).
+      if (low.length < 6) {
+        const other = entries.map((e, i) => ({ e, i })).filter((x) => x.i !== byId[0].i && x.e.text.toLowerCase().includes(low));
+        if (other.length > 0) {
+          const both = [byId[0], ...other].sort((a, b) => a.i - b.i).map((x) => x.e);
+          throw new NbError(
+            'ambiguous_selector',
+            `"${selector}" is the id prefix of one entry and also text in ${other.length === 1 ? 'another' : `${other.length} others`} — pick one by its full id:\n${listHint(both)}`,
+          );
+        }
+      }
+      return byId[0].i;
+    }
     // 0 or >1 id matches: ambiguous/none as an id — fall through to text match.
   }
   // 2) case-insensitive substring of the lesson text — use only when unique.
