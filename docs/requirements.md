@@ -95,8 +95,8 @@ score-descending with ties broken by ascending file order (stalest first).
   eviction tie-break act on.
 - The dock moves its entry too (issue #437). Left in place, the docked entry stayed
   the stalest and took every following dock until it was evicted, so one session
-  adding a few lessons could remove a well-voted lesson. Moved, each add docks a
-  different quiet lesson, and file order reads "longest since touched or docked".
+  adding a few lessons could remove a well-voted lesson. Moved, each add docks the
+  next quiet lesson in turn, and file order reads "longest since touched or docked".
 - The cost: a `vote` is now a line *move* (a delete + an append, which git renders as
   a ~2-line move) rather than a 1-line in-place edit. This is the one diff cost the
   design accepts; everything else stays a small diff, and git is not required at all

@@ -11,9 +11,9 @@
 // LOWEST-scored line is evicted (ties → stalest), and the stalest survivor is
 // docked one point and moved to the END (the aging that frees once-useful-now-
 // quiet lessons without needing a downvote to arrive). Moving the docked line
-// spreads the aging: the next add docks the NEXT stalest lesson, so a run of
-// adds takes one point from many quiet lessons instead of draining one of them
-// (issue #437). No embeddings, no scheduler, no decay curve over wall-clock
+// spreads the aging: the next add docks the NEXT stalest lesson (when the shelf
+// holds another line that is not a newcomer), so a run of adds takes one point
+// from many quiet lessons instead of draining one of them (issue #437). No embeddings, no scheduler, no decay curve over wall-clock
 // time — see docs/eviction-and-aging.md.
 //
 // Everything here is plain fs over one small file under a mkdir spinlock, so
@@ -1272,7 +1272,8 @@ function enforceCap(entries: Entry[], protectedCount: number): CapResult {
 
   // 3) Dock the stalest SURVIVING evictable line — the first kept entry whose
   // original index was non-protected (topmost = least-recently-touched-or-docked
-  // survivor) — and move it to the end, so the next add docks a different line.
+  // survivor) — and move it to the end, so the next add docks the next line in
+  // turn (the same line again only if it is the sole non-newcomer, e.g. cap 2).
   let decayed: Entry | null = null;
   const pos = keptIdx.findIndex((i) => i < protectedStart);
   if (pos !== -1) {
@@ -1653,7 +1654,7 @@ export interface SplitResult {
   evicted: Entry | null;
   /** EVERY entry the split evicted, in storage order (stalest first); one in the ordinary case, many when `NB_MAX_LINES` was lowered below the shelf's size. Empty when none. `evicted` is `evictedAll[0] ?? null`. */
   evictedAll: Entry[];
-  /** The stalest survivor the aging step docked −1 (post-dock score), or `null`. */
+  /** The stalest survivor the aging step docked −1 and moved to the end of the file (post-dock score), or `null`. */
   decayed: Entry | null;
 }
 
@@ -1750,7 +1751,7 @@ export interface MoveResult {
   evicted: Entry | null;
   /** EVERY entry the move evicted from the target, in storage order (stalest first); one in the ordinary case, many when `NB_MAX_LINES` was lowered below the target's size. Empty when none. `evicted` is `evictedAll[0] ?? null`. */
   evictedAll: Entry[];
-  /** The stalest target entry the aging step docked −1 (post-dock score), or `null`. */
+  /** The stalest target entry the aging step docked −1 and moved to the end of the target file (post-dock score), or `null`. */
   decayed: Entry | null;
   /** For `duplicate`: the id of the existing target entry that blocked the move. */
   collidedId?: string;
@@ -2036,7 +2037,7 @@ export interface StaleResult {
 /**
  * Rank a shelf's lessons by eviction priority — the order {@link enforceCap}
  * would drop them in when a notebook overflows: **lowest score first, ties
- * broken by stalest** (lowest file index = least-recently-touched). It mirrors
+ * broken by stalest** (lowest file index = least-recently-touched-or-docked). It mirrors
  * `enforceCap` step 2's comparator minus the newcomer protection, because every
  * lesson is a candidate here, and is strictly read-only: it never changes a
  * score or removes anything.

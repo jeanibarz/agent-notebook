@@ -2559,7 +2559,8 @@ function renderStats(rep: StatsReport, shelf: string | undefined): string {
     for (const n of rep.notebooks) {
       const full = n.lines >= n.cap ? '  FULL' : '';
       // Add rate (issue #353): on a full shelf each add evicts a line, so
-      // `cap ÷ adds/day` is how long an untouched lesson survives. Shown for every
+      // `cap ÷ adds/day` is the most an unvoted lesson gets (a voted one lasts
+      // longer: each point buys another pass of the aging, issue #437). Shown for every
       // shelf (0 adds is "measured, quiet", DP-5); the window estimate only when full.
       const rate = `${n.adds} add${n.adds === 1 ? '' : 's'} (${n.addsPerDay}/day)`;
       const keep = n.retentionDays !== null ? `, ~${n.retentionDays}d retention` : '';
