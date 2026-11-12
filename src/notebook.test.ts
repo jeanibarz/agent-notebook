@@ -147,7 +147,7 @@ import {
   withLock,
   resolveIntEnv,
 } from './notebook.js';
-import type { UsageRow } from './notebook.js';
+import type { Entry, UsageRow } from './notebook.js';
 
 /**
  * A complete `UsageRow` with every column at its empty value, overridden by `over`.
@@ -574,7 +574,10 @@ describe('caps', () => {
     for (let n = 1; n <= 9; n++) {
       const r = await addEntry(dir, 'x', `n${n}`);
       if (r.evicted) evictedAtX[r.evicted.text] = n;
-      if (n === 3) await vote(dir, 'x', 'S', 1); // +1 -> +2
+      if (n === 3) {
+        await vote(dir, 'x', 'S', 1);
+        expect(readEntries(dir, 'x').find((e) => e.text === 'S')?.score).toBe(2); // +1 -> +2, as §7.2 says
+      }
     }
     expect(evictedAtX.T).toBe(7);
     expect(evictedAtX.S).toBe(9);
@@ -1025,8 +1028,11 @@ describe('caps', () => {
   // A vote on the docked lesson itself does not reset its set: the vote only
   // moves it further back, so the lessons it was behind are still ahead of it.
   // Longer sequences than the sweep above, and mostly upvotes, so lessons live
-  // long enough to be docked several times.
-  // [slow]: ~600 durable writes.
+  // long enough to be docked several times. FR-ADD-006 states the rule for every
+  // caller of the cap, so the run also splits a lesson and moves one in from a
+  // side shelf now and then (issue #442): a split removes its source and appends
+  // two halves, a move appends a lesson that keeps its score.
+  // [slow]: ~700 durable writes.
   test('randomized: a lesson is docked again only after the decay has passed over the rest of the shelf [slow]', async () => {
     const mulberry32 = (seed: number) => {
       let a = seed >>> 0;
@@ -1038,11 +1044,13 @@ describe('caps', () => {
       };
     };
     let repeatDocks = 0; // guard against a vacuous run
+    const docksBy = { add: 0, split: 0, move: 0 }; // and against a run where split or move never docks
     for (let seq = 0; seq < 12; seq++) {
       const rng = mulberry32(0xd0c4 + seq);
       const cap = 3 + Math.floor(rng() * 4); // 3..6
       process.env.NB_MAX_LINES = String(cap);
       const shelf = `pass${seq}`;
+      const side = `side${seq}`; // lessons are moved from here into `shelf`
       let counter = 0;
       // text of a docked lesson -> the lessons still "ahead of it" since that dock
       const ahead = new Map<string, Set<string>>();
@@ -1050,20 +1058,15 @@ describe('caps', () => {
       const passed = (text: string) => {
         for (const set of ahead.values()) set.delete(text);
       };
-      for (let op = 0; op < 50; op++) {
-        const before = readEntries(dir, shelf);
-        if (before.length > 0 && rng() < 0.45) {
-          const target = before[Math.floor(rng() * before.length)];
-          await vote(dir, shelf, entryId(target.text), rng() < 0.85 ? 1 : -1);
-          passed(target.text); // a voted lesson moves to the end: it is ahead of nobody
-          continue;
-        }
-        const res = await addEntry(dir, shelf, `lesson ${seq}-${counter++}`);
-        for (const e of res.evictedAll) {
-          passed(e.text);
-          ahead.delete(e.text);
-        }
-        if (!res.decayed) continue;
+      // `text` has left the shelf: it is ahead of nobody, and nobody is ahead of it.
+      const gone = (text: string) => {
+        passed(text);
+        ahead.delete(text);
+      };
+      const settle = (op: keyof typeof docksBy, res: { evictedAll: Entry[]; decayed: Entry | null }) => {
+        for (const e of res.evictedAll) gone(e.text);
+        if (!res.decayed) return;
+        docksBy[op]++;
         const docked = res.decayed.text;
         const pending = ahead.get(docked);
         if (pending) {
@@ -1072,9 +1075,32 @@ describe('caps', () => {
         }
         passed(docked);
         ahead.set(docked, new Set(readEntries(dir, shelf).map((e) => e.text).filter((t) => t !== docked)));
+      };
+      for (let op = 0; op < 50; op++) {
+        const before = readEntries(dir, shelf);
+        const r = rng();
+        if (before.length > 0 && r < 0.45) {
+          const target = before[Math.floor(rng() * before.length)];
+          await vote(dir, shelf, entryId(target.text), rng() < 0.85 ? 1 : -1);
+          passed(target.text); // a voted lesson moves to the end: it is ahead of nobody
+        } else if (before.length > 0 && r < 0.53) {
+          const source = before[Math.floor(rng() * before.length)];
+          const res = await split(dir, shelf, entryId(source.text), `lesson ${seq}-${counter++}`, `lesson ${seq}-${counter++}`);
+          gone(source.text); // the halves are new lines, so no set holds them
+          settle('split', res);
+        } else if (r < 0.61) {
+          const text = `moved ${seq}-${counter++}`;
+          await addEntry(dir, side, text);
+          for (let up = Math.floor(rng() * 3); up > 0; up--) await vote(dir, side, entryId(text), 1); // arrives at +1..+3
+          settle('move', await move(dir, side, shelf, entryId(text)));
+        } else {
+          settle('add', await addEntry(dir, shelf, `lesson ${seq}-${counter++}`));
+        }
       }
     }
     expect(repeatDocks).toBeGreaterThan(20);
+    expect(docksBy.split).toBeGreaterThan(10);
+    expect(docksBy.move).toBeGreaterThan(10);
   }, 120_000);
 });
 

@@ -263,7 +263,7 @@ recently or docked recently.
 
 ### The retention window is set by the add rate
 
-Because eviction and aging fire once per add, a full shelf turns over at the pace of adds. A lesson that nobody votes for lasts about `cap ÷ adds per day` at most: that is the time the shelf takes to bring in `cap` new lines. A vote buys a lesson time: each point is one more pass of the decay it can absorb before it reaches the bottom score (the G3 figures above, which are for a shelf with no other votes). A vote on another lesson can shorten a pass, so on a busy shelf a voted lesson can still leave within `cap` adds. `nb stats` shows each shelf's accepted adds and, for a full shelf, that estimate, and flags a session that adds in a burst (`add-burst`). Read the estimate as the most time a new lesson has to earn its first vote; it can get much less on a shelf where most lessons are voted, because the unvoted ones are evicted first. If the window is shorter than you want, the first remedy is fewer adds per session; only then divide the shelf or raise `NB_MAX_LINES`.
+Because eviction and aging fire once per add, a full shelf turns over at the pace of adds. A lesson that never gets a vote lasts about `cap ÷ adds per day` at most: that is the time the shelf takes to bring in `cap` new lines. A vote buys a lesson time: each point is one more pass of the decay it can absorb before it reaches the bottom score (the G3 figures above, which are for a shelf with no other votes). A vote on another lesson can shorten a pass, so on a busy shelf a voted lesson can still leave within `cap` adds. `nb stats` shows each shelf's accepted adds and, for a full shelf, that estimate, and flags a session that adds in a burst (`add-burst`). Read the estimate as the most time a new lesson has to earn its first vote; it can get much less on a shelf where most lessons are voted, because the unvoted ones are evicted first. If the window is shorter than you want, the first remedy is fewer adds per session; only then divide the shelf or raise `NB_MAX_LINES`.
 
 ## 7. Worked examples
 
@@ -286,7 +286,7 @@ stalest survivor (C) and send it to the back*. Note B — not the newcomer — l
 and the aging fell on C, the line nobody had touched, not on A, which had just
 been voted.
 
-### 7.2 The life of a lesson — immortal no more, but rescued by one vote
+### 7.2 The life of a lesson — quiet lessons share the decay, and a vote buys time
 
 Cap = 4. Two lessons, `S` and `T`, were upvoted to **+3** and then went quiet;
 `u` and `v` are unvoted. The shelf stays busy: a new lesson `n1`, `n2`, …

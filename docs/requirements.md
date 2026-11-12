@@ -1249,8 +1249,8 @@ took at least one add, else `null` (never 0 or Infinity, [DP-5]). The human tabl
 `NB_ADD_BURST_N` (default 15); a blank session is skipped. The change only counts rows
 [FR-USAGE-002](#fr-usage-002) already writes: no field is added to a lesson ([NG-004]), no aging
 rule or scheduler ([NG-005]), and `STATS_SCHEMA_VERSION` SHALL NOT bump (additive).
-**Rationale:** On a full shelf eviction and aging fire once per add, so the time an unvoted lesson
-has to earn a vote is `cap ÷ add rate`. Nothing showed that rate, so "a full shelf is normal"
+**Rationale:** On a full shelf eviction and aging fire once per add, so the time a never-voted lesson
+has to earn a vote is at most about `cap ÷ add rate`. Nothing showed that rate, so "a full shelf is normal"
 could not be told from "this shelf forgets a lesson in ten days" (issue #353).
 *Proven by:* `notebook.test.ts` → `describe('stats add rate, retention window and add-burst (issue #353)')`
 and `cli.test.ts` → the `stats table shows the notebook inventory` tests.
