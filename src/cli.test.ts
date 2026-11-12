@@ -4898,6 +4898,16 @@ describe('a git merge-conflicted shelf warns on reads and refuses mutations (iss
     }
   });
 
+  test('the refusal escapes C1, line-separator and Tag characters in the quoted marker line (issue #445)', async () => {
+    writeFileSync(join(dir, 'g.md'), '+1\tfoo lesson\n<<<<<<< HEAD\u009b31m\u2028\u{E0041}\n=======\n>>>>>>> branch\n');
+    for (const argv of [['add', 'g', 'new one'], ['describe', 'g', 'a description']]) {
+      const r = await run(argv);
+      expect(r.code, argv.join(' ')).toBe(1);
+      expect(r.err, argv.join(' ')).toContain('<<<<<<< HEAD\\u009b31m\\u2028\\u{e0041}');
+      expect(r.err).not.toMatch(/[\u0080-\u009f\u2028\u2029\u{E0000}-\u{E007F}]/u);
+    }
+  });
+
   test('the refusal is logged with errorClass corrupt (issue #333)', async () => {
     seed();
     const r = await run(['add', 'g', 'new one']);
