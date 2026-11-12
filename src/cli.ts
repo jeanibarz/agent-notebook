@@ -260,8 +260,8 @@ notes:
   - \`nb stats\` also surfaces free *diagnostic signals* read straight from the usage log (no
     extra agent action): browse-without-use (a notebook shown in a session but no entry voted
     that session — the description may over-promise), eviction-while-still-voted (the cap
-    evicted an entry whose score was still above the
-    starting +1 — a useful lesson was lost),
+    evicted an entry upvoted in the window, or whose score was still
+    above the starting +1 — a useful lesson was lost),
     vote-reversal (the same entry upvoted in one session and downvoted in another — correct but
     mis-aimed), and failed-search (a search returned nothing and a lesson was then added in the
     same session — the coverage gap that search just exposed), and add-burst (one session accepted

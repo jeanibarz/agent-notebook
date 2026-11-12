@@ -3729,6 +3729,36 @@ describe('diagnostic signals (issue #72)', () => {
     expect(rep.signals.some((s) => s.kind === 'eviction-while-still-voted')).toBe(false);
   });
 
+  test('eviction-while-still-voted: an entry upvoted in the window then docked to +1 and evicted IS flagged, with the upvote count (#438)', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', entries: ['dock11'], outcome: 'up' });
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's2', entries: ['dock11'], outcome: 'up' });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's3', entries: ['new999'], outcome: 'accepted', evicted: 'dock11:1' });
+    const sigs = stats(dir, { now: Date.now() }).signals.filter((s) => s.kind === 'eviction-while-still-voted');
+    expect(sigs).toHaveLength(1);
+    expect(sigs[0]).toMatchObject({ entry: 'dock11' });
+    expect(sigs[0].detail).toContain('after 2 upvotes');
+  });
+
+  test('eviction-while-still-voted: an upvoted entry evicted at exactly 0 is flagged, at -1 it is not (#438 boundary)', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', entries: ['zero00', 'neg111'], outcome: 'up' });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's2', entries: ['n1'], outcome: 'accepted', evicted: 'zero00:0,neg111:-1' });
+    const sigs = stats(dir, { now: Date.now() }).signals.filter((s) => s.kind === 'eviction-while-still-voted');
+    expect(sigs.map((s) => s.entry)).toEqual(['zero00']);
+  });
+
+  test('eviction-while-still-voted: an upvote on a DIFFERENT shelf does not qualify the evicted id (#438)', () => {
+    logUsage(dir, 'other', 'vote', true, 1, { session: 's1', entries: ['dock11'], outcome: 'up' });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's2', entries: ['new999'], outcome: 'accepted', evicted: 'dock11:1' });
+    expect(stats(dir, { now: Date.now() }).signals.some((s) => s.kind === 'eviction-while-still-voted')).toBe(false);
+  });
+
+  test('eviction-while-still-voted: an upvoted entry evicted above +1 is flagged once, not twice (#438)', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', entries: ['hi4444'], outcome: 'up' });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's2', entries: ['n1'], outcome: 'accepted', evicted: 'hi4444:4' });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's3', entries: ['n2'], outcome: 'accepted', evicted: 'hi4444:4' });
+    expect(stats(dir, { now: Date.now() }).signals.filter((s) => s.kind === 'eviction-while-still-voted')).toHaveLength(1);
+  });
+
   test('vote-reversal: upvoted in one session, downvoted in another', () => {
     logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's1', entries: ['xy12ab'], outcome: 'up' });
     logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's2', entries: ['xy12ab'], outcome: 'down' });
