@@ -2218,6 +2218,35 @@ describe('error-class usage column (issue #176)', () => {
     expect(anomaly.detail).toContain('unclassified 50%');
   });
 
+  test('the high-error-rate detail and the error-causes readout agree on a mixed-age log (issue #418)', () => {
+    process.env.NB_ERR_MIN = '3';
+    process.env.NB_ERR_RATE = '0.5';
+    const now = Date.now();
+    // 5 failed adds: 2 carry the too_long class, 2 predate the class column but
+    // recorded the `too-long` outcome (column 8), 1 is a bare legacy row with
+    // neither. Both stats lines must call the first four too_long — before #418
+    // the anomaly read the two outcome-only rows as `unclassified` (40/60) while
+    // the error-causes readout read them as too_long (80/20).
+    const rows = [
+      `${new Date(now - 1000).toISOString()}\tp\tadd\terr\t2ms\t\t\t\t\t\t\t\ttoo_long`,
+      `${new Date(now - 2000).toISOString()}\tp\tadd\terr\t2ms\t\t\t\t\t\t\t\ttoo_long`,
+      `${new Date(now - 3000).toISOString()}\tp\tadd\terr\t2ms\t\t\ttoo-long`,
+      `${new Date(now - 4000).toISOString()}\tp\tadd\terr\t2ms\t\t\ttoo-long`,
+      `${new Date(now - 5000).toISOString()}\tp\tadd\terr\t2ms`, // legacy 5-column
+    ];
+    writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    const rep = stats(dir, { now });
+    const causes = rep.errorCauses.find((c) => c.command === 'add')!;
+    expect(causes.breakdown).toEqual([
+      { cause: 'too_long', pct: 80 },
+      { cause: 'unclassified', pct: 20 },
+    ]);
+    const anomaly = rep.anomalies.find((a) => a.kind === 'high-error-rate' && a.command === 'add')!;
+    // The anomaly's split is the same split, rendered as text.
+    expect(anomaly.detail).toContain(causes.breakdown.map((b) => `${b.cause} ${b.pct}%`).join(', '));
+    expect(anomaly.detail).toContain('too_long 80%, unclassified 20%');
+  });
+
   test('a degenerate NB_ERR_RATE=0 flags a zero-error command with the generic phrase, not an empty breakdown', () => {
     // NB_ERR_RATE=0 means "flag at any error rate", so a command with ZERO errors
     // trips the anomaly. There are no error rows to classify, so the detail falls

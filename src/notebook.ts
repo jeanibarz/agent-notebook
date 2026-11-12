@@ -3407,19 +3407,32 @@ function globalStoredLessons(dir: string, notebooks: NotebookStat[], scope: stri
 }
 
 /**
- * Summarize a set of error rows as a `class pct%` breakdown, most-common first
+ * The cause token for one error row, shared by the two places `nb stats` names a
+ * cause — the per-command `error causes` readout (issue #223) and the
+ * `high-error-rate` anomaly detail (issue #176) — so both lines report the same
+ * split for the same rows (issue #418). A row's cause is its `errorClass`; a row
+ * written before that column existed has none, so it falls back to `outcome` for
+ * the one outcome that is an error (`too-long` → `too_long`), and anything else
+ * reads `unclassified`.
+ */
+function errorCause(r: UsageRow): string {
+  return r.errorClass || (r.outcome === 'too-long' ? 'too_long' : 'unclassified');
+}
+
+/**
+ * Summarize a set of error rows as a `cause pct%` breakdown, most-common first
  * (issue #176) — e.g. `too_long 78%, bad_args 14%, other 8%`. Percentages are
  * rounded whole numbers of the error total, so they may not sum to exactly 100%
- * (an honest rounding artefact, not a bug). A pre-#176 error row carries no class
- * (`errorClass === ''`); it is bucketed as `unclassified` — kept distinct from a
- * genuine `other` so a freshly-upgraded window reads "unclassified 100%" (wait
- * for data) rather than a misleading "other 100%" ([DP-5]). Ties break by label
- * for a stable line.
+ * (an honest rounding artefact, not a bug). Each row's cause comes from
+ * `errorCause`: a pre-#176 row with no class and no error outcome is bucketed as
+ * `unclassified` — kept distinct from a genuine `other` so a freshly-upgraded
+ * window reads "unclassified 100%" (wait for data) rather than a misleading
+ * "other 100%" ([DP-5]). Ties break by label for a stable line.
  */
 function errorClassBreakdown(errRows: UsageRow[]): string {
   const counts = new Map<string, number>();
   for (const r of errRows) {
-    const key = r.errorClass || 'unclassified';
+    const key = errorCause(r);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const total = errRows.length;
@@ -3466,16 +3479,12 @@ export function stats(
   // Per-command error-cause breakdown (issue #223): name the lever behind each
   // command's err% so `add` over-cap rejections and `vote` selector misses are
   // surfaced in the header, not only when the high-error-rate anomaly fires. A
-  // row's cause is its `errorClass` (issue #176); a pre-#176 row falls back to
-  // `outcome` for the one outcome that is an error (`too-long` → `too_long`), so
-  // `add`'s dominant cause reads correctly even on an older log; anything else is
-  // `unclassified`.
+  // row's cause comes from `errorCause` — the same resolver the anomaly detail
+  // uses — so `add`'s dominant cause reads correctly even on an older log.
   // A couple of stray errors (e.g. a one-off unknown-subcommand guess) is noise,
   // not a rate; only a handful is a pattern worth naming. This keeps the readout
   // to the commands that actually have an err% worth diagnosing (add, vote).
   const ERROR_CAUSE_MIN = 3;
-  const errorCause = (r: UsageRow): string =>
-    r.errorClass || (r.outcome === 'too-long' ? 'too_long' : 'unclassified');
   const errorCauses: ErrorCause[] = [...byCmd.entries()]
     .map(([command, rows]): ErrorCause => {
       const errRows = rows.filter((r) => !r.ok);
