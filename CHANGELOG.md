@@ -9,6 +9,8 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-12
+
 ### Added
 
 - `examples/nb-git-wrapper.mjs`: opt-in `NB_GIT_SESSION_TRAILER=1` adds a `Nb-Session: <NB_SESSION>` line to each auto-commit body so history shows which task changed a lesson (#409).
@@ -787,7 +789,8 @@ versions are listed plainly.
 ### Added
 - Initial release: a bounded, voted, plain-text memory for AI agents. Commands: `nb add`, `show`, `vote`, `merge`, `rm`, `stats`. Each role's notebook holds at most 200 lines, each at most 200 characters, and the lowest-scored line is evicted first when full. The library has zero runtime dependencies.
 
-[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.4.0...v0.5.0
