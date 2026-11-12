@@ -464,9 +464,13 @@ describe('caps', () => {
       const now = readEntries(dir, 'burst');
       const left = now.filter((e) => originals.includes(e.text)).length;
       survivors.push(left);
-      // While nine originals remain, the one other line is the newest add: each
-      // earlier newcomer was evicted by the add that followed it.
-      if (i <= 10) expect(now.filter((e) => !originals.includes(e.text)).map((e) => e.text)).toEqual([`unrelated junk entry ${i} zzq${i}`]);
+      // Through the eleventh add the one line that is not an original is the
+      // newest add: each of the first ten newcomers was evicted by the add that
+      // followed it. The twelfth add evicts an original instead, so the
+      // eleventh newcomer is the first to survive the add that follows it.
+      const others = now.filter((e) => !originals.includes(e.text)).map((e) => e.text);
+      if (i <= 10) expect(others).toEqual([`unrelated junk entry ${i} zzq${i}`]);
+      if (i === 11) expect(others).toEqual(['unrelated junk entry 10 zzq10', 'unrelated junk entry 11 zzq11']);
       if (i === 8) {
         // Nine adds in: the nine surviving originals have each lost exactly one point.
         const scores = readEntries(dir, 'burst').filter((e) => originals.includes(e.text)).map((e) => e.score);
@@ -570,6 +574,19 @@ describe('caps', () => {
     expect(evictedAtX.S).toBe(9);
   });
 
+  test('a merge that overflows a lowered cap also sends the docked line to the end (#437)', async () => {
+    process.env.NB_MAX_LINES = '4';
+    for (const t of ['quiet one', 'quiet two', 'first half', 'second half']) await addEntry(dir, 'mg', t);
+    for (const t of ['first half', 'second half', 'quiet one', 'quiet two']) await vote(dir, 'mg', t, 1);
+    // file: first half+2, second half+2, quiet one+2, quiet two+2
+    process.env.NB_MAX_LINES = '2';
+    const m = await merge(dir, 'mg', 'first half', 'second half', 'both halves together');
+    expect(m.evicted?.text).toBe('quiet one');
+    expect(m.decayed?.text).toBe('quiet two');
+    expect(readEntries(dir, 'mg').map((e) => e.text)).toEqual(['both halves together', 'quiet two']); // docked line after the merged one
+    expect(readEntries(dir, 'mg')[1].score).toBe(1);
+  });
+
   // Issue #437: docs/eviction-and-aging.md quotes these numbers. On a shelf that
   // also holds unvoted lessons, a run of adds evicts those (lowest score first)
   // and takes points from the proven ones without evicting any of them.
@@ -590,6 +607,7 @@ describe('caps', () => {
     expect(left.reduce((sum, e) => sum + e.score, 0)).toBe(50); // 80 points before; 30 docked
     expect(Math.max(...left.map((e) => e.score)) - Math.min(...left.map((e) => e.score))).toBeLessThanOrEqual(1); // spread evenly
     expect(after.filter((e) => e.text.startsWith('unvoted')).length).toBe(0); // the unvoted lessons paid
+    expect(after.filter((e) => e.text.startsWith('junk')).length).toBe(30); // and so did ten of the forty adds
   }, 30_000);
 
   // Issue #437: docs/eviction-and-aging.md quotes these numbers (G3). One lesson

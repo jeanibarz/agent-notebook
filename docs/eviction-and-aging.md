@@ -202,7 +202,9 @@ flowchart TD
 
 ### Why this hits the goals
 
-- **G1:** a newcomer can never be the victim, so it always gets its trial.
+- **G1:** a newcomer can never be the victim of its own add, so it always gets
+  in. How long its trial lasts depends on the shelf: see
+  [The price we knowingly pay](#the-price-we-knowingly-pay).
 - **G2 + G4:** a stale high lesson loses a point each time the decay comes round
   to it (step 3) — eventually evictable, with no downvote required.
 - **G3:** eviction still removes the lowest score first, so a hard-earned lesson is
@@ -220,15 +222,19 @@ flowchart TD
   of adds and votes). Two pinned cases show what that buys:
   - **A shelf with unvoted lessons on it.** Cap of fifty, twenty stale lessons at
     +4 and thirty unvoted ones, then forty unrelated adds: none of the twenty is
-    evicted. They keep 50 of their 80 points, spread evenly, and the thirty
-    unvoted lessons are the ones that leave.
+    evicted. They keep 50 of their 80 points, spread evenly. The forty
+    evictions take the thirty unvoted lessons and ten of the new adds.
   - **A shelf where every lesson is proven.** Cap of ten, ten lessons at +3, then
     twenty unrelated adds: the original lessons left after each add are 9 for
     the first eleven adds, then 8, 8, 7, 7, 6, 6, 5, 5, 4. The first add has to
     evict one of them, because every line is proven and the newcomer is
-    protected. After that none is lost until each has been docked once. During
-    those eleven adds the newcomers pay instead: each is evicted by the next
-    add, because it is the only line at the bottom score.
+    protected. After that none is lost until the twelfth add, by which time
+    each has been docked at least once. Until then the newcomers pay instead:
+    each of the first ten is evicted by the add that follows it. The first nine
+    are the only line at the bottom score. The tenth is tied at +1 with a
+    lesson that has just been docked a second time and sits behind it in the
+    file, so the newcomer is the staler of the two. The eleventh newcomer is
+    the first to survive the add that follows it.
 
   G6 bounds how fast a run of adds can hurt one lesson; it does not make proven
   lessons permanent. A shelf that takes adds and no votes for long enough still
@@ -247,15 +253,16 @@ bounded (C4) because decay pulls the top down as votes push it up.
 Two more costs came with moving the docked line (issue #437, which measured
 them on a live store). The cap is fixed, so every proven lesson that is kept
 longer is an unvoted one evicted sooner. This weakens G1 on a shelf where every
-other lesson is voted well above +1: a newcomer there is evicted by the next
-add, until the decay has brought the quietest lessons down to its score (the
-second pinned case under G6 shows it). And file order is no longer a pure
+other lesson is voted well above +1: a newcomer there is evicted by the add
+that follows it, unless a quiet lesson had already been worn down to the bottom
+score when it arrived (so the first ten newcomers go, in the second pinned case
+under G6). And file order is no longer a pure
 record of engagement: a lesson near the end of the file was either engaged
 recently or docked recently.
 
 ### The retention window is set by the add rate
 
-Because eviction and aging fire once per add, a full shelf turns over at the pace of adds. A lesson that nobody votes for lasts about `cap ÷ adds per day` at most: that is the time the shelf takes to bring in `cap` new lines. A voted lesson lasts longer, since each point buys it another pass of the decay (the G3 figures above). `nb stats` shows each shelf's accepted adds and, for a full shelf, that estimate, and flags a session that adds in a burst (`add-burst`). Read the estimate as the most time a new lesson has to earn its first vote; it gets less on a shelf where most lessons are voted, because the unvoted ones are evicted first. If the window is shorter than you want, the first remedy is fewer adds per session; only then divide the shelf or raise `NB_MAX_LINES`.
+Because eviction and aging fire once per add, a full shelf turns over at the pace of adds. A lesson that nobody votes for lasts about `cap ÷ adds per day` at most: that is the time the shelf takes to bring in `cap` new lines. A lesson voted above the lowest score on its shelf lasts longer, since each point buys it another pass of the decay (the G3 figures above). `nb stats` shows each shelf's accepted adds and, for a full shelf, that estimate, and flags a session that adds in a burst (`add-burst`). Read the estimate as the most time a new lesson has to earn its first vote; it gets less on a shelf where most lessons are voted, because the unvoted ones are evicted first. If the window is shorter than you want, the first remedy is fewer adds per session; only then divide the shelf or raise `NB_MAX_LINES`.
 
 ## 7. Worked examples
 

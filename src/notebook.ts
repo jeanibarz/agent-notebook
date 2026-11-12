@@ -3007,8 +3007,8 @@ export interface NotebookStat {
   /**
    * Estimated retention window of a FULL shelf, in days: `cap ÷ addsPerDay` — each
    * add to a full shelf evicts one line, so a lesson nobody votes for lasts about
-   * `cap` adds at most. A voted lesson lasts longer (each point buys it another
-   * pass of the aging dock, issue #437). `null` when the shelf is below its cap or took no
+   * `cap` adds at most. A lesson voted above the shelf's lowest score lasts
+   * longer (each point buys it another pass of the aging dock, issue #437). `null` when the shelf is below its cap or took no
    * adds in the window (no rate to divide by) — never a misleading 0 or Infinity.
    */
   retentionDays: number | null;

@@ -41,7 +41,7 @@ One definition per term, used identically in requirements, code, and tests.
 | **Score** | A signed integer: the running sum of +1/-1 votes on an entry. |
 | **File order** / **recency order** | The order entries physically appear in the file — least-recently-*touched* first. A *touch* (a vote of either sign, an add, or a merge/split's new lesson) moves its entry to the end, and so does the staleness dock, so the top of the file is the **stalest** entry: the one that has gone longest since it was touched or docked. |
 | **Touch** | An engagement with a specific entry that refreshes its recency: a `vote` (±1), an `add`, or the new lesson(s) a `merge`/`split` creates. A read (`show`/`search`) is not a touch. |
-| **Display order** | The order `nb show` / `render` presents entries: score descending, ties broken by ascending file order (stalest / least-recently-touched first). |
+| **Display order** | The order `nb show` / `render` presents entries: score descending, ties broken by ascending file order (stalest first: least recently touched or docked). |
 | **Stable id** | A 6-hex-character identifier derived from an entry's deduped text (`entryId`), not its position. |
 | **Dedup key** | The case-, punctuation-, and whitespace-insensitive normal form of a text (`dedupKey`), used for duplicate detection and the stable id. |
 | **Selector** | The argument to `vote`/`rm`/`merge`/`split` that identifies an entry: a stable id (exact or unique prefix) or a unique case-insensitive text substring. |
@@ -264,7 +264,7 @@ does not drain one of them. The same rule applies to the dock a `merge`, `split`
 `move` causes. Decay fires ONLY when a notebook is over cap; a sub-cap notebook is
 untouched. *(See [DP-1](#dp-1), [DP-3](#dp-3).)*
 
-*Proven by:* `notebook.test.ts` → `describe('caps')` → "the docked line moves to the end of the file, after the newcomer (#437)", "a move into a full shelf and a split of a full shelf also send the docked line to the end (#437)", "a run of unrelated adds docks each proven lesson once before it evicts a second one (#414, #437)", "40 unrelated adds into 20 stale +4 lessons and 30 unvoted ones evict none of the 20 (#437)", "each extra point buys an untouched lesson another pass of the decay (#437)" and "randomized: a lesson is docked again only after the decay has passed over the rest of the shelf [slow]".
+*Proven by:* `notebook.test.ts` → `describe('caps')` → "the docked line moves to the end of the file, after the newcomer (#437)", "a move into a full shelf and a split of a full shelf also send the docked line to the end (#437)", "a merge that overflows a lowered cap also sends the docked line to the end (#437)", "a run of unrelated adds docks each proven lesson once before it evicts a second one (#414, #437)", "40 unrelated adds into 20 stale +4 lessons and 30 unvoted ones evict none of the 20 (#437)", "each extra point buys an untouched lesson another pass of the decay (#437)" and "randomized: a lesson is docked again only after the decay has passed over the rest of the shelf [slow]".
 
 <a id="fr-add-007"></a>
 **FR-ADD-007 (Should).** On the CLI, a lesson operand of `-` SHALL mean "read the
