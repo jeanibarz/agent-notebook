@@ -2437,7 +2437,7 @@ function renderSkipped(cmd: string, skipped: SkippedShelf[]): string {
  */
 function renderConflict(cmd: string, shelf: string, marker: string): string {
   return (
-    `nb ${cmd}: warning: shelf "${shelf}" contains a git merge-conflict marker (${JSON.stringify(marker)}); ` +
+    `nb ${cmd}: warning: shelf "${shelf}" contains a git merge-conflict marker (${escapeDiskName(JSON.stringify(marker))}); ` +
     `resolve the conflict in ${shelf}.md before mutating it — writes are refused until then\n`
   );
 }

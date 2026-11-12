@@ -4818,6 +4818,17 @@ describe('a git merge-conflicted shelf warns on reads and refuses mutations (iss
     expect(r.err.split('\n').filter((l) => l.includes('merge-conflict marker'))).toHaveLength(1);
   });
 
+  test('the warning escapes C1, line-separator and Tag characters in the quoted marker line (issue #441)', async () => {
+    // JSON.stringify leaves U+009B, U+2028 and the Tag block raw; they must reach the terminal escaped.
+    writeFileSync(join(dir, 'g.md'), '+1\tfoo lesson\n<<<<<<< HEAD\u009b31m\u2028\u{E0041}\n=======\n>>>>>>> branch\n');
+    for (const argv of [['list'], ['search', 'foo'], ['stats'], ['show', 'g']]) {
+      const r = await run(argv);
+      const warning = r.err.split('\n').find((l) => l.includes('merge-conflict marker')) ?? '';
+      expect(warning, argv.join(' ')).toContain('<<<<<<< HEAD\\u009b31m\\u2028\\u{e0041}');
+      expect(r.err).not.toMatch(/[\u0080-\u009f\u2028\u2029\u{E0000}-\u{E007F}]/u);
+    }
+  });
+
   test('show --json stdout is unchanged and valid, warning on stderr', async () => {
     seed();
     const r = await run(['show', 'g', '--json']);
