@@ -319,7 +319,11 @@ such entries SHALL be evicted first under [FR-ADD-005](#fr-add-005).
 **FR-SEL-001 (Must).** Resolution SHALL try, in order: (1) if the selector is hex,
 match it as a stable id by exact value or unique prefix; (2) otherwise, or if the
 hex matched zero or many ids, match it as a unique case-insensitive substring of the
-text. A step SHALL be used only when it identifies exactly one entry.
+text. A step SHALL be used only when it identifies exactly one entry. A hex selector
+shorter than a full id that uniquely prefixes one id but is also a substring of the
+text of a *different* entry SHALL be refused as `ambiguous_selector`, listing both
+entries; a full 6-character id that equals an entry's id SHALL resolve directly,
+whatever other entries' texts contain.
 **Rationale:** Lets hex-looking real words (e.g. "dead", "cafe", "add") still resolve
 as text when they are not an id.
 

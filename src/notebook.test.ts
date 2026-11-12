@@ -1051,6 +1051,34 @@ describe('vote', () => {
     expect(r.score).toBe(2);
   });
 
+  test('a short hex selector that is an id prefix of one lesson and text in another is refused (#412)', async () => {
+    await addEntry(dir, 'v', 'Prefer rebase over merge for feature branch 51'); // id 184862
+    await addEntry(dir, 'v', 'Node 18 lacks a global fetch without --experimental-fetch');
+    await addEntry(dir, 'v', 'Run the linter before every commit');
+    expect(entryId('Prefer rebase over merge for feature branch 51')).toBe('184862');
+    const file = join(dir, 'v.md');
+    const before = readFileSync(file, 'utf8');
+    const err = await remove(dir, 'v', '18').catch((e) => e);
+    expect(err.errorClass).toBe('ambiguous_selector');
+    expect(err.message).toContain('Node 18');
+    expect(err.message).toContain('Prefer rebase');
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  test('a full 6-hex id resolves even when another lesson text contains it (#412)', async () => {
+    await addEntry(dir, 'v', 'Prefer rebase over merge for feature branch 51'); // id 184862
+    await addEntry(dir, 'v', 'ticket 184862 tracks the flaky fetch');
+    const r = await vote(dir, 'v', '184862', 1);
+    expect(r.text).toBe('Prefer rebase over merge for feature branch 51');
+  });
+
+  test('batch vote records the new refusal as a per-selector miss (#412)', async () => {
+    await addEntry(dir, 'v', 'Prefer rebase over merge for feature branch 51');
+    await addEntry(dir, 'v', 'Node 18 lacks a global fetch');
+    const r = await voteMany(dir, 'v', ['18', 'Node 18'], 1);
+    expect(r[0].error).toMatch(/id prefix/);
+  });
+
   test('a hex-looking word falls through to a text match when it is not an id', async () => {
     await addEntry(dir, 'v', 'dead letter queue retries thrice'); // "dead" is hex but a real word here
     await addEntry(dir, 'v', 'unrelated note');
