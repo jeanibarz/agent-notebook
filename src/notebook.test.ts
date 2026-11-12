@@ -3739,6 +3739,13 @@ describe('diagnostic signals (issue #72)', () => {
     expect(sigs[0].detail).toContain('after 2 upvotes');
   });
 
+  test('eviction-while-still-voted: an upvoted entry evicted at exactly 0 is flagged, at -1 it is not (#438 boundary)', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', entries: ['zero00', 'neg111'], outcome: 'up' });
+    logUsage(dir, 'patcher', 'add', true, 2, { session: 's2', entries: ['n1'], outcome: 'accepted', evicted: 'zero00:0,neg111:-1' });
+    const sigs = stats(dir, { now: Date.now() }).signals.filter((s) => s.kind === 'eviction-while-still-voted');
+    expect(sigs.map((s) => s.entry)).toEqual(['zero00']);
+  });
+
   test('eviction-while-still-voted: an upvote on a DIFFERENT shelf does not qualify the evicted id (#438)', () => {
     logUsage(dir, 'other', 'vote', true, 1, { session: 's1', entries: ['dock11'], outcome: 'up' });
     logUsage(dir, 'patcher', 'add', true, 2, { session: 's2', entries: ['new999'], outcome: 'accepted', evicted: 'dock11:1' });

@@ -11,7 +11,7 @@ versions are listed plainly.
 
 ### Fixed
 
-- `nb stats` now raises `eviction-while-still-voted` for a lesson that was upvoted in the usage window and then evicted at 0 or above, not only one evicted above +1. The staleness dock takes an upvoted lesson down to +1 or 0 before it leaves a full shelf, so the old test never fired (0 of 191 evictions measured). The detail line gives the upvote count (a lower bound: older votes are outside the log window) (#438).
+- `nb stats` now raises `eviction-while-still-voted` for a lesson that was upvoted in the usage window and then evicted at 0 or above, not only one evicted above +1. The staleness dock takes an upvoted lesson down to +1 or 0 before it leaves a full shelf, so the old test never fired (0 of 191 evictions measured). The detail line gives the upvote count (a lower bound: older votes are outside the log window) (#438). The example janitor reads shelf git history, not this signal, so its "2 or more" threshold is unchanged.
 
 ### Changed
 

@@ -2956,8 +2956,8 @@ export interface Anomaly {
  * The three kinds, all implied by behavior the agent already performs:
  *   - `browse-without-use`: a notebook was `show`n in a session but nothing in it
  *     was voted that session → its description may over-promise.
- *   - `eviction-while-still-voted`: the cap evicted an entry whose score was still
- *     above the +1 a new lesson starts at → a lesson agents found useful was lost. A full shelf is normal; only
+ *   - `eviction-while-still-voted`: the cap evicted an entry upvoted in the window
+ *     (final score 0 or above), or whose score was still above the +1 a new lesson starts at → a lesson agents found useful was lost. A full shelf is normal; only
  *     repeated still-voted evictions suggest the cap is too tight for that shelf.
  *   - `vote-reversal`: the same entry was upvoted in one session and downvoted in
  *     another → the lesson may be correct but mis-aimed.
