@@ -1354,6 +1354,56 @@ describe('vote', () => {
     expect(r[0].error).toMatch(/id prefix/);
   });
 
+  test('batch vote resolves every selector exactly as a single vote does (#463 precomputed ids)', async () => {
+    const lessons = [
+      'Prefer rebase over merge for feature branch 51', // id 184862
+      'Node 18 lacks a global fetch without --experimental-fetch',
+      'ticket 184862 tracks the flaky fetch',
+      'dead letter queue retries thrice',
+      'Run the linter before every commit',
+      'Run the formatter before every push',
+      'cafe au lait is not a build step',
+    ];
+    const full = entryId(lessons[4]);
+    const selectors = [
+      '184862', // full id that is also text in another lesson -> the id wins (#412)
+      '18', // short prefix that is also text elsewhere -> ambiguous (#412)
+      full, // full id
+      full.slice(0, 4), // short id prefix
+      'dead', // hex-looking word that is not an id -> text match
+      'CAFE', // hex-looking, case-insensitive text
+      'ffffff', // hex, no id and no text -> no match
+      'Run the', // text matching two lessons -> ambiguous
+      'formatter', // unique text
+      'nothing like this', // no match
+      '1', // one-char hex: matches zero or several ids, then text
+    ];
+    const seed = async (shelf: string) => {
+      for (const l of lessons) await addEntry(dir, shelf, l);
+    };
+    // Reference: each selector resolved by the single-selector path on a fresh copy.
+    const expected: { text?: string; error?: string }[] = [];
+    for (const [k, sel] of selectors.entries()) {
+      await seed(`ref${k}`);
+      const r = await vote(dir, `ref${k}`, sel, 1).catch((e: Error) => e);
+      expected.push(r instanceof Error ? { error: r.message } : { text: r.text });
+    }
+    await seed('batch');
+    const got = await voteMany(dir, 'batch', selectors, 1);
+    const bySelector = new Map(got.map((r) => [r.selector, r]));
+    expect(bySelector.size).toBe(selectors.length);
+    selectors.forEach((sel, k) => {
+      const r = bySelector.get(sel)!;
+      expect(r.error === undefined ? { text: r.text } : { error: r.error }).toEqual(expected[k]);
+      if (r.text !== undefined) expect(r.id).toBe(entryId(r.text));
+    });
+    // The cases above really cover both outcomes and both #412 branches.
+    expect(bySelector.get('184862')!.text).toBe(lessons[0]);
+    expect(bySelector.get('18')!.error).toMatch(/id prefix/);
+    expect(got.filter((r) => r.error === undefined).length).toBeGreaterThan(2);
+    expect(got.filter((r) => r.error !== undefined).length).toBeGreaterThan(2);
+  });
+
   test('a hex-looking word falls through to a text match when it is not an id', async () => {
     await addEntry(dir, 'v', 'dead letter queue retries thrice'); // "dead" is hex but a real word here
     await addEntry(dir, 'v', 'unrelated note');

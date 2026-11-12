@@ -1465,13 +1465,17 @@ function listHint(items: Entry[], cap = 10): string {
  * neither step finds exactly one entry, refuse with an error that lists the
  * candidate ids. Numeric position ids are gone: they shifted under reordering
  * and caused mis-votes.
+ *
+ * `ids`, when given, must be `entries.map((e) => entryId(e.text))`: a batch caller
+ * resolving many selectors against one array hashes each lesson once instead of
+ * once per selector (issue #463). Resolution is identical either way.
  */
-function selectIndex(entries: Entry[], selector: string): number {
+function selectIndex(entries: Entry[], selector: string, ids?: readonly string[]): number {
   const sel = selector.trim();
   // 1) stable id — use only when it UNIQUELY identifies one entry.
   if (/^[0-9a-f]+$/i.test(sel)) {
     const low = sel.toLowerCase();
-    const byId = entries.map((e, i) => ({ e, i })).filter((x) => entryId(x.e.text).startsWith(low));
+    const byId = entries.map((e, i) => ({ e, i })).filter((x) => (ids ? ids[x.i] : entryId(x.e.text)).startsWith(low));
     if (byId.length === 1) {
       // A full 6-hex id is unambiguous whatever other lessons' texts contain. A
       // SHORTER prefix is also read as text by a caller who meant a word ("18",
@@ -1574,10 +1578,14 @@ export function voteMany(dir: string, shelf: string, selectors: string[], delta:
     // Resolve every selector against the ORIGINAL array first (indices are only
     // stable before we start moving touched entries to the end). A resolution
     // failure is captured as an item, not thrown, so the rest of the batch runs.
+    // Hash every lesson once for the whole batch, not once per selector: the
+    // per-selector rehash made a 200-id vote on a 5000-line shelf hold the lock
+    // for seconds (issue #463).
+    const ids = entries.map((e) => entryId(e.text));
     const hits: { idx: number; selector: string }[] = [];
     for (const selector of selectors) {
       try {
-        hits.push({ idx: selectIndex(entries, selector), selector });
+        hits.push({ idx: selectIndex(entries, selector, ids), selector });
       } catch (err) {
         results.push({ selector, error: err instanceof Error ? err.message : String(err) });
       }
@@ -1606,7 +1614,7 @@ export function voteMany(dir: string, shelf: string, selectors: string[], delta:
     writeEntries(dir, shelf, reordered, metaLines);
     for (const { idx, selector } of hits) {
       const e = entries[idx];
-      results.push({ selector, id: entryId(e.text), text: e.text, score: e.score });
+      results.push({ selector, id: ids[idx], text: e.text, score: e.score });
     }
     return results;
   });
