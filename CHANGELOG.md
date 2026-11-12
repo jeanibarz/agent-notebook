@@ -12,6 +12,7 @@ versions are listed plainly.
 ### Fixed
 
 - `nb stats` now raises `eviction-while-still-voted` for a lesson that was upvoted in the usage window and then evicted at 0 or above, not only one evicted above +1. The staleness dock takes an upvoted lesson down to +1 or 0 before it leaves a full shelf, so the old test never fired (0 of 191 evictions measured). The detail line gives the upvote count (a lower bound: older votes are outside the log window) (#438). The example janitor reads shelf git history, not this signal, so its "2 or more" threshold is unchanged.
+- **A large batch `nb vote` no longer holds the lock for seconds (#463).** A batch vote computed the id of every lesson on the shelf again for each id it resolved, so its cost grew with ids × lessons. It now computes them once per call. On a 5000-line shelf (`NB_MAX_LINES=5000`), a 50-id vote went from about 1.0–1.1 s to 0.15–0.20 s and a 200-id vote from 4.0–4.8 s to 0.20–0.26 s. At the default cap of 50 lines the difference is negligible. Which lesson each id selects, and every error message, are unchanged.
 
 ### Changed
 
