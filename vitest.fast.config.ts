@@ -24,6 +24,8 @@ import { defineConfig } from 'vitest/config';
  */
 export default defineConfig({
   test: {
+    // Issue #420: same stale-`dist/` guard as the base config.
+    globalSetup: ['./scripts/vitest-global-setup.mjs'],
     testNamePattern: '^(?!.*\\[(?:slow|timing)\\]).*$',
   },
 });

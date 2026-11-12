@@ -98,6 +98,9 @@ const TIMING_TAG = '\\[timing\\]';
 
 export default defineConfig({
   test: {
+    // Issue #420: rebuild a missing/stale `dist/` before the suites exec it, so a
+    // bare `npx vitest run` never tests an old build. No-op when dist/ is current.
+    globalSetup: ['./scripts/vitest-global-setup.mjs'],
     // Reporters, outputFile and coverage are run-global: they stay at the root
     // (not inside a project) so the aggregate run annotates/records once and the
     // #248 and #233 wiring is unchanged by the #249 project split.

@@ -50,8 +50,11 @@ mark a new slow test for the fast-skip set, add ` [slow]` to its title.
 
 The tests exec the built `dist/` output, so a stale build gives misleading
 results — `npm test`, `npm run test:fast` and `npm run test:coverage` run the
-build first via `pre*` hooks. `npm run test:watch` does **not**: rebuild
-(`npm run build`) yourself after editing `src/`.
+build first via `pre*` hooks, and a Vitest global setup
+(`scripts/vitest-global-setup.mjs`) rebuilds `dist/` when it is missing or older
+than a `src/` file, so a bare `npx vitest run` is safe too. `npm run test:watch`
+starts with the same check but does **not** rebuild on later edits: rerun
+`npm run build` yourself after editing `src/` while it is running.
 
 **`npm test` needs Node 20.12 or newer.** Although the package itself runs on
 Node ≥ 18 (see `engines` in `package.json`), the test runner (vitest 5) imports
