@@ -114,7 +114,7 @@ never of position.
 **Rationale:** An agent reads `nb show` in one step and votes in another; between
 them other entries may be added or reordered. A positional id would drift and cause
 a vote to land on the wrong lesson. A content id does not move.
-*Proven by:* `notebook.test.ts` → "a stable id keeps pointing at the same entry after reordering".
+*Proven by:* `notebook.test.ts` → "a stable id keeps pointing at the same entry after reordering (regression)".
 
 <a id="dp-5"></a>
 ### DP-5: Never silently mislead the agent — **Must**
@@ -295,7 +295,7 @@ lexical overlap, not embeddings or semantic ranking ([NG-001](#ng-001)). *(On th
 the advisory goes to stderr so stdout stays pipe-clean; `--json` carries `nearId`.)*
 *Proven by:* `notebook.test.ts` → `describe('near-duplicate advisory (FR-ADD-008)')`;
 `cli.test.ts` → "a resembling add still stores the lesson, warns on stderr, and logs the
-accepted row with the near-match id" and "a resembling add --json carries nearId; a
+accepted row with the near-match id (FR-ADD-008)" and "a resembling add --json carries nearId; a
 dissimilar add does not warn".
 
 *Acceptance (table):*
@@ -547,7 +547,7 @@ One level is enough to cluster the index; deeper names would split lessons that 
 needed together into small shelves ([DP-8](#dp-8)), lengthen the injected index, and make
 renames costly because shelf names match exactly.
 Part of epic [#73](https://github.com/jeanibarz/agent-notebook/issues/73) (Phase 2).
-*Proven by:* `notebook.test.ts` → "a `.`-namespaced shelf is first-class (issue #83)"; "the `.` delimiter clusters a namespace and excludes a non-namespaced sibling (issue #83)"; `cli.test.ts` → "a bare prefix filters by name (the `.` namespace convention)".
+*Proven by:* `notebook.test.ts` → "a `.`-namespaced shelf is first-class (issue #83) …"; "the `.` delimiter clusters a namespace and excludes a non-namespaced sibling (issue #83)"; `cli.test.ts` → "a bare prefix filters by name (the `.` namespace convention)".
 
 <a id="fr-list-003"></a>
 **FR-LIST-003 (Should).** When a notebook has no `# desc:` description, `list` SHALL
@@ -611,7 +611,7 @@ run) previously turned every accumulated lesson into "nb failed" for `nb list`,
 `nb search`, and the session-start index agents use to decide which shelves to open
 (#332). Degrading to "one shelf is unreadable, here it is" preserves the rest of the
 memory and keeps the failure actionable.
-*Proven by:* `notebook.test.ts` → `describe('one unreadable shelf does not abort list/search (issue #332)')` and `describe('one unreadable shelf does not abort the stats inventory (issue #332)')`; `cli.test.ts` → the `list …` / `nb search …` / `nb stats …` "issue #332" cases.
+*Proven by:* `notebook.test.ts` → `describe('one unreadable shelf does not abort list/search (issue #332)')` and `describe('one unreadable shelf does not abort the stats inventory (issue #332)')`; `cli.test.ts` → the `list …` / `nb search …` / `nb stats …` `issue #332` cases.
 
 <a id="fr-list-007"></a>
 **FR-LIST-007 (Should).** Only a missing notebooks directory (`ENOENT`) SHALL count as an
@@ -856,8 +856,8 @@ concurrent `add`+`vote` from corrupting the file, and stale-steal recovers from 
 crashed process — recovery that is reachable only when the acquire budget is at
 least the steal threshold (issue #133).
 *Proven by:* `notebook.test.ts` → `describe('locking (mkdir spinlock)')`, in particular
-"a crashed holder's fresh lock is reclaimed WITHIN the acquire window, not thrown (issue #133)"
-and "a genuinely live holder that keeps its lock fresh still times out, reporting the DERIVED budget"
+"a crashed holder’s fresh lock is reclaimed WITHIN the acquire window, not thrown (issue #133) [timing]"
+and "a genuinely live holder that keeps its lock fresh still times out, reporting the DERIVED budget [timing]"
 — the latter asserts the thrown timeout message reports the derived budget (`staleMs + grace`),
 which proves the acquire deadline is >= the steal threshold. The fail-fast guarantee is proven by
 "fails fast (not 'locked') when mkdir(.nb.lock) throws EACCES — unwritable store (issue #263)"
