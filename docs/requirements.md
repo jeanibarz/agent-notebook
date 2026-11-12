@@ -1037,8 +1037,8 @@ the usage ring alone — the entry-level columns of [FR-USAGE-002](#fr-usage-002
 new agent action and no field added to a lesson ([NG-004](#ng-004)). The three kinds:
 **browse-without-use** (a `show` of a notebook in a session with no `vote` on any of its
 entries that same session → the description may over-promise), **eviction-while-still-voted**
-(an `add` where **any** evicted entry's final score was above the +1 a new entry starts at → a useful
-lesson was lost; evicting an entry at +1 or below is the cap working as intended — and because a cap
+(an `add` where **any** evicted entry either received an `up` vote in the windowed usage rows and left at a final score of 0 or above, or left with a final score above the +1 a new entry starts at → a useful
+lesson was lost — the staleness dock usually takes an upvoted entry down to +1 or 0 before it is evicted, issue #438, and the upvote count is a lower bound because older votes are outside the window; evicting a never-voted entry at +1 or below, or a net-downvoted one, is the cap working as intended — and because a cap
 *decrease* can evict many entries in one `add` ([FR-USAGE-002](#fr-usage-002), issue #306), this
 signal SHALL count **each** still-voted entry in that row's `evicted` list, not just the first),
 and **vote-reversal** (one entry id with an `up` vote in one session and a `down` vote in a

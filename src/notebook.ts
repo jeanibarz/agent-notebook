@@ -3668,7 +3668,8 @@ export function stats(
   // (B) eviction-while-still-voted: an `add` evicted one or more entries (its
   //     `evicted` column is a comma-separated list of `<id>:<score>` pairs —
   //     usually one, but a cap decrease can evict many at once, issue #306)
-  //     whose final score was still above the +1 a new lesson starts at → a
+  //     whose final score was still above the +1 a new lesson starts at, or that
+  //     was upvoted in the window and left at 0 or above (issue #438) → a
   //     lesson agents voted up, and that had not aged or been voted back down,
   //     was lost. Every such pair is counted, so a mass eviction surfaces each
   //     still-voted loss, not just the first. Evicting an entry at +1 or below is
@@ -3677,21 +3678,39 @@ export function stats(
   //     carries no per-entry score, so it is skipped here.
   {
     const seen = new Set<string>(); // dedup repeat evictions of the same shelf+id
+    // Issue #438: on a full shelf the staleness dock lowers a stale lesson a point
+    // per add, so an upvoted lesson usually leaves at +1 or 0 and the above-+1 test
+    // alone almost never fires. Also count an entry that received an `up` vote in
+    // the window, provided it did not end below 0 (a net-downvoted entry leaving is
+    // the cap doing its job). The count is a lower bound: votes older than the log's
+    // window are invisible.
+    const upvotes = new Map<string, number>(); // shelf \u0000 id → `up` votes in the window
+    for (const r of recent) {
+      if (r.command !== 'vote' || r.outcome !== 'up') continue;
+      for (const id of r.entries) {
+        const k = `${r.role}\u0000${id}`;
+        upvotes.set(k, (upvotes.get(k) ?? 0) + 1);
+      }
+    }
     for (const r of recent) {
       if (r.command !== 'add' || r.evicted === '') continue;
       for (const pair of r.evicted.split(',')) {
         if (pair.startsWith('+')) continue; // `+<dropped>` overflow marker — count only, no per-entry score
         const [evictedId, scoreRaw] = pair.split(':');
-        if (!evictedId || !(Number(scoreRaw) > 1)) continue;
+        if (!evictedId) continue;
         const k = `${r.role}\u0000${evictedId}`;
+        const ups = upvotes.get(k) ?? 0;
+        const score = Number(scoreRaw);
+        if (!(score > 1) && !(ups > 0 && score >= 0)) continue;
         if (seen.has(k)) continue;
         seen.add(k);
+        const upNote = ups > 0 ? ` after ${ups} upvote${ups === 1 ? '' : 's'} in the window` : '';
         signals.push({
           kind: 'eviction-while-still-voted',
           role: r.role,
           shelf: r.role,
           entry: evictedId,
-          detail: `entry ${evictedId} was evicted by the cap with score ${scoreRaw} — if this repeats, the cap may be too tight for shelf "${r.role}"`,
+          detail: `entry ${evictedId} was evicted by the cap with score ${scoreRaw}${upNote} — if this repeats, the cap may be too tight for shelf "${r.role}"`,
         });
       }
     }

@@ -305,7 +305,7 @@ Do not divide a shelf into two shelves because it is full. (This is not about `n
 
 Act only when a full shelf loses lessons that agents still use:
 
-- **Signal:** `nb stats` reports `eviction-while-still-voted` for the shelf repeatedly: a lesson was evicted with a score above the +1 a new lesson starts at. The [example janitor](docs/harness-setup.md#the-janitor) flags a shelf with 2 or more such evictions, or evicted lessons that were added again, within its window (30 days by default).
+- **Signal:** `nb stats` reports `eviction-while-still-voted` for the shelf repeatedly: a lesson was evicted after being upvoted in the window (and not below 0), or with a score above the +1 a new lesson starts at. The [example janitor](docs/harness-setup.md#the-janitor) flags a shelf with 2 or more such evictions, or evicted lessons that were added again, within its window (30 days by default).
 - **If the shelf holds two groups of lessons needed in different situations**, divide it by situation into two shelves (see the namespace convention below).
 - **Otherwise**, merge near-duplicates (`nb merge`) to free lines, or raise `NB_MAX_LINES`.
 
@@ -378,7 +378,7 @@ Each of the eight Unicode block glyphs (`▁▂▃▄▅▆▇█`) is one bucke
 `nb stats` also surfaces a handful of **free diagnostic signals** — memory-quality observations read straight from the usage log, costing no new agent action because each is already implied by behaviour the agent performs for its own reasons. They appear in the human table under a `signals:` section and in `--json` as `signals[]` (each a `DiagnosticSignal` = `{ kind, shelf, role, detail, session?, entry? }`). The kinds:
 
 - **browse-without-use** — a notebook was `show`n in a session but nothing in it was voted that session → its description may over-promise (it drew a look that didn't pay off). The human table folds it to one line per shelf with the number of sessions (`shelf s: shown without a vote in 29 sessions`), busiest first; `--json` still lists every (session, shelf) pair.
-- **eviction-while-still-voted** — the cap evicted an entry (`add`'s `evicted` column) whose score was still above the +1 a new lesson starts at → a lesson agents found useful was lost. One occurrence is normal churn; repeated ones on the same shelf mean the cap is too tight for it (see [A full shelf is the normal state](#a-full-shelf-is-the-normal-state)).
+- **eviction-while-still-voted** — the cap evicted an entry (`add`'s `evicted` column) that was upvoted in the usage window (and left at 0 or above), or whose score was still above the +1 a new lesson starts at → a lesson agents found useful was lost. One occurrence is normal churn; repeated ones on the same shelf mean the cap is too tight for it (see [A full shelf is the normal state](#a-full-shelf-is-the-normal-state)).
 - **vote-reversal** — the same entry was upvoted in one session and downvoted in another → the lesson may be correct but *mis-aimed* (right in one context, wrong in another).
 - **failed-search** — a [`nb search`](#searching--the-demoted-fallback) returned nothing and a lesson was then `add`ed in the same session → a coverage gap the notebook did not hold, labelled by the agent's own query.
 - **add-burst** — one session accepted more than `NB_ADD_BURST_N` (default 15) adds into a single shelf → on a full shelf each add evicts a line, so the burst shortens how long the other lessons survive. Fix it with fewer, better lessons per session.
