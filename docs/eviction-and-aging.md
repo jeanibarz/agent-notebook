@@ -220,7 +220,7 @@ flowchart TD
 - **G6:** the docked lesson moves to the end, so a lesson is docked again only
   after the decay has passed over the rest of the shelf (a randomized test in
   `src/notebook.test.ts` asserts the invariant in the goal over random sequences
-  of adds and votes). Two pinned cases show what that buys:
+  of adds, votes, splits and moves into the shelf). Two pinned cases show what that buys:
   - **A shelf with unvoted lessons on it.** Cap of fifty, twenty stale lessons at
     +4 and thirty unvoted ones, then forty unrelated adds: none of the twenty is
     evicted. They keep 50 of their 80 points, spread evenly. The forty
