@@ -1305,7 +1305,7 @@ export interface AddResult {
    * Empty when nothing was evicted. `evicted` is `evictedAll[0] ?? null`.
    */
   evictedAll: Entry[];
-  /** The stalest survivor the aging step docked −1 and moved to the end of the file (already mutated, so `score` is the POST-dock value), or `null` when no cap overflow occurred. */
+  /** The stalest survivor the aging step docked −1 and moved to the end of the file (already mutated, so `score` is the POST-dock value), or `null` when nothing was docked: no cap overflow, or no surviving line to dock (with a cap of 1 an add evicts a line and docks nothing). */
   decayed: Entry | null;
   size: number;
   /** For 'too-long': the length of the submitted lesson, so the caller can report it. */
@@ -3006,7 +3006,7 @@ export interface NotebookStat {
   addsPerDay: number;
   /**
    * Estimated retention window of a FULL shelf, in days: `cap ÷ addsPerDay` — each
-   * add to a full shelf evicts one line, so a lesson nobody votes for lasts about
+   * add to a full shelf evicts one line, so a lesson that never gets a vote lasts about
    * `cap` adds at most. A vote buys more time: each point is one more dock the
    * lesson can absorb before it reaches the bottom score (issue #437). `null` when the shelf is below its cap or took no
    * adds in the window (no rate to divide by) — never a misleading 0 or Infinity.
