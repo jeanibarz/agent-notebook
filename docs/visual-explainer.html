@@ -187,7 +187,7 @@
 <section><div class="wrap stack reveal">
   <p class="eyebrow">when the shelf is full</p>
   <h2>A new lesson always gets in — something has to give.</h2>
-  <p class="muted" style="max-width:62ch">A full notebook still accepts a new lesson. The weakest line (lowest score) is evicted, and the <em>stalest</em> survivor — the one nobody has used for the longest — loses a single point. Keep using a lesson and it stays near the top forever; let it go quiet and it fades out on its own. No timer, no cleanup job.</p>
+  <p class="muted" style="max-width:62ch">A full notebook still accepts a new lesson. The weakest line (lowest score) is evicted, and the <em>stalest</em> survivor — the one nobody has used for the longest — loses a single point, then waits its turn behind the others before it can lose another. Keep using a lesson and it stays near the top forever; let it go quiet and it fades out on its own. No timer, no cleanup job.</p>
   <div class="two" style="margin-top:0.8rem">
     <div class="nb" aria-label="A full notebook before a new lesson arrives">
       <div class="nb-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>full · a new lesson arrives</span></div>
@@ -208,7 +208,7 @@
       </div>
     </div>
   </div>
-  <p class="muted" style="margin-top:0.8rem; max-width:62ch">The weakest <code style="font-family:var(--font-mono)">+1</code> line dropped off; the newcomer took a slot; the long-unused <code style="font-family:var(--font-mono)">+5</code> slipped to <code style="font-family:var(--font-mono)">+4</code>. One upvote on that line at any time would move it back to "fresh" and spare it — so only genuine silence retires a lesson. <a class="ln" href="https://github.com/jeanibarz/agent-notebook/blob/main/docs/eviction-and-aging.md">The exact rule, and why →</a></p>
+  <p class="muted" style="margin-top:0.8rem; max-width:62ch">The weakest <code style="font-family:var(--font-mono)">+1</code> line dropped off; the newcomer took a slot; the long-unused <code style="font-family:var(--font-mono)">+5</code> slipped to <code style="font-family:var(--font-mono)">+4</code>. One upvote on that line at any time lifts it back up — so only genuine silence retires a lesson. <a class="ln" href="https://github.com/jeanibarz/agent-notebook/blob/main/docs/eviction-and-aging.md">The exact rule, and why →</a></p>
 </div></section>
 
 <section><div class="wrap stack reveal">

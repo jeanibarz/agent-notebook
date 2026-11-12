@@ -58,8 +58,12 @@ enter, nothing ever aging out.
   arrive (§1.1), the tool must create its own, or G2 is impossible.
 - **G5 — Decay the *stale*, spare the *active*.** Pressure should fall on lessons
   that have gone quiet, not on ones still being used.
-- **G6 — Bounded blast radius.** A burst of junk adds must not gut the proven
-  corpus.
+- **G6 — Bounded blast radius.** A run of adds must not single out a proven
+  lesson. Each add to a full shelf costs the shelf one line and one point. The
+  evictions fall on the lowest-scored lines first, and no lesson loses a second
+  point until the decay has passed over every other lesson that was on the shelf
+  when it lost the first: each of them has since been docked, voted on, or
+  removed.
 
 ### The tension we had to resolve
 
@@ -84,6 +88,11 @@ The lesson from the mis-targeted options: to satisfy G2+G4 the decay pressure
 must **rise with score / staleness**, not be uniform — and to satisfy G5 it needs
 a recency signal.
 
+The policy in §6 does take turns, like the round-robin above, but over the
+recency order of §5 and not over a fixed one: a vote takes a lesson out of its
+turn, so an active lesson is never docked. That is the part a plain round-robin
+cannot do.
+
 ## 5. The decision: storage order *is* the recency signal
 
 The recency signal we need costs **zero characters** if we stop storing entries
@@ -95,8 +104,12 @@ instead (classic LRU layout):
   agent surfaced this and judged it"), an `add`, and the new lesson(s) a `merge`
   or `split` produces. A plain `show`/`search` is **not** a touch (a read is not a
   vote; otherwise recency would mean nothing).
-- **Therefore the top of the file is the stalest lesson** (longest since anyone
-  engaged it) and the bottom is the freshest.
+- **The aging dock of §6 also moves its line to the end.** A dock is not an
+  engagement, but a lesson that has just paid a point goes to the back of the
+  queue, so the next dock falls on a different lesson (§6, step 3).
+- **Therefore the top of the file is the stalest lesson** — the one that has
+  gone longest since anyone engaged it or since it last paid a point — and the
+  bottom is the freshest. "Stalest" means this everywhere below.
 
 This overturns the old **DP-3** ("storage is insertion order, never re-sorted on
 vote"). DP-3's rationale was that insertion order was "the only record of age" —
@@ -107,17 +120,21 @@ vote genuinely touches it. It satisfies the constraints:
 - **C2:** no format change at all — the recency lives in line *order*.
 - **C3:** a vote becomes a line *move* (a delete + an append, which git renders as
   a ~2-line move) instead of a 1-line in-place edit. This is the one cost we
-  accepted. Everything else stays a small diff.
+  accepted. Everything else stays a small diff. The dock is a move too, at no
+  extra cost: it already rewrote its line with the new score.
 - **C4:** nothing inflates; scores stay pure-ish vote sums (see §6).
 - **Backfill / compat:** none needed. Existing files are in insertion order, which
   is a perfectly good *initial* recency order (older inserts = staler — a fair
   prior). An older `nb` still reads a reordered file correctly (it sorts by score
   for display and addresses entries by content-hash id, so order is irrelevant to
   it); the only degradation when mixing old and new binaries is that the old one's
-  votes won't update recency. Nothing breaks.
+  votes won't update recency. A binary from before the dock moved its line
+  (issue #437) docks in place; mixing the two only changes which lesson is
+  docked next. Nothing breaks.
 
-A **touch** (a vote, add, or merge/split result) moves its line to the bottom, so
-position encodes "how long since anyone engaged this lesson":
+A **touch** (a vote, add, or merge/split result) moves its line to the bottom, and
+so does a dock, so position encodes "how long since anyone engaged this lesson
+or since it last paid a point":
 
 ```mermaid
 flowchart LR
@@ -152,16 +169,24 @@ On an add/split that overflows the cap:
    staleness dock came first it could push a merely-quiet lesson below an
    explicitly worse-scored one (e.g. a downvoted lesson) and evict the wrong one.
    Evicting by score first keeps the quality signal authoritative.
-3. **Staleness decay of the stalest *survivor* (G2, G4, G5).** Dock **1** from the
-   score of the stalest lesson still present — the topmost (least-recently-
-   touched) non-newcomer. Because an actively re-voted lesson keeps moving to the
-   fresh end, it never sits at the top and is never decayed; a lesson that stops
-   earning votes drifts to the top and loses a point each time the full notebook
-   takes a new lesson, until it is re-voted (instantly moved back to fresh, full
-   protection) or finally evicted. This is the self-supplied downward pressure
-   that replaces the downvotes that never come — **targeted** at the stale — and
-   it is what stops a once-upvoted lesson being immortal (without it, nothing
-   below such a lesson ever leaves, so it never can).
+3. **Staleness decay of the stalest *survivor* (G2, G4, G5, G6).** Dock **1** from
+   the score of the stalest lesson still present — the topmost non-newcomer —
+   and **move that lesson to the end of the file**, after the newcomer. Because
+   an actively re-voted lesson keeps moving to the fresh end, it never sits at
+   the top and is never decayed. A lesson that stops earning votes drifts to the
+   top, loses a point, and goes to the back; it loses the next point only when
+   the decay has come round to it again. A vote at any time lifts its score back
+   up. With no vote it reaches the bottom score and is evicted. This is the
+   self-supplied downward pressure that replaces the downvotes that never come —
+   **targeted** at the stale — and it is what stops a once-upvoted lesson being
+   immortal (without it, nothing below such a lesson ever leaves, so it never
+   can).
+
+   The move is what bounds the damage of a run of adds (G6). Until issue #437
+   the docked lesson stayed at the top, so it took the next dock as well, and
+   every one after, until it was evicted: a score of +4 bought a quiet lesson
+   three adds, and one session adding four lessons could remove it within a
+   minute. With the move, each add docks a different quiet lesson.
 
 ```mermaid
 flowchart TD
@@ -169,29 +194,41 @@ flowchart TD
   B -->|no| C["keep it · done<br/>(sub-cap notebooks are untouched)"]
   B -->|yes| D["1 · the newcomer is ALWAYS kept"]
   D --> E["2 · EVICT the lowest-scored line<br/>ties → stalest (top of file)<br/>never the newcomer"]
-  E --> F["3 · AGE the stalest SURVIVOR<br/>dock its score by 1"]
+  E --> F["3 · AGE the stalest SURVIVOR<br/>dock its score by 1,<br/>move it to the end"]
   F --> G["back at the cap · done"]
 ```
 
 ### Why this hits the goals
 
 - **G1:** a newcomer can never be the victim, so it always gets its trial.
-- **G2 + G4:** a stale high lesson is pulled down one point per add-when-full by
-  step 3 — eventually evictable, with no downvote required.
+- **G2 + G4:** a stale high lesson loses a point each time the decay comes round
+  to it (step 3) — eventually evictable, with no downvote required.
 - **G3:** eviction still removes the lowest score first, so a hard-earned lesson is
-  the last to go; a +30 lesson survives ~30× longer under decay than a +1.
+  the last to go, and each point buys a quiet lesson another pass of the decay.
+  With a cap of ten, on a shelf of unvoted lessons that keeps taking unrelated
+  adds, a lesson that nobody touches again survives 10 adds at +1, 19 at +2, 37
+  at +4 and 91 at +10 (pinned by a test in `src/notebook.test.ts`).
 - **G5:** decay targets the *stalest* line (recency), so an actively-used high
   lesson is spared while a quiet one is not — the targeting score-alone could not
   do.
-- **G6 (met in part):** at most one lesson is evicted per add, and one upvote
-  rescues any lesson the decay is pushing out. It is **not** met for proven
-  lessons that receive no further votes: every over-cap add also docks the
-  stalest survivor by a point, so a run of adds does erode them. With a cap of
-  ten and ten lessons at +3, the original lessons left after each of twenty
-  unrelated adds are 9, 9, 8, 8, 7, 7, 6, 6, 5, 5, 4, 4, 3, 3, 2, 2, 1, 1, 0, 0
-  (pinned by a test in `src/notebook.test.ts`). See
+- **G6:** the docked lesson moves to the end, so a lesson is docked again only
+  after the decay has passed over the rest of the shelf (a randomized test in
+  `src/notebook.test.ts` asserts exactly the invariant in the goal). Two pinned
+  cases show what that buys:
+  - **A shelf with unvoted lessons on it.** Cap of fifty, twenty stale lessons at
+    +4 and thirty unvoted ones, then forty unrelated adds: none of the twenty is
+    evicted. They keep 50 of their 80 points, spread evenly, and the thirty
+    unvoted lessons are the ones that leave.
+  - **A shelf where every lesson is proven.** Cap of ten, ten lessons at +3, then
+    twenty unrelated adds: the original lessons left after each add are 9 for
+    the first eleven adds, then 8, 8, 7, 7, 6, 6, 5, 5, 4. The first add has to
+    evict one of them, because every line is proven and the newcomer is
+    protected. After that none is lost until each has been docked once.
+
+  G6 bounds how fast a run of adds can hurt one lesson; it does not make proven
+  lessons permanent. A shelf that takes adds and no votes for long enough still
+  loses them all, which is G2. See
   [The retention window is set by the add rate](#the-retention-window-is-set-by-the-add-rate).
-  Whether G6 *should* hold is a separate design question.
 
 ### The price we knowingly pay
 
@@ -202,9 +239,15 @@ to get G2, and this is the gentlest, most targeted form of it. "Staying near the
 top requires continued use" is the intended behavior, not a bug. Scores stay
 bounded (C4) because decay pulls the top down as votes push it up.
 
+Two more costs came with moving the docked line (issue #437, which measured
+them on a live store). The cap is fixed, so every proven lesson that is kept
+longer is an unvoted one evicted sooner. And file order is no longer a pure
+record of engagement: a lesson near the end of the file was either engaged
+recently or docked recently.
+
 ### The retention window is set by the add rate
 
-Because eviction and aging fire once per add, a full shelf turns over at the pace of adds. An untouched lesson reaches the top of the file in about `cap` adds and then loses a point per add, so it lasts roughly `cap ÷ adds per day`, whatever its score. `nb stats` shows each shelf's accepted adds and, for a full shelf, that estimate, and flags a session that adds in a burst (`add-burst`). If the window is shorter than you want, the first remedy is fewer adds per session; only then divide the shelf or raise `NB_MAX_LINES`.
+Because eviction and aging fire once per add, a full shelf turns over at the pace of adds. A lesson that nobody votes for lasts about `cap ÷ adds per day` at most: that is the time the shelf takes to bring in `cap` new lines. A voted lesson lasts longer, since each point buys it another pass of the decay (the G3 figures above). `nb stats` shows each shelf's accepted adds and, for a full shelf, that estimate, and flags a session that adds in a burst (`add-burst`). Read the estimate as the time a new lesson has to earn its first vote. If the window is shorter than you want, the first remedy is fewer adds per session; only then divide the shelf or raise `NB_MAX_LINES`.
 
 ## 7. Worked examples
 
@@ -220,32 +263,38 @@ Cap = 3. Scores are the signed numbers; the arrow marks what changed.
 |---|---------|----------------------------|---------------|
 | 1 | `add A`, `add B`, `add C` | `A +1` · `B +1` · `C +1` | three adds; recency = insertion order so far |
 | 2 | `vote A +1` | `B +1` · `C +1` · **`A +2`** | A is *touched* → moves to the fresh end (and +1) |
-| 3 | `add D` (now 4 > cap 3) | **`C 0`** · `A +2` · `D +1` | newcomer **D kept**; `B +1` was the lowest & stalest → **evicted**; `C` is the stalest survivor → **aged** +1 → 0 |
+| 3 | `add D` (now 4 > cap 3) | `A +2` · `D +1` · **`C 0`** | newcomer **D kept**; `B +1` was the lowest & stalest → **evicted**; `C` is the stalest survivor → **aged** +1 → 0 and moved to the end |
 
 Step 3 is the whole policy in one line: *admit D, evict the lowest (B), age the
-stalest survivor (C)*. Note B — not the newcomer — left, and the aging fell on C,
-the line nobody had touched, not on A, which had just been voted.
+stalest survivor (C) and send it to the back*. Note B — not the newcomer — left,
+and the aging fell on C, the line nobody had touched, not on A, which had just
+been voted.
 
 ### 7.2 The life of a lesson — immortal no more, but rescued by one vote
 
-Cap = 2. A lesson `S` is upvoted to **+5**, then the notebook stays busy (a new
-lesson arrives each round). Watch `S`'s score as the per-add aging reaches it
-(it is the stalest, since nothing re-touches it):
+Cap = 4. Two lessons, `S` and `T`, were upvoted to **+3** and then went quiet;
+`u` and `v` are unvoted. The shelf stays busy: a new lesson `n1`, `n2`, …
+arrives each round and nobody votes.
 
-| round | event | `S`'s score | note |
-|-------|-------|-------------|------|
-| 0 | `S` upvoted to +5, notebook full | **+5** | under plain eviction, immortal — newcomers enter at +1 and are always lower |
-| 1 | `add` (S is stalest survivor) | +4 | docked 1 |
-| 2 | `add` | +3 | docked 1 |
-| 3 | `add` | +2 | … |
-| 4 | `add` | +1 | … |
-| 5 | `add` | — | `S` is now tied at the bottom and **evicted** |
+| round | stored file after the add (top → bottom) | evicted | docked |
+|-------|------------------------------------------|---------|--------|
+| 0 | `S +3` · `T +3` · `u +1` · `v +1` | | |
+| 1 | `T +3` · `v +1` · `n1 +1` · `S +2` | `u` | `S` |
+| 2 | `n1 +1` · `S +2` · `n2 +1` · `T +2` | `v` | `T` |
+| 3 | `n2 +1` · `T +2` · `n3 +1` · `S +1` | `n1` | `S` |
+| 4 | `n3 +1` · `S +1` · `n4 +1` · `T +1` | `n2` | `T` |
+| 5 | `n4 +1` · `T +1` · `n5 +1` · `S 0` | `n3` | `S` |
+| 6 | `T +1` · `n5 +1` · `n6 +1` · `n4 0` | `S` | `n4` |
 
-So a once-valued lesson that goes quiet ages out in ~`score` busy rounds instead
-of living forever. **But a single `vote S +1` at any round** moves `S` to the
-fresh end and lifts its score — it is no longer the stalest, so the aging skips it
-entirely and lands on the next-stalest line. Continued usefulness keeps a lesson
-alive; only *silence* retires it.
+`S` and `T` take the docks in turn, one point each time the decay comes round,
+so neither is singled out. (A test in `src/notebook.test.ts` pins this trace.) Under plain eviction both would be immortal: a
+newcomer enters at +1 and is always lower. Here `S` leaves at round 6, after
+three docks, and `T` two rounds later.
+
+**A single `vote S +1` changes the outcome.** Cast after round 3, it lifts `S`
+from +1 back to +2. `S` then outlives `T` and is not evicted until round 9. A
+lesson that keeps earning votes never reaches the bottom; only *silence*
+retires it.
 
 ## 8. What this is NOT
 

@@ -23,7 +23,8 @@ file: a group of lessons an agent needs in the same situations (co-access), for 
 `release-and-tagging` or `flaky-ci-debugging`, not one file per agent role. Each shelf holds at most 50 one-line lessons by
 default (raise the cap with `NB_MAX_LINES`),
 ranked by the votes agents cast on them; when it is full a new lesson still goes
-in — the lowest-scored line is evicted and the stalest one ages a point, so a
+in — the lowest-scored line is evicted and the stalest one ages a point and goes
+to the back of the queue, so a
 once-useful lesson that goes quiet eventually makes way (see
 [docs/eviction-and-aging.md](docs/eviction-and-aging.md)). A full shelf is the
 normal state: do not divide a shelf into two shelves because it is full. There is one file

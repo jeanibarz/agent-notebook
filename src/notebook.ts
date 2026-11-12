@@ -5,13 +5,16 @@
 // `<score>\t<lesson>`; at most MAX_LINES entries; each lesson at most
 // MAX_CHARS characters. The agent votes +1/-1 at task end. A touch (a vote of
 // either sign, an add, or a merge/split's new lesson) moves its line to the END
-// of the file, so storage order is least-recently-touched first — the top line
-// is the stalest. When the file is full and takes a new lesson, the newcomer is
-// always admitted, the stalest line is docked one point (the aging that frees
-// once-useful-now-quiet lessons without needing a downvote to arrive), and the
-// LOWEST-scored line is evicted (ties → stalest), so harmful and stale lines
-// leave first while hard-earned ones stay. No embeddings, no scheduler, no
-// decay curve over wall-clock time — see docs/eviction-and-aging.md.
+// of the file, and so does the aging dock below, so storage order is
+// least-recently-touched-or-docked first — the top line is the stalest. When
+// the file is full and takes a new lesson, the newcomer is always admitted, the
+// LOWEST-scored line is evicted (ties → stalest), and the stalest survivor is
+// docked one point and moved to the END (the aging that frees once-useful-now-
+// quiet lessons without needing a downvote to arrive). Moving the docked line
+// spreads the aging: the next add docks the NEXT stalest lesson, so a run of
+// adds takes one point from many quiet lessons instead of draining one of them
+// (issue #437). No embeddings, no scheduler, no decay curve over wall-clock
+// time — see docs/eviction-and-aging.md.
 //
 // Everything here is plain fs over one small file under a mkdir spinlock, so
 // a call is a millisecond and offline.
@@ -1198,11 +1201,11 @@ function fsyncDir(dir: string): void {
 
 /** The outcome of applying the cap to an over-full entry list. */
 interface CapResult {
-  /** The surviving entries, in their original (recency) order. */
+  /** The surviving entries in recency order: their original order, except that the docked entry (`decayed`) has moved to the end. */
   kept: Entry[];
   /** Entries removed to get back to `maxLines` (empty when nothing was evicted). */
   evicted: Entry[];
-  /** The stalest entry whose score was docked by the aging step, or `null` when no eviction occurred. Same object as in `kept`/`evicted`, already mutated. */
+  /** The stalest surviving entry, docked one point by the aging step and moved to the end of `kept`, or `null` when no eviction occurred. Same object as in `kept`, already mutated. */
   decayed: Entry | null;
 }
 
@@ -1222,13 +1225,21 @@ interface CapResult {
  *      in step 3 from ever pushing a merely-stale line below an explicitly
  *      worse-scored (e.g. downvoted) one and evicting the wrong lesson.
  *   3. STALENESS DECAY (anti-immortality) — dock 1 from the stalest surviving
- *      evictable entry (the topmost non-protected line that was NOT evicted). A
- *      lesson that stops being re-voted drifts to the top as others are touched
- *      and loses a point each time the full notebook takes a new lesson, until it
- *      is re-voted (which moves it back to the fresh end, full protection) or
- *      finally evicted — the self-supplied downward pressure that replaces the
- *      downvotes that rarely arrive, aimed at the stale, not the active. Without
- *      it a once-upvoted line could never fall (nothing below it ever leaves).
+ *      evictable entry (the topmost non-protected line that was NOT evicted) and
+ *      MOVE IT TO THE END, after the newcomer(s). A lesson that stops being
+ *      re-voted drifts to the top as others are touched or docked, loses one
+ *      point, and goes back to the end; it is docked again only after the decay
+ *      has passed over the lines that were ahead of it. A re-vote lifts its
+ *      score back up; with no vote it reaches the bottom score and is evicted.
+ *      This is the self-supplied downward pressure that replaces the downvotes
+ *      that rarely arrive, aimed at the stale, not the active. Without it a
+ *      once-upvoted line could never fall (nothing below it ever leaves).
+ *
+ *      Why the docked line moves (issue #437): left in place it stayed the
+ *      stalest, so it took the next dock too, and every one after, until it was
+ *      evicted — a lesson's score bought it `score − 1` adds, and one session
+ *      adding four lessons could remove a +4 lesson within a minute. Moved, a
+ *      dock costs each quiet lesson one point per pass over the shelf.
  */
 function enforceCap(entries: Entry[], protectedCount: number): CapResult {
   const cap = maxLines();
@@ -1260,12 +1271,15 @@ function enforceCap(entries: Entry[], protectedCount: number): CapResult {
   });
 
   // 3) Dock the stalest SURVIVING evictable line — the first kept entry whose
-  // original index was non-protected (topmost = least-recently-touched survivor).
+  // original index was non-protected (topmost = least-recently-touched-or-docked
+  // survivor) — and move it to the end, so the next add docks a different line.
   let decayed: Entry | null = null;
   const pos = keptIdx.findIndex((i) => i < protectedStart);
   if (pos !== -1) {
-    kept[pos].score -= 1;
     decayed = kept[pos];
+    decayed.score -= 1;
+    kept.splice(pos, 1);
+    kept.push(decayed);
   }
   return { kept, evicted, decayed };
 }
@@ -1290,7 +1304,7 @@ export interface AddResult {
    * Empty when nothing was evicted. `evicted` is `evictedAll[0] ?? null`.
    */
   evictedAll: Entry[];
-  /** The stalest survivor the aging step docked −1 (already mutated, so `score` is the POST-dock value), or `null` when no cap overflow occurred. */
+  /** The stalest survivor the aging step docked −1 and moved to the end of the file (already mutated, so `score` is the POST-dock value), or `null` when no cap overflow occurred. */
   decayed: Entry | null;
   size: number;
   /** For 'too-long': the length of the submitted lesson, so the caller can report it. */
@@ -1389,8 +1403,9 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     // told about (issue #354). Decide before the write, which creates the file.
     const created = !notebookExists(dir, shelf);
     const similar = created ? overlappingShelves(dir, shelf) : [];
-    // Newcomer is protected: a full notebook admits it, ages its stalest line,
-    // and evicts the lowest-scored one (never the newcomer). See enforceCap.
+    // Newcomer is protected: a full notebook admits it, evicts the lowest-scored
+    // line (never the newcomer), then docks its stalest survivor and moves that
+    // line to the end, after the newcomer. See enforceCap.
     const { kept, evicted, decayed } = enforceCap(entries, 1);
     writeEntries(dir, shelf, kept, metaLines);
     return {
@@ -2990,8 +3005,9 @@ export interface NotebookStat {
   addsPerDay: number;
   /**
    * Estimated retention window of a FULL shelf, in days: `cap ÷ addsPerDay` — each
-   * add to a full shelf evicts one line, so an untouched lesson lasts about `cap`
-   * adds whatever its score. `null` when the shelf is below its cap or took no
+   * add to a full shelf evicts one line, so a lesson nobody votes for lasts about
+   * `cap` adds at most. A voted lesson lasts longer (each point buys it another
+   * pass of the aging dock, issue #437). `null` when the shelf is below its cap or took no
    * adds in the window (no rate to divide by) — never a misleading 0 or Infinity.
    */
   retentionDays: number | null;
