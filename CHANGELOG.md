@@ -13,27 +13,10 @@ versions are listed plainly.
 
 ### Added
 
+- **`nb doctor` reports a lesson that appears twice in one shelf (#413).** Two identical lessons in one shelf, which is what a "keep both" git merge leaves, share one id, so no command can select either. `nb doctor` now lists them under the finding code `duplicate-lesson`. `nb doctor --exit-code` therefore exits 3 on a store with such a shelf, where it used to pass.
+- **`nb` says when an over-cap add ages another lesson (#294).** When a shelf goes over its cap, the lesson that has gone longest without a vote loses one point. That used to happen with no output and no log row. `add`, `merge`, `move` and `split` now print `(aged stalest −1 → [score] text)` when the aged lesson's score was above +1, and every such change is recorded in a new trailing `decayed` column of the usage log (`<id>:<score after>`). `split` now also reports what it evicted.
+- **`--json` returns a structured error when a command fails (#266).** A failing command under `--json` used to write only an English sentence to stderr and nothing to stdout. It now also writes `{ ok: false, command, error: { class, message } }` to stdout, where `class` is the same error class the usage log records; an unknown command uses the class `unknown_subcommand`. When a flag value is invalid and a default is used instead (`stats --since`, `--limit` on `search`/`list`/`stale`), a `{ warning: { class: "defaulted_flag", … } }` line goes to stderr. The English stderr lines and all exit codes are unchanged.
 - `examples/nb-git-wrapper.mjs`: opt-in `NB_GIT_SESSION_TRAILER=1` adds a `Nb-Session: <NB_SESSION>` line to each auto-commit body so history shows which task changed a lesson (#409).
-
-### Fixed
-
-- **`nb stats` no longer gives two different cause splits for the same failed calls (#418).** On a usage log that still held rows from before error classes were recorded, the `error causes:` line read an old over-length `add` as `too_long` while the `high-error-rate` anomaly read the same row as `unclassified` (one real report showed `too_long 96%` on one line and `too_long 50%, unclassified 48%` on the other). Both lines now use one rule, so they agree on the same error rows; a row with neither a class nor an error outcome is still `unclassified`.
-- **A truncated `nb list` now says which notebooks it left out (#407).** The default 50-row cap drops the shelves with the fewest lessons, which are the newest ones, and the only hint was the `50 of 53` header. Without an explicit `--limit`, the output now ends with a flush-left `# 3 more notebooks not shown … nb list --limit 53` line, so the SessionStart hook carries it too. `--limit` and `--json` output are unchanged; AGENTS.md, the README, the getting-started guide and the hook hints no longer claim a bare `nb list` shows everything. See [FR-LIST-001](docs/requirements.md#fr-list-001).
-- **`nb stats` now prints one `browse-without-use` line per shelf instead of one per session (#415).** The text report folds the signal into `shelf s: shown without a vote in 29 sessions`, busiest first. `--json` is unchanged and still lists every (session, shelf) pair.
-- **The documented git-wrapper shim no longer spawns `npm root -g` on every `nb` call (#405).** The recipe now writes the global npm root into the shim as `NODE_PATH` once (only if that directory exists), so the wrapper resolves the package without npm, saving about 120 ms per call. A shim without it, or with a stale root, still works through the existing npm fallback; rewrite the shim after switching Node versions or npm prefix.
-- **`nb move` and `nb describe` now say when they create a shelf (#404).** A mistyped move target or `describe` shelf started an orphan shelf with only the normal success line. Both now print the same stderr `note: created new shelf` that `add` prints (naming overlapping existing shelves), and their `--json` result carries additive `created: true` / `similarShelves` only when a shelf was created. Moves refused as duplicates, existing shelves and cleared descriptions print nothing new. See [FR-NOTE-001](docs/requirements.md#fr-note-001).
-- **`examples/nb-janitor.mjs` now reads mass evictions and batch votes (#403).** It parsed `evicted` as one `<id>:<score>` pair and counted one vote per `vote` row, so a lowered `NB_MAX_LINES` showed an all-clear while `nb stats` flagged each voted loss, and batch votes were undercounted. It now parses the comma list (skipping the `+<n>` overflow token) and counts one vote per id; `LOSS_MIN` is unchanged.
-- **A short hex selector no longer silently picks an id over the lesson text that mentions it (#412).** `nb rm s 18` removed the lesson whose id began `18` while the lesson mentioning "Node 18" stayed, exit 0. A hex selector shorter than a full id that uniquely prefixes one id but is also a substring of a different lesson now exits 1 with `ambiguous_selector`, listing both and changing nothing; a full 6-character id always resolves directly. Only refusals are added; in a batch vote the refusal is a per-selector miss. FR-SEL-001 and the README selector text are updated.
-- **`nb-backup.sh` no longer commits and pushes an unresolved git merge (#399).** With `NB_DIR` mid-merge or mid-rebase, `git add -A` marked the conflicted shelf resolved and the job published its `<<<<<<<` markers while logging success. It now checks for unmerged paths, `MERGE_HEAD`, `rebase-merge` and `rebase-apply` under the git lock; if any is present it commits and pushes nothing, logs `MERGE IN PROGRESS`, and exits 1.
-- **`nb <command> --help` / `-h` and `nb help <command>` now print that command's own usage (#370).** Previously `--help` after a subcommand was rejected as an unknown option, and `-h` was stored as data (`nb describe <shelf> -h` overwrote the description). The scoped text is sliced from the full help, so it cannot drift; the call is logged as `help`. A literal `-h` is still storable after `--`.
-- **`nb-backup.sh` no longer skips its straggler commit when the git lock is released mid-acquire (#371).** After a failed `mkdir` of `.nb-git.lock` the script treated an already-absent lock as an unwritable store and gave up at once, logging a misleading `busy after Ns`. It now retries, gives up as unwritable only after 3 consecutive failures (with its own message), and reports the time actually waited.
-- **The usage log no longer records raw arguments in its `shelf` and `command` columns (#375).** A shelf operand that is not a valid shelf name (e.g. a lesson typed with the shelf forgotten) is logged as `-`; both columns are capped like `note`/`session`; control characters (ESC, BEL) are dropped from every column on write; and `nb stats` strips them from log-derived output, including rows written by older versions.
-- The documented git-wrapper install no longer breaks every `nb` call: the wrapper falls back to the global npm root when it cannot resolve `agent-notebook` from its own location, says what it searched when it still fails, and the install is now a `.mjs` copy behind a one-line `nb` shim (an extensionless copy fails on older Node, e.g. 18 and 22.5). (#376)
-- **`nb` now rejects surplus operands instead of silently dropping them (#378).** `nb add s run lint first` used to store `run` and exit 0; an unquoted `nb merge` replaced two lessons with one word, and a repeated `--note`/`--reason` was stored as the lesson or description. `add`, `merge`, `split`, `rm`, `vote`, `move` and `describe` now exit 1 with `bad_args` naming the first extra word and saying to quote the text as one argument; a repeated `--note`/`--reason` is refused too. `show` and `search` are unchanged, operands after `--` count but stay literal, and a trailing `--` on `vote` is still a downvote.
-- **`npm run test:fast` and `npm run test:coverage` now build `dist/` first (#379).** Ten suites exec the built `dist/cli.js`, but only `npm test` rebuilt it, so the fast loop failed on a fresh clone and could pass green against a stale build. `pretest:fast` and `pretest:coverage` hooks run the build like `pretest` does; the script strings are unchanged. `test:watch` still does not build, and CONTRIBUTING and AGENTS now say so.
-- **`nb doctor --json` now includes the `shelves` count its spec promised (#381).** A gate pointed at an empty or mistyped notebooks directory could not be told from a clean one. The human line now says `0 shelves checked (the notebooks directory does not exist | holds no shelf)` and pluralizes (`1 shelf`). Exit codes and finding codes are unchanged (an empty directory still exits 0).
-
-### Added
 - **`npm run typecheck` now type-checks the test files and both vitest configs (#382).** A new `tsconfig.test.json` (extends the build config, `noEmit`, `rootDir` at the repo root) covers `src/**/*.test.ts` and `vitest*.config.ts`, which the build's `tsconfig.json` excludes; `typecheck` runs both projects and one CI leg runs it. The 26 errors it surfaced are fixed: nine stale `UsageRow` fixtures now go through one typed `usageRow()` helper, five `@ts-expect-error` directives that asserted nothing are removed, and a declaration file types `scripts/check-node-for-tests.mjs`. `dist/` and the published package are unchanged.
 - **`nb-janitor` reports slug drift and exact duplicate lessons across `shelf@project` shelves (#362).**
   Two new read-only signals in the example janitor (`examples/nb-janitor.mjs`; no change to any `nb`
@@ -55,14 +38,86 @@ versions are listed plainly.
   `~Dd retention`; `--json` gains `adds`, `addsPerDay` and `retentionDays` per shelf (additive, schema version
   unchanged). A new `add-burst` signal flags a session that accepted more than `NB_ADD_BURST_N` (default 15) adds
   into one shelf. Docs now say the first remedy for a short window is fewer adds per session.
+- **`nb add` says when it creates a shelf, and names existing shelves with overlapping names (#354).**
+  `add` is the only mutation that may name a shelf that does not exist, and it printed the same
+  `added — 1 line` either way, so two sessions coining different descriptive names for one subject
+  went unwarned. When `add` creates a shelf it now prints one advisory line on stderr — the new
+  shelf, up to three existing shelves sharing at least two name words with it (split on `-` and
+  `.`, lexical only), and the `nb move` that would consolidate — and `--json` carries `created` and
+  `similarShelves`. Non-blocking: the lesson is stored and the exit code is unchanged.
+- **`nb config` now reports whether each env tunable was honored, clamped, or ignored, and flags unknown `NB_*` vars (#336).**
+  The source tag only checked whether a var was *set*, so an unparseable value (silently replaced by the
+  default), an out-of-range value (silently clamped) and a typo like `NB_MAX_LINE` (never read) were all
+  invisible or mislabeled — `NB_MAX_LINES=abc` printed `maxLines=50 (env NB_MAX_LINES)`, as if `abc` were
+  in force. Each set numeric tunable now reports how its value was resolved: `honored`, `clamped` (with the
+  raw value, e.g. `(env NB_NEAR_DUP: clamped to 1 from 2)`), or `ignored` (`(env NB_MAX_LINES: ignored
+  "abc", not an integer; using default)`). `nb config --json` gains additive `status` and `rawValue` fields
+  on each numeric row (`source` and every existing key unchanged). Integer knobs must be a whole integer, so a
+  partially-numeric value (`1e3`, `12.9`) is `ignored` rather than silently truncated by `parseInt` to `1`/`12`.
+  Any `NB_*` var `nb` does not read is listed as `not read by nb` (with a nearest-name `did you mean` hint) in
+  both outputs, derived from the same variable registry `effectiveConfig` uses — informational only, never an
+  error, exit code stays `0`. The knobs read only by the tooling shipped under `examples/` are not flagged.
+  Output for a config with no problems is byte-identical to before. See
+  [FR-CONFIG-001](docs/requirements.md#fr-config-001).
+- **`nb stats` now surfaces crash/interrupt recovery, so silent mid-write crashes become observable (#309).**
+  Two recovery paths each mean a previous `nb` died mid-mutation — the stale-lock steal (`withLock`)
+  and the leftover-temp reap (`reapLeftoverTemps`) — yet both were entirely silent, so an operator
+  running `nb` from agent hooks could not answer "are my agents crashing mid-write and losing updates?".
+  Each usage row now carries a trailing `recovered` column (`<lockSteals>:<tempReaps>`, blank in the
+  common case), and `nb stats` sums it window-wide into a new `crashRecovery: { lockSteals, tempReaps }`
+  readout — shown as a `crash recovery: N stale locks stolen, M leftover temps reaped (window)` line in
+  the human table and under a new top-level `crashRecovery` key in `--json`. Like the usage-ring
+  occupancy readout it is deployment-wide (the lock and temp debris are shared across shelves), so a
+  `[<shelf>]` scope does not narrow it; only the window applies. A clean deployment reports `{ 0, 0 }`,
+  shown rather than omitted so "measured, healthy" is never confused with "not measured". The recovery
+  actions themselves are unchanged and the counting is best-effort — a logging failure never fails a
+  mutation. `STATS_SCHEMA_VERSION` stays `1` (the field is additive). See
+  [FR-STATS-007](docs/requirements.md#fr-stats-007).
+- **`nb config` now reports the behavior-critical string env vars `NB_DIR`, `NB_SESSION`, and `NB_ASCII` (#312).**
+  The command listed only the 14 numeric clamp tunables, so the three string env vars that most often
+  explain a misbehaving deployment were structurally invisible — including `NB_SESSION`, whose unset
+  state is the usual cause of `nb stats` reporting "no engaged sessions". A new `environment` section
+  prints each as `NAME=value`, read from the same resolver the hot path uses (`notebooksDir()`, the
+  effective `NB_SESSION`, `asciiMode()`), tagged `(env)` or `(default)` like the numeric rows. Under
+  `--json` the vars live under a new top-level `environment` key (`{ value, source }` each); the numeric
+  rows keep their exact keys and `{ value, source, env }` shape, so the `--json` contract stays
+  backward-compatible. See [FR-CONFIG-002](docs/requirements.md#fr-config-002).
+- **`nb show` reads several shelves in one call, and `--json` entries now carry a dedup `key` (#286).**
+  `nb show <a> <b> <c>` now prints every named shelf instead of silently dropping all but the
+  first, and under `--json` returns a per-shelf array of `{shelf, description, entries, exists}`
+  in one process — one consistent snapshot, no N spawns. A single shelf stays a lone object
+  (backward compatible); a named shelf with no file reports `exists: false`, never a silent empty.
+  Each `--json` entry gains a `key` field: the `dedupKey` normal form of its text (case- and
+  punctuation-folded, whitespace-collapsed). Two entries with an equal `key` are *exact*
+  duplicates — the one thing a caller cannot reproduce without reimplementing nb's internals — so
+  a harness composing a context pack from several shelves can drop exact cross-shelf dupes itself.
+  `key` is equality-only; nb does no cross-shelf dedup, ordering, scope precedence, or similarity
+  ranking on this path — those stay caller policy. See [FR-SHOW-004](docs/requirements.md#fr-show-004).
 
 ### Changed
+
 - **`nb-janitor` section 8 counts a copy in the bare `<base>` shelf as a duplicate holder (#362).**
   A lesson in `code-review` and in `code-review@my-repo` is now reported (previously only two or more
   `@` shelves were). The bare shelf is the shared one, so the suggestion is only `nb rm` for the `@` copies.
   The "blocked move target" note no longer appears when no move is needed.
 
 ### Fixed
+
+- **`nb stats` no longer gives two different cause splits for the same failed calls (#418).** On a usage log that still held rows from before error classes were recorded, the `error causes:` line read an old over-length `add` as `too_long` while the `high-error-rate` anomaly read the same row as `unclassified` (one real report showed `too_long 96%` on one line and `too_long 50%, unclassified 48%` on the other). Both lines now use one rule, so they agree on the same error rows; a row with neither a class nor an error outcome is still `unclassified`.
+- **A truncated `nb list` now says which notebooks it left out (#407).** The default 50-row cap drops the shelves with the fewest lessons, which are the newest ones, and the only hint was the `50 of 53` header. Without an explicit `--limit`, the output now ends with a flush-left `# 3 more notebooks not shown … nb list --limit 53` line, so the SessionStart hook carries it too. `--limit` and `--json` output are unchanged; AGENTS.md, the README, the getting-started guide and the hook hints no longer claim a bare `nb list` shows everything. See [FR-LIST-001](docs/requirements.md#fr-list-001).
+- **`nb stats` now prints one `browse-without-use` line per shelf instead of one per session (#415).** The text report folds the signal into `shelf s: shown without a vote in 29 sessions`, busiest first. `--json` is unchanged and still lists every (session, shelf) pair.
+- **The documented git-wrapper shim no longer spawns `npm root -g` on every `nb` call (#405).** The recipe now writes the global npm root into the shim as `NODE_PATH` once (only if that directory exists), so the wrapper resolves the package without npm, saving about 120 ms per call. A shim without it, or with a stale root, still works through the existing npm fallback; rewrite the shim after switching Node versions or npm prefix.
+- **`nb move` and `nb describe` now say when they create a shelf (#404).** A mistyped move target or `describe` shelf started an orphan shelf with only the normal success line. Both now print the same stderr `note: created new shelf` that `add` prints (naming overlapping existing shelves), and their `--json` result carries additive `created: true` / `similarShelves` only when a shelf was created. Moves refused as duplicates, existing shelves and cleared descriptions print nothing new. See [FR-NOTE-001](docs/requirements.md#fr-note-001).
+- **`examples/nb-janitor.mjs` now reads mass evictions and batch votes (#403).** It parsed `evicted` as one `<id>:<score>` pair and counted one vote per `vote` row, so a lowered `NB_MAX_LINES` showed an all-clear while `nb stats` flagged each voted loss, and batch votes were undercounted. It now parses the comma list (skipping the `+<n>` overflow token) and counts one vote per id; `LOSS_MIN` is unchanged.
+- **A short hex selector no longer silently picks an id over the lesson text that mentions it (#412).** `nb rm s 18` removed the lesson whose id began `18` while the lesson mentioning "Node 18" stayed, exit 0. A hex selector shorter than a full id that uniquely prefixes one id but is also a substring of a different lesson now exits 1 with `ambiguous_selector`, listing both and changing nothing; a full 6-character id always resolves directly. Only refusals are added; in a batch vote the refusal is a per-selector miss. FR-SEL-001 and the README selector text are updated.
+- **`nb-backup.sh` no longer commits and pushes an unresolved git merge (#399).** With `NB_DIR` mid-merge or mid-rebase, `git add -A` marked the conflicted shelf resolved and the job published its `<<<<<<<` markers while logging success. It now checks for unmerged paths, `MERGE_HEAD`, `rebase-merge` and `rebase-apply` under the git lock; if any is present it commits and pushes nothing, logs `MERGE IN PROGRESS`, and exits 1.
+- **`nb <command> --help` / `-h` and `nb help <command>` now print that command's own usage (#370).** Previously `--help` after a subcommand was rejected as an unknown option, and `-h` was stored as data (`nb describe <shelf> -h` overwrote the description). The scoped text is sliced from the full help, so it cannot drift; the call is logged as `help`. A literal `-h` is still storable after `--`.
+- **`nb-backup.sh` no longer skips its straggler commit when the git lock is released mid-acquire (#371).** After a failed `mkdir` of `.nb-git.lock` the script treated an already-absent lock as an unwritable store and gave up at once, logging a misleading `busy after Ns`. It now retries, gives up as unwritable only after 3 consecutive failures (with its own message), and reports the time actually waited.
+- **The usage log no longer records raw arguments in its `shelf` and `command` columns (#375).** A shelf operand that is not a valid shelf name (e.g. a lesson typed with the shelf forgotten) is logged as `-`; both columns are capped like `note`/`session`; control characters (ESC, BEL) are dropped from every column on write; and `nb stats` strips them from log-derived output, including rows written by older versions.
+- The documented git-wrapper install no longer breaks every `nb` call: the wrapper falls back to the global npm root when it cannot resolve `agent-notebook` from its own location, says what it searched when it still fails, and the install is now a `.mjs` copy behind a one-line `nb` shim (an extensionless copy fails on older Node, e.g. 18 and 22.5). (#376)
+- **`nb` now rejects surplus operands instead of silently dropping them (#378).** `nb add s run lint first` used to store `run` and exit 0; an unquoted `nb merge` replaced two lessons with one word, and a repeated `--note`/`--reason` was stored as the lesson or description. `add`, `merge`, `split`, `rm`, `vote`, `move` and `describe` now exit 1 with `bad_args` naming the first extra word and saying to quote the text as one argument; a repeated `--note`/`--reason` is refused too. `show` is unchanged (`search` got its own check, #402 below), operands after `--` count but stay literal, and a trailing `--` on `vote` is still a downvote.
+- **`npm run test:fast` and `npm run test:coverage` now build `dist/` first (#379).** Ten suites exec the built `dist/cli.js`, but only `npm test` rebuilt it, so the fast loop failed on a fresh clone and could pass green against a stale build. `pretest:fast` and `pretest:coverage` hooks run the build like `pretest` does; the script strings are unchanged. `test:watch` still does not build, and CONTRIBUTING and AGENTS now say so.
+- **`nb doctor --json` now includes the `shelves` count its spec promised (#381).** A gate pointed at an empty or mistyped notebooks directory could not be told from a clean one. The human line now says `0 shelves checked (the notebooks directory does not exist | holds no shelf)` and pluralizes (`1 shelf`). Exit codes and finding codes are unchanged (an empty directory still exits 0).
 - **`nb list`, `nb search` and `nb stats` no longer report an unreadable notebooks directory as an empty store (#383).**
   Before, any failure to list `NB_DIR` (permissions, an I/O error, a regular file where the directory should be)
   printed "no notebooks yet" and exited 0, so a session-start hook could not tell a broken store from an empty one.
@@ -159,65 +214,6 @@ versions are listed plainly.
   (`no_match`, exit 1) and single-vote paths are untouched. The column is appended last, so pre-#310
   rows read it as `0` and a corrupt negative cell is clamped to `0`; `STATS_SCHEMA_VERSION` stays `1`
   (additive). See [FR-STATS-008](docs/requirements.md#fr-stats-008).
-
-### Added
-- **`nb add` says when it creates a shelf, and names existing shelves with overlapping names (#354).**
-  `add` is the only mutation that may name a shelf that does not exist, and it printed the same
-  `added — 1 line` either way, so two sessions coining different descriptive names for one subject
-  went unwarned. When `add` creates a shelf it now prints one advisory line on stderr — the new
-  shelf, up to three existing shelves sharing at least two name words with it (split on `-` and
-  `.`, lexical only), and the `nb move` that would consolidate — and `--json` carries `created` and
-  `similarShelves`. Non-blocking: the lesson is stored and the exit code is unchanged.
-- **`nb config` now reports whether each env tunable was honored, clamped, or ignored, and flags unknown `NB_*` vars (#336).**
-  The source tag only checked whether a var was *set*, so an unparseable value (silently replaced by the
-  default), an out-of-range value (silently clamped) and a typo like `NB_MAX_LINE` (never read) were all
-  invisible or mislabeled — `NB_MAX_LINES=abc` printed `maxLines=50 (env NB_MAX_LINES)`, as if `abc` were
-  in force. Each set numeric tunable now reports how its value was resolved: `honored`, `clamped` (with the
-  raw value, e.g. `(env NB_NEAR_DUP: clamped to 1 from 2)`), or `ignored` (`(env NB_MAX_LINES: ignored
-  "abc", not an integer; using default)`). `nb config --json` gains additive `status` and `rawValue` fields
-  on each numeric row (`source` and every existing key unchanged). Integer knobs must be a whole integer, so a
-  partially-numeric value (`1e3`, `12.9`) is `ignored` rather than silently truncated by `parseInt` to `1`/`12`.
-  Any `NB_*` var `nb` does not read is listed as `not read by nb` (with a nearest-name `did you mean` hint) in
-  both outputs, derived from the same variable registry `effectiveConfig` uses — informational only, never an
-  error, exit code stays `0`. The knobs read only by the tooling shipped under `examples/` are not flagged.
-  Output for a config with no problems is byte-identical to before. See
-  [FR-CONFIG-001](docs/requirements.md#fr-config-001).
-- **`nb stats` now surfaces crash/interrupt recovery, so silent mid-write crashes become observable (#309).**
-  Two recovery paths each mean a previous `nb` died mid-mutation — the stale-lock steal (`withLock`)
-  and the leftover-temp reap (`reapLeftoverTemps`) — yet both were entirely silent, so an operator
-  running `nb` from agent hooks could not answer "are my agents crashing mid-write and losing updates?".
-  Each usage row now carries a trailing `recovered` column (`<lockSteals>:<tempReaps>`, blank in the
-  common case), and `nb stats` sums it window-wide into a new `crashRecovery: { lockSteals, tempReaps }`
-  readout — shown as a `crash recovery: N stale locks stolen, M leftover temps reaped (window)` line in
-  the human table and under a new top-level `crashRecovery` key in `--json`. Like the usage-ring
-  occupancy readout it is deployment-wide (the lock and temp debris are shared across shelves), so a
-  `[<shelf>]` scope does not narrow it; only the window applies. A clean deployment reports `{ 0, 0 }`,
-  shown rather than omitted so "measured, healthy" is never confused with "not measured". The recovery
-  actions themselves are unchanged and the counting is best-effort — a logging failure never fails a
-  mutation. `STATS_SCHEMA_VERSION` stays `1` (the field is additive). See
-  [FR-STATS-007](docs/requirements.md#fr-stats-007).
-- **`nb config` now reports the behavior-critical string env vars `NB_DIR`, `NB_SESSION`, and `NB_ASCII` (#312).**
-  The command listed only the 14 numeric clamp tunables, so the three string env vars that most often
-  explain a misbehaving deployment were structurally invisible — including `NB_SESSION`, whose unset
-  state is the usual cause of `nb stats` reporting "no engaged sessions". A new `environment` section
-  prints each as `NAME=value`, read from the same resolver the hot path uses (`notebooksDir()`, the
-  effective `NB_SESSION`, `asciiMode()`), tagged `(env)` or `(default)` like the numeric rows. Under
-  `--json` the vars live under a new top-level `environment` key (`{ value, source }` each); the numeric
-  rows keep their exact keys and `{ value, source, env }` shape, so the `--json` contract stays
-  backward-compatible. See [FR-CONFIG-002](docs/requirements.md#fr-config-002).
-- **`nb show` reads several shelves in one call, and `--json` entries now carry a dedup `key` (#286).**
-  `nb show <a> <b> <c>` now prints every named shelf instead of silently dropping all but the
-  first, and under `--json` returns a per-shelf array of `{shelf, description, entries, exists}`
-  in one process — one consistent snapshot, no N spawns. A single shelf stays a lone object
-  (backward compatible); a named shelf with no file reports `exists: false`, never a silent empty.
-  Each `--json` entry gains a `key` field: the `dedupKey` normal form of its text (case- and
-  punctuation-folded, whitespace-collapsed). Two entries with an equal `key` are *exact*
-  duplicates — the one thing a caller cannot reproduce without reimplementing nb's internals — so
-  a harness composing a context pack from several shelves can drop exact cross-shelf dupes itself.
-  `key` is equality-only; nb does no cross-shelf dedup, ordering, scope precedence, or similarity
-  ranking on this path — those stay caller policy. See [FR-SHOW-004](docs/requirements.md#fr-show-004).
-
-### Fixed
 - **Lowering `NB_MAX_LINES` below a full shelf now reports every eviction, not just one (#306).**
   When the cap is lowered under a full shelf's size, the next `add`/`merge`/`split`/`move` trims
   the shelf all the way down in one call — many evictions at once (e.g. `NB_MAX_LINES` 50→10 on a
@@ -280,8 +276,35 @@ versions are listed plainly.
   `.nb-git.lock` mkdir lock (distinct from `.nb.lock`) serializes only the git calls, so they can't
   collide on `index.lock`. The lock is fail-open and guards no lesson write — a git or lock problem
   never fails or loses a lesson. One commit per change, with an accurate message.
+- **`nb search` rejects a third operand and no longer logs a mistyped shelf prefix as a missing lesson (#402).** An unquoted two-word query (`nb search flaky test`) read the second word as a shelf prefix, reported no match although the lesson existed, and logged a false coverage gap. A third operand now exits 1 with `bad_args`, and a prefix that matches no shelf is logged with the outcome `no-shelf` instead of `no-match`.
+- **`nb stats` says when `--since` reaches further back than the usage log retains (#406).** The usage log keeps a fixed number of rows, not a span of time, so on a busy store `--since 30d` can cover only the last few days. The report now adds a line `usage log reaches back only …` when the window is longer than what is recorded.
+- **A stray `*.md` file with an invalid shelf name no longer breaks every cross-shelf command (#369).** A file such as `review copy.md` in the notebooks directory made `nb list`, `nb search` and `nb stats` exit 1 for every shelf. Those commands now skip the file and report it, and `nb doctor` lists it under the finding code `invalid-name`. Naming such a shelf directly is still a `bad_args` error.
+- **Unicode Tag characters and the soft hyphen are stripped from lessons (#374).** These invisible characters (U+E0000–U+E007F and U+00AD) passed the earlier control-character filter (#335); they are now removed on write, and `nb doctor` flags a stored lesson that contains them.
+- **`nb doctor` escapes file names read from disk (#410).** A file name containing an escape sequence reached the terminal as-is, and one containing a newline forged extra finding rows. The human output now shows such characters as visible `\uXXXX` escapes; `--json` output is unchanged.
+- **`nb stats` counts a batch vote once per lesson in the surfacing metrics (#373).** `nb vote <shelf> <id1,id2,…> +1` was counted as one vote, so the surfacing metrics were wrong for the voting form `nb show` recommends.
+- **The `loop` and `went-silent` anomalies no longer fire on a healthy store (#372).** `loop` now groups calls by session, so several agents each making one call are not reported as one stuck agent, and `went-silent` ignores rows for a mistyped command name. This matters most to `nb stats --exit-code`, which exits 3 on any anomaly.
+- **`nb stats` honors the `--` terminator (#302).** `nb stats -- --json` still printed JSON because `stats` re-read the raw arguments; it now uses the same option parsing as the other commands.
+- **`nb add <shelf> -` no longer buffers all of stdin before checking it (#304).** It stops reading as soon as the input is multi-line, and rejects with `too_long` once a byte budget (8× the lesson cap, at least 4096 bytes) is exceeded.
+- **A shelf file that starts with a UTF-8 byte-order mark is read correctly (#299).** The mark made the `# desc:` line unrecognizable, so the description was read as a lesson with score 0.
+- **A shelf deleted by a concurrent `nb rm` while another call reads it is treated as empty (#300).** The reader used to crash when the file disappeared between its existence check and its read.
+- **`nb move` and `nb describe <shelf> ""` no longer leave a 0-byte shelf file behind (#355).** Every mutation that empties a shelf with no description now removes the file, not only `nb rm` (#209). A shelf that still has a description is kept.
+- **The store lock can no longer be released by, or granted to, the wrong process (#331).** A holder that ran longer than `NB_STALE_LOCK_MS` removed the lock of the process that had taken over from it, and two waiters racing for one stale lock could both acquire it. Each lock now carries an owner token that is checked on release, and takeovers of a stale lock are serialized.
+- **Two writers that overlap after a lock takeover can no longer corrupt a shelf (#270).** Every writer used the same temporary file name for a shelf, so their bytes could interleave before the atomic rename. Each process now uses its own temporary file.
+- **One usage-log row can no longer grow without bound (#292).** A `search` row recorded the id of every hit across every matching shelf. The id list is now capped like the other free-text columns, so the log's row limit also limits its size.
+- **Concurrent calls on a full usage log no longer drop each other's rows (#377).** With a missing or stale row-count file, each overlapping call rewrote the whole log as soon as it reached its cap. Rewrites now wait for the same threshold on both code paths.
+- **The package no longer ships source maps that point at files it does not contain (#316).** The maps referenced `src/*.ts`, which is not published. Source maps are no longer built, and a test checks the package's file list.
+- **`examples/nb-janitor.mjs` suggests `nb move`, not re-adding, to fold a typo-split shelf (#408).** Re-adding resets every lesson's score to +1; `nb move` keeps it.
+- **`examples/nb-janitor.mjs` warns when `--days` reaches further back than the usage log retains (#275).** The windowed sections used to print an all-clear computed from only the rows still in the log.
+- **`examples/nb-git-wrapper.mjs` handles a closed pipe and signals like `nb` does (#401).** `nb show <shelf> | head` through the wrapper crashed with an `EPIPE` stack trace and exit 1.
+- **`examples/hooks/claude-code/nb-session-start.sh` reports a failing `nb list` as a failure (#303).** It used to print "no notebooks yet" when `nb list` failed, and did not print it for a store that really was empty.
+- **`examples/nb-backup.sh` and the git wrapper no longer collide on git's index lock (#305).** The backup's commit now takes the wrapper's `.nb-git.lock`; if the lock stays busy the commit is skipped and the push still runs.
+- **`examples/nb-backup.sh` cannot hang forever on a credential prompt (#272).** `git push` now runs with prompts disabled and a timeout (`NB_BACKUP_PUSH_TIMEOUT`, default 300s). A hung push used to hold the single-instance lock, so every later run skipped.
+- **`examples/nb-backup.sh` validates `NB_BACKUP_PUSH_TIMEOUT` (#311).** A malformed value such as `5min` made every push fail with a generic message; it now logs a `CONFIG ERROR` and uses the 300s default.
+- **`examples/nb-backup.sh` names a missing git identity as the cause of a failed commit (#308).** On a host with no `user.name`/`user.email`, every commit failed with only "COMMIT FAILED — see log".
+- **`examples/nb-backup.sh` is a no-op when there is nothing new to commit (#274).** Without a `.gitignore`, each run committed the log line the previous run had written. The script now seeds a `.gitignore` for its own log and lock files.
 
 ### Documentation
+
 - **A project / domain / global memory-layer convention for agents that work across several repos (#363).**
   New [`docs/memory-layers.md`](docs/memory-layers.md) describes three layers read off the shelf name
   (`<situation>@<slug>`, a bare `<situation>`, one bare global shelf), "project beats domain beats global"
