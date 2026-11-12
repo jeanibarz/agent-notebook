@@ -1865,7 +1865,7 @@ function assertNotConflicted(shelf: string, conflict: string | null): void {
   if (conflict === null) return;
   throw new NbError(
     'corrupt',
-    `notebook for shelf "${shelf}" contains a git merge-conflict marker (${JSON.stringify(conflict)}) — ` +
+    `notebook for shelf "${shelf}" contains a git merge-conflict marker (${escapeDiskName(JSON.stringify(conflict))}) — ` +
       `resolve the merge conflict in ${shelf}.md first; refusing to rewrite it`,
   );
 }
