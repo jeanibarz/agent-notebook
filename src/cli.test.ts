@@ -1331,7 +1331,7 @@ describe('runNbCli', () => {
     const s = await run(['stats', 'patcher']);
     expect(s.code).toBe(0);
     const out = s.out.split('\n').map((l) => l.trim());
-    expect(out).toContain('notebooks: 1 shelf, 1 lines (cap 50/shelf)'); // singular "shelf"
+    expect(out).toContain('notebooks: 1 shelf, 1 line (cap 50/shelf)'); // singular "shelf" and "line"
     expect(out.some((l) => /^patcher\s+1\/50\s+1 add \(0\.14\/day\)$/.test(l))).toBe(true);
     expect(out.some((l) => /^scout\b/.test(l))).toBe(false); // the other shelf is not listed
   });
@@ -5330,5 +5330,64 @@ describe('created-shelf note (issue #404)', () => {
     expect(j).toMatchObject({ shelf: 'fresh-shelf', set: true, created: true });
     const j2 = JSON.parse((await run(['describe', '--json', 'fresh-shelf', 'trigger two'])).out);
     expect('created' in j2).toBe(false);
+  });
+});
+
+describe('merge, split, move and the stats inventory pluralise "line" (issue #462)', () => {
+  test('merge: "1 line" when the merge leaves one, "2 lines" when it leaves two', async () => {
+    await run(['add', 'patcher', 'alpha lesson one']);
+    await run(['add', 'patcher', 'beta lesson two']);
+    const one = await run(['merge', 'patcher', 'alpha', 'beta', 'merged lesson alpha+beta']);
+    expect(one.code).toBe(0);
+    expect(one.out).toBe('merged two entries into one — 1 line\n');
+
+    await run(['add', 'patcher', 'gamma lesson three']);
+    await run(['add', 'patcher', 'delta lesson four']);
+    const two = await run(['merge', 'patcher', 'gamma', 'delta', 'merged lesson gamma+delta']);
+    expect(two.out).toBe('merged two entries into one — 2 lines\n');
+  });
+
+  test('split: "2 lines" on a one-lesson shelf, "1 line" when a cap of 1 evicts a half', async () => {
+    await run(['add', 'patcher', 'build then test the change']);
+    const two = await run(['split', 'patcher', 'build', 'build the change', 'test the change after building']);
+    expect(two.code).toBe(0);
+    expect(two.out).toBe('split one entry into two — 2 lines\n');
+
+    process.env.NB_MAX_LINES = '1';
+    await run(['add', 'solo', 'lint then format the change']);
+    const one = await run(['split', 'solo', 'lint', 'lint the change', 'format the change after linting']);
+    expect(one.code).toBe(0);
+    expect(one.out).toMatch(/^split one entry into two — 1 line \(evicted/);
+  });
+
+  test('move: each count carries its own unit, singular and plural', async () => {
+    await run(['add', 'from', 'first portable lesson']);
+    await run(['add', 'from', 'second portable lesson']);
+    const first = await run(['move', 'from', 'to', 'first']);
+    expect(first.code).toBe(0);
+    expect(first.out).toContain('"from" now 1 line, "to" now 1 line\n');
+
+    await run(['add', 'from', 'third portable lesson']);
+    const second = await run(['move', 'from', 'to', 'third']);
+    expect(second.out).toContain('"from" now 1 line, "to" now 2 lines\n');
+
+    const third = await run(['move', 'from', 'to', 'second']);
+    expect(third.out).toContain('"from" now 0 lines, "to" now 3 lines\n');
+  });
+
+  test('move skipped as a near-duplicate: "still 1 line", prefix unchanged', async () => {
+    await run(['add', 'from', 'prefer execFileSync, array args']);
+    await run(['add', 'to', 'prefer execfilesync array args']); // dedup-equal
+    const m = await run(['move', 'from', 'to', 'execFileSync']);
+    expect(m.code).toBe(0);
+    expect(m.out).toBe('skipped (a near-duplicate already lives in "to") — "from" unchanged, "to" still 1 line\n');
+  });
+
+  test('stats inventory: "1 line" for one lesson (plural is pinned by the issue #40 test)', async () => {
+    await run(['add', 'patcher', 'only lesson']);
+    const s = await run(['stats']);
+    expect(s.code).toBe(0);
+    expect(s.out.split('\n').map((l) => l.trim())).toContain('notebooks: 1 shelf, 1 line (cap 50/shelf)');
+    expect(s.out).not.toContain('1 lines');
   });
 });

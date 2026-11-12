@@ -1175,7 +1175,7 @@ export async function runNbCli(
         }
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else {
-          process.stdout.write(`merged two entries into one — ${r.size} lines`);
+          process.stdout.write(`merged two entries into one — ${plural(r.size, 'line')}`);
           if (r.evicted) {
             // A cap decrease trims the shelf all the way down in one call, so
             // report the extra evictions rather than hiding them (issue #306).
@@ -1209,7 +1209,7 @@ export async function runNbCli(
         if (note) meta.note = note;
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else {
-          process.stdout.write(`split one entry into two — ${r.size} lines`);
+          process.stdout.write(`split one entry into two — ${plural(r.size, 'line')}`);
           if (r.evicted) {
             // A cap decrease trims the shelf all the way down in one call, so
             // report the extra evictions rather than hiding them (issue #306).
@@ -1269,11 +1269,11 @@ export async function runNbCli(
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else if (r.reason === 'duplicate') {
           process.stdout.write(
-            `skipped (a near-duplicate already lives in "${to}") — "${from}" unchanged, "${to}" still ${r.toSize} lines\n`,
+            `skipped (a near-duplicate already lives in "${to}") — "${from}" unchanged, "${to}" still ${plural(r.toSize, 'line')}\n`,
           );
         } else {
           process.stdout.write(
-            `moved [${fmt(r.score)}] ${r.text} — "${from}" now ${r.fromSize}, "${to}" now ${r.toSize} lines`,
+            `moved [${fmt(r.score)}] ${r.text} — "${from}" now ${plural(r.fromSize, 'line')}, "${to}" now ${plural(r.toSize, 'line')}`,
           );
           if (r.evicted) {
             const more = r.evictedAll.length - 1;
@@ -2557,7 +2557,7 @@ function renderStats(rep: StatsReport, shelf: string | undefined): string {
   if (rep.notebooks.length === 0) {
     lines.push('  notebooks: none');
   } else {
-    lines.push(`  notebooks: ${nb.shelves} ${nb.shelves === 1 ? 'shelf' : 'shelves'}, ${nb.lines} lines (cap ${nb.cap}/shelf)`);
+    lines.push(`  notebooks: ${nb.shelves} ${nb.shelves === 1 ? 'shelf' : 'shelves'}, ${plural(nb.lines, 'line')} (cap ${nb.cap}/shelf)`);
     for (const n of rep.notebooks) {
       const full = n.lines >= n.cap ? '  FULL' : '';
       // Add rate (issue #353): on a full shelf each add evicts a line, so

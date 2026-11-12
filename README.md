@@ -220,7 +220,7 @@ $ nb vote reviewer acf179 +1
 
 ```
 $ nb merge reviewer acf179 "linter first" "run lint before every commit"
-merged two entries into one — 1 lines
+merged two entries into one — 1 line
 
 $ nb show reviewer
 8ddce2  [+2]  run lint before every commit
@@ -315,7 +315,7 @@ When the evicted lessons were never voted, or had fallen back to +1 or below thr
 
 ```
 $ nb move repo-onboarding build-and-test "build/test entry points" --reason consolidate
-moved [+7] build/test entry points — "repo-onboarding" now 2, "build-and-test" now 13 lines
+moved [+7] build/test entry points — "repo-onboarding" now 2 lines, "build-and-test" now 13 lines
 ```
 
 The entry is admitted into the target like a newcomer, so a full target ages and evicts its *stalest other* line, never the lesson you just moved. A move is refused — writing nothing to either shelf — if the source and target are the same shelf, the selector is absent or ambiguous (the same unique-match rule as `vote`/`rm`), or the target already holds a near-duplicate (the same dedup rule as `add`, so a move never creates a duplicate).
