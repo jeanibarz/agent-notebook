@@ -14,7 +14,7 @@ versions are listed plainly.
 ### Added
 
 - **`nb doctor` reports a lesson that appears twice in one shelf (#413).** Two identical lessons in one shelf, which is what a "keep both" git merge leaves, share one id, so no command can select either. `nb doctor` now lists them under the finding code `duplicate-lesson`. `nb doctor --exit-code` therefore exits 3 on a store with such a shelf, where it used to pass.
-- **`nb` says when an over-cap add ages another lesson (#294).** When a shelf goes over its cap, the lesson that has gone longest without a vote loses one point. That used to happen with no output and no log row. `add`, `merge` and `split` now print `(aged stalest −1 → [score] text)` when the aged lesson's score was above +1; `move` prints `(aged stalest in "<target shelf>" −1 → [score] text)`. Every such change is recorded in a new `decayed` column of the usage log (`<id>:<score after>`). `split` now also reports what it evicted.
+- **`nb` says when an over-cap add ages another lesson (#294).** When a shelf goes over its cap, the lesson that has gone longest without a vote loses one point. That used to happen with no output and no record of it in the usage log. `add`, `merge` and `split` now print `(aged stalest −1 → [score] text)` when the aged lesson's score was above +1; `move` prints `(aged stalest in "<target shelf>" −1 → [score] text)`. Every such change is recorded in a new `decayed` column of the usage log (`<id>:<score after>`). `split` now also reports what it evicted.
 - **`--json` returns a structured error when a command fails (#266).** A failing command under `--json` used to write only an English sentence to stderr and nothing to stdout. It now also writes `{ ok: false, command, error: { class, message } }` to stdout, where `class` is the same error class the usage log records; an unknown command uses the class `unknown_subcommand`. When a flag value is invalid and a default is used instead (`stats --since`, `--limit` on `search`/`list`/`stale`), a `{ warning: { class: "defaulted_flag", … } }` line goes to stderr. The English stderr lines and all exit codes are unchanged.
 - `examples/nb-git-wrapper.mjs`: opt-in `NB_GIT_SESSION_TRAILER=1` adds a `Nb-Session: <NB_SESSION>` line to each auto-commit body so history shows which task changed a lesson (#409).
 - **`npm run typecheck` now type-checks the test files and both vitest configs (#382).** A new `tsconfig.test.json` (extends the build config, `noEmit`, `rootDir` at the repo root) covers `src/**/*.test.ts` and `vitest*.config.ts`, which the build's `tsconfig.json` excludes; `typecheck` runs both projects and one CI leg runs it. The 26 errors it surfaced are fixed: nine stale `UsageRow` fixtures now go through one typed `usageRow()` helper, five `@ts-expect-error` directives that asserted nothing are removed, and a declaration file types `scripts/check-node-for-tests.mjs`. `dist/` and the published package are unchanged.
@@ -31,7 +31,7 @@ versions are listed plainly.
   merge-conflict markers, lines without a valid `<score>\t` prefix, control/bidi characters, lessons over
   `NB_MAX_CHARS`, shelves over `NB_MAX_LINES` and 0-byte shelf files, plus case-colliding shelf names,
   leftover `*.tmp` files (older than the stale-lock threshold) and a stale `.nb.lock`. Each finding has a stable `code`. `--json` emits
-  `{schemaVersion, findings}`; `--exit-code` exits 3 when anything is found (same convention as `nb stats`).
+  `{schemaVersion, shelves, findings}`; `--exit-code` exits 3 when anything is found (same convention as `nb stats`).
 - **`nb stats` shows each shelf's add rate, the retention window of a full shelf, and sessions that add in bursts (#353).**
   On a full shelf each add evicts a line, so an untouched lesson lasts about `cap ÷ adds per day`, and nothing
   showed that rate. Each shelf row now prints its accepted adds in the window (`N adds (R/day)`) and, when full,
@@ -63,7 +63,7 @@ versions are listed plainly.
   Two recovery paths each mean a previous `nb` died mid-mutation — the stale-lock steal (`withLock`)
   and the leftover-temp reap (`reapLeftoverTemps`) — yet both were entirely silent, so an operator
   running `nb` from agent hooks could not answer "are my agents crashing mid-write and losing updates?".
-  Each usage row now carries a trailing `recovered` column (`<lockSteals>:<tempReaps>`, blank in the
+  Each usage row now carries a `recovered` column (`<lockSteals>:<tempReaps>`, blank in the
   common case), and `nb stats` sums it window-wide into a new `crashRecovery: { lockSteals, tempReaps }`
   readout — shown as a `crash recovery: N stale locks stolen, M leftover temps reaped (window)` line in
   the human table and under a new top-level `crashRecovery` key in `--json`. Like the usage-ring
@@ -146,7 +146,7 @@ versions are listed plainly.
   `<<<<<<<`/`>>>>>>>` followed by a space or end of line); a mid-line `=======` or an ordinary hand-edited
   tab-less line is still a normal tolerated lesson. Read commands (`show`, `list`, `search`, `stale`) still
   print exactly as before but add one stderr warning naming the shelf and marker (`--json` stdout stays valid
-  JSON, with only the additive `conflicts` field below); the same shelves appear in the additive `conflicts` field of `nb list`/`nb search`
+  JSON, with only the additive fields described next); the same shelves appear in the additive `conflicts` field of `nb list`/`nb search`
   `--json` (emitted, together with `skipped`, only when either of the two is non-empty, so one of them can be `[]`) and of `nb stats --json` (always present, `[]` when clean, like `skipped`). Every mutation (`add`, `vote`, `merge`, `split`, `rm`, `move`,
   `describe`) refuses with exit 1 and a new `corrupt` error class that names the shelf and marker line, leaving
   the file byte-identical. See [FR-MODEL-004](docs/requirements.md#fr-model-004).
@@ -157,7 +157,7 @@ versions are listed plainly.
   lesson into "nb failed". `listNotebooks` and `search` now skip only the unreadable shelf, keep every
   healthy one, and exit `0`; the skip is surfaced as a `{shelf, code}` entry in the additive
   `NotebookListing.skipped` / `SearchResult.skipped` field (emitted in `--json`, together with `conflicts`, only when either of the two is
-  non-empty, so one of them can be `[]` and healthy output is byte-identical) and as one stderr line naming the shelf and errno. The same resilience
+  non-empty, so one of them can be `[]` and healthy output is byte-identical) and, outside `--json`, as one stderr line naming the shelf and errno. The same resilience
   covers the `nb stats` inventory (`StatsReport.skipped`), since a health scan of a damaged store is exactly
   where aborting hurts. Only a real errno failure is skipped — a codeless throw (a parser bug) still
   propagates rather than being mislabelled. A prefix/scope whose only match is the skipped shelf reports it
@@ -277,10 +277,10 @@ versions are listed plainly.
   collide on `index.lock`. The lock is fail-open and guards no lesson write — a git or lock problem
   never fails or loses a lesson. One commit per change, with an accurate message.
 - **`nb search` rejects a third operand and no longer logs a mistyped shelf prefix as a missing lesson (#402).** An unquoted two-word query (`nb search flaky test`) read the second word as a shelf prefix, reported no match although the lesson existed, and logged a false coverage gap. A third operand now exits 1 with `bad_args`, and a prefix that matches no shelf is logged with the outcome `no-shelf` instead of `no-match`.
-- **`nb stats` says when `--since` reaches further back than the usage log retains (#406).** The usage log keeps a fixed number of rows, not a span of time, so on a busy store `--since 30d` can cover only the last few days. The report now adds a line `usage log reaches back only …` when the window is longer than what is recorded.
+- **`nb stats` says when `--since` reaches further back than the usage log retains (#406).** The usage log keeps a fixed number of rows, not a span of time, so on a busy store `--since 30d` can cover only the last few days. The report now adds a line `usage log reaches back only …` when the log is at its row cap and its oldest row is newer than the start of the window.
 - **A stray `*.md` file with an invalid shelf name no longer breaks every cross-shelf command (#369).** A file such as `review copy.md` in the notebooks directory made `nb list`, `nb search` and `nb stats` exit 1 for every shelf. Those commands now skip the file and report it, and `nb doctor` lists it under the finding code `invalid-name`. Naming such a shelf directly is still a `bad_args` error.
 - **Unicode Tag characters and the soft hyphen are stripped from lessons (#374).** These invisible characters (U+E0000–U+E007F and U+00AD) passed the earlier control-character filter (#335); they are now removed on write, and `nb doctor` flags a stored lesson that contains them.
-- **`nb doctor` escapes file names read from disk (#410).** A file name containing an escape sequence reached the terminal as-is, and one containing a newline forged extra finding rows. The human output of `nb doctor`, and the "skipped file" lines that `nb list`, `nb search` and `nb stats` write to stderr, now show such characters as visible `\uXXXX` or `\u{XXXXX}` escapes; `--json` output is unchanged.
+- **`nb doctor` escapes file names read from disk (#410).** A file name containing an escape sequence reached the terminal as-is, and one containing a newline forged extra finding rows. The human output of `nb doctor`, and the "skipped file" lines that `nb list`, `nb search` and `nb stats` write to stderr, now show such characters as visible escapes: `\uXXXX`, or `\u{XXXXX}` for a Tag character, and a newline, tab or carriage return inside a quoted file name appears as `\n`, `\t` or `\r`. No raw control character reaches the terminal; `--json` output is unchanged.
 - **`nb stats` counts a batch vote once per lesson in the surfacing metrics (#373).** `nb vote <shelf> <id1,id2,…> +1` was counted as one vote, so the surfacing metrics were wrong for the voting form `nb show` recommends.
 - **The `loop` and `went-silent` anomalies no longer fire on a healthy store (#372).** `loop` now groups calls by session, so several agents each making one call are not reported as one stuck agent, and `went-silent` ignores rows for a mistyped command name. This matters most to `nb stats --exit-code`, which exits 3 on any anomaly.
 - **`nb stats` honors the `--` terminator (#302).** `nb stats -- --json` still printed JSON because `stats` re-read the raw arguments; it now uses the same option parsing as the other commands.
