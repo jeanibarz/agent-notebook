@@ -266,7 +266,8 @@ notes:
     mis-aimed), and failed-search (a search returned nothing and a lesson was then added in the
     same session — the coverage gap that search just exposed), and add-burst (one session accepted
     more than NB_ADD_BURST_N adds into one shelf — on a full shelf that shortens how long the other
-    lessons survive). Each shelf row also shows its adds and, when full, ~retention (cap ÷ adds/day). They need \`NB_SESSION\` set to
+    lessons survive). Each shelf row also shows its adds and, when full, ~retention (cap ÷ adds/day: the most
+    time an unvoted lesson gets). They need \`NB_SESSION\` set to
     attribute calls to a session; \`--json\` includes them as \`signals[]\` in the StatsReport.
   - \`nb stats\` also reports the named *surfacing metrics* (as \`surfacing\` in the StatsReport):
     coverage (novel-add rate), recall-miss (dedup-block rate — the headline alarm: a stored lesson
@@ -2559,7 +2560,9 @@ function renderStats(rep: StatsReport, shelf: string | undefined): string {
     for (const n of rep.notebooks) {
       const full = n.lines >= n.cap ? '  FULL' : '';
       // Add rate (issue #353): on a full shelf each add evicts a line, so
-      // `cap ÷ adds/day` is how long an untouched lesson survives. Shown for every
+      // `cap ÷ adds/day` is the most an unvoted lesson gets (a vote buys more
+      // time: each point is one more dock the lesson can absorb, issue #437).
+      // Shown for every
       // shelf (0 adds is "measured, quiet", DP-5); the window estimate only when full.
       const rate = `${n.adds} add${n.adds === 1 ? '' : 's'} (${n.addsPerDay}/day)`;
       const keep = n.retentionDays !== null ? `, ~${n.retentionDays}d retention` : '';

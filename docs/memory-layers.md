@@ -127,7 +127,8 @@ the exit code.
 
 A full shelf (50 lessons by default) makes room for a moved lesson in two steps.
 It **evicts its lowest-scored lesson** (the stalest one if scores tie), then
-**lowers the score of the stalest lesson that remains by one point**. The moved
+**lowers the score of the stalest lesson that remains by one point** and sends
+that lesson to the end of the file. The moved
 lesson is always admitted, even if it scores below everything already there. So
 moving a mediocre lesson into a full shelf can push out a better one. Before
 promoting into a shelf that may be full, look at what would go:

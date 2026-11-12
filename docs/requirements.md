@@ -39,9 +39,9 @@ One definition per term, used identically in requirements, code, and tests.
 | **Entry** | One lesson = one line `"<score>\t<text>"`. The in-memory shape is `{ score: number; text: string }`. |
 | **Lesson** / **text** | The single-line content of an entry, at most `maxChars` characters, no tab/newline. |
 | **Score** | A signed integer: the running sum of +1/-1 votes on an entry. |
-| **File order** / **recency order** | The order entries physically appear in the file — least-recently-*touched* first. A *touch* (a vote of either sign, an add, or a merge/split's new lesson) moves its entry to the end, so the top of the file is the stalest entry. |
+| **File order** / **recency order** | The order entries physically appear in the file — least-recently-*touched* first. A *touch* (a vote of either sign, an add, or a merge/split's new lesson) moves its entry to the end, and so does the staleness dock, so the top of the file is the **stalest** entry: the one that has gone longest since it was touched or docked. |
 | **Touch** | An engagement with a specific entry that refreshes its recency: a `vote` (±1), an `add`, or the new lesson(s) a `merge`/`split` creates. A read (`show`/`search`) is not a touch. |
-| **Display order** | The order `nb show` / `render` presents entries: score descending, ties broken by ascending file order (stalest / least-recently-touched first). |
+| **Display order** | The order `nb show` / `render` presents entries: score descending, ties broken by ascending file order (stalest first: least recently touched or docked). |
 | **Stable id** | A 6-hex-character identifier derived from an entry's deduped text (`entryId`), not its position. |
 | **Dedup key** | The case-, punctuation-, and whitespace-insensitive normal form of a text (`dedupKey`), used for duplicate detection and the stable id. |
 | **Selector** | The argument to `vote`/`rm`/`merge`/`split` that identifies an entry: a stable id (exact or unique prefix) or a unique case-insensitive text substring. |
@@ -50,7 +50,7 @@ One definition per term, used identically in requirements, code, and tests.
 | **Description** | The `# desc:` metadata value: a one-line *trigger* ("the situation in which you should open me") that lets an agent decide whether to open a notebook without reading its lessons. Set/printed with `nb describe` (see [FR-DESC-002](#fr-desc-002)). |
 | **Cap** | `maxLines` (max entries per notebook) and `maxChars` (max characters per lesson). |
 | **Eviction** | Removing the lowest-scored entry (ties: stalest) when the notebook exceeds `maxLines`. The newcomer is never the one removed. |
-| **Staleness decay** / **aging** | Docking one point from the stalest surviving entry each time a full notebook accepts a new lesson, so a once-upvoted lesson that goes quiet eventually becomes evictable (see [eviction-and-aging.md](./eviction-and-aging.md)). |
+| **Staleness decay** / **aging** | Docking one point from the stalest surviving entry, and moving that entry to the end of the file, each time a full notebook accepts a new lesson. A once-upvoted lesson that goes quiet eventually becomes evictable, and a run of adds docks the quiet lessons in turn instead of one lesson many times (see [eviction-and-aging.md](./eviction-and-aging.md)). |
 | **Usage ring** | A bounded append-only log of CLI calls (`.nb-usage.log`) that `nb stats` reads. |
 
 ---
@@ -80,7 +80,9 @@ as an unambiguous field separator. Multi-line notes are a non-goal.
 ### DP-3: Storage order is recency order; display order is by score — **Must**
 The notebook file SHALL be stored in **recency order** — least-recently-*touched*
 first — with a touch (a `vote` of either sign, an `add`, or a `merge`/`split`'s new
-lesson) moving its entry to the END of the file. Sorting by score SHALL happen only
+lesson) moving its entry to the END of the file. The staleness dock of
+[FR-ADD-006](#fr-add-006) SHALL move the docked entry to the END as well, after the
+newcomer(s) of the same call. Sorting by score SHALL happen only
 at read/display time (`render`, `nb show`), and the injected/printed view SHALL be
 score-descending with ties broken by ascending file order (stalest first).
 **Rationale:**
@@ -91,6 +93,10 @@ score-descending with ties broken by ascending file order (stalest first).
   FIFO trap, where a frequently-reused lesson looks as old as a dead one. The top of
   the file is therefore the stalest lesson, which is what the staleness-decay and the
   eviction tie-break act on.
+- The dock moves its entry too (issue #437). Left in place, the docked entry stayed
+  the stalest and took every following dock until it was evicted, so one session
+  adding a few lessons could remove a well-voted lesson. Moved, each add docks the
+  next quiet lesson in turn, and file order reads "longest since touched or docked".
 - The cost: a `vote` is now a line *move* (a delete + an append, which git renders as
   a ~2-line move) rather than a 1-line in-place edit. This is the one diff cost the
   design accepts; everything else stays a small diff, and git is not required at all
@@ -99,7 +105,7 @@ score-descending with ties broken by ascending file order (stalest first).
   (older = staler, a fair prior), and an older binary still reads a reordered file
   (it ranks by score and addresses entries by content id ([DP-4](#dp-4))).
 A raw `cat` of the file therefore looks unordered; read it with `nb show`.
-*Proven by:* `notebook.test.ts` → `describe('display ordering ("moving" an entry)')` and the recency/aging tests under `describe('caps')`.
+*Proven by:* `notebook.test.ts` → `describe('display ordering ("moving" an entry)')` and the recency/aging tests under `describe('caps')`, including "the docked line moves to the end of the file, after the newcomer (#437)".
 
 <a id="dp-4"></a>
 ### DP-4: Entry identity is content-derived and stable — **Must**
@@ -246,12 +252,19 @@ and the CLI SHALL report the extra count (issue #306). (See [eviction-and-aging.
 **FR-ADD-006 (Must).** A newcomer SHALL always be admitted — there is no
 `rejected-full`. When the notebook is full, after the eviction of
 [FR-ADD-005](#fr-add-005) the stalest surviving entry (the topmost non-newcomer)
-SHALL be docked one point (**staleness decay / aging**). This runs *after*
-eviction, so the dock never flips which entry is lowest. The decay is what prevents
-a once-upvoted lesson from being immortal: it drifts to the top as fresher lessons
-are touched and loses a point per add until it is re-voted (moved back to fresh) or
-evicted. Decay fires ONLY when a notebook is over cap; a sub-cap notebook is
+SHALL be docked one point (**staleness decay / aging**) and SHALL be moved to the
+END of the file, after the newcomer. This runs *after* eviction, so the dock never
+flips which entry is lowest. The decay is what prevents a once-upvoted lesson from
+being immortal: it drifts to the top as fresher lessons are touched or docked, loses
+a point, and goes to the back; with no vote it reaches the bottom score and is
+evicted. Because the docked entry moves, an entry SHALL NOT be docked again until
+every other entry that was present at its previous dock has been docked, voted on,
+or removed (issue #437): a run of adds takes its points from the quiet lessons in
+turn. The same rule applies to the dock a `merge`, `split` or
+`move` causes. Decay fires ONLY when a notebook is over cap; a sub-cap notebook is
 untouched. *(See [DP-1](#dp-1), [DP-3](#dp-3).)*
+
+*Proven by:* `notebook.test.ts` → `describe('caps')` → "the docked line moves to the end of the file, after the newcomer (#437)", "a move into a full shelf and a split of a full shelf also send the docked line to the end (#437)", "a merge that overflows a lowered cap also sends the docked line to the end (#437)", "a run of unrelated adds docks each proven lesson once before it evicts a second one (#414, #437)", "40 unrelated adds into 20 stale +4 lessons and 30 unvoted ones evict none of the 20 (#437)", "each extra point buys an untouched lesson another pass of the decay (#437)" and "randomized: a lesson is docked again only after the decay has passed over the rest of the shelf [slow]".
 
 <a id="fr-add-007"></a>
 **FR-ADD-007 (Should).** On the CLI, a lesson operand of `-` SHALL mean "read the
@@ -294,7 +307,7 @@ dissimilar add does not warn".
 | contains a trigram-similar line (≥ `NB_NEAR_DUP`) | same lesson reworded | `added` + advisory | yes, score +1 |
 | `maxChars=30` | 50-char lesson | `too-long` | no |
 | full, mixed scores, newcomer not lowest | new lesson | `added` | yes, lowest evicted |
-| full, every entry outranks newcomer | new lesson | `added` | yes — stalest line aged, lowest evicted |
+| full, every entry outranks newcomer | new lesson | `added` | yes — lowest evicted, stalest survivor aged and moved to the end |
 
 ### 4.3 `vote`
 

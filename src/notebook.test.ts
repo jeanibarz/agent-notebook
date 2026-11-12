@@ -443,10 +443,12 @@ describe('caps', () => {
     expect(texts).toEqual(['middle', 'newcomer', 'useful']);
   });
 
-  // Issue #414: docs/eviction-and-aging.md quotes this sequence. A run of
-  // unrelated adds DOES erode proven lessons that receive no further votes:
-  // each over-cap add evicts one line and docks the stalest survivor by one.
-  test('proven lessons with no further votes are eroded by a run of unrelated adds (#414)', async () => {
+  // Issues #414 and #437: docs/eviction-and-aging.md quotes this sequence. The
+  // aging dock moves the docked line to the fresh end, so a run of unrelated
+  // adds takes one point from each proven lesson in turn. The first add must
+  // evict one of them (every line is proven and the newcomer is protected);
+  // after that none is lost until each has been docked once.
+  test('a run of unrelated adds docks each proven lesson once before it evicts a second one (#414, #437)', async () => {
     process.env.NB_MAX_LINES = '10';
     const originals: string[] = [];
     for (let i = 0; i < 10; i++) {
@@ -459,11 +461,182 @@ describe('caps', () => {
     const survivors: number[] = [];
     for (let i = 0; i < 20; i++) {
       await addEntry(dir, 'burst', `unrelated junk entry ${i} zzq${i}`);
-      const left = readEntries(dir, 'burst').filter((e) => originals.includes(e.text)).length;
+      const now = readEntries(dir, 'burst');
+      const left = now.filter((e) => originals.includes(e.text)).length;
       survivors.push(left);
+      // Through the eleventh add the one line that is not an original is the
+      // newest add: each of the first ten newcomers was evicted by the add that
+      // followed it. The twelfth add evicts an original instead, so the
+      // eleventh newcomer is the first to survive the add that follows it.
+      const others = now.filter((e) => !originals.includes(e.text)).map((e) => e.text);
+      if (i <= 10) expect(others).toEqual([`unrelated junk entry ${i} zzq${i}`]);
+      if (i === 11) expect(others).toEqual(['unrelated junk entry 10 zzq10', 'unrelated junk entry 11 zzq11']);
+      if (i === 8) {
+        // Nine adds in: the nine surviving originals have each lost exactly one point.
+        const scores = readEntries(dir, 'burst').filter((e) => originals.includes(e.text)).map((e) => e.score);
+        expect(scores).toEqual([2, 2, 2, 2, 2, 2, 2, 2, 2]);
+      }
     }
-    expect(survivors).toEqual([9, 9, 8, 8, 7, 7, 6, 6, 5, 5, 4, 4, 3, 3, 2, 2, 1, 1, 0, 0]);
+    expect(survivors).toEqual([9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 8, 8, 7, 7, 6, 6, 5, 5, 4]);
+  }, 30_000);
+
+  // Issue #437: WHERE the docked line lands. It goes to the very end of the
+  // file, after the newcomer, and every other survivor keeps its place.
+  test('the docked line moves to the end of the file, after the newcomer (#437)', async () => {
+    process.env.NB_MAX_LINES = '4';
+    for (const t of ['alpha', 'bravo', 'charlie', 'delta']) await addEntry(dir, 'o', t);
+    for (const t of ['alpha', 'bravo', 'charlie']) await vote(dir, 'o', t, 1); // file: delta+1, alpha+2, bravo+2, charlie+2
+    const r = await addEntry(dir, 'o', 'echo');
+    expect(r.evicted?.text).toBe('delta'); // lowest score
+    expect(r.decayed?.text).toBe('alpha'); // stalest survivor
+    expect(readEntries(dir, 'o')).toEqual([
+      { score: 2, text: 'bravo' },
+      { score: 2, text: 'charlie' },
+      { score: 1, text: 'echo' },
+      { score: 1, text: 'alpha' }, // docked +2 -> +1 and moved after the newcomer
+    ]);
+    // The next add docks the NEXT stalest line (bravo), not alpha again, and
+    // evicts the previous newcomer: it is as low as alpha and now staler.
+    const r2 = await addEntry(dir, 'o', 'foxtrot');
+    expect(r2.evicted?.text).toBe('echo');
+    expect(r2.decayed?.text).toBe('bravo');
+    expect(readEntries(dir, 'o')).toEqual([
+      { score: 2, text: 'charlie' },
+      { score: 1, text: 'alpha' },
+      { score: 1, text: 'foxtrot' },
+      { score: 1, text: 'bravo' },
+    ]);
   });
+
+  test('a move into a full shelf and a split of a full shelf also send the docked line to the end (#437)', async () => {
+    process.env.NB_MAX_LINES = '3';
+    for (const t of ['alpha', 'bravo', 'charlie']) await addEntry(dir, 'to', t);
+    await vote(dir, 'to', 'bravo', 1);
+    await vote(dir, 'to', 'charlie', 1); // file: alpha+1, bravo+2, charlie+2
+    await addEntry(dir, 'from', 'moved lesson');
+    const m = await move(dir, 'from', 'to', 'moved lesson');
+    expect(m.evicted?.text).toBe('alpha');
+    expect(m.decayed?.text).toBe('bravo');
+    expect(readEntries(dir, 'to')).toEqual([
+      { score: 2, text: 'charlie' },
+      { score: 1, text: 'moved lesson' },
+      { score: 1, text: 'bravo' }, // docked, after the moved-in lesson
+    ]);
+    // split: charlie (the stalest) becomes two new lines, both protected. The
+    // shelf is over its cap by one, so 'moved lesson' (lowest score, staler than
+    // bravo) is evicted; the dock falls on the stalest survivor, bravo, which
+    // lands after both halves.
+    const sp = await split(dir, 'to', 'charlie', 'first half of charlie', 'second half of charlie');
+    expect(sp.evicted?.text).toBe('moved lesson');
+    expect(sp.decayed?.text).toBe('bravo');
+    expect(readEntries(dir, 'to')).toEqual([
+      { score: 2, text: 'first half of charlie' },
+      { score: 2, text: 'second half of charlie' },
+      { score: 0, text: 'bravo' },
+    ]);
+  });
+
+  // docs/eviction-and-aging.md §7.2 traces this shelf round by round.
+  test('worked example §7.2: two quiet +3 lessons take the docks in turn; one vote decides which leaves first (#437)', async () => {
+    process.env.NB_MAX_LINES = '4';
+    const seed = async (shelf: string) => {
+      for (const t of ['S', 'T']) {
+        await addEntry(dir, shelf, t);
+        await vote(dir, shelf, t, 1);
+        await vote(dir, shelf, t, 1); // -> +3
+      }
+      await addEntry(dir, shelf, 'u');
+      await addEntry(dir, shelf, 'v');
+    };
+    const file = (shelf: string) => readEntries(dir, shelf).map((e) => `${e.text} ${e.score > 0 ? '+' : ''}${e.score}`).join(' · ');
+    await seed('w');
+    expect(file('w')).toBe('S +3 · T +3 · u +1 · v +1');
+    const rounds: string[] = [];
+    const evictedAt: Record<string, number> = {};
+    for (let n = 1; n <= 9; n++) {
+      const r = await addEntry(dir, 'w', `n${n}`);
+      if (n <= 6) rounds.push(file('w'));
+      if (r.evicted) evictedAt[r.evicted.text] = n;
+    }
+    expect(rounds).toEqual([
+      'T +3 · v +1 · n1 +1 · S +2',
+      'n1 +1 · S +2 · n2 +1 · T +2',
+      'n2 +1 · T +2 · n3 +1 · S +1',
+      'n3 +1 · S +1 · n4 +1 · T +1',
+      'n4 +1 · T +1 · n5 +1 · S 0',
+      'T +1 · n5 +1 · n6 +1 · n4 0',
+    ]);
+    expect(evictedAt.S).toBe(6);
+    expect(evictedAt.T).toBe(8);
+    // The same shelf, with one upvote on S after round 3.
+    await seed('x');
+    const evictedAtX: Record<string, number> = {};
+    for (let n = 1; n <= 9; n++) {
+      const r = await addEntry(dir, 'x', `n${n}`);
+      if (r.evicted) evictedAtX[r.evicted.text] = n;
+      if (n === 3) await vote(dir, 'x', 'S', 1); // +1 -> +2
+    }
+    expect(evictedAtX.T).toBe(7);
+    expect(evictedAtX.S).toBe(9);
+  });
+
+  test('a merge that overflows a lowered cap also sends the docked line to the end (#437)', async () => {
+    process.env.NB_MAX_LINES = '4';
+    for (const t of ['quiet one', 'quiet two', 'first half', 'second half']) await addEntry(dir, 'mg', t);
+    for (const t of ['first half', 'second half', 'quiet one', 'quiet two']) await vote(dir, 'mg', t, 1);
+    // file: first half+2, second half+2, quiet one+2, quiet two+2
+    process.env.NB_MAX_LINES = '2';
+    const m = await merge(dir, 'mg', 'first half', 'second half', 'both halves together');
+    expect(m.evicted?.text).toBe('quiet one');
+    expect(m.decayed?.text).toBe('quiet two');
+    expect(readEntries(dir, 'mg').map((e) => e.text)).toEqual(['both halves together', 'quiet two']); // docked line after the merged one
+    expect(readEntries(dir, 'mg')[1].score).toBe(1);
+  });
+
+  // Issue #437: docs/eviction-and-aging.md quotes these numbers. On a shelf that
+  // also holds unvoted lessons, a run of adds evicts those (lowest score first)
+  // and takes points from the proven ones without evicting any of them.
+  test('40 unrelated adds into 20 stale +4 lessons and 30 unvoted ones evict none of the 20 (#437)', async () => {
+    process.env.NB_MAX_LINES = '50';
+    const proven: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const t = `proven alpha${i} widget${i} about gamma${i}`;
+      proven.push(t);
+      await addEntry(dir, 'mix', t);
+    }
+    for (let k = 0; k < 3; k++) await voteMany(dir, 'mix', proven.map((t) => entryId(t)), 1); // each -> +4
+    for (let i = 0; i < 30; i++) await addEntry(dir, 'mix', `unvoted beta${i} thing${i} delta${i}`);
+    for (let i = 0; i < 40; i++) await addEntry(dir, 'mix', `junk zeta${i} blob${i} omega${i}`);
+    const after = readEntries(dir, 'mix');
+    const left = after.filter((e) => proven.includes(e.text));
+    expect(left).toHaveLength(20); // none of the proven lessons was evicted
+    expect(left.reduce((sum, e) => sum + e.score, 0)).toBe(50); // 80 points before; 30 docked
+    expect(Math.max(...left.map((e) => e.score)) - Math.min(...left.map((e) => e.score))).toBeLessThanOrEqual(1); // spread evenly
+    expect(after.filter((e) => e.text.startsWith('unvoted')).length).toBe(0); // the unvoted lessons paid
+    expect(after.filter((e) => e.text.startsWith('junk')).length).toBe(30); // and so did ten of the forty adds
+  }, 30_000);
+
+  // Issue #437: docs/eviction-and-aging.md quotes these numbers (G3). One lesson
+  // is voted to a score and then left alone on a full shelf of unvoted lessons
+  // that keeps taking unrelated adds. Find the add that evicts it. About 210
+  // durable writes, so it carries its own timeout.
+  test('each extra point buys an untouched lesson another pass of the decay (#437)', async () => {
+    process.env.NB_MAX_LINES = '10';
+    const evictedByAdd = async (shelf: string, score: number): Promise<number> => {
+      for (let i = 0; i < 9; i++) await addEntry(dir, shelf, `filler eta${i} item${i} theta${i}`);
+      await addEntry(dir, shelf, 'the watched lesson');
+      for (let k = 1; k < score; k++) await vote(dir, shelf, 'the watched lesson', 1);
+      for (let n = 1; n <= 200; n++) {
+        await addEntry(dir, shelf, `junk iota${n} lump${n} kappa${n}`);
+        if (!readEntries(dir, shelf).some((e) => e.text === 'the watched lesson')) return n;
+      }
+      return -1;
+    };
+    expect(await evictedByAdd('s1', 1)).toBe(10);
+    expect(await evictedByAdd('s2', 2)).toBe(19);
+    expect(await evictedByAdd('s4', 4)).toBe(37);
+    expect(await evictedByAdd('s10', 10)).toBe(91);
+  }, 60_000);
 
   test('a downvoted line is evicted before useful ones', async () => {
     process.env.NB_MAX_LINES = '2';
@@ -505,8 +678,9 @@ describe('caps', () => {
     for (let i = 0; i < 4; i++) await vote(dir, 'r', 'stale high', 1); // -> +5
     await addEntry(dir, 'r', 'filler lesson'); // notebook now full at +5 / +1
     // Under plain eviction a +5 lesson is immortal (newcomers enter at +1 and are
-    // always the lowest). The per-add staleness dock on the stalest survivor pulls
-    // it down one point each add until it finally reaches the bottom and is evicted.
+    // always the lowest). The staleness dock on the stalest survivor pulls it down
+    // until it reaches the bottom and is evicted. With a cap of 2 it is the only
+    // line that is not a newcomer, so here it is docked on every add.
     let evictedStale = false;
     for (let i = 0; i < 6 && !evictedStale; i++) {
       const r = await addEntry(dir, 'r', `newcomer number ${i}`);
@@ -530,6 +704,9 @@ describe('caps', () => {
     expect(byText.ccc).toBe(0);
     expect(byText.aaa).toBe(2);
     expect(byText.ddd).toBe(1);
+    // Stored order (the worked example of docs/eviction-and-aging.md §7.1): the
+    // aged line goes last, after the newcomer.
+    expect(readEntries(dir, 'g').map((e) => e.text)).toEqual(['aaa', 'ddd', 'ccc']);
   });
 
   test('an add under the cap neither evicts nor decays (issue #293)', async () => {
@@ -721,7 +898,9 @@ describe('caps', () => {
   //   4. when an add evicts from a full notebook: the evicted line is the
   //      lowest-scored one, ties broken by staleness (topmost in storage order);
   //      EXACTLY ONE surviving non-protected line — the stalest survivor — is
-  //      docked EXACTLY ONE point; every other survivor is unchanged;
+  //      docked EXACTLY ONE point; every other survivor is unchanged; the docked
+  //      line is moved to the very end, after the newcomer, and the other
+  //      survivors keep their relative order (issue #437);
   //   5. a vote applies ±delta to its target and moves it to the fresh end — the
   //      recency signal the staleness targeting in (4) is built on.
   // [slow]: ~19s of durable fsync writes (300 sequences × 6 ops). Tagged so the
@@ -813,6 +992,15 @@ describe('caps', () => {
               }
             }
             expect(docked).toBe(1); // exactly one survivor docked
+
+            // Order oracle (issue #437): the file is the other survivors in their
+            // old order, then the newcomer, then the docked line.
+            const expectedOrder = before
+              .filter((e) => e.text !== res.evicted!.text && e.text !== expectedDock?.text)
+              .map((e) => e.text)
+              .concat(text, expectedDock ? [expectedDock.text] : []);
+            expect(after.map((e) => e.text)).toEqual(expectedOrder);
+            expect(res.decayed?.text).toBe(expectedDock?.text);
           }
         }
 
@@ -826,6 +1014,67 @@ describe('caps', () => {
     // many times; a run that never filled a notebook would satisfy invariant 4
     // vacuously. This floor fails such a degenerate run loudly.
     expect(evictionsSeen).toBeGreaterThan(100);
+  }, 120_000);
+
+  // Issue #437, goal G6 of docs/eviction-and-aging.md, as an invariant: a lesson
+  // is not docked a second time until every other lesson that was on the shelf
+  // at its previous dock has since been docked, voted on, or removed. So a run
+  // of adds cannot single one lesson out. The oracle keeps, for each docked
+  // lesson, the set of lessons that were present at that dock and have not been
+  // docked, voted or evicted since; the set must be empty when it is docked again.
+  // A vote on the docked lesson itself does not reset its set: the vote only
+  // moves it further back, so the lessons it was behind are still ahead of it.
+  // Longer sequences than the sweep above, and mostly upvotes, so lessons live
+  // long enough to be docked several times.
+  // [slow]: ~600 durable writes.
+  test('randomized: a lesson is docked again only after the decay has passed over the rest of the shelf [slow]', async () => {
+    const mulberry32 = (seed: number) => {
+      let a = seed >>> 0;
+      return () => {
+        a = (a + 0x6d2b79f5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    };
+    let repeatDocks = 0; // guard against a vacuous run
+    for (let seq = 0; seq < 12; seq++) {
+      const rng = mulberry32(0xd0c4 + seq);
+      const cap = 3 + Math.floor(rng() * 4); // 3..6
+      process.env.NB_MAX_LINES = String(cap);
+      const shelf = `pass${seq}`;
+      let counter = 0;
+      // text of a docked lesson -> the lessons still "ahead of it" since that dock
+      const ahead = new Map<string, Set<string>>();
+      // `text` no longer stands ahead of anyone (it was docked, voted or evicted).
+      const passed = (text: string) => {
+        for (const set of ahead.values()) set.delete(text);
+      };
+      for (let op = 0; op < 50; op++) {
+        const before = readEntries(dir, shelf);
+        if (before.length > 0 && rng() < 0.45) {
+          const target = before[Math.floor(rng() * before.length)];
+          await vote(dir, shelf, entryId(target.text), rng() < 0.85 ? 1 : -1);
+          passed(target.text); // a voted lesson moves to the end: it is ahead of nobody
+          continue;
+        }
+        const res = await addEntry(dir, shelf, `lesson ${seq}-${counter++}`);
+        for (const e of res.evictedAll) {
+          passed(e.text);
+          ahead.delete(e.text);
+        }
+        if (!res.decayed) continue;
+        const docked = res.decayed.text;
+        const pending = ahead.get(docked);
+        if (pending) {
+          repeatDocks++;
+          expect([...pending]).toEqual([]); // nobody it was behind is still waiting
+        }
+        passed(docked);
+        ahead.set(docked, new Set(readEntries(dir, shelf).map((e) => e.text).filter((t) => t !== docked)));
+      }
+    }
+    expect(repeatDocks).toBeGreaterThan(20);
   }, 120_000);
 });
 

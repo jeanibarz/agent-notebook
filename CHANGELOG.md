@@ -9,6 +9,10 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Changed
+
+- **A run of adds no longer drains one voted lesson (#437).** When a full shelf takes a new lesson it still evicts its lowest-scored line and docks the stalest survivor by one point, but the docked lesson now moves to the end of the file, as it does after a vote. Before, it stayed at the top and took every following dock until it was evicted, so a +4 lesson that nobody had voted for lately could be removed by one session adding four lessons. Now each add docks the next quiet lesson in turn (with a cap of 2 there is only one), and a lesson is docked again only after the aging has passed over the rest of the shelf. With a cap of ten, ten lessons at +3 and twenty unrelated adds, nine survive the first eleven adds (before: one lost every two adds, none left after twenty). The cap is fixed, so unvoted lessons leave sooner: on a shelf where every other lesson is voted well above +1, in a run of adds with no votes between them, a new lesson is evicted by the add that follows it, unless a quiet lesson had already been worn down to +1 when it arrived (so the first ten new lessons go, in the example above). The line format and the commands are unchanged; right after it is aged, a line appears last within its score in `nb show`. See [eviction-and-aging.md](docs/eviction-and-aging.md), [DP-3](docs/requirements.md#dp-3) and [FR-ADD-006](docs/requirements.md#fr-add-006).
+
 ## [0.8.0] - 2026-11-12
 
 ### Added
