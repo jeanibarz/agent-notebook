@@ -59,9 +59,8 @@ enter, nothing ever aging out.
 - **G5 — Decay the *stale*, spare the *active*.** Pressure should fall on lessons
   that have gone quiet, not on ones still being used.
 - **G6 — Bounded blast radius.** A run of adds must not single out a proven
-  lesson. Each add to a full shelf costs the shelf one line and one point. The
-  evictions fall on the lowest-scored lines first, and no lesson loses a second
-  point until the decay has passed over every other lesson that was on the shelf
+  lesson. The evictions fall on the lowest-scored lines first, and no lesson
+  loses a second point until the decay has passed over every other lesson that was on the shelf
   when it lost the first: each of them has since been docked, voted on, or
   removed.
 
@@ -90,8 +89,8 @@ a recency signal.
 
 The policy in §6 does take turns, like the round-robin above, but over the
 recency order of §5 and not over a fixed one: a vote takes a lesson out of its
-turn, so an active lesson is never docked. That is the part a plain round-robin
-cannot do.
+turn, so a lesson that keeps being voted is passed over. That is the part a
+plain round-robin cannot do.
 
 ## 5. The decision: storage order *is* the recency signal
 
@@ -106,7 +105,7 @@ instead (classic LRU layout):
   vote; otherwise recency would mean nothing).
 - **The aging dock of §6 also moves its line to the end.** A dock is not an
   engagement, but a lesson that has just paid a point goes to the back of the
-  queue, so the next dock falls on a different lesson (§6, step 3).
+  queue, so the next dock falls on the next lesson in line (§6, step 3).
 - **Therefore the top of the file is the stalest lesson** — the one that has
   gone longest since anyone engaged it or since it last paid a point — and the
   bottom is the freshest. "Stalest" means this everywhere below.
@@ -210,9 +209,11 @@ flowchart TD
 - **G3:** eviction still removes the lowest score first, so a hard-earned lesson is
   the last to go, and each point buys a quiet lesson another pass of the decay.
   With a cap of ten, on a shelf of unvoted lessons that keeps taking unrelated
-  adds, a lesson that nobody touches again is evicted by the 10th add at +1, the
-  19th at +2, the 37th at +4 and the 91st at +10 (pinned by a test in
-  `src/notebook.test.ts`).
+  adds and where nothing else is voted, a lesson is evicted by the 10th add
+  after its last touch at +1, the 19th at +2, the 37th at +4 and the 91st at +10
+  (pinned by a test in `src/notebook.test.ts`). Votes on other lessons shorten
+  a pass, so these are the figures for a shelf with no other votes, not a
+  minimum.
 - **G5:** decay targets the *stalest* line (recency), so an actively-used high
   lesson is spared while a quiet one is not — the targeting score-alone could not
   do.
@@ -253,16 +254,16 @@ bounded (C4) because decay pulls the top down as votes push it up.
 Two more costs came with moving the docked line (issue #437, which measured
 them on a live store). The cap is fixed, so every proven lesson that is kept
 longer is an unvoted one evicted sooner. This weakens G1 on a shelf where every
-other lesson is voted well above +1: a newcomer there is evicted by the add
-that follows it, unless a quiet lesson had already been worn down to the bottom
-score when it arrived (so the first ten newcomers go, in the second pinned case
-under G6). And file order is no longer a pure
+other lesson is voted well above +1. In a run of adds with no votes between
+them, a newcomer there is evicted by the add that follows it, unless a quiet
+lesson had already been worn down to the bottom score when it arrived (so the
+first ten newcomers go, in the second pinned case under G6). And file order is no longer a pure
 record of engagement: a lesson near the end of the file was either engaged
 recently or docked recently.
 
 ### The retention window is set by the add rate
 
-Because eviction and aging fire once per add, a full shelf turns over at the pace of adds. A lesson that nobody votes for lasts about `cap ÷ adds per day` at most: that is the time the shelf takes to bring in `cap` new lines. A lesson voted above the lowest score on its shelf lasts longer, since each point buys it another pass of the decay (the G3 figures above). `nb stats` shows each shelf's accepted adds and, for a full shelf, that estimate, and flags a session that adds in a burst (`add-burst`). Read the estimate as the most time a new lesson has to earn its first vote; it gets less on a shelf where most lessons are voted, because the unvoted ones are evicted first. If the window is shorter than you want, the first remedy is fewer adds per session; only then divide the shelf or raise `NB_MAX_LINES`.
+Because eviction and aging fire once per add, a full shelf turns over at the pace of adds. A lesson that nobody votes for lasts about `cap ÷ adds per day` at most: that is the time the shelf takes to bring in `cap` new lines. A vote buys a lesson time: each point is one more pass of the decay it can absorb before it reaches the bottom score (the G3 figures above, which are for a shelf with no other votes). A vote on another lesson can shorten a pass, so on a busy shelf a voted lesson can still leave within `cap` adds. `nb stats` shows each shelf's accepted adds and, for a full shelf, that estimate, and flags a session that adds in a burst (`add-burst`). Read the estimate as the most time a new lesson has to earn its first vote; it can get much less on a shelf where most lessons are voted, because the unvoted ones are evicted first. If the window is shorter than you want, the first remedy is fewer adds per session; only then divide the shelf or raise `NB_MAX_LINES`.
 
 ## 7. Worked examples
 
@@ -307,9 +308,8 @@ newcomer enters at +1 and is always lower. Here `S` leaves at round 6, after
 three docks, and `T` two rounds later.
 
 **A single `vote S +1` changes the outcome.** Cast after round 3, it lifts `S`
-from +1 back to +2. `S` then outlives `T` and is not evicted until round 9. A
-lesson that keeps earning votes never reaches the bottom; only *silence*
-retires it.
+from +1 back to +2. `S` then outlives `T` and is not evicted until round 9.
+Votes keep a lesson ahead of the decay; silence lets the decay catch up.
 
 ## 8. What this is NOT
 

@@ -50,7 +50,7 @@ One definition per term, used identically in requirements, code, and tests.
 | **Description** | The `# desc:` metadata value: a one-line *trigger* ("the situation in which you should open me") that lets an agent decide whether to open a notebook without reading its lessons. Set/printed with `nb describe` (see [FR-DESC-002](#fr-desc-002)). |
 | **Cap** | `maxLines` (max entries per notebook) and `maxChars` (max characters per lesson). |
 | **Eviction** | Removing the lowest-scored entry (ties: stalest) when the notebook exceeds `maxLines`. The newcomer is never the one removed. |
-| **Staleness decay** / **aging** | Docking one point from the stalest surviving entry, and moving that entry to the end of the file, each time a full notebook accepts a new lesson. A once-upvoted lesson that goes quiet eventually becomes evictable, and a run of adds docks many quiet lessons once instead of one lesson many times (see [eviction-and-aging.md](./eviction-and-aging.md)). |
+| **Staleness decay** / **aging** | Docking one point from the stalest surviving entry, and moving that entry to the end of the file, each time a full notebook accepts a new lesson. A once-upvoted lesson that goes quiet eventually becomes evictable, and a run of adds docks the quiet lessons in turn instead of one lesson many times (see [eviction-and-aging.md](./eviction-and-aging.md)). |
 | **Usage ring** | A bounded append-only log of CLI calls (`.nb-usage.log`) that `nb stats` reads. |
 
 ---
@@ -259,8 +259,8 @@ being immortal: it drifts to the top as fresher lessons are touched or docked, l
 a point, and goes to the back; with no vote it reaches the bottom score and is
 evicted. Because the docked entry moves, an entry SHALL NOT be docked again until
 every other entry that was present at its previous dock has been docked, voted on,
-or removed (issue #437): a run of adds takes one point from many quiet lessons and
-does not drain one of them. The same rule applies to the dock a `merge`, `split` or
+or removed (issue #437): a run of adds takes its points from the quiet lessons in
+turn. The same rule applies to the dock a `merge`, `split` or
 `move` causes. Decay fires ONLY when a notebook is over cap; a sub-cap notebook is
 untouched. *(See [DP-1](#dp-1), [DP-3](#dp-3).)*
 

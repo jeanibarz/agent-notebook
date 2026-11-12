@@ -522,12 +522,18 @@ describe('caps', () => {
       { score: 1, text: 'moved lesson' },
       { score: 1, text: 'bravo' }, // docked, after the moved-in lesson
     ]);
-    // split: charlie (the stalest) becomes two new lines; both are protected, so
-    // the dock falls on the stalest OTHER line and lands after both halves.
+    // split: charlie (the stalest) becomes two new lines, both protected. The
+    // shelf is over its cap by one, so 'moved lesson' (lowest score, staler than
+    // bravo) is evicted; the dock falls on the stalest survivor, bravo, which
+    // lands after both halves.
     const sp = await split(dir, 'to', 'charlie', 'first half of charlie', 'second half of charlie');
+    expect(sp.evicted?.text).toBe('moved lesson');
     expect(sp.decayed?.text).toBe('bravo');
-    const after = readEntries(dir, 'to').map((e) => e.text);
-    expect(after).toEqual(['first half of charlie', 'second half of charlie', 'bravo']);
+    expect(readEntries(dir, 'to')).toEqual([
+      { score: 2, text: 'first half of charlie' },
+      { score: 2, text: 'second half of charlie' },
+      { score: 0, text: 'bravo' },
+    ]);
   });
 
   // docs/eviction-and-aging.md §7.2 traces this shelf round by round.

@@ -12,8 +12,8 @@
 // docked one point and moved to the END (the aging that frees once-useful-now-
 // quiet lessons without needing a downvote to arrive). Moving the docked line
 // spreads the aging: the next add docks the NEXT stalest lesson (when the shelf
-// holds another line that is not a newcomer), so a run of adds takes one point
-// from many quiet lessons instead of draining one of them (issue #437). No embeddings, no scheduler, no decay curve over wall-clock
+// holds another line that is not a newcomer), so a run of adds takes its points
+// from the quiet lessons in turn instead of draining one of them (issue #437). No embeddings, no scheduler, no decay curve over wall-clock
 // time — see docs/eviction-and-aging.md.
 //
 // Everything here is plain fs over one small file under a mkdir spinlock, so
@@ -1118,7 +1118,7 @@ export function readShelf(dir: string, shelf: string): ShelfContents {
  * writes two shelves) falls back to re-reading the existing block from disk under
  * the lock and re-emitting it unchanged. Either way the description round-trips
  * byte-for-byte. The metadata leads the file; the entries follow in recency order
- * — least-recently-touched first, a touch moving its entry to the end ([DP-3]). A
+ * — least-recently-touched-or-docked first, a touch or a dock moving its entry to the end ([DP-3]). A
  * file with metadata but no entries is still written (its block survives an
  * emptied notebook), and only a notebook with neither becomes the empty string.
  */
@@ -1205,14 +1205,14 @@ interface CapResult {
   kept: Entry[];
   /** Entries removed to get back to `maxLines` (empty when nothing was evicted). */
   evicted: Entry[];
-  /** The stalest surviving entry, docked one point by the aging step and moved to the end of `kept`, or `null` when no eviction occurred. Same object as in `kept`, already mutated. */
+  /** The stalest surviving entry, docked one point by the aging step and moved to the end of `kept`, or `null` when nothing was docked (the list was within the cap, or no surviving entry was unprotected). Same object as in `kept`, already mutated. */
   decayed: Entry | null;
 }
 
 /**
  * Enforce the `maxLines` cap after `entries` has grown past it, applying the
  * recency-ordered aging policy (see docs/eviction-and-aging.md). `entries` is in
- * storage order — least-recently-touched first, so index 0 is the stalest — and
+ * storage order — least-recently-touched-or-docked first, so index 0 is the stalest — and
  * the last `protectedCount` entries are the lesson(s) this call just created/
  * touched (a new add, a merge's result, a split's two halves).
  *
@@ -1520,7 +1520,7 @@ export function vote(dir: string, shelf: string, selector: string, delta: number
     const idx = selectIndex(entries, selector);
     entries[idx].score += delta;
     // A vote is a touch: move the entry to the fresh END so storage stays in
-    // recency order (least-recently-touched first). Both signs count — a
+    // recency order (least-recently-touched-or-docked first). Both signs count — a
     // downvote is engagement too. Score is the PRIMARY eviction key, so a low
     // score is what makes a lesson a target; position is only the TIEBREAK, and
     // ties (rows at the +1/0 floor) are common — on a score tie the fresher line
@@ -3007,8 +3007,8 @@ export interface NotebookStat {
   /**
    * Estimated retention window of a FULL shelf, in days: `cap ÷ addsPerDay` — each
    * add to a full shelf evicts one line, so a lesson nobody votes for lasts about
-   * `cap` adds at most. A lesson voted above the shelf's lowest score lasts
-   * longer (each point buys it another pass of the aging dock, issue #437). `null` when the shelf is below its cap or took no
+   * `cap` adds at most. A vote buys more time: each point is one more dock the
+   * lesson can absorb before it reaches the bottom score (issue #437). `null` when the shelf is below its cap or took no
    * adds in the window (no rate to divide by) — never a misleading 0 or Infinity.
    */
   retentionDays: number | null;
