@@ -1378,9 +1378,10 @@ describe('vote', () => {
       'nothing like this', // no match
       '1', // one-char hex: matches zero or several ids, then text
     ];
-    const seed = async (shelf: string) => {
-      for (const l of lessons) await addEntry(dir, shelf, l);
-    };
+    // Build the shelf once and copy the file, so the test stays cheap.
+    for (const l of lessons) await addEntry(dir, 'seed', l);
+    const seeded = readFileSync(join(dir, 'seed.md'), 'utf8');
+    const seed = async (shelf: string) => writeFileSync(join(dir, `${shelf}.md`), seeded);
     // Reference: each selector resolved by the single-selector path on a fresh copy.
     const expected: { text?: string; error?: string }[] = [];
     for (const [k, sel] of selectors.entries()) {
