@@ -3094,7 +3094,7 @@ describe('runNbCli', () => {
       await run(['vote', 's', 'always run the linter before each commit', '+1']);
       const j = await run(['add', 's', 'always run the linter before each commit now']);
       expect(j.err).toContain('nb merge'); // near-match survived: advisory unchanged
-      expect(j.err).not.toContain('evicted:');
+      expect(j.err).not.toContain('this add evicted');
       delete process.env.NB_MAX_LINES;
     });
 
