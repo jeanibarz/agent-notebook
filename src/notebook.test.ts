@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync, readdirSync, chmodSync } from 'node:fs';
+import { describe, test, test as baseTest, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync, readdirSync, chmodSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -6391,5 +6391,51 @@ describe('case-variant shelf guard (#337)', () => {
     await addEntry(dir, 'Foo', 'first');
     await expect(setDescription(dir, 'FOO', 'x')).rejects.toThrow(/differs only by case/);
     expect(readdirSync(dir).filter((n) => n.endsWith('.md'))).toEqual(['Foo.md']);
+  });
+});
+
+describe('rewrites preserve the file mode (issue #459)', () => {
+  // POSIX permission bits only; Windows has no meaningful chmod.
+  const test = process.platform === 'win32' ? baseTest.skip : baseTest;
+  const modeOf = (f: string) => statSync(join(dir, f)).mode & 0o777;
+
+  test.each([0o600, 0o660])('add, vote, describe, merge, split and move keep a %o shelf', async (mode) => {
+    await addEntry(dir, 's', 'first lesson about builds');
+    await addEntry(dir, 's', 'second lesson about tests');
+    await addEntry(dir, 't', 'other shelf lesson');
+    chmodSync(join(dir, 's.md'), mode);
+    chmodSync(join(dir, 't.md'), mode);
+    await addEntry(dir, 's', 'third lesson about lint');
+    expect(modeOf('s.md')).toBe(mode);
+    await vote(dir, 's', 'first', 1);
+    expect(modeOf('s.md')).toBe(mode);
+    await setDescription(dir, 's', 'open when building');
+    expect(modeOf('s.md')).toBe(mode);
+    await merge(dir, 's', 'first', 'second', 'builds and tests merged');
+    expect(modeOf('s.md')).toBe(mode);
+    await split(dir, 's', 'third', 'lint part one', 'lint part two');
+    expect(modeOf('s.md')).toBe(mode);
+    await move(dir, 's', 't', 'lint part one');
+    expect(modeOf('s.md')).toBe(mode);
+    expect(modeOf('t.md')).toBe(mode);
+  });
+
+  test('a newly created shelf keeps the umask default', async () => {
+    const old = process.umask(0o027);
+    try {
+      await addEntry(dir, 'fresh', 'a lesson');
+    } finally {
+      process.umask(old);
+    }
+    expect(modeOf('fresh.md')).toBe(0o640);
+  });
+
+  test('the usage log keeps its mode across a compaction', () => {
+    process.env.NB_USAGE_RING = '100';
+    logUsage(dir, 'p', 'show', true, 1);
+    chmodSync(join(dir, '.nb-usage.log'), 0o600);
+    for (let i = 0; i < 400; i++) logUsage(dir, 'p', 'show', true, 1);
+    expect(parseUsage(dir).length).toBeLessThanOrEqual(120); // it did compact
+    expect(modeOf('.nb-usage.log')).toBe(0o600);
   });
 });

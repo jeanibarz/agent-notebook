@@ -896,6 +896,14 @@ monitoring row is acceptable; losing a lesson is not.)
 lose a lesson the CLI already reported as added. *(Directory-fsync failure is
 tolerated for platforms that disallow it.)*
 
+<a id="fr-dur-002"></a>
+**FR-DUR-002 (Should).** A rewrite of an existing shelf, and the usage log's compaction,
+SHALL preserve the file's permission bits (`mode & 0o777`) on the replacement, so a
+`chmod 600` or group-shared `660` survives the next `add`, `vote`, `describe`, `merge`,
+`split`, `move` or compaction. Owner and group are not preserved. A newly created file
+keeps the process umask default, and a failure to set the mode is non-fatal.
+*Proven by:* `notebook.test.ts` → `describe('rewrites preserve the file mode (issue #459)')`.
+
 ### 4.12 Usage log & stats
 
 <a id="fr-usage-001"></a>
