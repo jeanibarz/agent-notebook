@@ -140,8 +140,11 @@ Rules the tool enforces, so you don't have to guess:
   truncated — rewrite it shorter and complete, don't store a cut-off fragment.
   You can't count characters reliably, so aim for ~150 (one clause, no preamble) to stay
   safely under the cap.
-- **Near-duplicates are skipped.** If a lesson already says it, your `add` is a
-  no-op; that's a signal the notebook already covered you (good), not a failure.
+- **Only identical lessons are skipped.** An `add` whose text matches an existing
+  lesson up to case, punctuation and spacing is a no-op; that's a signal the notebook
+  already covered you (good), not a failure. A merely *reworded* lesson is stored,
+  with a `note: resembles …` on stderr — if you see it, consolidate with `nb merge`
+  instead of keeping both variants, since each paraphrase uses up a line.
 - **A reason is always optional.** Omit it rather than invent one; an unknown
   code is kept as free text, never rejected.
 

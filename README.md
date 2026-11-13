@@ -150,26 +150,34 @@ New here, or wiring it into a real agent? These pick up where the reference belo
 ## Usage
 
 ```
-nb show   <shelf>                        print the notebook (highest-scored first)
-nb stale  <shelf> [--limit N]            list cull candidates to downvote/rm, most disposable first (lowest score, then stalest)
-nb add    <shelf> "<lesson>"             add a lesson (dedup-skipped; rejected if too long, never truncated)
+nb show   <shelf>... [--json]            print one or more notebooks (highest-scored first; --json emits {shelf,description,entries} — a lone object for one shelf, an array for several; each entry carries a dedup key)
+nb stale  <shelf> [--limit N] [--json]   list cull candidates to downvote/rm, most disposable first (lowest score, then stalest; default 10)
+nb add    <shelf> "<lesson>"             add a lesson (exact dup skipped; a near-dup still adds but warns; rejected if too long, never truncated)
 nb add    <shelf> -                      read the lesson from stdin (one line; multi-line is refused)
 nb vote   <shelf> <id|query> +1|-1       upvote/downvote an entry you used
+nb vote   <shelf> <id1,id2,…> +1|-1      batch: vote several ids at once with one delta (one lock, one write)
 nb merge  <shelf> <idA> <idB> "<merged>" consolidate two entries into one
 nb split  <shelf> <id|query> "<a>" "<b>" cut one overloaded entry into two (reverse of merge)
 nb rm     <shelf> <id|query>             delete an entry
 nb move   <from> <to> <id|query>         move an entry to another shelf, keeping its score (consolidate shelves)
-nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print it)
-nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback — scan all notebooks (surfacing is primary)
-nb stats  [<shelf>] [--since 7d] [--json] usage analytics + anomaly/diagnostic flags + surfacing metrics (--json emits the raw StatsReport)
-nb doctor [--json] [--exit-code]  read-only check of the notebooks dir for structural problems (conflict markers, lines without a score, control chars, repeated lessons, case-colliding shelves, over-cap, 0-byte files, leftover temps, stale lock); --exit-code exits 3 if any are found
-nb path   [<shelf> | --usage]            print the notebooks dir, a shelf's resolved file path, or (--usage) the usage-log path
-nb config [--json]                       print the effective (post-clamp) NB_* tunables as name=value (--json: object keyed by name)
-nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lessons, description)
-nb ls / nb shelves                       aliases of `nb list` (`nb roles` still works, deprecated)
-nb completion <bash|zsh>                print a shell-completion script to source (see below)
+nb describe <shelf> ["<text>"]           set the notebook's one-line description (no text → print the current one)
+nb describe <shelf> -                    read the description from stdin (one line; multi-line is refused)
+nb search <query> [prefix] [--any] [--limit N]  SECONDARY keyword fallback — scan all notebooks (surfacing is the primary path)
+nb stats  [<shelf>] [--since 7d] [--json] [--exit-code] usage analytics + anomaly & diagnostic-signal flags (--json emits the raw StatsReport)
+nb doctor [--json] [--exit-code]         read-only check of the notebooks dir for structural problems (conflict markers, lines without a score, control chars, case-colliding shelves, over-cap, 0-byte files, leftover temps, stale lock); --exit-code exits 3 if any are found
+nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's resolved file path (--json emits a {dir, shelf, path} object)
+nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
+nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under `environment`)
+nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
+nb ls     [prefix] [--limit N]          alias of `nb list`
+nb shelves [prefix] [--limit N]         alias of `nb list`
+nb roles  [prefix] [--limit N]          deprecated alias of `nb list` (still works)
+nb completion <bash|zsh>                print a shell-completion script to source (eval "$(nb completion bash)")
 nb --help                               show this help
+nb --version                            print the tool version
 ```
+
+Exit codes: `0` ok, `1` a handled error, `2` an unknown command, `3` a health gate tripped (`nb stats --exit-code` found an anomaly, or `nb doctor --exit-code` found a problem).
 
 Every `show` line starts with a short stable id — pass that id (or a unique prefix, or a unique text substring) to `vote`/`rm`/`merge`/`split`/`move`. An over-long `add` is rejected outright, never silently truncated, so you rewrite it shorter instead of storing a cut-off, useless lesson.
 
@@ -378,7 +386,7 @@ Each of the eight Unicode block glyphs (`▁▂▃▄▅▆▇█`) is one bucke
 `nb stats` also surfaces a handful of **free diagnostic signals** — memory-quality observations read straight from the usage log, costing no new agent action because each is already implied by behaviour the agent performs for its own reasons. They appear in the human table under a `signals:` section and in `--json` as `signals[]` (each a `DiagnosticSignal` = `{ kind, shelf, role, detail, session?, entry? }`). The kinds:
 
 - **browse-without-use** — a notebook was `show`n in a session but nothing in it was voted that session → its description may over-promise (it drew a look that didn't pay off). The human table folds it to one line per shelf with the number of sessions (`shelf s: shown without a vote in 29 sessions`), busiest first; `--json` still lists every (session, shelf) pair.
-- **eviction-while-still-voted** — the cap evicted an entry (`add`'s `evicted` column) that was upvoted in the usage window (and left at 0 or above), or whose score was still above the +1 a new lesson starts at → a lesson agents found useful was lost. One occurrence is normal churn; repeated ones on the same shelf mean the cap is too tight for it (see [A full shelf is the normal state](#a-full-shelf-is-the-normal-state)).
+- **eviction-while-still-voted** — the cap evicted an entry (the `evicted` column of an `add`, `merge` or `split`) that was upvoted in the usage window (and left at 0 or above), or whose score was still above the +1 a new lesson starts at → a lesson agents found useful was lost. One occurrence is normal churn; repeated ones on the same shelf mean the cap is too tight for it (see [A full shelf is the normal state](#a-full-shelf-is-the-normal-state)).
 - **vote-reversal** — the same entry was upvoted in one session and downvoted in another → the lesson may be correct but *mis-aimed* (right in one context, wrong in another).
 - **failed-search** — a [`nb search`](#searching--the-demoted-fallback) returned nothing and a lesson was then `add`ed in the same session → a coverage gap the notebook did not hold, labelled by the agent's own query.
 - **add-burst** — one session accepted more than `NB_ADD_BURST_N` (default 15) adds into a single shelf → on a full shelf each add evicts a line, so the burst shortens how long the other lessons survive. Fix it with fewer, better lessons per session.

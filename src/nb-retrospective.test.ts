@@ -228,7 +228,7 @@ describe('nb-retrospective.sh sentinel TTL prune (issue #165)', () => {
 });
 
 describe('nb-retrospective.sh atomic sentinel claim (issue #245)', () => {
-  test('concurrent stops on one session_id: exactly one blocks, every process exits 0', async () => {
+  test('concurrent stops on one session_id: exactly one blocks, every process exits 0 [timing]', async () => {
     // Parallel subagents share the parent session_id and can stop at once. With
     // a non-atomic existsSync()-then-writeFileSync() claim, several processes
     // could all see the sentinel absent and all emit `block`. The atomic `wx`
@@ -257,7 +257,9 @@ describe('nb-retrospective.sh atomic sentinel claim (issue #245)', () => {
       expect(retros).toContain(`.retro-${session}`);
       expect(retros).toHaveLength(round + 1);
     }
-  });
+    // 3 rounds x 24 real bash+node spawns is ~72 processes: well over Vitest's
+    // 5 s default on a loaded macOS runner (issue #450), so size the timeout for it.
+  }, 30_000);
 
   test('a loser finding the sentinel already present exits 0 without overwriting it', () => {
     // Deterministic companion to the race (whose overlap is timing-dependent):
@@ -279,5 +281,33 @@ describe('nb-retrospective.sh length target (issue #342)', () => {
     expect(reason).toContain('<=200-char lesson');
     expect(reason).toMatch(/aim for ~150 chars/);
     expect(reason).toMatch(/rejected, not truncated/);
+  });
+});
+
+describe('nb-retrospective.sh session_id sanitizing (issue #460)', () => {
+  test('a traversal id never writes outside the sentinel directory', () => {
+    const store = join(dir, 'store');
+    mkdirSync(store);
+    const out = runHook({ session_id: 'x/../../escaped-file' }, { NB_DIR: store });
+    expect(JSON.parse(out).decision).toBe('block');
+    expect(existsSync(join(dir, 'escaped-file'))).toBe(false);
+    expect(readdirSync(store)).toEqual(['.retro-x_.._.._escaped-file']);
+  });
+
+  test('a slash-containing id is nudged once, then later stops pass', () => {
+    expect(JSON.parse(runHook({ session_id: 'a/b' })).decision).toBe('block');
+    expect(runHook({ session_id: 'a/b' }).trim()).toBe('');
+    expect(existsSync(join(dir, '.retro-a_b'))).toBe(true);
+  });
+
+  test('a UUID-shaped id keeps its file name', () => {
+    const id = '123e4567-e89b-12d3-a456-426614174000';
+    runHook({ session_id: id });
+    expect(existsSync(join(dir, `.retro-${id}`))).toBe(true);
+  });
+
+  test('an over-long id is capped to 128 chars', () => {
+    runHook({ session_id: 'a'.repeat(300) });
+    expect(readdirSync(dir)).toEqual([`.retro-${'a'.repeat(128)}`]);
   });
 });

@@ -37,7 +37,7 @@ _nb_complete() {
   # failure are swallowed, so a broken or absent `nb` yields no completions
   # rather than an error.
   local shelves
-  shelves="$(nb list 2>/dev/null | awk '/^[[:space:]]/ {print $1}')" || return 0
+  shelves="$(nb list --limit 1000000 2>/dev/null | awk '/^[[:space:]]/ {print $1}')" || return 0
   COMPREPLY=( $(compgen -W "$shelves" -- "$cur") )
   return 0
 }

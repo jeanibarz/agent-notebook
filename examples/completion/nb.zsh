@@ -33,7 +33,7 @@ _nb() {
     # line is flush-left, so the leading-space match skips it). Only split and add
     # when the lookup produced output, so an empty list adds no empty candidate.
     local _nb_list
-    _nb_list="$(nb list 2>/dev/null | awk '/^[[:space:]]/ {print $1}')"
+    _nb_list="$(nb list --limit 1000000 2>/dev/null | awk '/^[[:space:]]/ {print $1}')"
     if [[ -n $_nb_list ]]; then
       local -a _nb_shelves
       _nb_shelves=(${(f)_nb_list})

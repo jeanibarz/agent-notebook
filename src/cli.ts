@@ -124,6 +124,15 @@ import { doctor, renderDoctor } from './doctor.js';
 const LIST_DEFAULT_LIMIT = 50;
 
 /**
+ * Row cap the emitted shell-completion scripts pass to `nb list` (issue #456). A
+ * bare `nb list` stops at `LIST_DEFAULT_LIMIT` rows, so on a larger store the
+ * newest, smallest shelves would never tab-complete. `--limit 0` returns no rows
+ * (it cannot mean "all"), so completion asks for an explicit, practically
+ * unbounded number instead.
+ */
+const COMPLETION_LIST_LIMIT = 1000000;
+
+/**
  * Default notebook-group cap for `nb search` when `--limit` is not given (issue
  * #186). Mirrors `LIST_DEFAULT_LIMIT`: search groups ARE notebooks, so the same
  * generous bound keeps a normal result set whole while capping a common term (or
@@ -175,7 +184,7 @@ usage:
 notes:
   - <shelf> is a notebook's name: one <shelf>.md file of lessons an agent needs in the
     same situations (see \`nb list\`).
-  - add/vote/rm/merge/move accept --json (after the subcommand): stdout is one JSON
+  - add/vote/rm/merge/split/move/describe accept --json (after the subcommand): stdout is one JSON
     result object and nothing else; warnings/errors stay on stderr. Exit codes are
     unchanged (a too-long add still exits 1, a duplicate still exits 0).
   - \`--\` ends option parsing: every token after it is a literal operand, so a
@@ -205,7 +214,7 @@ notes:
     each inheriting the original's score. Each half is rejected (not truncated) if too
     long, and a split never creates a duplicate (the two halves must differ from each
     other and from every surviving entry, else the split is refused and nothing changes).
-  - add/merge/rm/split/describe accept an optional \`--reason <code>\` (+ \`--note "<text>"\`), logged
+  - add/merge/rm/split/move/describe accept an optional \`--reason <code>\` (+ \`--note "<text>"\`), logged
     (never stored in the notebook) so each op's rate-by-reason becomes a diagnostic
     signal. The reason is always OPTIONAL (omit it rather than invent one — forcing it
     breeds filler), and an unrecognized code is accepted as \`other\` (kept in the note),
@@ -291,7 +300,7 @@ notes:
     with \`--since\`/\`<shelf>\`/\`--json\` (the exit code reflects the same filtered window that is printed).
   - a notebook holds at most 50 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
-  - when full, the LOWEST-scored line is evicted (ties: oldest).
+  - when full, the LOWEST-scored line is evicted (ties: stalest — the least recently touched line).
   - every \`nb show\` line begins with the entry's short stable <id>; pass that id to vote/rm/merge
     (a unique id prefix works too). A unique text substring also selects an entry; an ambiguous one is refused.
   - storage: $NB_DIR or ~/.agent-notebook/notebooks/<shelf>.md (plain text, git-diffable).
@@ -428,7 +437,7 @@ _nb_complete() {
   # failure are swallowed, so a broken or absent \`nb\` yields no completions
   # rather than an error.
   local shelves
-  shelves="$(nb list 2>/dev/null | awk '/^[[:space:]]/ {print $1}')" || return 0
+  shelves="$(nb list --limit ${COMPLETION_LIST_LIMIT} 2>/dev/null | awk '/^[[:space:]]/ {print $1}')" || return 0
   COMPREPLY=( $(compgen -W "$shelves" -- "$cur") )
   return 0
 }
@@ -473,7 +482,7 @@ _nb() {
     # line is flush-left, so the leading-space match skips it). Only split and add
     # when the lookup produced output, so an empty list adds no empty candidate.
     local _nb_list
-    _nb_list="$(nb list 2>/dev/null | awk '/^[[:space:]]/ {print $1}')"
+    _nb_list="$(nb list --limit ${COMPLETION_LIST_LIMIT} 2>/dev/null | awk '/^[[:space:]]/ {print $1}')"
     if [[ -n $_nb_list ]]; then
       local -a _nb_shelves
       _nb_shelves=(\${(f)_nb_list})
@@ -1081,7 +1090,11 @@ export async function runNbCli(
           // above), and this hint goes to stderr so stdout stays pipe-clean. It
           // surfaces the resembling lesson at the moment of re-derivation, so the
           // agent can consolidate if it is the same lesson reworded.
-          if (r.nearId) {
+          if (r.nearId && r.nearEvicted) {
+            // The resembling lesson is the one this add just evicted, so it is no
+            // longer on the shelf: a `nb merge` naming it would fail (issue #451).
+            process.stderr.write(`note: resembles a lesson this add evicted: "${r.nearText}"\n`);
+          } else if (r.nearId) {
             process.stderr.write(
               `note: resembles ${r.nearId} "${r.nearText}" — if that is the same lesson reworded, ` +
                 `consolidate with: nb merge ${shelf} ${r.nearId} ${r.id} "<combined>"\n`,
@@ -1185,6 +1198,11 @@ export async function runNbCli(
             );
           }
           if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
+          // A third lesson identical to the merged text was dropped; say so, with
+          // the score it held (the merged entry does not inherit it — issue #454).
+          for (const a of r.absorbed) {
+            process.stdout.write(` (also absorbed [${fmt(a.score)}] ${a.text}, identical to the merged lesson)`);
+          }
           process.stdout.write('\n');
         }
         break;

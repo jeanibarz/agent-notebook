@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync, readdirSync, chmodSync } from 'node:fs';
+import { describe, test, test as baseTest, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync, readdirSync, chmodSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -347,6 +347,26 @@ describe('near-duplicate advisory (FR-ADD-008)', () => {
     expect(e).toBeLessThanOrEqual(1);
   });
 
+  test('an evicted near-match is flagged nearEvicted; a surviving one is not', async () => {
+    process.env.NB_MAX_LINES = '3';
+    await addEntry(dir, 'ev', 'always run the linter before you commit');
+    await addEntry(dir, 'ev', 'pin node version in CI');
+    await addEntry(dir, 'ev', 'cache npm in workflows');
+    await vote(dir, 'ev', 'pin node', 1);
+    await vote(dir, 'ev', 'cache npm', 1);
+    const r = await addEntry(dir, 'ev', 'always run the linter before each commit');
+    expect(r.nearId).toBe(entryId('always run the linter before you commit'));
+    expect(r.evicted?.text).toBe('always run the linter before you commit');
+    expect(r.nearEvicted).toBe(true);
+    // Near-match survives (a different, lower-scored line is evicted): no flag.
+    await vote(dir, 'ev', 'always run the linter before each', 1);
+    await vote(dir, 'ev', 'always run the linter before each', 1);
+    const r2 = await addEntry(dir, 'ev', 'always run the linter before each commit please');
+    expect(r2.nearId).toBe(entryId('always run the linter before each commit'));
+    expect(r2.nearEvicted).toBeUndefined();
+    delete process.env.NB_MAX_LINES;
+  });
+
   test('NB_NEAR_DUP=0 disables the advisory entirely (no spurious near-match on every add)', async () => {
     process.env.NB_NEAR_DUP = '0';
     await addEntry(dir, 'c', 'run lint before claiming done');
@@ -431,13 +451,19 @@ describe('caps', () => {
     expect(readEntries(dir, 'c')[0].text).toHaveLength(30); // stored in full
   });
 
-  test('evicts the LOWEST-scored line when full (ties: oldest)', async () => {
+  test('--help describes the eviction tie-break as stalest, not oldest (#458)', async () => {
+    const { stdout: help } = await execFileAsync(process.execPath, [CLI, '--help'], { env: { ...process.env, NB_DIR: dir } });
+    expect(help).toContain('ties: stalest');
+    expect(help).not.toMatch(/ties: oldest/);
+  });
+
+  test('evicts the LOWEST-scored line when full (ties: stalest)', async () => {
     process.env.NB_MAX_LINES = '3';
     await addEntry(dir, 'r', 'oldest');   // +1
     await addEntry(dir, 'r', 'middle');   // +1
     await addEntry(dir, 'r', 'useful');   // +1
     await vote(dir, 'r', 'useful', 1);    // useful -> +2
-    const r = await addEntry(dir, 'r', 'newcomer'); // now 4 > cap 3 -> evict lowest, ties oldest
+    const r = await addEntry(dir, 'r', 'newcomer'); // now 4 > cap 3 -> evict lowest, ties stalest
     expect(r.evicted?.text).toBe('oldest'); // +1 tie with 'middle', 'oldest' is older
     const texts = readEntries(dir, 'r').map((e) => e.text).sort();
     expect(texts).toEqual(['middle', 'newcomer', 'useful']);
@@ -1490,6 +1516,16 @@ describe('merge', () => {
     // only max(A,B) = +3; the dropped C's +2 is discarded. Pinned so a change to
     // merge's score inheritance becomes a visible, deliberate decision.
     expect(entries[0].score).toBe(3);
+    // The loss is reported, not silent (issue #454): C and its +2 are returned.
+    expect(r.absorbed).toEqual([{ text: 'shared merged text', score: 2 }]);
+  });
+
+  test('a merge with no third match reports nothing absorbed (issue #454)', async () => {
+    await addEntry(dir, 'm', 'alpha one');
+    await addEntry(dir, 'm', 'beta two');
+    await addEntry(dir, 'm', 'unrelated gamma');
+    const r = await merge(dir, 'm', entryId('alpha one'), entryId('beta two'), 'combined lesson');
+    expect(r.absorbed).toEqual([]);
   });
 
   test('refuses to merge an entry with itself', async () => {
@@ -3808,6 +3844,25 @@ describe('diagnostic signals (issue #72)', () => {
     logUsage(dir, 'patcher', 'add', true, 2, { session: 's2', entries: ['n1'], outcome: 'accepted', evicted: 'hi4444:4' });
     logUsage(dir, 'patcher', 'add', true, 2, { session: 's3', entries: ['n2'], outcome: 'accepted', evicted: 'hi4444:4' });
     expect(stats(dir, { now: Date.now() }).signals.filter((s) => s.kind === 'eviction-while-still-voted')).toHaveLength(1);
+  });
+
+  test.each(['merge', 'split'])('eviction-while-still-voted: a voted lesson evicted by %s is flagged for that shelf (#455)', (command) => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', entries: ['tidy11'], outcome: 'up' });
+    logUsage(dir, 'patcher', command, true, 2, { session: 's2', entries: ['a1', 'b2'], outcome: command === 'merge' ? 'merged' : 'split', evicted: 'tidy11:2' });
+    const sigs = stats(dir, { now: Date.now() }).signals.filter((s) => s.kind === 'eviction-while-still-voted');
+    expect(sigs).toHaveLength(1);
+    expect(sigs[0]).toMatchObject({ shelf: 'patcher', entry: 'tidy11' });
+  });
+
+  test('eviction-while-still-voted: a merge evicting a never-voted lesson at +1 is NOT flagged (#455)', () => {
+    logUsage(dir, 'patcher', 'merge', true, 2, { session: 's1', entries: ['a1', 'b2'], outcome: 'merged', evicted: 'unv000:1' });
+    expect(stats(dir, { now: Date.now() }).signals.some((s) => s.kind === 'eviction-while-still-voted')).toBe(false);
+  });
+
+  test('eviction-while-still-voted: a move row never produces the signal (#455)', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', entries: ['mov111'], outcome: 'up' });
+    logUsage(dir, 'patcher', 'move', true, 2, { session: 's2', entries: ['mov111'], outcome: 'moved', evicted: 'mov111:3' });
+    expect(stats(dir, { now: Date.now() }).signals.some((s) => s.kind === 'eviction-while-still-voted')).toBe(false);
   });
 
   test('vote-reversal: upvoted in one session, downvoted in another', () => {
@@ -6391,5 +6446,51 @@ describe('case-variant shelf guard (#337)', () => {
     await addEntry(dir, 'Foo', 'first');
     await expect(setDescription(dir, 'FOO', 'x')).rejects.toThrow(/differs only by case/);
     expect(readdirSync(dir).filter((n) => n.endsWith('.md'))).toEqual(['Foo.md']);
+  });
+});
+
+describe('rewrites preserve the file mode (issue #459)', () => {
+  // POSIX permission bits only; Windows has no meaningful chmod.
+  const test = process.platform === 'win32' ? baseTest.skip : baseTest;
+  const modeOf = (f: string) => statSync(join(dir, f)).mode & 0o777;
+
+  test.each([0o600, 0o660])('add, vote, describe, merge, split and move keep a %o shelf', async (mode) => {
+    await addEntry(dir, 's', 'first lesson about builds');
+    await addEntry(dir, 's', 'second lesson about tests');
+    await addEntry(dir, 't', 'other shelf lesson');
+    chmodSync(join(dir, 's.md'), mode);
+    chmodSync(join(dir, 't.md'), mode);
+    await addEntry(dir, 's', 'third lesson about lint');
+    expect(modeOf('s.md')).toBe(mode);
+    await vote(dir, 's', 'first', 1);
+    expect(modeOf('s.md')).toBe(mode);
+    await setDescription(dir, 's', 'open when building');
+    expect(modeOf('s.md')).toBe(mode);
+    await merge(dir, 's', 'first', 'second', 'builds and tests merged');
+    expect(modeOf('s.md')).toBe(mode);
+    await split(dir, 's', 'third', 'lint part one', 'lint part two');
+    expect(modeOf('s.md')).toBe(mode);
+    await move(dir, 's', 't', 'lint part one');
+    expect(modeOf('s.md')).toBe(mode);
+    expect(modeOf('t.md')).toBe(mode);
+  });
+
+  test('a newly created shelf keeps the umask default', async () => {
+    const old = process.umask(0o027);
+    try {
+      await addEntry(dir, 'fresh', 'a lesson');
+    } finally {
+      process.umask(old);
+    }
+    expect(modeOf('fresh.md')).toBe(0o640);
+  });
+
+  test('the usage log keeps its mode across a compaction', () => {
+    process.env.NB_USAGE_RING = '100';
+    logUsage(dir, 'p', 'show', true, 1);
+    chmodSync(join(dir, '.nb-usage.log'), 0o600);
+    for (let i = 0; i < 400; i++) logUsage(dir, 'p', 'show', true, 1);
+    expect(parseUsage(dir).length).toBeLessThanOrEqual(120); // it did compact
+    expect(modeOf('.nb-usage.log')).toBe(0o600);
   });
 });

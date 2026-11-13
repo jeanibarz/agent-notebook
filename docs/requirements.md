@@ -293,10 +293,16 @@ measurable near-duplicate / paraphrase-miss signal, distinct from a hard
 `dedup-blocked`. The check SHALL be deterministic, offline, and dependency-free — a
 lexical overlap, not embeddings or semantic ranking ([NG-001](#ng-001)). *(On the CLI
 the advisory goes to stderr so stdout stays pipe-clean; `--json` carries `nearId`.)*
+When the resembling entry is the very one this add evicts from a full shelf, the result
+SHALL carry `nearEvicted: true`, the CLI SHALL print a note that does not suggest an
+`nb merge` naming the (no longer present) id, and the usage log's `collided` field SHALL
+still record that id.
 *Proven by:* `notebook.test.ts` → `describe('near-duplicate advisory (FR-ADD-008)')`;
 `cli.test.ts` → "a resembling add still stores the lesson, warns on stderr, and logs the
 accepted row with the near-match id (FR-ADD-008)" and "a resembling add --json carries nearId; a
-dissimilar add does not warn".
+dissimilar add does not warn"; `notebook.test.ts` → "an evicted near-match is flagged
+nearEvicted; a surviving one is not"; `cli.test.ts` → "an add whose near-match it evicts
+prints no nb merge suggestion but still logs the id".
 
 *Acceptance (table):*
 
@@ -355,7 +361,11 @@ single entry whose text is the sanitized `merged`, and give it `max(scoreA, scor
 <a id="fr-merge-002"></a>
 **FR-MERGE-002 (Must).** `merge` SHALL reject an empty or over-`maxChars` merged
 lesson (throw, leaving both sources intact), and SHALL drop any pre-existing entry
-whose dedup key equals the merged text so the merge never creates a duplicate.
+whose dedup key equals the merged text so the merge never creates a duplicate. It SHALL
+report each such absorbed entry (text and score) in the result's `absorbed` array (empty
+when none), and the CLI SHALL name each one with its score on the human line and in
+`--json`, because the merged entry does not inherit the absorbed entry's score.
+*Proven by:* `notebook.test.ts` → the `merge` test that drops a third dedup-equal entry and "a merge with no third match reports nothing absorbed (issue #454)"; `cli.test.ts` → "merge names a third lesson it absorbed, with its score, in text and --json (issue #454)".
 
 ### 4.6 `split`
 
@@ -406,7 +416,7 @@ relocate it losslessly under its own lock and eviction rules.
 **FR-MOVE-002 (Must).** `move` SHALL refuse, writing NOTHING to either shelf, when: the
 source and target are the same shelf (throw); the source is empty (throw); the selector
 is absent or ambiguous (throw, per [FR-SEL-002](#fr-sel-002)); or the target already
-holds an entry with the moved lesson's dedup key — a near-duplicate — in which case it
+holds an entry with the moved lesson's dedup key (identical text up to case, punctuation and spacing), in which case it
 SHALL return `reason: 'duplicate'` with the colliding entry's `collidedId` and leave
 both shelves untouched (same dedup rule as `add`/`merge`, so a move never creates a
 duplicate). On success it SHALL persist the target before removing from the source, so
@@ -896,6 +906,14 @@ monitoring row is acceptable; losing a lesson is not.)
 lose a lesson the CLI already reported as added. *(Directory-fsync failure is
 tolerated for platforms that disallow it.)*
 
+<a id="fr-dur-002"></a>
+**FR-DUR-002 (Should).** A rewrite of an existing shelf, and the usage log's compaction,
+SHALL preserve the file's permission bits (`mode & 0o777`) on the replacement, so a
+`chmod 600` or group-shared `660` survives the next `add`, `vote`, `describe`, `merge`,
+`split`, `move` or compaction. Owner and group are not preserved. A newly created file
+keeps the process umask default, and a failure to set the mode is non-fatal.
+*Proven by:* `notebook.test.ts` → `describe('rewrites preserve the file mode (issue #459)')`.
+
 ### 4.12 Usage log & stats
 
 <a id="fr-usage-001"></a>
@@ -1037,10 +1055,10 @@ the usage ring alone — the entry-level columns of [FR-USAGE-002](#fr-usage-002
 new agent action and no field added to a lesson ([NG-004](#ng-004)). The three kinds:
 **browse-without-use** (a `show` of a notebook in a session with no `vote` on any of its
 entries that same session → the description may over-promise), **eviction-while-still-voted**
-(an `add` where **any** evicted entry either received an `up` vote in the windowed usage rows and left at a final score of 0 or above, or left with a final score above the +1 a new entry starts at → a useful
+(an `add`, `merge` or `split` where **any** evicted entry either received an `up` vote in the windowed usage rows and left at a final score of 0 or above, or left with a final score above the +1 a new entry starts at → a useful
 lesson was lost — the staleness dock usually takes an upvoted entry down to +1 or 0 before it is evicted, issue #438, and the upvote count is a lower bound because older votes are outside the window; evicting a never-voted entry at +1 or below, or a net-downvoted one, is the cap working as intended — and because a cap
 *decrease* can evict many entries in one `add` ([FR-USAGE-002](#fr-usage-002), issue #306), this
-signal SHALL count **each** still-voted entry in that row's `evicted` list, not just the first),
+signal SHALL count **each** still-voted entry in that row's `evicted` list, not just the first; a `move` row is never read, because it is filed under the source shelf while the eviction happens in the target, issue #455),
 and **vote-reversal** (one entry id with an `up` vote in one session and a `down` vote in a
 **different** session → correct but mis-aimed). browse-without-use and vote-reversal are
 session-scoped and SHALL skip rows with a blank session ([FR-USAGE-002](#fr-usage-002):

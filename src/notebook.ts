@@ -19,7 +19,7 @@
 // Everything here is plain fs over one small file under a mkdir spinlock, so
 // a call is a millisecond and offline.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, rmdirSync, unlinkSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, rmdirSync, unlinkSync, statSync, openSync, fsyncSync, closeSync, fchmodSync, chmodSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -1166,6 +1166,7 @@ function writeEntries(dir: string, shelf: string, entries: Entry[], metaLines?: 
 function writeFileDurable(file: string, tmp: string, data: string): void {
   const fd = openSync(tmp, 'w');
   try {
+    preserveMode(file, fd);
     writeFileSync(fd, data, 'utf-8');
     fsyncSync(fd); // body hits stable storage before the rename
   } finally {
@@ -1173,6 +1174,25 @@ function writeFileDurable(file: string, tmp: string, data: string): void {
   }
   renameSync(tmp, file); // atomic replace
   fsyncDir(dirname(file)); // make the rename itself durable
+}
+
+/**
+ * Carry an existing file's permission bits onto its replacement (issue #459).
+ * The temp-file-and-rename write would otherwise give the new file the process
+ * umask default, silently undoing a `chmod 600` or a group-shared `660`. Only
+ * the permission bits move (owner and group are not preserved), and only when
+ * `file` already exists, so a newly created file keeps the umask default.
+ * `target` is the temp file's open fd or its path. Best effort: a missing
+ * original or a filesystem that rejects chmod must never fail the write.
+ */
+function preserveMode(file: string, target: number | string): void {
+  try {
+    const mode = statSync(file).mode & 0o777;
+    if (typeof target === 'number') fchmodSync(target, mode);
+    else chmodSync(target, mode);
+  } catch {
+    /* no original (first write) or chmod unsupported: keep the umask default */
+  }
 }
 
 /**
@@ -1320,6 +1340,8 @@ export interface AddResult {
   nearId?: string;
   /** The text of the `nearId` entry, so the caller can show it in the advisory. */
   nearText?: string;
+  /** True when the `nearId` entry was evicted by this very add, so it is no longer on the shelf and `nb merge` cannot name it (issue #451). Absent when it survived. */
+  nearEvicted?: true;
   /** For an *accepted* add: true when this add created the shelf (it did not exist before). Absent otherwise. */
   created?: true;
   /** When `created`: up to 3 existing shelves sharing at least two name words with the new one (non-blocking advisory; absent when none). */
@@ -1409,6 +1431,7 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     // line to the end, after the newcomer. See enforceCap.
     const { kept, evicted, decayed } = enforceCap(entries, 1);
     writeEntries(dir, shelf, kept, metaLines);
+    const nearEvicted = near !== null && evicted.some((e) => entryId(e.text) === entryId(near.text));
     return {
       added: true,
       reason: 'added',
@@ -1417,7 +1440,7 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
       decayed,
       size: kept.length,
       id,
-      ...(near ? { nearId: entryId(near.text), nearText: near.text } : {}),
+      ...(near ? { nearId: entryId(near.text), nearText: near.text, ...(nearEvicted ? { nearEvicted: true as const } : {}) } : {}),
       ...(created ? { created: true as const } : {}),
       ...(similar.length > 0 ? { similarShelves: similar } : {}),
     };
@@ -1620,7 +1643,18 @@ export function voteMany(dir: string, shelf: string, selectors: string[], delta:
   });
 }
 
-export function merge(dir: string, shelf: string, selA: string, selB: string, mergedLesson: string): Promise<AddResult> {
+/** What `merge` returns: the usual add-style result plus the lessons the merge absorbed. */
+export interface MergeResult extends AddResult {
+  /**
+   * Third lessons the merge dropped because their text normalizes to the merged
+   * text (FR-MERGE-002), each with the score it held. Empty in the ordinary
+   * case. The merged entry keeps `max(scoreA, scoreB)`, so an absorbed lesson's
+   * own score is NOT inherited — this field is how the caller learns of the loss.
+   */
+  absorbed: Entry[];
+}
+
+export function merge(dir: string, shelf: string, selA: string, selB: string, mergedLesson: string): Promise<MergeResult> {
   return withLock(dir, () => {
     // One scan for entries AND the metadata block, passed through to writeEntries
     // below so the mutation reads the shelf once, not twice (issue #251).
@@ -1641,13 +1675,14 @@ export function merge(dir: string, shelf: string, selA: string, selB: string, me
     // Drop an existing duplicate of the merged text so merge never creates one.
     const key = dedupKey(text);
     const deduped = remaining.filter((e) => dedupKey(e.text) !== key);
+    const absorbed = remaining.filter((e) => dedupKey(e.text) === key);
     deduped.push({ score, text }); // merged lesson is a fresh touch → fresh end
     // merge consolidates (2 → 1) so it never grows past the cap; enforceCap is a
     // harmless no-op here unless the cap was lowered, in which case the merged
     // lesson is protected like any newcomer.
     const { kept, evicted, decayed } = enforceCap(deduped, 1);
     writeEntries(dir, shelf, kept, metaLines);
-    return { added: true, reason: 'added', evicted: evicted[0] ?? null, evictedAll: evicted, decayed, size: kept.length, id: entryId(text), sources };
+    return { added: true, reason: 'added', evicted: evicted[0] ?? null, evictedAll: evicted, decayed, size: kept.length, id: entryId(text), sources, absorbed };
   });
 }
 
@@ -2868,6 +2903,7 @@ export function logUsage(
     // the rename is still atomic, so a reader sees one whole file or the other.
     const tmp = `${file}.${process.pid}.tmp`;
     writeFileSync(tmp, body, 'utf-8');
+    preserveMode(file, tmp);
     renameSync(tmp, file);
     writeUsageState(dir, kept.length, Buffer.byteLength(body));
   } catch {
@@ -2964,7 +3000,7 @@ export interface Anomaly {
  * The three kinds, all implied by behavior the agent already performs:
  *   - `browse-without-use`: a notebook was `show`n in a session but nothing in it
  *     was voted that session → its description may over-promise.
- *   - `eviction-while-still-voted`: the cap evicted an entry upvoted in the window
+ *   - `eviction-while-still-voted`: the cap evicted (on an `add`, `merge` or `split`) an entry upvoted in the window
  *     (final score 0 or above), or whose score was still above the +1 a new lesson starts at → a lesson agents found useful was lost. A full shelf is normal; only
  *     repeated still-voted evictions suggest the cap is too tight for that shelf.
  *   - `vote-reversal`: the same entry was upvoted in one session and downvoted in
@@ -3673,7 +3709,7 @@ export function stats(
     }
   }
 
-  // (B) eviction-while-still-voted: an `add` evicted one or more entries (its
+  // (B) eviction-while-still-voted: an `add`, `merge` or `split` evicted one or more entries (its
   //     `evicted` column is a comma-separated list of `<id>:<score>` pairs —
   //     usually one, but a cap decrease can evict many at once, issue #306)
   //     whose final score was still above the +1 a new lesson starts at, or that
@@ -3686,6 +3722,7 @@ export function stats(
   //     carries no per-entry score, so it is skipped here.
   {
     const seen = new Set<string>(); // dedup repeat evictions of the same shelf+id
+    const EVICTING_COMMANDS = new Set(['add', 'merge', 'split']);
     // Issue #438: on a full shelf the staleness dock lowers a stale lesson a point
     // per add, so an upvoted lesson usually leaves at +1 or 0 and the above-+1 test
     // alone almost never fires. Also count an entry that received an `up` vote in
@@ -3701,7 +3738,10 @@ export function stats(
       }
     }
     for (const r of recent) {
-      if (r.command !== 'add' || r.evicted === '') continue;
+      // `add`, `merge` and `split` file their row under the shelf that evicted
+      // (issue #455). `move` is left out: its row is filed under the SOURCE shelf
+      // while the eviction happens in the target, so it cannot be attributed here.
+      if (!EVICTING_COMMANDS.has(r.command) || r.evicted === '') continue;
       for (const pair of r.evicted.split(',')) {
         if (pair.startsWith('+')) continue; // `+<dropped>` overflow marker — count only, no per-entry score
         const [evictedId, scoreRaw] = pair.split(':');

@@ -2854,6 +2854,36 @@ describe('runNbCli', () => {
       expect(parseOnly(r.out)).toEqual({ text: 'delete me', score: 1 });
     });
 
+    test('merge names a third lesson it absorbed, with its score, in text and --json (issue #454)', async () => {
+      await run(['add', 'patcher', 'gamma combined lesson']);
+      for (let i = 0; i < 4; i++) await run(['vote', 'patcher', 'gamma', '+1']);
+      await run(['add', 'patcher', 'alpha lesson']);
+      await run(['add', 'patcher', 'beta lesson']);
+      const plain = await run(['merge', 'patcher', 'alpha', 'beta', 'Gamma combined lesson']);
+      expect(plain.code).toBe(0);
+      expect(plain.out).toContain('(also absorbed [+5] gamma combined lesson, identical to the merged lesson)');
+
+      await run(['add', 'patcher', 'delta lesson']);
+      await run(['add', 'patcher', 'epsilon lesson']);
+      await run(['vote', 'patcher', 'delta', '+1']);
+      await run(['add', 'patcher', 'zeta target']);
+      await run(['vote', 'patcher', 'zeta', '+1']);
+      await run(['vote', 'patcher', 'zeta', '+1']);
+      const json = await run(['merge', 'patcher', 'delta', 'epsilon', 'zeta target', '--json']);
+      expect(parseOnly(json.out)).toMatchObject({ absorbed: [{ text: 'zeta target', score: 3 }] });
+    });
+
+    test('merge with no third match prints no absorbed note and --json has an empty array (issue #454)', async () => {
+      await run(['add', 'patcher', 'alpha lesson']);
+      await run(['add', 'patcher', 'beta lesson']);
+      const r = await run(['merge', 'patcher', 'alpha', 'beta', 'plain merged']);
+      expect(r.out).not.toContain('absorbed');
+      await run(['add', 'patcher', 'gamma lesson']);
+      await run(['add', 'patcher', 'delta lesson']);
+      const j = await run(['merge', 'patcher', 'gamma', 'delta', 'other merged', '--json']);
+      expect(parseOnly(j.out)).toMatchObject({ absorbed: [] });
+    });
+
     test('merge --json prints the resulting AddResult', async () => {
       await run(['add', 'patcher', 'alpha lesson']);
       await run(['add', 'patcher', 'beta lesson']);
@@ -3045,6 +3075,27 @@ describe('runNbCli', () => {
       // Both lessons are kept — the advisory never blocks.
       expect((await run(['show', 'patcher'])).out).toContain('run lint before claiming complete');
       delete process.env.NB_NEAR_DUP;
+    });
+
+    test('an add whose near-match it evicts prints no nb merge suggestion but still logs the id', async () => {
+      process.env.NB_MAX_LINES = '3';
+      await run(['add', 's', 'always run the linter before you commit']);
+      await run(['add', 's', 'pin node version in CI']);
+      await run(['add', 's', 'cache npm in workflows']);
+      await run(['vote', 's', 'pin node', '+1']);
+      await run(['vote', 's', 'cache npm', '+1']);
+      const nearId = entryId('always run the linter before you commit');
+      const r = await run(['add', 's', 'always run the linter before each commit']);
+      expect(r.code).toBe(0);
+      expect(r.err).toContain('resembles a lesson this add evicted');
+      expect(r.err).not.toContain('nb merge');
+      expect(parseUsage(dir).at(-1)!.collided).toBe(nearId);
+      await run(['vote', 's', 'always run the linter before each commit', '+1']);
+      await run(['vote', 's', 'always run the linter before each commit', '+1']);
+      const j = await run(['add', 's', 'always run the linter before each commit now']);
+      expect(j.err).toContain('nb merge'); // near-match survived: advisory unchanged
+      expect(j.err).not.toContain('this add evicted');
+      delete process.env.NB_MAX_LINES;
     });
 
     test('a resembling add --json carries nearId; a dissimilar add does not warn', async () => {
@@ -4151,6 +4202,29 @@ describe('per-command help (issue #370)', () => {
     expect(scopedHelp('nonsense')).toBeNull();
   });
 
+  test('scoped help mentions every flag the command accepts (issue #457)', () => {
+    for (const c of COMMANDS) {
+      const h = scopedHelp(c)!;
+      const mutators = ['add', 'vote', 'rm', 'merge', 'split', 'move', 'describe'];
+      for (const f of [...(KNOWN_FLAGS[c] ?? []), ...(mutators.includes(c) ? ['--json'] : [])]) {
+        expect(h, `${c} ${f}`).toContain(f);
+      }
+    }
+  });
+
+  test('the README Usage block carries every usage line `nb --help` prints (issue #457)', async () => {
+    const help = (await run(['--help'])).out;
+    const usage = help.slice(help.indexOf('usage:\n') + 7, help.indexOf('\nnotes:'))
+      .split('\n').filter((l) => /^ {2}nb /.test(l)).map((l) => l.trim());
+    const readme = readFileSync(join(REPO_ROOT, 'README.md'), 'utf8');
+    const block = readme.slice(readme.indexOf('## Usage'));
+    const open = block.indexOf('```\n') + 4;
+    const fence = block.slice(open, block.indexOf('\n```', open));
+    const lines = new Set(fence.split('\n').map((l) => l.trim()));
+    expect(usage.length).toBeGreaterThan(10);
+    for (const u of usage) expect(lines.has(u), u).toBe(true);
+  });
+
   test.each(['--help', '-h'])('`nb <command> %s` exits 0, prints scoped usage and writes no shelf', async (flag) => {
     for (const c of COMMANDS) {
       const r = await run([c, 'shelf', flag]);
@@ -4686,7 +4760,7 @@ describe('nb completion (shell completion, issue #187)', () => {
     const out = (await run(['completion', 'bash'])).out;
     // Shelf names come from `nb list`, and the lookup swallows stderr/failure so
     // it can never hang or error the shell (the issue's load-bearing risk).
-    expect(out).toContain('nb list 2>/dev/null');
+    expect(out).toContain('nb list --limit 1000000 2>/dev/null');
     // `show` (the acceptance-criteria example) is among the shelf-completing cmds.
     expect(out).toMatch(/case "\$cmd" in[\s\S]*\bshow\b/);
   });
@@ -4722,6 +4796,37 @@ describe('nb completion (shell completion, issue #187)', () => {
     expect(cmds).toContain('completion');
     expect(shelvesLine.split(/\s+/).filter(Boolean).sort()).toEqual(['alpha', 'beta']); // nb show <TAB>
     expect(lessonLine.trim()).toBe(''); // free-text operand position offers nothing (no stale leak)
+  });
+
+  test('bash: completes every shelf on a store of more than 50 shelves (issue #456)', async () => {
+    // A bare `nb list` stops at 50 rows, so before the fix `shelf5<TAB>` offered
+    // only `shelf50`: the remaining shelves never completed.
+    const cliJs = join(REPO_ROOT, 'dist', 'cli.js');
+    if (!shellPresent('bash') || !existsSync(cliJs)) return;
+    for (let i = 1; i <= 60; i++) await run(['add', `shelf${i}`, `lesson ${i}`]);
+    const script = (await run(['completion', 'bash'])).out;
+    const harness = [
+      `nb() { node ${JSON.stringify(cliJs)} "$@"; }`,
+      script,
+      '_sim() { COMP_WORDS=("$@"); COMP_CWORD=$(( $# - 1 )); _nb_complete; echo "${COMPREPLY[*]}"; }',
+      '_sim nb show shelf5',
+    ].join('\n');
+    const result = execFileSync('bash', ['-c', harness], {
+      env: { ...process.env, NB_DIR: dir },
+      encoding: 'utf8',
+    });
+    const offered = result.split('\n')[0].split(/\s+/).filter(Boolean).sort();
+    expect(offered).toEqual(
+      ['shelf5', ...Array.from({ length: 10 }, (_, i) => `shelf5${i}`)].sort(),
+    );
+  });
+
+  test('both emitted scripts ask `nb list` for more than its default 50 rows (issue #456)', async () => {
+    for (const shell of ['bash', 'zsh']) {
+      const out = (await run(['completion', shell])).out;
+      expect(out).toContain('nb list --limit 1000000 2>/dev/null');
+      expect(out).not.toMatch(/nb list 2>/);
+    }
   });
 
   test('a missing shell is a bad-args error (exit 1), not an unknown command (exit 2)', async () => {

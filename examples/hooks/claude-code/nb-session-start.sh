@@ -68,7 +68,9 @@ layered_index() {
       } else if (r.shelf === globalName) layers.global.push(r);
       else layers.domain.push(r);
     }
-    const row = (r) => "  " + r.shelf + "  " + r.lessons + "  " + String(r.desc || r.auto || "").slice(0, 100);
+    // An auto-derived trigger (the top lesson standing in for a missing description) carries the
+    // same "(auto)" marker as `nb list` and the flat index, so it does not pass as a description.
+    const row = (r) => "  " + r.shelf + "  " + r.lessons + "  " + String(r.desc || r.auto || "").slice(0, 100) + (!r.desc && r.auto ? "  (auto)" : "");
     const section = (title, rows, ifEmpty) => {
       if (!rows.length && ifEmpty === undefined) return;
       console.log("### " + title);
