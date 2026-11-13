@@ -85,6 +85,19 @@ describe('nb-session-start.sh layered variant (NB_PROJECT_SLUG)', () => {
     row('a@acme-app@other'), // last `@` wins: another project's shelf
   ];
 
+  test('marks an auto-derived description with (auto) and leaves a real one unmarked (#453)', () => {
+    const out = run(layeredStub(rows), { NB_PROJECT_SLUG: 'acme-app' });
+    const lines = out.split('\n');
+    const line = (shelf: string) => lines.find((l) => l.startsWith(`  ${shelf}  `)) ?? '';
+    expect(line('code-review')).toBe('  code-review  1  auto text of code-review  (auto)');
+    expect(line('global')).toBe('  global  1  auto text of global  (auto)');
+    expect(line('code-review@acme-app')).toBe('  code-review@acme-app  2  reviewing a diff in acme-app');
+    expect(line('release-notes')).toBe('  release-notes  3  writing release notes');
+    // A shelf with neither a description nor a lesson gets no dangling marker.
+    const empty = run(layeredStub([{ ...row('empty@acme-app', 0), auto: null }]), { NB_PROJECT_SLUG: 'acme-app' });
+    expect(empty).toContain('  empty@acme-app  0  \n');
+  });
+
   test('groups project / domain / global, project first, and counts the hidden shelves', () => {
     const out = run(layeredStub(rows), { NB_PROJECT_SLUG: 'acme-app' });
     const project = out.indexOf('### Project layer');
