@@ -19,7 +19,7 @@
 // Everything here is plain fs over one small file under a mkdir spinlock, so
 // a call is a millisecond and offline.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, rmdirSync, unlinkSync, statSync, openSync, fsyncSync, closeSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, rmdirSync, unlinkSync, statSync, openSync, fsyncSync, closeSync, fchmodSync, chmodSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -1166,6 +1166,7 @@ function writeEntries(dir: string, shelf: string, entries: Entry[], metaLines?: 
 function writeFileDurable(file: string, tmp: string, data: string): void {
   const fd = openSync(tmp, 'w');
   try {
+    preserveMode(file, fd);
     writeFileSync(fd, data, 'utf-8');
     fsyncSync(fd); // body hits stable storage before the rename
   } finally {
@@ -1173,6 +1174,25 @@ function writeFileDurable(file: string, tmp: string, data: string): void {
   }
   renameSync(tmp, file); // atomic replace
   fsyncDir(dirname(file)); // make the rename itself durable
+}
+
+/**
+ * Carry an existing file's permission bits onto its replacement (issue #459).
+ * The temp-file-and-rename write would otherwise give the new file the process
+ * umask default, silently undoing a `chmod 600` or a group-shared `660`. Only
+ * the permission bits move (owner and group are not preserved), and only when
+ * `file` already exists, so a newly created file keeps the umask default.
+ * `target` is the temp file's open fd or its path. Best effort: a missing
+ * original or a filesystem that rejects chmod must never fail the write.
+ */
+function preserveMode(file: string, target: number | string): void {
+  try {
+    const mode = statSync(file).mode & 0o777;
+    if (typeof target === 'number') fchmodSync(target, mode);
+    else chmodSync(target, mode);
+  } catch {
+    /* no original (first write) or chmod unsupported: keep the umask default */
+  }
 }
 
 /**
@@ -2868,6 +2888,7 @@ export function logUsage(
     // the rename is still atomic, so a reader sees one whole file or the other.
     const tmp = `${file}.${process.pid}.tmp`;
     writeFileSync(tmp, body, 'utf-8');
+    preserveMode(file, tmp);
     renameSync(tmp, file);
     writeUsageState(dir, kept.length, Buffer.byteLength(body));
   } catch {
