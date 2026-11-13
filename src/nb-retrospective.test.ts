@@ -228,7 +228,7 @@ describe('nb-retrospective.sh sentinel TTL prune (issue #165)', () => {
 });
 
 describe('nb-retrospective.sh atomic sentinel claim (issue #245)', () => {
-  test('concurrent stops on one session_id: exactly one blocks, every process exits 0', async () => {
+  test('concurrent stops on one session_id: exactly one blocks, every process exits 0 [timing]', async () => {
     // Parallel subagents share the parent session_id and can stop at once. With
     // a non-atomic existsSync()-then-writeFileSync() claim, several processes
     // could all see the sentinel absent and all emit `block`. The atomic `wx`
@@ -257,7 +257,9 @@ describe('nb-retrospective.sh atomic sentinel claim (issue #245)', () => {
       expect(retros).toContain(`.retro-${session}`);
       expect(retros).toHaveLength(round + 1);
     }
-  });
+    // 3 rounds x 24 real bash+node spawns is ~72 processes: well over Vitest's
+    // 5 s default on a loaded macOS runner (issue #450), so size the timeout for it.
+  }, 30_000);
 
   test('a loser finding the sentinel already present exits 0 without overwriting it', () => {
     // Deterministic companion to the race (whose overlap is timing-dependent):
