@@ -322,6 +322,40 @@ describe('nb-janitor section 2 — scope-aware shelf-name dedup', () => {
     mkShelf('build.cd@your-repo');
     expect(shelfDups()).toEqual([]);
   });
+
+  test('the text view caps similar-name pairs at 25 with a --json pointer; --json keeps every pair (#461)', () => {
+    // A numbered family (issue-101 … issue-160) yields pairs quadratically.
+    for (let n = 101; n <= 160; n++) mkShelf(`issue-${n}`);
+    // Every issue-NNN pair has sim 0.89; this typo pair scores higher (0.92),
+    // so it must lead the text view if pairs are still shown strongest first.
+    mkShelf('orchestrator');
+    mkShelf('orchestratr');
+    const all = shelfDups();
+    expect(all.length).toBeGreaterThan(25);
+    const human = runHuman();
+    const section = human.slice(human.indexOf('2. Near-duplicate shelf names'), human.indexOf('3. Likely duplicate lessons'));
+    const shown = section.split('\n').filter((l) => l.includes('(name similarity '));
+    expect(shown.length).toBe(25);
+    // Strongest first, as before the cap: the higher-similarity typo pair leads.
+    expect(shown[0]).toContain('"orchestrator" ~ "orchestratr"');
+    expect(all[0].sim).toBeGreaterThan(all[all.length - 1].sim);
+    expect(section).toContain(`…(${all.length - 25} more pairs — run with --json)`);
+  });
+
+  test('exactly 25 similar-name pairs print in full with no "more" line (pins the > guard)', () => {
+    // 25 disjoint typo pairs (`aaaaaaaaa`/`aaaaaaaaaz`, `bbbbbbbbb`/…): stems share
+    // no letters, so no pair forms across stems.
+    const stems = Array.from({ length: 25 }, (_, i) => String.fromCharCode(97 + i).repeat(9));
+    for (const s of stems) {
+      mkShelf(s);
+      mkShelf(`${s}z`);
+    }
+    expect(shelfDups().length).toBe(25);
+    const human = runHuman();
+    const section = human.slice(human.indexOf('2. Near-duplicate shelf names'), human.indexOf('3. Likely duplicate lessons'));
+    expect(section.split('\n').filter((l) => l.includes('(name similarity ')).length).toBe(25);
+    expect(section).not.toContain('more pairs');
+  });
 });
 
 describe('nb-janitor section 6 — curation: unreinforced +1-floor lessons (#223)', () => {
