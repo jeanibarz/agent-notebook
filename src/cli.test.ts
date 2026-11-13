@@ -4709,7 +4709,7 @@ describe('nb completion (shell completion, issue #187)', () => {
     const out = (await run(['completion', 'bash'])).out;
     // Shelf names come from `nb list`, and the lookup swallows stderr/failure so
     // it can never hang or error the shell (the issue's load-bearing risk).
-    expect(out).toContain('nb list 2>/dev/null');
+    expect(out).toContain('nb list --limit 1000000 2>/dev/null');
     // `show` (the acceptance-criteria example) is among the shelf-completing cmds.
     expect(out).toMatch(/case "\$cmd" in[\s\S]*\bshow\b/);
   });
@@ -4745,6 +4745,37 @@ describe('nb completion (shell completion, issue #187)', () => {
     expect(cmds).toContain('completion');
     expect(shelvesLine.split(/\s+/).filter(Boolean).sort()).toEqual(['alpha', 'beta']); // nb show <TAB>
     expect(lessonLine.trim()).toBe(''); // free-text operand position offers nothing (no stale leak)
+  });
+
+  test('bash: completes every shelf on a store of more than 50 shelves (issue #456)', async () => {
+    // A bare `nb list` stops at 50 rows, so before the fix `shelf5<TAB>` offered
+    // only `shelf50`: the remaining shelves never completed.
+    const cliJs = join(REPO_ROOT, 'dist', 'cli.js');
+    if (!shellPresent('bash') || !existsSync(cliJs)) return;
+    for (let i = 1; i <= 60; i++) await run(['add', `shelf${i}`, `lesson ${i}`]);
+    const script = (await run(['completion', 'bash'])).out;
+    const harness = [
+      `nb() { node ${JSON.stringify(cliJs)} "$@"; }`,
+      script,
+      '_sim() { COMP_WORDS=("$@"); COMP_CWORD=$(( $# - 1 )); _nb_complete; echo "${COMPREPLY[*]}"; }',
+      '_sim nb show shelf5',
+    ].join('\n');
+    const result = execFileSync('bash', ['-c', harness], {
+      env: { ...process.env, NB_DIR: dir },
+      encoding: 'utf8',
+    });
+    const offered = result.split('\n')[0].split(/\s+/).filter(Boolean).sort();
+    expect(offered).toEqual(
+      ['shelf5', ...Array.from({ length: 10 }, (_, i) => `shelf5${i}`)].sort(),
+    );
+  });
+
+  test('both emitted scripts ask `nb list` for more than its default 50 rows (issue #456)', async () => {
+    for (const shell of ['bash', 'zsh']) {
+      const out = (await run(['completion', shell])).out;
+      expect(out).toContain('nb list --limit 1000000 2>/dev/null');
+      expect(out).not.toMatch(/nb list 2>/);
+    }
   });
 
   test('a missing shell is a bad-args error (exit 1), not an unknown command (exit 2)', async () => {
