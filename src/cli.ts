@@ -291,7 +291,7 @@ notes:
     with \`--since\`/\`<shelf>\`/\`--json\` (the exit code reflects the same filtered window that is printed).
   - a notebook holds at most 50 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
-  - when full, the LOWEST-scored line is evicted (ties: oldest).
+  - when full, the LOWEST-scored line is evicted (ties: stalest — the least recently touched line).
   - every \`nb show\` line begins with the entry's short stable <id>; pass that id to vote/rm/merge
     (a unique id prefix works too). A unique text substring also selects an entry; an ambiguous one is refused.
   - storage: $NB_DIR or ~/.agent-notebook/notebooks/<shelf>.md (plain text, git-diffable).
