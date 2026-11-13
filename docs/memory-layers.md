@@ -156,7 +156,7 @@ the block in a subshell, so the lowered cap does not leak into your shell:
 ```
 
 ```text
-moved [+0] Rebuild the generated client before running its tests — "widget@acme-app" now 0, "shared" now 3 lines (evicted lowest-scored from "shared": [+1] Use the repo's merge method flag with gh pr merge)
+moved [+0] Rebuild the generated client before running its tests — "widget@acme-app" now 0 lines, "shared" now 3 lines (evicted lowest-scored from "shared": [+1] Use the repo's merge method flag with gh pr merge)
 ```
 
 The moved lesson (score +0, the lowest) was admitted and a +1 lesson was
