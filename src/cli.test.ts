@@ -3077,6 +3077,27 @@ describe('runNbCli', () => {
       delete process.env.NB_NEAR_DUP;
     });
 
+    test('an add whose near-match it evicts prints no nb merge suggestion but still logs the id', async () => {
+      process.env.NB_MAX_LINES = '3';
+      await run(['add', 's', 'always run the linter before you commit']);
+      await run(['add', 's', 'pin node version in CI']);
+      await run(['add', 's', 'cache npm in workflows']);
+      await run(['vote', 's', 'pin node', '+1']);
+      await run(['vote', 's', 'cache npm', '+1']);
+      const nearId = entryId('always run the linter before you commit');
+      const r = await run(['add', 's', 'always run the linter before each commit']);
+      expect(r.code).toBe(0);
+      expect(r.err).toContain('resembles a lesson this add evicted');
+      expect(r.err).not.toContain('nb merge');
+      expect(parseUsage(dir).at(-1)!.collided).toBe(nearId);
+      await run(['vote', 's', 'always run the linter before each commit', '+1']);
+      await run(['vote', 's', 'always run the linter before each commit', '+1']);
+      const j = await run(['add', 's', 'always run the linter before each commit now']);
+      expect(j.err).toContain('nb merge'); // near-match survived: advisory unchanged
+      expect(j.err).not.toContain('evicted:');
+      delete process.env.NB_MAX_LINES;
+    });
+
     test('a resembling add --json carries nearId; a dissimilar add does not warn', async () => {
       process.env.NB_NEAR_DUP = '0.4';
       await run(['add', 'patcher', 'run lint before claiming done']);

@@ -1340,6 +1340,8 @@ export interface AddResult {
   nearId?: string;
   /** The text of the `nearId` entry, so the caller can show it in the advisory. */
   nearText?: string;
+  /** True when the `nearId` entry was evicted by this very add, so it is no longer on the shelf and `nb merge` cannot name it (issue #451). Absent when it survived. */
+  nearEvicted?: true;
   /** For an *accepted* add: true when this add created the shelf (it did not exist before). Absent otherwise. */
   created?: true;
   /** When `created`: up to 3 existing shelves sharing at least two name words with the new one (non-blocking advisory; absent when none). */
@@ -1429,6 +1431,7 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
     // line to the end, after the newcomer. See enforceCap.
     const { kept, evicted, decayed } = enforceCap(entries, 1);
     writeEntries(dir, shelf, kept, metaLines);
+    const nearEvicted = near !== null && evicted.some((e) => entryId(e.text) === entryId(near.text));
     return {
       added: true,
       reason: 'added',
@@ -1437,7 +1440,7 @@ export function addEntry(dir: string, shelf: string, lesson: string): Promise<Ad
       decayed,
       size: kept.length,
       id,
-      ...(near ? { nearId: entryId(near.text), nearText: near.text } : {}),
+      ...(near ? { nearId: entryId(near.text), nearText: near.text, ...(nearEvicted ? { nearEvicted: true as const } : {}) } : {}),
       ...(created ? { created: true as const } : {}),
       ...(similar.length > 0 ? { similarShelves: similar } : {}),
     };

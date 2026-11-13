@@ -293,10 +293,16 @@ measurable near-duplicate / paraphrase-miss signal, distinct from a hard
 `dedup-blocked`. The check SHALL be deterministic, offline, and dependency-free — a
 lexical overlap, not embeddings or semantic ranking ([NG-001](#ng-001)). *(On the CLI
 the advisory goes to stderr so stdout stays pipe-clean; `--json` carries `nearId`.)*
+When the resembling entry is the very one this add evicts from a full shelf, the result
+SHALL carry `nearEvicted: true`, the CLI SHALL print a note that does not suggest an
+`nb merge` naming the (no longer present) id, and the usage log's `collided` field SHALL
+still record that id.
 *Proven by:* `notebook.test.ts` → `describe('near-duplicate advisory (FR-ADD-008)')`;
 `cli.test.ts` → "a resembling add still stores the lesson, warns on stderr, and logs the
 accepted row with the near-match id (FR-ADD-008)" and "a resembling add --json carries nearId; a
-dissimilar add does not warn".
+dissimilar add does not warn"; `notebook.test.ts` → "an evicted near-match is flagged
+nearEvicted; a surviving one is not"; `cli.test.ts` → "an add whose near-match it evicts
+prints no nb merge suggestion but still logs the id".
 
 *Acceptance (table):*
 

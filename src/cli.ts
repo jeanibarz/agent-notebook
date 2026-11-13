@@ -1090,7 +1090,11 @@ export async function runNbCli(
           // above), and this hint goes to stderr so stdout stays pipe-clean. It
           // surfaces the resembling lesson at the moment of re-derivation, so the
           // agent can consolidate if it is the same lesson reworded.
-          if (r.nearId) {
+          if (r.nearId && r.nearEvicted) {
+            // The resembling lesson is the one this add just evicted, so it is no
+            // longer on the shelf: a `nb merge` naming it would fail (issue #451).
+            process.stderr.write(`note: resembles a lesson this add evicted: "${r.nearText}"\n`);
+          } else if (r.nearId) {
             process.stderr.write(
               `note: resembles ${r.nearId} "${r.nearText}" — if that is the same lesson reworded, ` +
                 `consolidate with: nb merge ${shelf} ${r.nearId} ${r.id} "<combined>"\n`,
