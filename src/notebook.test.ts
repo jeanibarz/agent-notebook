@@ -431,13 +431,19 @@ describe('caps', () => {
     expect(readEntries(dir, 'c')[0].text).toHaveLength(30); // stored in full
   });
 
-  test('evicts the LOWEST-scored line when full (ties: oldest)', async () => {
+  test('--help describes the eviction tie-break as stalest, not oldest (#458)', async () => {
+    const { stdout: help } = await execFileAsync(process.execPath, [CLI, '--help'], { env: { ...process.env, NB_DIR: dir } });
+    expect(help).toContain('ties: stalest');
+    expect(help).not.toMatch(/ties: oldest/);
+  });
+
+  test('evicts the LOWEST-scored line when full (ties: stalest)', async () => {
     process.env.NB_MAX_LINES = '3';
     await addEntry(dir, 'r', 'oldest');   // +1
     await addEntry(dir, 'r', 'middle');   // +1
     await addEntry(dir, 'r', 'useful');   // +1
     await vote(dir, 'r', 'useful', 1);    // useful -> +2
-    const r = await addEntry(dir, 'r', 'newcomer'); // now 4 > cap 3 -> evict lowest, ties oldest
+    const r = await addEntry(dir, 'r', 'newcomer'); // now 4 > cap 3 -> evict lowest, ties stalest
     expect(r.evicted?.text).toBe('oldest'); // +1 tie with 'middle', 'oldest' is older
     const texts = readEntries(dir, 'r').map((e) => e.text).sort();
     expect(texts).toEqual(['middle', 'newcomer', 'useful']);
