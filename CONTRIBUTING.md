@@ -48,6 +48,16 @@ it finishes in a few seconds instead of ~30. **It is not the gate:** always run 
 full `npm test` (which includes the `[slow]` tests, as CI does) before pushing. To
 mark a new slow test for the fast-skip set, add ` [slow]` to its title.
 
+Tag a test ` [timing]` when it asserts a real-clock upper bound or spawns many
+real child processes (for example the `nb-retrospective` race that starts 72 hook
+processes) — anything that can overshoot Vitest's 5 s default when a CI runner is
+loaded. A ` [timing]` test runs in the `timing` project (retried twice, one worker)
+instead of the parallel, no-retry `unit` project, so the test's **file must be
+listed in that project's `include`** in `vitest.config.ts`
+(`src/timing-project-include.test.ts` fails until it is). Give a spawn-heavy test an
+explicit timeout too. `npm run test:fast` skips ` [timing]` tests, just like
+` [slow]` ones, so `npm test` is still the gate.
+
 The tests exec the built `dist/` output, so a stale build gives misleading
 results — `npm test`, `npm run test:fast` and `npm run test:coverage` run the
 build first via `pre*` hooks, and a Vitest global setup

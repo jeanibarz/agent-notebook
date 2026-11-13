@@ -137,7 +137,7 @@ export default defineConfig({
           name: 'timing',
           // Only the files that hold [timing] tests, so this project does not
           // re-transform the whole tree just to run a few tests.
-          include: ['src/notebook.test.ts', 'src/timing-retry.test.ts'],
+          include: ['src/notebook.test.ts', 'src/nb-retrospective.test.ts', 'src/timing-retry.test.ts'],
           // @ts-expect-error — same: accepted per project at runtime, missing from the types
           testNamePattern: TIMING_TAG,
           // Re-run a wall-clock test that lost a scheduling race; a real,
