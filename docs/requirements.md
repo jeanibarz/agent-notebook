@@ -410,7 +410,7 @@ relocate it losslessly under its own lock and eviction rules.
 **FR-MOVE-002 (Must).** `move` SHALL refuse, writing NOTHING to either shelf, when: the
 source and target are the same shelf (throw); the source is empty (throw); the selector
 is absent or ambiguous (throw, per [FR-SEL-002](#fr-sel-002)); or the target already
-holds an entry with the moved lesson's dedup key — a near-duplicate — in which case it
+holds an entry with the moved lesson's dedup key (identical text up to case, punctuation and spacing), in which case it
 SHALL return `reason: 'duplicate'` with the colliding entry's `collidedId` and leave
 both shelves untouched (same dedup rule as `add`/`merge`, so a move never creates a
 duplicate). On success it SHALL persist the target before removing from the source, so
