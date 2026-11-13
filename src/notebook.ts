@@ -2985,7 +2985,7 @@ export interface Anomaly {
  * The three kinds, all implied by behavior the agent already performs:
  *   - `browse-without-use`: a notebook was `show`n in a session but nothing in it
  *     was voted that session → its description may over-promise.
- *   - `eviction-while-still-voted`: the cap evicted an entry upvoted in the window
+ *   - `eviction-while-still-voted`: the cap evicted (on an `add`, `merge` or `split`) an entry upvoted in the window
  *     (final score 0 or above), or whose score was still above the +1 a new lesson starts at → a lesson agents found useful was lost. A full shelf is normal; only
  *     repeated still-voted evictions suggest the cap is too tight for that shelf.
  *   - `vote-reversal`: the same entry was upvoted in one session and downvoted in
@@ -3694,7 +3694,7 @@ export function stats(
     }
   }
 
-  // (B) eviction-while-still-voted: an `add` evicted one or more entries (its
+  // (B) eviction-while-still-voted: an `add`, `merge` or `split` evicted one or more entries (its
   //     `evicted` column is a comma-separated list of `<id>:<score>` pairs —
   //     usually one, but a cap decrease can evict many at once, issue #306)
   //     whose final score was still above the +1 a new lesson starts at, or that
@@ -3707,6 +3707,7 @@ export function stats(
   //     carries no per-entry score, so it is skipped here.
   {
     const seen = new Set<string>(); // dedup repeat evictions of the same shelf+id
+    const EVICTING_COMMANDS = new Set(['add', 'merge', 'split']);
     // Issue #438: on a full shelf the staleness dock lowers a stale lesson a point
     // per add, so an upvoted lesson usually leaves at +1 or 0 and the above-+1 test
     // alone almost never fires. Also count an entry that received an `up` vote in
@@ -3722,7 +3723,10 @@ export function stats(
       }
     }
     for (const r of recent) {
-      if (r.command !== 'add' || r.evicted === '') continue;
+      // `add`, `merge` and `split` file their row under the shelf that evicted
+      // (issue #455). `move` is left out: its row is filed under the SOURCE shelf
+      // while the eviction happens in the target, so it cannot be attributed here.
+      if (!EVICTING_COMMANDS.has(r.command) || r.evicted === '') continue;
       for (const pair of r.evicted.split(',')) {
         if (pair.startsWith('+')) continue; // `+<dropped>` overflow marker — count only, no per-entry score
         const [evictedId, scoreRaw] = pair.split(':');

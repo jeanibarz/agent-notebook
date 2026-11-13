@@ -3816,6 +3816,25 @@ describe('diagnostic signals (issue #72)', () => {
     expect(stats(dir, { now: Date.now() }).signals.filter((s) => s.kind === 'eviction-while-still-voted')).toHaveLength(1);
   });
 
+  test.each(['merge', 'split'])('eviction-while-still-voted: a voted lesson evicted by %s is flagged for that shelf (#455)', (command) => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', entries: ['tidy11'], outcome: 'up' });
+    logUsage(dir, 'patcher', command, true, 2, { session: 's2', entries: ['a1', 'b2'], outcome: command === 'merge' ? 'merged' : 'split', evicted: 'tidy11:2' });
+    const sigs = stats(dir, { now: Date.now() }).signals.filter((s) => s.kind === 'eviction-while-still-voted');
+    expect(sigs).toHaveLength(1);
+    expect(sigs[0]).toMatchObject({ shelf: 'patcher', entry: 'tidy11' });
+  });
+
+  test('eviction-while-still-voted: a merge evicting a never-voted lesson at +1 is NOT flagged (#455)', () => {
+    logUsage(dir, 'patcher', 'merge', true, 2, { session: 's1', entries: ['a1', 'b2'], outcome: 'merged', evicted: 'unv000:1' });
+    expect(stats(dir, { now: Date.now() }).signals.some((s) => s.kind === 'eviction-while-still-voted')).toBe(false);
+  });
+
+  test('eviction-while-still-voted: a move row never produces the signal (#455)', () => {
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', entries: ['mov111'], outcome: 'up' });
+    logUsage(dir, 'patcher', 'move', true, 2, { session: 's2', entries: ['mov111'], outcome: 'moved', evicted: 'mov111:3' });
+    expect(stats(dir, { now: Date.now() }).signals.some((s) => s.kind === 'eviction-while-still-voted')).toBe(false);
+  });
+
   test('vote-reversal: upvoted in one session, downvoted in another', () => {
     logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's1', entries: ['xy12ab'], outcome: 'up' });
     logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's2', entries: ['xy12ab'], outcome: 'down' });
