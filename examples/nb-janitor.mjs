@@ -741,13 +741,15 @@ else
 H('2. Near-duplicate shelf names (fragmented memory)');
 if (shelfDups.length === 0 && slugVariants.length === 0) out.push('  ✅ no suspiciously similar shelf names.');
 else {
-  for (const d of shelfDups) {
+  for (const d of shelfDups.slice(0, COACCESS_MAX_ROWS)) {
     out.push(`  ⚠️  "${d.a}" ~ "${d.b}" (name similarity ${d.sim}) — likely the same shelf, split in two.`);
     out.push(
       `      → consolidate a lesson at a time, keeping its score: nb move ${d.b} ${d.a} <id>  (ids: nb show ${d.b}; swap the two names to keep ${d.b} instead). ` +
         `A shelf with no description disappears with its last lesson; one with a description also needs nb describe <emptied-shelf> "".`,
     );
   }
+  if (shelfDups.length > COACCESS_MAX_ROWS)
+    out.push(`  …(${shelfDups.length - COACCESS_MAX_ROWS} more pairs — run with --json)`);
   for (const v of slugVariants.slice(0, COACCESS_MAX_ROWS)) {
     out.push(
       `  ⚠️  possible slug drift: "${v.shortShelf}" (${v.shortLessons} lesson(s)) and "${v.longShelf}" (${v.longLessons}) — ` +
