@@ -281,3 +281,31 @@ describe('nb-retrospective.sh length target (issue #342)', () => {
     expect(reason).toMatch(/rejected, not truncated/);
   });
 });
+
+describe('nb-retrospective.sh session_id sanitizing (issue #460)', () => {
+  test('a traversal id never writes outside the sentinel directory', () => {
+    const store = join(dir, 'store');
+    mkdirSync(store);
+    const out = runHook({ session_id: 'x/../../escaped-file' }, { NB_DIR: store });
+    expect(JSON.parse(out).decision).toBe('block');
+    expect(existsSync(join(dir, 'escaped-file'))).toBe(false);
+    expect(readdirSync(store)).toEqual(['.retro-x_.._.._escaped-file']);
+  });
+
+  test('a slash-containing id is nudged once, then later stops pass', () => {
+    expect(JSON.parse(runHook({ session_id: 'a/b' })).decision).toBe('block');
+    expect(runHook({ session_id: 'a/b' }).trim()).toBe('');
+    expect(existsSync(join(dir, '.retro-a_b'))).toBe(true);
+  });
+
+  test('a UUID-shaped id keeps its file name', () => {
+    const id = '123e4567-e89b-12d3-a456-426614174000';
+    runHook({ session_id: id });
+    expect(existsSync(join(dir, `.retro-${id}`))).toBe(true);
+  });
+
+  test('an over-long id is capped to 128 chars', () => {
+    runHook({ session_id: 'a'.repeat(300) });
+    expect(readdirSync(dir)).toEqual([`.retro-${'a'.repeat(128)}`]);
+  });
+});

@@ -35,7 +35,11 @@ try { data = JSON.parse(input || '{}'); } catch {}
 // Never loop: if we already blocked once this stop cycle, let it finish.
 if (data.stop_hook_active) process.exit(0);
 
-const session = data.session_id || 'nosession';
+// session_id is untrusted input that becomes part of a file name: keep only
+// [A-Za-z0-9._-] (so a `/` or `../` can never leave the sentinel directory or hit
+// ENOENT and fail open into a nudge on every stop) and cap the length. UUID-shaped
+// ids pass through unchanged, so the documented `.retro-<session_id>` names hold.
+const session = String(data.session_id || 'nosession').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128);
 const fs = require('node:fs');
 const path = require('node:path');
 const sentinel = path.join(sentinelDir, `.retro-${session}`);
