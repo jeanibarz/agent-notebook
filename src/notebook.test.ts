@@ -1496,6 +1496,16 @@ describe('merge', () => {
     // only max(A,B) = +3; the dropped C's +2 is discarded. Pinned so a change to
     // merge's score inheritance becomes a visible, deliberate decision.
     expect(entries[0].score).toBe(3);
+    // The loss is reported, not silent (issue #454): C and its +2 are returned.
+    expect(r.absorbed).toEqual([{ text: 'shared merged text', score: 2 }]);
+  });
+
+  test('a merge with no third match reports nothing absorbed (issue #454)', async () => {
+    await addEntry(dir, 'm', 'alpha one');
+    await addEntry(dir, 'm', 'beta two');
+    await addEntry(dir, 'm', 'unrelated gamma');
+    const r = await merge(dir, 'm', entryId('alpha one'), entryId('beta two'), 'combined lesson');
+    expect(r.absorbed).toEqual([]);
   });
 
   test('refuses to merge an entry with itself', async () => {

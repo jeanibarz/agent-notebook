@@ -355,7 +355,11 @@ single entry whose text is the sanitized `merged`, and give it `max(scoreA, scor
 <a id="fr-merge-002"></a>
 **FR-MERGE-002 (Must).** `merge` SHALL reject an empty or over-`maxChars` merged
 lesson (throw, leaving both sources intact), and SHALL drop any pre-existing entry
-whose dedup key equals the merged text so the merge never creates a duplicate.
+whose dedup key equals the merged text so the merge never creates a duplicate. It SHALL
+report each such absorbed entry (text and score) in the result's `absorbed` array (empty
+when none), and the CLI SHALL name each one with its score on the human line and in
+`--json`, because the merged entry does not inherit the absorbed entry's score.
+*Proven by:* `notebook.test.ts` → the `merge` test that drops a third dedup-equal entry and "a merge with no third match reports nothing absorbed (issue #454)"; `cli.test.ts` → "merge names a third lesson it absorbed, with its score, in text and --json (issue #454)".
 
 ### 4.6 `split`
 

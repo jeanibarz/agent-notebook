@@ -1194,6 +1194,11 @@ export async function runNbCli(
             );
           }
           if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
+          // A third lesson identical to the merged text was dropped; say so, with
+          // the score it held (the merged entry does not inherit it — issue #454).
+          for (const a of r.absorbed) {
+            process.stdout.write(` (also absorbed [${fmt(a.score)}] ${a.text}, identical to the merged lesson)`);
+          }
           process.stdout.write('\n');
         }
         break;
