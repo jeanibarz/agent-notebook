@@ -1640,7 +1640,18 @@ export function voteMany(dir: string, shelf: string, selectors: string[], delta:
   });
 }
 
-export function merge(dir: string, shelf: string, selA: string, selB: string, mergedLesson: string): Promise<AddResult> {
+/** What `merge` returns: the usual add-style result plus the lessons the merge absorbed. */
+export interface MergeResult extends AddResult {
+  /**
+   * Third lessons the merge dropped because their text normalizes to the merged
+   * text (FR-MERGE-002), each with the score it held. Empty in the ordinary
+   * case. The merged entry keeps `max(scoreA, scoreB)`, so an absorbed lesson's
+   * own score is NOT inherited — this field is how the caller learns of the loss.
+   */
+  absorbed: Entry[];
+}
+
+export function merge(dir: string, shelf: string, selA: string, selB: string, mergedLesson: string): Promise<MergeResult> {
   return withLock(dir, () => {
     // One scan for entries AND the metadata block, passed through to writeEntries
     // below so the mutation reads the shelf once, not twice (issue #251).
@@ -1661,13 +1672,14 @@ export function merge(dir: string, shelf: string, selA: string, selB: string, me
     // Drop an existing duplicate of the merged text so merge never creates one.
     const key = dedupKey(text);
     const deduped = remaining.filter((e) => dedupKey(e.text) !== key);
+    const absorbed = remaining.filter((e) => dedupKey(e.text) === key);
     deduped.push({ score, text }); // merged lesson is a fresh touch → fresh end
     // merge consolidates (2 → 1) so it never grows past the cap; enforceCap is a
     // harmless no-op here unless the cap was lowered, in which case the merged
     // lesson is protected like any newcomer.
     const { kept, evicted, decayed } = enforceCap(deduped, 1);
     writeEntries(dir, shelf, kept, metaLines);
-    return { added: true, reason: 'added', evicted: evicted[0] ?? null, evictedAll: evicted, decayed, size: kept.length, id: entryId(text), sources };
+    return { added: true, reason: 'added', evicted: evicted[0] ?? null, evictedAll: evicted, decayed, size: kept.length, id: entryId(text), sources, absorbed };
   });
 }
 

@@ -2854,6 +2854,36 @@ describe('runNbCli', () => {
       expect(parseOnly(r.out)).toEqual({ text: 'delete me', score: 1 });
     });
 
+    test('merge names a third lesson it absorbed, with its score, in text and --json (issue #454)', async () => {
+      await run(['add', 'patcher', 'gamma combined lesson']);
+      for (let i = 0; i < 4; i++) await run(['vote', 'patcher', 'gamma', '+1']);
+      await run(['add', 'patcher', 'alpha lesson']);
+      await run(['add', 'patcher', 'beta lesson']);
+      const plain = await run(['merge', 'patcher', 'alpha', 'beta', 'Gamma combined lesson']);
+      expect(plain.code).toBe(0);
+      expect(plain.out).toContain('(also absorbed [+5] gamma combined lesson, identical to the merged lesson)');
+
+      await run(['add', 'patcher', 'delta lesson']);
+      await run(['add', 'patcher', 'epsilon lesson']);
+      await run(['vote', 'patcher', 'delta', '+1']);
+      await run(['add', 'patcher', 'zeta target']);
+      await run(['vote', 'patcher', 'zeta', '+1']);
+      await run(['vote', 'patcher', 'zeta', '+1']);
+      const json = await run(['merge', 'patcher', 'delta', 'epsilon', 'zeta target', '--json']);
+      expect(parseOnly(json.out)).toMatchObject({ absorbed: [{ text: 'zeta target', score: 3 }] });
+    });
+
+    test('merge with no third match prints no absorbed note and --json has an empty array (issue #454)', async () => {
+      await run(['add', 'patcher', 'alpha lesson']);
+      await run(['add', 'patcher', 'beta lesson']);
+      const r = await run(['merge', 'patcher', 'alpha', 'beta', 'plain merged']);
+      expect(r.out).not.toContain('absorbed');
+      await run(['add', 'patcher', 'gamma lesson']);
+      await run(['add', 'patcher', 'delta lesson']);
+      const j = await run(['merge', 'patcher', 'gamma', 'delta', 'other merged', '--json']);
+      expect(parseOnly(j.out)).toMatchObject({ absorbed: [] });
+    });
+
     test('merge --json prints the resulting AddResult', async () => {
       await run(['add', 'patcher', 'alpha lesson']);
       await run(['add', 'patcher', 'beta lesson']);
