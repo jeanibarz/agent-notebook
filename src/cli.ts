@@ -175,7 +175,7 @@ usage:
 notes:
   - <shelf> is a notebook's name: one <shelf>.md file of lessons an agent needs in the
     same situations (see \`nb list\`).
-  - add/vote/rm/merge/move accept --json (after the subcommand): stdout is one JSON
+  - add/vote/rm/merge/split/move/describe accept --json (after the subcommand): stdout is one JSON
     result object and nothing else; warnings/errors stay on stderr. Exit codes are
     unchanged (a too-long add still exits 1, a duplicate still exits 0).
   - \`--\` ends option parsing: every token after it is a literal operand, so a
@@ -205,7 +205,7 @@ notes:
     each inheriting the original's score. Each half is rejected (not truncated) if too
     long, and a split never creates a duplicate (the two halves must differ from each
     other and from every surviving entry, else the split is refused and nothing changes).
-  - add/merge/rm/split/describe accept an optional \`--reason <code>\` (+ \`--note "<text>"\`), logged
+  - add/merge/rm/split/move/describe accept an optional \`--reason <code>\` (+ \`--note "<text>"\`), logged
     (never stored in the notebook) so each op's rate-by-reason becomes a diagnostic
     signal. The reason is always OPTIONAL (omit it rather than invent one — forcing it
     breeds filler), and an unrecognized code is accepted as \`other\` (kept in the note),

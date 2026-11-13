@@ -4151,6 +4151,29 @@ describe('per-command help (issue #370)', () => {
     expect(scopedHelp('nonsense')).toBeNull();
   });
 
+  test('scoped help mentions every flag the command accepts (issue #457)', () => {
+    for (const c of COMMANDS) {
+      const h = scopedHelp(c)!;
+      const mutators = ['add', 'vote', 'rm', 'merge', 'split', 'move', 'describe'];
+      for (const f of [...(KNOWN_FLAGS[c] ?? []), ...(mutators.includes(c) ? ['--json'] : [])]) {
+        expect(h, `${c} ${f}`).toContain(f);
+      }
+    }
+  });
+
+  test('the README Usage block carries every usage line `nb --help` prints (issue #457)', async () => {
+    const help = (await run(['--help'])).out;
+    const usage = help.slice(help.indexOf('usage:\n') + 7, help.indexOf('\nnotes:'))
+      .split('\n').filter((l) => /^ {2}nb /.test(l)).map((l) => l.trim());
+    const readme = readFileSync(join(REPO_ROOT, 'README.md'), 'utf8');
+    const block = readme.slice(readme.indexOf('## Usage'));
+    const open = block.indexOf('```\n') + 4;
+    const fence = block.slice(open, block.indexOf('\n```', open));
+    const lines = new Set(fence.split('\n').map((l) => l.trim()));
+    expect(usage.length).toBeGreaterThan(10);
+    for (const u of usage) expect(lines.has(u), u).toBe(true);
+  });
+
   test.each(['--help', '-h'])('`nb <command> %s` exits 0, prints scoped usage and writes no shelf', async (flag) => {
     for (const c of COMMANDS) {
       const r = await run([c, 'shelf', flag]);
