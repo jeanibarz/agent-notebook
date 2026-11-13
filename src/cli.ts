@@ -124,6 +124,15 @@ import { doctor, renderDoctor } from './doctor.js';
 const LIST_DEFAULT_LIMIT = 50;
 
 /**
+ * Row cap the emitted shell-completion scripts pass to `nb list` (issue #456). A
+ * bare `nb list` stops at `LIST_DEFAULT_LIMIT` rows, so on a larger store the
+ * newest, smallest shelves would never tab-complete. `--limit 0` returns no rows
+ * (it cannot mean "all"), so completion asks for an explicit, practically
+ * unbounded number instead.
+ */
+const COMPLETION_LIST_LIMIT = 1000000;
+
+/**
  * Default notebook-group cap for `nb search` when `--limit` is not given (issue
  * #186). Mirrors `LIST_DEFAULT_LIMIT`: search groups ARE notebooks, so the same
  * generous bound keeps a normal result set whole while capping a common term (or
@@ -428,7 +437,7 @@ _nb_complete() {
   # failure are swallowed, so a broken or absent \`nb\` yields no completions
   # rather than an error.
   local shelves
-  shelves="$(nb list 2>/dev/null | awk '/^[[:space:]]/ {print $1}')" || return 0
+  shelves="$(nb list --limit ${COMPLETION_LIST_LIMIT} 2>/dev/null | awk '/^[[:space:]]/ {print $1}')" || return 0
   COMPREPLY=( $(compgen -W "$shelves" -- "$cur") )
   return 0
 }
@@ -473,7 +482,7 @@ _nb() {
     # line is flush-left, so the leading-space match skips it). Only split and add
     # when the lookup produced output, so an empty list adds no empty candidate.
     local _nb_list
-    _nb_list="$(nb list 2>/dev/null | awk '/^[[:space:]]/ {print $1}')"
+    _nb_list="$(nb list --limit ${COMPLETION_LIST_LIMIT} 2>/dev/null | awk '/^[[:space:]]/ {print $1}')"
     if [[ -n $_nb_list ]]; then
       local -a _nb_shelves
       _nb_shelves=(\${(f)_nb_list})
