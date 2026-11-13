@@ -347,6 +347,26 @@ describe('near-duplicate advisory (FR-ADD-008)', () => {
     expect(e).toBeLessThanOrEqual(1);
   });
 
+  test('an evicted near-match is flagged nearEvicted; a surviving one is not', async () => {
+    process.env.NB_MAX_LINES = '3';
+    await addEntry(dir, 'ev', 'always run the linter before you commit');
+    await addEntry(dir, 'ev', 'pin node version in CI');
+    await addEntry(dir, 'ev', 'cache npm in workflows');
+    await vote(dir, 'ev', 'pin node', 1);
+    await vote(dir, 'ev', 'cache npm', 1);
+    const r = await addEntry(dir, 'ev', 'always run the linter before each commit');
+    expect(r.nearId).toBe(entryId('always run the linter before you commit'));
+    expect(r.evicted?.text).toBe('always run the linter before you commit');
+    expect(r.nearEvicted).toBe(true);
+    // Near-match survives (a different, lower-scored line is evicted): no flag.
+    await vote(dir, 'ev', 'always run the linter before each', 1);
+    await vote(dir, 'ev', 'always run the linter before each', 1);
+    const r2 = await addEntry(dir, 'ev', 'always run the linter before each commit please');
+    expect(r2.nearId).toBe(entryId('always run the linter before each commit'));
+    expect(r2.nearEvicted).toBeUndefined();
+    delete process.env.NB_MAX_LINES;
+  });
+
   test('NB_NEAR_DUP=0 disables the advisory entirely (no spurious near-match on every add)', async () => {
     process.env.NB_NEAR_DUP = '0';
     await addEntry(dir, 'c', 'run lint before claiming done');
