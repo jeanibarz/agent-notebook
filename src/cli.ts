@@ -267,7 +267,8 @@ notes:
     reads back as a \`failed-search\` coverage gap in \`nb stats\`.
   - \`nb stats\` also surfaces free *diagnostic signals* read straight from the usage log (no
     extra agent action): browse-without-use (a notebook shown in a session but no entry voted
-    that session — the description may over-promise), eviction-while-still-voted (the cap
+    that session; the report ranks shelves by the share of sessions that voted, lowest first,
+    and a low share suggests the description may over-promise), eviction-while-still-voted (the cap
     evicted an entry upvoted in the window, or whose score was still
     above the starting +1 — a useful lesson was lost),
     vote-reversal (the same entry upvoted in one session and downvoted in another — correct but
@@ -905,6 +906,10 @@ export async function runNbCli(
         const shelves = args.slice(1);
         need(shelves[0], 'shelf');
         shelf = shelves[0]; // usage-log field: the first shelf (single-shelf behavior unchanged)
+        // Record a show of a shelf with no notebook file as `no-shelf` (issue #480),
+        // so `nb stats` does not read it as a browse — even after a later `add` in
+        // the same session creates the file. Exit stays 0 (see below).
+        if (!notebookExists(dir, shelf)) meta.outcome = 'no-shelf';
         if (json) {
           // One shelf → a lone ShowResult object ({ shelf, description, entries })
           // so an agent reads each entry's id/score/text/key without regex-parsing
@@ -2467,6 +2472,17 @@ function renderConflicts(cmd: string, conflicts: ConflictShelf[]): string {
   return conflicts.map((c) => renderConflict(cmd, c.shelf, c.marker)).join('');
 }
 
+/**
+ * browse-without-use text-report thresholds (issue #480). A shelf is rated —
+ * printed on its own line, ranked by voted share — only once at least
+ * BROWSE_MIN_SESSIONS sessions showed it; below that one unvoted session says
+ * little, so those shelves fold into one summary line. A rated shelf voted in
+ * fewer than BROWSE_LOW_SHARE of the sessions that showed it gets the "the
+ * notebook's description may over-promise" hint.
+ */
+const BROWSE_MIN_SESSIONS = 3;
+const BROWSE_LOW_SHARE = 0.25;
+
 function renderStats(rep: StatsReport, shelf: string | undefined): string {
   const lines: string[] = [];
   lines.push(`nb usage — ${shelf ? `shelf ${shelf}, ` : ''}window ${rep.window}, ${rep.totalCalls} calls`);
@@ -2519,21 +2535,41 @@ function renderStats(rep: StatsReport, shelf: string | undefined): string {
   if (rep.signals.length > 0) {
     lines.push('  signals:');
     // browse-without-use fires once per (session, shelf) pair (issue #415), so
-    // the text report folds it into one line per shelf with a session count,
-    // busiest first. `--json` keeps every pair. Other kinds print as before.
-    const browse = new Map<string, number>();
+    // the text report folds it into one line per shelf. Each line gives both
+    // counts — sessions that showed the shelf and sessions that voted in it — and
+    // the list is sorted by voted share, lowest first (issue #480): a busy shelf
+    // voted in half its sessions is ordinary, a shelf never voted is the one to
+    // read. Shelves shown in fewer than BROWSE_MIN_SESSIONS sessions are too few
+    // to rate and fold into one summary line. `--json` keeps every pair.
+    const browse = new Map<string, { shown: number; voted: number }>();
     for (const s of rep.signals) {
       if (s.kind === 'browse-without-use') {
-        browse.set(s.shelf, (browse.get(s.shelf) ?? 0) + 1);
+        // Every pair of one shelf carries the same shelf totals, so overwriting is fine.
+        browse.set(s.shelf, { shown: s.shown ?? 0, voted: s.voted ?? 0 });
         continue;
       }
       const where = s.entry ? ` entry ${s.entry}` : s.session ? ` session "${s.session}"` : '';
       lines.push(`    [${s.kind}] shelf ${s.shelf}${where}: ${s.detail}`);
     }
-    const folded = [...browse].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-    for (const [shelf, n] of folded) {
+    const share = (t: { shown: number; voted: number }): number => (t.shown > 0 ? t.voted / t.shown : 0);
+    const rated = [...browse]
+      .filter(([, t]) => t.shown >= BROWSE_MIN_SESSIONS)
+      .sort(
+        ([a, ta], [b, tb]) =>
+          share(ta) - share(tb) || tb.shown - ta.shown || (a < b ? -1 : a > b ? 1 : 0),
+      );
+    for (const [shelf, t] of rated) {
+      const pctVoted = Math.round(share(t) * 100);
+      // Compare the printed percent, so a line reading "(25%)" never carries the hint.
+      const hint = pctVoted < BROWSE_LOW_SHARE * 100 ? " — the notebook's description may over-promise" : '';
       lines.push(
-        `    [browse-without-use] shelf ${shelf}: shown without a vote in ${n} session${n === 1 ? '' : 's'} — the notebook's description may over-promise`,
+        `    [browse-without-use] shelf ${shelf}: shown in ${t.shown} sessions, voted in ${t.voted} (${pctVoted}%)${hint}`,
+      );
+    }
+    const few = browse.size - rated.length;
+    if (few > 0) {
+      lines.push(
+        `    [browse-without-use] ${few} more shel${few === 1 ? 'f' : 'ves'} shown without a vote, each in fewer than ${BROWSE_MIN_SESSIONS} sessions — run \`nb stats --json\` for every pair`,
       );
     }
   } else {

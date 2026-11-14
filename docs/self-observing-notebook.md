@@ -74,7 +74,7 @@ where the surface form is ambiguous.
 | **merge** (`reason=duplicate`) | a *reworded* duplicate had accumulated that the literal dedup check let through | recall (paraphrase misses) |
 | **split** (`reason=overloaded`) | an entry was too coarse — two lessons in one line | entry granularity / cap strain |
 | **rm** (`reason=wrong`/`obsolete`) | bad content (fix the add-guidance) vs natural rot (expected) | content quality vs rot |
-| **show without a following vote** | a notebook was opened and nothing in it used — its description over-promised | surfacing precision (shelf level) |
+| **show without a following vote** | a notebook was opened and nothing in it used — a low voted share over several sessions suggests its description over-promised | surfacing precision (shelf level) |
 
 Why reasons matter: an agent may `merge` not because two entries duplicate but
 because editing one and deleting the other is cheaper than three calls. Without

@@ -950,8 +950,9 @@ then not computed), `entry-ids` is the comma-joined stable id(s) the call touche
 `rejected-full` in logs predating the always-admit policy; `add` no longer emits it),
 `up`/`down` for `vote`, `removed` for `rm`, `merged` for `merge`, `split` for `split`,
 `moved`/`move-blocked` for `move` (the latter when the target already held a
-near-duplicate), and blank for a
-read-only command, `collided-id` is the id of the existing entry that blocked a
+near-duplicate), `no-shelf` for a `show` of a shelf with no notebook file (issue #480;
+for `nb show a b` the row names the first shelf, so the outcome is about that one), and blank for a
+read-only command otherwise, `collided-id` is the id of the existing entry that blocked a
 `dedup-blocked` add or a `move-blocked` move, and `evicted-id:score` records the
 entry/entries an `add`/`merge`/`split`/`move` evicted, each as `<id>:<finalScore>`.
 A single eviction is one such pair (byte-identical to the original format); a cap
@@ -1050,11 +1051,17 @@ documented default (never `NaN`, which would disable detection).
 <a id="fr-stats-003"></a>
 **FR-STATS-003 (Should).** `stats` SHALL additionally derive **free diagnostic signals**
 from the same windowed, shelf-scoped usage rows and return them as `StatsReport.signals`
-(a list of `DiagnosticSignal = { kind, shelf, role, detail, session?, entry? }`, `role` being a deprecated copy of `shelf`), computed from
+(a list of `DiagnosticSignal = { kind, shelf, role, detail, session?, entry?, shown?, voted? }`, `role` being a deprecated copy of `shelf`), computed from
 the usage ring alone — the entry-level columns of [FR-USAGE-002](#fr-usage-002) — with no
 new agent action and no field added to a lesson ([NG-004](#ng-004)). The three kinds:
 **browse-without-use** (a `show` of a notebook in a session with no `vote` on any of its
-entries that same session → the description may over-promise), **eviction-while-still-voted**
+entries that same session; a vote on another shelf does not count. A `show` of a shelf
+with no notebook file SHALL NOT count, issue #480: it exits 0 but there is no description
+or lesson to fault. It is logged with outcome `no-shelf` and skipped even if the shelf is
+created later in the session; a row without that outcome (logged before it existed) is
+skipped when the shelf has no file at report time. Each
+pair SHALL carry the shelf's window totals as additive fields `shown` (sessions that showed
+it) and `voted` (how many of those also voted on it)), **eviction-while-still-voted**
 (an `add`, `merge` or `split` where **any** evicted entry either received an `up` vote in the windowed usage rows and left at a final score of 0 or above, or left with a final score above the +1 a new entry starts at → a useful
 lesson was lost — the staleness dock usually takes an upvoted entry down to +1 or 0 before it is evicted, issue #438, and the upvote count is a lower bound because older votes are outside the window; evicting a never-voted entry at +1 or below, or a net-downvoted one, is the cap working as intended — and because a cap
 *decrease* can evict many entries in one `add` ([FR-USAGE-002](#fr-usage-002), issue #306), this
@@ -1062,15 +1069,21 @@ signal SHALL count **each** still-voted entry in that row's `evicted` list, not 
 and **vote-reversal** (one entry id with an `up` vote in one session and a `down` vote in a
 **different** session → correct but mis-aimed). browse-without-use and vote-reversal are
 session-scoped and SHALL skip rows with a blank session ([FR-USAGE-002](#fr-usage-002):
-"co-access is then not computed"). The human report SHALL fold browse-without-use into one line per shelf carrying the session count (busiest first); `signals[]` in `--json` keeps every (session, shelf) pair (issue #415). The field is additive — the report from
+"co-access is then not computed"). The human report SHALL fold browse-without-use into one line per shelf (issue #415) that prints both counts (`shelf s: shown in 15 sessions, voted in 3 (20%)`), sorted by voted share, lowest first (ties: more sessions first, then by name), for shelves shown in at least 3 sessions; it SHALL fold the shelves shown in fewer into one summary line pointing at `--json`, and SHALL add "the notebook's description may over-promise" only to a listed shelf whose printed voted share (rounded to a whole percent) is below 25%. One unvoted pair is weak evidence, since an agent may open several shelves and vote only the one that helped, so the per-pair `detail` SHALL NOT make that claim (issue #480). `signals[]` in `--json` keeps every (session, shelf) pair. The field is additive — the report from
 [FR-STATS-001](#fr-stats-001) and the issue-#40 inventory is otherwise unchanged. A fourth
 kind, **failed-search** (a `no-match` `search` followed by an `accepted` `add` in the same
 session → a coverage gap), was added with `nb search` — see [FR-SEARCH-002](#fr-search-002).
 **Rationale:** These signals diagnose description quality, cap pressure, and mis-targeting
 from behaviour the agent already performs; reading them costs nothing and keeps the
 one-line / no-schema lesson contract intact. They are heuristic hints, not verdicts.
-*Proven by:* `notebook.test.ts` → `describe('diagnostic signals (issue #72)')` and
-`cli.test.ts` → `describe('diagnostic signals (issue #72)')`.
+*Proven by:* `notebook.test.ts` → `describe('diagnostic signals (issue #72)')`, including
+`browse-without-use: a shelf with no notebook file is not flagged (issue #480)`,
+`browse-without-use: a show logged as no-shelf is skipped even once the file exists (issue #480)` and
+`browse-without-use: each pair carries the shelf's shown / voted session counts (issue #480)`;
+`cli.test.ts` → `the human stats table renders a browse-without-use signal (issue #72)`,
+`the human stats table folds browse-without-use to one line per shelf; --json keeps every pair (issue #415)` and
+`browse-without-use lines give both counts and sort by voted share, lowest first (issue #480)` and
+`a show of a shelf created later in the same session is not a browse (issue #480)`.
 
 <a id="fr-stats-004"></a>
 **FR-STATS-004 (Should).** `stats` SHALL additionally report the named **surfacing
