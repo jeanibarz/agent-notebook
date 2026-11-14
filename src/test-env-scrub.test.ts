@@ -55,8 +55,9 @@ describe('inherited environment is scrubbed before the suites run (issue #481)',
     );
 
     expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(0);
-    // The filter must have selected a real seeding test, not zero tests.
-    expect(r.stdout).toMatch(/Tests\s+1 passed/);
+    // The filter must have selected a real seeding test, not zero tests. CI sets
+    // FORCE_COLOR, so strip ANSI colour codes before matching the summary line.
+    expect(r.stdout.replace(/\x1b\[[0-9;]*m/g, '')).toMatch(/Tests\s+1 passed/);
     expect(git('rev-parse', 'HEAD')).toBe(headBefore);
     expect(git('rev-list', '--count', 'HEAD')).toBe('1');
     expect(readFileSync(configPath, 'utf-8')).toBe(configBefore);
