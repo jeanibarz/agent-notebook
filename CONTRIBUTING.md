@@ -58,6 +58,11 @@ listed in that project's `include`** in `vitest.config.ts`
 explicit timeout too. `npm run test:fast` skips ` [timing]` tests, just like
 ` [slow]` ones, so `npm test` is still the gate.
 
+Before any suite runs, the Vitest global setup (`scripts/vitest-global-setup.mjs`)
+deletes every inherited `GIT_*` and `NB_*` variable. Git exports `GIT_DIR` to hooks,
+so without this a `npm test` from a pre-commit hook would commit the fixtures into
+your repository. A test that needs one of these variables must set it itself.
+
 The tests exec the built `dist/` output, so a stale build gives misleading
 results — `npm test`, `npm run test:fast` and `npm run test:coverage` run the
 build first via `pre*` hooks, and a Vitest global setup
