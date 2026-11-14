@@ -62,7 +62,13 @@ function importGraph(): Map<string, string[]> {
   for (const f of readdirSync(srcDir)) {
     if (!f.endsWith('.ts') || f.endsWith('.test.ts') || f.endsWith('.d.ts')) continue;
     const text = readFileSync(join(srcDir, f), 'utf-8');
-    const deps = [...text.matchAll(/^(?:import|export)\b[^;]*?\bfrom '\.\/([\w-]+)\.js'/gm)].map((m) => m[1]);
+    // Static `import … from` / `export … from`, bare side-effect `import './x.js'`,
+    // and dynamic `import('./x.js')`: any of them makes x a load-time dependency.
+    const deps = [
+      ...text.matchAll(/^(?:import|export)\b[^;]*?\bfrom '\.\/([\w-]+)\.js'/gm),
+      ...text.matchAll(/^import '\.\/([\w-]+)\.js'/gm),
+      ...text.matchAll(/\bimport\(\s*'\.\/([\w-]+)\.js'\s*\)/g),
+    ].map((m) => m[1]);
     graph.set(f.replace(/\.ts$/, ''), [...new Set(deps)]);
   }
   return graph;
