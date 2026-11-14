@@ -32,7 +32,20 @@ export function isDistStale(rootDir = root) {
   return newestSourceMtime(join(rootDir, 'src')) > distMtime;
 }
 
+// Issue #481: delete every inherited `GIT_*` and `NB_*` variable from `env`.
+// Git exports `GIT_DIR` (and friends) to hooks, so `npm test` run from a
+// pre-commit/pre-push hook used to make the fixtures' `git init`/`config`/
+// `commit` act on the caller's repository; an ambient `NB_*` tunable changed
+// the notebook under test the same way. Tests that need one of these set it
+// themselves, after this runs. Returns the removed names, for the test.
+export function scrubInheritedEnv(env = process.env) {
+  const removed = Object.keys(env).filter((k) => k.startsWith('GIT_') || k.startsWith('NB_'));
+  for (const k of removed) delete env[k];
+  return removed;
+}
+
 export default function setup() {
+  scrubInheritedEnv();
   if (!isDistStale()) return;
   console.log('dist/ is missing or older than src/; running `npm run build` first');
   execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {

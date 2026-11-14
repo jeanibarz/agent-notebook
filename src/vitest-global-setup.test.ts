@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync, readFileSync
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isDistStale } from '../scripts/vitest-global-setup.mjs';
+import { isDistStale, scrubInheritedEnv } from '../scripts/vitest-global-setup.mjs';
 
 // Issue #420: bare `npx vitest run` must not test a stale `dist/`. The global
 // setup rebuilds only when dist/cli.js is missing or older than a src/ file.
@@ -60,5 +60,37 @@ describe('vitest config wiring', () => {
   test('the fast config registers it too (npm run test:fast is a bare vitest call)', () => {
     const cfg = readFileSync(join(repo, 'vitest.fast.config.ts'), 'utf8');
     expect(cfg).toMatch(/globalSetup/);
+  });
+});
+
+// Issue #481: the global setup deletes inherited GIT_* and NB_* variables before
+// any worker starts, so a hook's GIT_DIR or an ambient NB_MAX_LINES cannot reach
+// the fixtures. The end-to-end decoy check lives in test-env-scrub.test.ts.
+describe('scrubInheritedEnv', () => {
+  test('removes every GIT_* and NB_* variable and keeps the rest', () => {
+    const env: NodeJS.ProcessEnv = {
+      GIT_DIR: '/x/.git',
+      GIT_WORK_TREE: '/x',
+      GIT_INDEX_FILE: '/x/.git/index',
+      GIT_CONFIG_GLOBAL: '/x/gitconfig',
+      NB_DIR: '/nb',
+      NB_MAX_LINES: '3',
+      PATH: '/bin',
+      HOME: '/home/u',
+      MY_GIT_DIR: 'kept',
+      NBX: 'kept',
+      git_dir: 'kept',
+    };
+    expect(scrubInheritedEnv(env).sort()).toEqual(
+      ['GIT_CONFIG_GLOBAL', 'GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'NB_DIR', 'NB_MAX_LINES'],
+    );
+    expect(env).toEqual({ PATH: '/bin', HOME: '/home/u', MY_GIT_DIR: 'kept', NBX: 'kept', git_dir: 'kept' });
+  });
+
+  test('the default export scrubs process.env before the dist check', () => {
+    const src = readFileSync(join(repo, 'scripts', 'vitest-global-setup.mjs'), 'utf8');
+    const body = src.slice(src.indexOf('export default function setup'));
+    expect(body.indexOf('scrubInheritedEnv()')).toBeGreaterThan(-1);
+    expect(body.indexOf('scrubInheritedEnv()')).toBeLessThan(body.indexOf('isDistStale()'));
   });
 });
