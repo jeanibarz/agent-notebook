@@ -82,21 +82,27 @@ const NB_DIR =
   process.env.NB_DIR && process.env.NB_DIR.trim() !== ''
     ? expandHome(process.env.NB_DIR)
     : join(homedir(), '.agent-notebook', 'notebooks');
-const MAX_LINES = Number.parseInt(process.env.NB_MAX_LINES ?? '50', 10) || 50;
-// The usage ring is bounded by ROW COUNT, not time (see notebook.ts usageRing():
-// default 5000, clamped to 100..100000). Mirror that clamp so we can tell when a
-// `--days` window reaches further back than the rows the ring still retains — an
-// active store rotates old rows out, so a wide window can be partially blind to
-// evicted activity and otherwise report a false all-clear (#275).
-// Mirror notebook.ts clampInt() EXACTLY (default 5000 only when the value is
-// non-finite; a finite 0 or negative clamps UP to the 100 floor, it does NOT
-// fall back to the default) — the `|| 5000` idiom would mishandle `NB_USAGE_RING=0`
-// (→ 5000 here vs 100 in core) and misjudge capacity.
-const USAGE_RING = (() => {
-  const raw = process.env.NB_USAGE_RING;
-  const n = raw === undefined ? NaN : Number.parseInt(raw, 10);
-  return Number.isFinite(n) ? Math.min(100000, Math.max(100, n)) : 5000;
-})();
+// Integer env vars are read with nb's own rule (notebook.ts resolveIntEnv, issue #336):
+// trim, honor only a WHOLE integer, clamp to [lo, hi], and fall back to the default
+// when unset or unparseable. `parseInt` alone would take a numeric prefix, so
+// `NB_MAX_LINES=1e3` read as 1 here while nb (which ignores it) uses 50.
+// src/nb-janitor-rules.test.ts pins these caps to `nb config --json`.
+function intEnv(name, dflt, lo, hi) {
+  const raw = process.env[name];
+  if (raw === undefined) return dflt;
+  const trimmed = raw.trim();
+  if (!/^[+-]?\d+$/.test(trimmed)) return dflt;
+  return Math.min(hi, Math.max(lo, Number.parseInt(trimmed, 10)));
+}
+// The per-shelf line cap (notebook.ts MAX_LINES: default 50, clamped to 1..5000).
+const MAX_LINES = intEnv('NB_MAX_LINES', 50, 1, 5000);
+// The usage ring is bounded by ROW COUNT, not time (notebook.ts USAGE_RING: default
+// 5000, clamped to 100..100000). Read it the same way so we can tell when a `--days`
+// window reaches further back than the rows the ring still retains — an active
+// store rotates old rows out, so a wide window can be partially blind to evicted
+// activity and otherwise report a false all-clear (#275). A finite 0 or negative
+// clamps UP to the 100 floor; it does not fall back to the default.
+const USAGE_RING = intEnv('NB_USAGE_RING', 5000, 100, 100000);
 
 // ---- nb's own exact-duplicate normal form ---------------------------------
 // Sections 2 and 8 compare lessons by `dedupKey`, the normal form `nb add|merge|move`
@@ -129,14 +135,28 @@ const lessonId = (raw) => createHash('sha1').update(dedupKey(raw)).digest('hex')
 const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 // ---- read the store (mirrors the package's file conventions) --------------
+// Same name rule as nb's assertSafeShelf (src/notebook.ts): a file nb refuses to treat as a
+// shelf (`nb list` skips it as "not a valid shelf name") is not counted here either.
+// src/nb-janitor-rules.test.ts pins this set to `nb list --json`.
 const SAFE_SHELF = /^[A-Za-z0-9](?:[A-Za-z0-9._@-]*[A-Za-z0-9])?$/;
+const MAX_SHELF_LEN = 128;
+// Windows device basenames, matched against the segment before the first `.` (issue #205):
+// `con.md` and `nul.notes.md` are refused, `console` and `com10` are ordinary names.
+const WINDOWS_RESERVED_DEVICE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+function isShelfName(name) {
+  return (
+    name.length <= MAX_SHELF_LEN &&
+    SAFE_SHELF.test(name) &&
+    !name.includes('..') &&
+    name.toLowerCase() !== 'readme' &&
+    !WINDOWS_RESERVED_DEVICE.test(name.split('.')[0])
+  );
+}
 function readNotebooks(dir) {
   let files = [];
   try {
-    // Same name rule as nb's assertSafeShelf: a stray `review copy.md` is not a shelf (issue #369).
-    files = readdirSync(dir).filter(
-      (f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md' && SAFE_SHELF.test(f.slice(0, -3)) && !f.includes('..'),
-    );
+    // A stray `review copy.md` (issue #369), a 129-character name or `con.md` is not a shelf.
+    files = readdirSync(dir).filter((f) => f.endsWith('.md') && isShelfName(f.slice(0, -3)));
   } catch {
     return [];
   }

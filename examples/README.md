@@ -39,8 +39,9 @@ undocumented (issue #207, extending the `src/*.ts` guard of #164).
 | `NB_BACKUP_GIT_LOCK_WAIT` | `12` (seconds) | [`nb-backup.sh`](nb-backup.sh) | how long the straggler commit waits for the git-wrapper's `.nb-git.lock` before skipping the commit this run (a lock older than 30 s is treated as a crashed holder's and reclaimed) |
 | `NB_GIT_AUTOCOMMIT` | `1` (on) | [`nb-git-wrapper.mjs`](nb-git-wrapper.mjs) | set to `0` to skip the auto-commit for a single `nb` call (e.g. a scripted bulk edit you'll commit yourself) |
 | `NB_GIT_SESSION_TRAILER` | — (off) | [`nb-git-wrapper.mjs`](nb-git-wrapper.mjs) | set to `1` to add a `Nb-Session: <NB_SESSION>` line to each auto-commit body (cleaned and capped like the usage log's session column; skipped when `NB_SESSION` is blank). Off by default because session ids then enter history the backup job may push |
-| `NB_MAX_LINES` | `50` | [`nb-janitor.mjs`](nb-janitor.mjs) | the per-shelf line cap the diagnostics report against (mirrors the package's own [`NB_MAX_LINES`](../README.md#other-environment-variables)) |
+| `NB_MAX_LINES` | `50` | [`nb-janitor.mjs`](nb-janitor.mjs) | the per-shelf line cap the diagnostics report against, read exactly as the package reads its own [`NB_MAX_LINES`](../README.md#other-environment-variables): a whole integer clamped to 1–5000, anything else (`1e3`, `abc`) ignored in favour of the default |
 | `NB_SESSION` | — | [`nb-janitor.mjs`](nb-janitor.mjs) | the session id that unlocks per-session [surfacing metrics](../README.md#surfacing-metrics) |
+| `NB_USAGE_RING` | `5000` | [`nb-janitor.mjs`](nb-janitor.mjs) | the usage-log row cap, read like the package's own (a whole integer clamped to 100–100000); the report warns when a `--days` window reaches past the rows the ring still holds |
 
 The `hooks/claude-code/` scripts (`NB_BIN`, `NB_RETRO_TTL_DAYS`, `NB_SESSION`)
 are documented in their own [README](hooks/claude-code/README.md#configuration-environment).
