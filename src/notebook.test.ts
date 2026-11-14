@@ -3779,8 +3779,14 @@ describe('diagnostic signals (issue #72)', () => {
   // All three signals are read from the usage ring (no new agent action). Rows
   // are logged with explicit sessions so the tests are deterministic regardless
   // of whether NB_SESSION happens to be set in the host environment.
+  // browse-without-use skips a shelf with no notebook file (issue #480), so a
+  // test that expects the signal, or its absence for another reason, creates
+  // the file first — otherwise a negative test passes only because the shelf
+  // is missing.
+  const touchShelf = (shelf: string): void => writeFileSync(join(dir, `${shelf}.md`), '', 'utf-8');
 
   test('browse-without-use: a show with no vote in the same session is flagged', () => {
+    touchShelf('reviewer');
     logUsage(dir, 'reviewer', 'show', true, 2, { session: 's1' });
     const rep = stats(dir, { now: Date.now() });
     const sig = rep.signals.find((s) => s.kind === 'browse-without-use' && s.shelf === 'reviewer');
@@ -3788,7 +3794,8 @@ describe('diagnostic signals (issue #72)', () => {
     expect(sig!.session).toBe('s1');
   });
 
-  test('browse-without-use: a vote anywhere in the session suppresses it', () => {
+  test('browse-without-use: a vote on that shelf in the same session suppresses it', () => {
+    touchShelf('reviewer');
     logUsage(dir, 'reviewer', 'show', true, 2, { session: 's1' });
     logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's1', entries: ['abc123'], outcome: 'up' });
     const rep = stats(dir, { now: Date.now() });
@@ -3796,9 +3803,67 @@ describe('diagnostic signals (issue #72)', () => {
   });
 
   test('browse-without-use: a show with a blank session is skipped (needs NB_SESSION)', () => {
+    touchShelf('reviewer');
     logUsage(dir, 'reviewer', 'show', true, 2, { session: '' });
     const rep = stats(dir, { now: Date.now() });
     expect(rep.signals.some((s) => s.kind === 'browse-without-use')).toBe(false);
+  });
+
+  test('browse-without-use: a vote on ANOTHER shelf in the session does not suppress it', () => {
+    touchShelf('reviewer');
+    touchShelf('patcher');
+    logUsage(dir, 'reviewer', 'show', true, 2, { session: 's1' });
+    logUsage(dir, 'patcher', 'show', true, 2, { session: 's1' });
+    logUsage(dir, 'patcher', 'vote', true, 1, { session: 's1', entries: ['abc123'], outcome: 'up' });
+    const rep = stats(dir, { now: Date.now() });
+    const bwu = rep.signals.filter((s) => s.kind === 'browse-without-use');
+    expect(bwu.map((s) => s.shelf)).toEqual(['reviewer']);
+  });
+
+  test('browse-without-use: a shelf with no notebook file is not flagged (issue #480)', () => {
+    // `nb show` of a never-created shelf exits 0 and logs a plain show row. The
+    // same rows raise the signal once the file exists, so only the file differs.
+    logUsage(dir, 'ghost@proj', 'show', true, 2, { session: 's1' });
+    logUsage(dir, 'ghost@proj', 'show', true, 2, { session: 's2' });
+    expect(stats(dir, { now: Date.now() }).signals.filter((s) => s.kind === 'browse-without-use')).toEqual([]);
+    expect(stats(dir, { now: Date.now(), shelf: 'ghost@proj' }).signals).toEqual([]);
+    touchShelf('ghost@proj');
+    const bwu = stats(dir, { now: Date.now() }).signals.filter((s) => s.kind === 'browse-without-use');
+    expect(bwu.map((s) => s.session)).toEqual(['s1', 's2']);
+    expect(stats(dir, { now: Date.now(), shelf: 'ghost@proj' }).signals).toHaveLength(2);
+  });
+
+  test('browse-without-use: a shelf deleted after it was shown is not flagged (issue #480)', () => {
+    touchShelf('reviewer');
+    logUsage(dir, 'reviewer', 'show', true, 2, { session: 's1' });
+    expect(stats(dir, { now: Date.now() }).signals).toHaveLength(1);
+    rmSync(join(dir, 'reviewer.md'));
+    expect(stats(dir, { now: Date.now() }).signals).toEqual([]);
+  });
+
+  test('browse-without-use: a show logged as no-shelf is skipped even once the file exists (issue #480)', () => {
+    touchShelf('reviewer');
+    logUsage(dir, 'reviewer', 'show', true, 2, { session: 's1', outcome: 'no-shelf' });
+    logUsage(dir, 'reviewer', 'show', true, 2, { session: 's2' });
+    const bwu = stats(dir, { now: Date.now() }).signals.filter((s) => s.kind === 'browse-without-use');
+    expect(bwu.map((s) => [s.session, s.shown])).toEqual([['s2', 1]]);
+  });
+
+  test("browse-without-use: each pair carries the shelf's shown / voted session counts (issue #480)", () => {
+    touchShelf('reviewer');
+    for (const s of ['s1', 's2', 's3']) logUsage(dir, 'reviewer', 'show', true, 2, { session: s });
+    logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's1', entries: ['abc123'], outcome: 'up' });
+    // A vote with no show in its session is not a shown session, so it must not
+    // raise `voted` (the share stays at most 100%).
+    logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's4', entries: ['abc123'], outcome: 'up' });
+    const bwu = stats(dir, { now: Date.now() }).signals.filter((s) => s.kind === 'browse-without-use');
+    expect(bwu.map((s) => [s.session, s.shown, s.voted])).toEqual([
+      ['s2', 3, 1],
+      ['s3', 3, 1],
+    ]);
+    // The per-pair detail no longer claims the description over-promises; one
+    // unvoted session is weak evidence on its own.
+    expect(bwu[0].detail).not.toContain('over-promise');
   });
 
   test('eviction-while-still-voted: the cap evicted an entry whose score was still above the starting +1', () => {
@@ -3886,6 +3951,7 @@ describe('diagnostic signals (issue #72)', () => {
   });
 
   test('quiet, healthy usage produces no signals', () => {
+    touchShelf('reviewer');
     logUsage(dir, 'reviewer', 'show', true, 2, { session: 's1' });
     logUsage(dir, 'reviewer', 'vote', true, 1, { session: 's1', entries: ['abc123'], outcome: 'up' });
     const rep = stats(dir, { now: Date.now() });
@@ -3893,6 +3959,8 @@ describe('diagnostic signals (issue #72)', () => {
   });
 
   test('signals are scoped to the shelf when stats is called with one', () => {
+    touchShelf('alpha');
+    touchShelf('beta');
     logUsage(dir, 'alpha', 'show', true, 2, { session: 's1' });
     logUsage(dir, 'beta', 'show', true, 2, { session: 's2' });
     const rep = stats(dir, { now: Date.now(), role: 'alpha' });
@@ -3903,6 +3971,7 @@ describe('diagnostic signals (issue #72)', () => {
   test('a signal older than the window is excluded', () => {
     const now = Date.parse('2026-10-23T10:00:00Z');
     const old = new Date(now - 100 * 3600_000).toISOString(); // 100h ago
+    touchShelf('reviewer');
     // A show row 100h back, with a session but no vote — would be browse-without-use
     // if it were in the window. Twelve columns: base five + session + the rest blank.
     writeFileSync(join(dir, '.nb-usage.log'), `${old}\treviewer\tshow\tok\t2ms\ts1\t\t\t\t\t\t\n`, 'utf-8');

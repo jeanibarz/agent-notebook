@@ -76,7 +76,10 @@ export interface Anomaly {
  *
  * The three kinds, all implied by behavior the agent already performs:
  *   - `browse-without-use`: a notebook was `show`n in a session but nothing in it
- *     was voted that session → its description may over-promise.
+ *     was voted that session. One pair is weak evidence (an agent may open three
+ *     shelves and vote only the one that helped); a shelf whose voted share stays
+ *     low over several sessions is the one whose description may over-promise.
+ *     A shelf with no notebook file is never flagged (issue #480).
  *   - `eviction-while-still-voted`: the cap evicted (on an `add`, `merge` or `split`) an entry upvoted in the window
  *     (final score 0 or above), or whose score was still above the +1 a new lesson starts at → a lesson agents found useful was lost. A full shelf is normal; only
  *     repeated still-voted evictions suggest the cap is too tight for that shelf.
@@ -106,6 +109,14 @@ export interface DiagnosticSignal {
   session?: string;
   /** `eviction-while-still-voted` / `vote-reversal`: the entry id involved. */
   entry?: string;
+  /**
+   * `browse-without-use` only (issue #480): the shelf's totals over the window —
+   * `shown` is the number of sessions that showed it, `voted` how many of those
+   * also voted on one of its entries. Every pair for one shelf carries the same
+   * two numbers, so `voted / shown` is the shelf's voted share.
+   */
+  shown?: number;
+  voted?: number;
 }
 
 /**
@@ -608,6 +619,11 @@ export function stats(
   const all = scope ? parsed.filter((r) => r.role === scope) : parsed;
   const recent = all.filter(inWindow);
 
+  // Every shelf with a notebook file, read once (unscoped). browse-without-use
+  // (issue #480) skips shelves absent from it; the inventory below narrows it to
+  // the scope. A shelf whose file is unreadable is still listed here — it exists.
+  const existingShelves = new Set(listShelves(dir));
+
   const byCmd = new Map<string, UsageRow[]>();
   for (const r of recent) {
     const arr = byCmd.get(r.command) ?? [];
@@ -758,30 +774,53 @@ export function stats(
   const signals: DiagnosticSignal[] = [];
 
   // (A) browse-without-use: a notebook `show`n in a session with no `vote` on any
-  //     of its entries that session → the description may over-promise. The unit
-  //     is the (session, shelf) pair, so it needs NB_SESSION — rows with a blank
-  //     session can't be grouped and are skipped (FR-USAGE-002: "co-access is
-  //     then not computed"). A vote anywhere in the session counts as use.
+  //     of its entries that session. The unit is the (session, shelf) pair, so it
+  //     needs NB_SESSION — rows with a blank session can't be grouped and are
+  //     skipped (FR-USAGE-002: "co-access is then not computed"). Only a vote on
+  //     THAT shelf counts as use; a vote on another shelf in the same session does
+  //     not. A shelf with no notebook file is skipped (issue #480): `nb show` of a
+  //     never-created shelf exits 0, but there is no description or lesson to
+  //     fault. Such a show is logged with outcome `no-shelf` and skipped even if
+  //     the shelf was created later; rows from before that outcome existed fall
+  //     back to the file check at report time. Each pair also carries the shelf's
+  //     window totals (`shown` / `voted` sessions) so a reader can rank shelves by
+  //     voted share instead of by raw unvoted count.
   {
     const browsed = new Map<string, { shown: boolean; voted: boolean }>(); // session \u0000 shelf
     for (const r of recent) {
       if (r.session === '') continue;
       if (r.command !== 'show' && !(r.command === 'vote' && (r.outcome === 'up' || r.outcome === 'down'))) continue;
+      if (r.command === 'show' && r.outcome === 'no-shelf') continue;
+      if (!existingShelves.has(r.role)) continue;
       const k = `${r.session}\u0000${r.role}`;
       const cur = browsed.get(k) ?? { shown: false, voted: false };
       if (r.command === 'show') cur.shown = true;
       else cur.voted = true;
       browsed.set(k, cur);
     }
+    // Per-shelf totals over the pairs that were SHOWN: `voted` counts only
+    // sessions that both showed and voted the shelf, so the share is ≤ 100%.
+    const totals = new Map<string, { shown: number; voted: number }>();
+    for (const [k, v] of browsed) {
+      if (!v.shown) continue;
+      const shelf = k.split('\u0000')[1];
+      const t = totals.get(shelf) ?? { shown: 0, voted: 0 };
+      t.shown++;
+      if (v.voted) t.voted++;
+      totals.set(shelf, t);
+    }
     for (const [k, v] of browsed) {
       if (!v.shown || v.voted) continue;
       const [session, shelf] = k.split('\u0000');
+      const t = totals.get(shelf)!;
       signals.push({
         kind: 'browse-without-use',
         role: shelf,
         shelf,
         session,
-        detail: `shown in session "${session}" but no entry was voted that session — the notebook's description may over-promise`,
+        shown: t.shown,
+        voted: t.voted,
+        detail: `shown in session "${session}" but no entry was voted that session`,
       });
     }
   }
@@ -1045,7 +1084,7 @@ export function stats(
   // and the total report the same value. Computed before the surfacing object so
   // its line total can gate the engagement diagnosis below (issue #105).
   const cap = maxLines();
-  const inventoryShelves = scope ? listShelves(dir).filter((r) => r === scope) : listShelves(dir);
+  const inventoryShelves = scope ? [...existingShelves].filter((r) => r === scope) : [...existingShelves];
   // `stats` is the scan an operator runs to find out WHY memory is unhealthy, and
   // the janitor drives it from the same directory — so it must survive a damaged
   // store exactly like `list`/`search` (issue #332). Skip (and report) only the

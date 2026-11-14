@@ -35,6 +35,9 @@ const MANAGED_ENV = [
   'NB_SESSION',
   'NB_COVERAGE_HI',
   'NB_RECALL_MISS_HI',
+  // Set by the usage-ring tests (#206, #406); unmanaged, a ring of 100 leaked
+  // into later tests and trimmed the larger browse-without-use fixture (#480).
+  'NB_USAGE_RING',
 ] as const;
 
 beforeEach(() => {
@@ -1365,7 +1368,9 @@ describe('runNbCli', () => {
     const s = await run(['stats', 'reviewer']);
     expect(s.code).toBe(0);
     expect(s.out).toContain('  signals:'); // the header branch, not the "none" line
-    expect(s.out).toContain('[browse-without-use] shelf reviewer');
+    // Shown in one session only: below the rating minimum, so it folds into the
+    // summary line (issue #480).
+    expect(s.out).toContain('[browse-without-use] 1 more shelf shown without a vote, each in fewer than 3 sessions');
     expect(s.out).not.toContain('signals: none');
   });
 
@@ -1380,16 +1385,91 @@ describe('runNbCli', () => {
     await run(['show', 'quiet']);
     const s = await run(['stats']);
     const lines = s.out.split('\n').filter((l) => l.includes('[browse-without-use]'));
-    expect(lines).toHaveLength(2);
-    expect(lines[0]).toContain('shelf busy: shown without a vote in 3 sessions');
-    expect(lines[1]).toContain('shelf quiet: shown without a vote in 1 session ');
+    expect(lines).toEqual([
+      "    [browse-without-use] shelf busy: shown in 3 sessions, voted in 0 (0%) — the notebook's description may over-promise",
+      '    [browse-without-use] 1 more shelf shown without a vote, each in fewer than 3 sessions — run `nb stats --json` for every pair',
+    ]);
     expect(s.out).not.toContain('session "sess-');
     const rep = JSON.parse((await run(['stats', '--json'])).out);
     expect(rep.signals.filter((x: { kind: string }) => x.kind === 'browse-without-use')).toHaveLength(4);
   });
 
+  test('browse-without-use lines give both counts and sort by voted share, lowest first (issue #480)', async () => {
+    // The issue's example plus a third shelf: by raw unvoted count A (5) would
+    // lead B (4); by share B (0%) leads A (50%), and C (80%, 2 unvoted) comes last.
+    const shows: [string, number, number][] = [
+      ['shelf-a', 10, 5],
+      ['shelf-b', 4, 0],
+      ['shelf-c', 10, 8],
+      ['shelf-q', 4, 1], // exactly 25%: rated, but not "low" — no over-promise hint
+      ['shelf-r', 3, 0], // exactly the minimum: rated
+      ['shelf-p', 3, 0], // same counts as shelf-r: the name breaks the tie
+      ['shelf-u', 53, 13], // 24.5% prints as 25%: no hint, like an exact 25%
+      ['shelf-s', 2, 0], // one below the minimum: folded into the summary
+      ['shelf-t', 1, 0], // also folded
+    ];
+    for (const [shelf] of shows) await run(['add', shelf, `a lesson for ${shelf}`]);
+    const ids = new Map<string, string>();
+    for (const [shelf] of shows) ids.set(shelf, entryId(`a lesson for ${shelf}`));
+    for (const [shelf, shown, voted] of shows) {
+      for (let i = 0; i < shown; i++) {
+        process.env.NB_SESSION = `${shelf}-s${i}`;
+        await run(['show', shelf]);
+        if (i < voted) await run(['vote', shelf, ids.get(shelf)!, '+1']);
+      }
+    }
+    // A show of a shelf that was never created is not a browse (issue #480).
+    for (let i = 0; i < 5; i++) {
+      process.env.NB_SESSION = `ghost-s${i}`;
+      await run(['show', 'ghost@proj']);
+    }
+    const s = await run(['stats']);
+    const lines = s.out.split('\n').filter((l) => l.includes('[browse-without-use]'));
+    const hint = " — the notebook's description may over-promise";
+    expect(lines).toEqual([
+      `    [browse-without-use] shelf shelf-b: shown in 4 sessions, voted in 0 (0%)${hint}`,
+      `    [browse-without-use] shelf shelf-p: shown in 3 sessions, voted in 0 (0%)${hint}`,
+      `    [browse-without-use] shelf shelf-r: shown in 3 sessions, voted in 0 (0%)${hint}`,
+      '    [browse-without-use] shelf shelf-u: shown in 53 sessions, voted in 13 (25%)',
+      '    [browse-without-use] shelf shelf-q: shown in 4 sessions, voted in 1 (25%)',
+      '    [browse-without-use] shelf shelf-a: shown in 10 sessions, voted in 5 (50%)',
+      '    [browse-without-use] shelf shelf-c: shown in 10 sessions, voted in 8 (80%)',
+      '    [browse-without-use] 2 more shelves shown without a vote, each in fewer than 3 sessions — run `nb stats --json` for every pair',
+    ]);
+    expect(s.out).not.toContain('ghost@proj');
+    const rep = JSON.parse((await run(['stats', '--json'])).out);
+    const bwu = rep.signals.filter((x: { kind: string }) => x.kind === 'browse-without-use');
+    expect(bwu.some((x: { shelf: string }) => x.shelf === 'ghost@proj')).toBe(false);
+    expect(bwu.filter((x: { shelf: string }) => x.shelf === 'shelf-a')).toHaveLength(5);
+    expect(bwu.find((x: { shelf: string }) => x.shelf === 'shelf-a')).toMatchObject({ shown: 10, voted: 5 });
+  });
+
+  test('a show of a shelf created later in the same session is not a browse (issue #480)', async () => {
+    // The first session of a new shelf: `nb show` finds no file, then `nb add`
+    // creates it. The show row is logged as `no-shelf`, so the file existing by
+    // report time does not turn it into a browse-without-use.
+    process.env.NB_SESSION = 'sess-new';
+    await run(['show', 'fresh']);
+    await run(['add', 'fresh', 'the first lesson']);
+    await run(['show', 'old']); // also missing, never created
+    process.env.NB_SESSION = 'sess-later';
+    await run(['show', 'fresh']); // the shelf exists now: a real browse, blank outcome
+    const shows = parseUsage(process.env.NB_DIR!).filter((r) => r.command === 'show');
+    expect(shows.map((r) => [r.role, r.outcome])).toEqual([
+      ['fresh', 'no-shelf'],
+      ['old', 'no-shelf'],
+      ['fresh', ''],
+    ]);
+    process.env.NB_SESSION = 'sess-other';
+    const rep = JSON.parse((await run(['stats', '--json'])).out);
+    const bwu = rep.signals.filter((x: { kind: string }) => x.kind === 'browse-without-use');
+    // Only the later session's show counts; sess-new's show found no file.
+    expect(bwu).toEqual([expect.objectContaining({ shelf: 'fresh', session: 'sess-later', shown: 1, voted: 0 })]);
+  });
+
   test('stats --json carries the browse-without-use signal (issue #72)', async () => {
     process.env.NB_SESSION = 'sess-B';
+    await run(['add', 'solo', 'a lesson']); // the shelf must exist (issue #480)
     await run(['show', 'solo']); // browse with no vote
     const s = await run(['stats', '--json']);
     const rep = JSON.parse(s.out);
@@ -3201,8 +3281,9 @@ describe('runNbCli', () => {
     });
 
     test('a read-only command (show) logs blank richer fields', async () => {
+      await run(['add', 'patcher', 'a lesson']); // an existing shelf: a missing one logs `no-shelf` (issue #480)
       await run(['show', 'patcher']);
-      const [row] = parseUsage(dir);
+      const row = parseUsage(dir).filter((r) => r.command === 'show')[0];
       expect(row.command).toBe('show');
       expect(row.entries).toEqual([]);
       expect(row.outcome).toBe('');
