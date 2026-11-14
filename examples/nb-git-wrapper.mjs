@@ -134,7 +134,7 @@ function globalNpmRoot() {
 /** Resolve the installed `agent-notebook` package's compiled CLI entry. */
 function resolveNbCliEntry() {
   const require = createRequire(import.meta.url);
-  // The package only publishes its main export (dist/notebook.js); the CLI is its
+  // The package only publishes its main export (dist/index.js); the CLI is its
   // sibling dist/cli.js. Resolve main, then import cli.js by absolute path, which
   // bypasses the package `exports` restriction.
   let main;

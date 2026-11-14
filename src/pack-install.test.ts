@@ -30,7 +30,7 @@ import { execFileSync } from 'node:child_process';
 //
 // Note on "`require('agent-notebook')`" from the acceptance criteria: this
 // package is ESM-only (`"type": "module"`, and its sole `exports` entry resolves
-// to the ESM `dist/notebook.js`), so a CommonJS `require()` is not a supported
+// to the ESM `dist/index.js`), so a CommonJS `require()` is not a supported
 // consumption path and `require(esm)` support varies across the Node 20/22 lines
 // CI runs. We therefore verify the supported shape — loading the package by its
 // bare specifier so Node's `exports`-map resolution runs — which is the thing the
@@ -129,8 +129,20 @@ describe('install from the packed tarball [slow]', () => {
     // package breaks here instead of silently in the field.
     const manifest = JSON.parse(
       readFileSync(join(installed, 'package.json'), 'utf-8'),
-    ) as { bin: { nb: string }; main: string; types: string };
+    ) as {
+      bin: { nb: string };
+      main: string;
+      types: string;
+      exports: { '.': { types: string; default: string } };
+    };
     const targets = [manifest.bin.nb, manifest.main, manifest.types];
+    // The `exports` map is what Node and TypeScript actually resolve for a bare
+    // `agent-notebook` import, so it must name the same files as main/types.
+    // Left pointing at an old entry, TypeScript consumers would silently lose
+    // every type that lives in the other modules (issue #478).
+    const posixRel = (p: string) => posix.normalize(p);
+    expect(posixRel(manifest.exports['.'].default)).toBe(posixRel(manifest.main));
+    expect(posixRel(manifest.exports['.'].types)).toBe(posixRel(manifest.types));
     for (const t of targets) {
       expect(
         existsSync(join(installed, t)),
@@ -138,12 +150,13 @@ describe('install from the packed tarball [slow]', () => {
       ).toBe(true);
     }
     // And the acceptance-criteria files specifically (#268): bin, main and types
-    // are exactly dist/cli.js, dist/notebook.js and dist/notebook.d.ts.
+    // are exactly dist/cli.js, dist/index.js and dist/index.d.ts. (Before #478
+    // the root was dist/notebook.*; it is now the dist/index.* barrel.)
     expect(targets).toEqual(
       expect.arrayContaining([
         'dist/cli.js',
-        'dist/notebook.js',
-        'dist/notebook.d.ts',
+        'dist/index.js',
+        'dist/index.d.ts',
       ]),
     );
   });
@@ -165,7 +178,7 @@ describe('install from the packed tarball [slow]', () => {
 
   test('the package main export loads and resolves by its bare specifier', () => {
     // Import the package the way a consumer does — by name, so Node's `exports`
-    // map (`.` -> dist/notebook.js) has to resolve from the consumer's
+    // map (`.` -> dist/index.js) has to resolve from the consumer's
     // node_modules — and confirm the module actually executes and surfaces its
     // public API. A path import would bypass the very resolution the gap is about.
     const consumer = dirname(dirname(installed)); // .../consumer
@@ -176,6 +189,11 @@ describe('install from the packed tarball [slow]', () => {
         "import * as nb from 'agent-notebook';",
         "if (typeof nb.assertSafeShelf !== 'function') { console.error('missing assertSafeShelf'); process.exit(2); }",
         "if (typeof nb.maxLines !== 'function') { console.error('missing maxLines'); process.exit(3); }",
+        // One name from each monitoring module (issue #478): these exist only on
+        // the dist/index.js root, so an `exports` map still pointing at
+        // dist/notebook.js fails here, not just in the in-repo golden test.
+        "if (typeof nb.logUsage !== 'function') { console.error('missing logUsage'); process.exit(4); }",
+        "if (typeof nb.stats !== 'function') { console.error('missing stats'); process.exit(5); }",
         "console.log('EXPORTS_OK');",
         '',
       ].join('\n'),
