@@ -129,8 +129,20 @@ describe('install from the packed tarball [slow]', () => {
     // package breaks here instead of silently in the field.
     const manifest = JSON.parse(
       readFileSync(join(installed, 'package.json'), 'utf-8'),
-    ) as { bin: { nb: string }; main: string; types: string };
+    ) as {
+      bin: { nb: string };
+      main: string;
+      types: string;
+      exports: { '.': { types: string; default: string } };
+    };
     const targets = [manifest.bin.nb, manifest.main, manifest.types];
+    // The `exports` map is what Node and TypeScript actually resolve for a bare
+    // `agent-notebook` import, so it must name the same files as main/types.
+    // Left pointing at an old entry, TypeScript consumers would silently lose
+    // every type that lives in the other modules (issue #478).
+    const posixRel = (p: string) => posix.normalize(p);
+    expect(posixRel(manifest.exports['.'].default)).toBe(posixRel(manifest.main));
+    expect(posixRel(manifest.exports['.'].types)).toBe(posixRel(manifest.types));
     for (const t of targets) {
       expect(
         existsSync(join(installed, t)),
@@ -177,6 +189,11 @@ describe('install from the packed tarball [slow]', () => {
         "import * as nb from 'agent-notebook';",
         "if (typeof nb.assertSafeShelf !== 'function') { console.error('missing assertSafeShelf'); process.exit(2); }",
         "if (typeof nb.maxLines !== 'function') { console.error('missing maxLines'); process.exit(3); }",
+        // One name from each monitoring module (issue #478): these exist only on
+        // the dist/index.js root, so an `exports` map still pointing at
+        // dist/notebook.js fails here, not just in the in-repo golden test.
+        "if (typeof nb.logUsage !== 'function') { console.error('missing logUsage'); process.exit(4); }",
+        "if (typeof nb.stats !== 'function') { console.error('missing stats'); process.exit(5); }",
         "console.log('EXPORTS_OK');",
         '',
       ].join('\n'),

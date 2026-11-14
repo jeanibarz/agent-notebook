@@ -95,7 +95,8 @@ describe('module boundaries (issue #478)', () => {
 
   test('the mechanism does not depend on the monitoring layer, and nothing in src imports the root', () => {
     const graph = importGraph();
-    expect(graph.get('notebook') ?? []).toEqual([]);
+    expect(graph.has('notebook')).toBe(true);
+    expect(graph.get('notebook')).toEqual([]);
     expect(graph.get('usage')).toEqual(['notebook']);
     for (const [mod, deps] of graph) {
       if (mod !== 'index') expect(deps, `${mod}.ts imports the package root`).not.toContain('index');
