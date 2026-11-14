@@ -83,25 +83,20 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import {
-  activityByDay,
   addEntry,
   assertSafeRole,
   assertSafeShelf,
   classifyError,
   dedupKey,
-  diagnoseEngagement,
   entryId,
-  formatEvictedUsage,
   similarity,
   getDescription,
   getMetaValue,
   isMetaLine,
   isConflictMarker,
-  isValidWindow,
   listNotebooks,
   listRoles,
   listShelves,
-  logUsage,
   maxChars,
   maxLines,
   merge,
@@ -109,10 +104,7 @@ import {
   nearThreshold,
   NbError,
   ERROR_CLASSES,
-  normalizeReason,
   notebookExists,
-  parseUsage,
-  parseWindowMs,
   noteRecovery,
   drainPendingRecovery,
   stealStale,
@@ -125,18 +117,13 @@ import {
   renderEntries,
   sanitizeLesson,
   stripControlChars,
-  asciiMode,
   search,
   setDescription,
   setMetaValue,
   showJson,
   showJsonMany,
   staleCandidates,
-  sparkGlyphs,
-  sparkline,
   split,
-  stats,
-  STATS_SCHEMA_VERSION,
   usageRing,
   usageRingSlack,
   expandHomeDir,
@@ -147,7 +134,25 @@ import {
   withLock,
   resolveIntEnv,
 } from './notebook.js';
-import type { Entry, UsageRow } from './notebook.js';
+import type { Entry } from './notebook.js';
+import {
+  formatEvictedUsage,
+  logUsage,
+  normalizeReason,
+  parseUsage,
+} from './usage.js';
+import type { UsageRow } from './usage.js';
+import {
+  activityByDay,
+  diagnoseEngagement,
+  isValidWindow,
+  parseWindowMs,
+  asciiMode,
+  sparkGlyphs,
+  sparkline,
+  stats,
+  STATS_SCHEMA_VERSION,
+} from './stats.js';
 
 /**
  * A complete `UsageRow` with every column at its empty value, overridden by `over`.

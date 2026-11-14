@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS, scopedHelp } from './cli.js';
-import { drainPendingRecovery, entryId, parseUsage, usageFile } from './notebook.js';
+import { drainPendingRecovery, entryId, usageFile } from './notebook.js';
+import { parseUsage } from './usage.js';
 import type { IntTunable, RateTunable } from './notebook.js';
 
 const PKG_VERSION: string = createRequire(import.meta.url)('../package.json').version;

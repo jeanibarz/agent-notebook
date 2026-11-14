@@ -30,7 +30,7 @@ import { execFileSync } from 'node:child_process';
 //
 // Note on "`require('agent-notebook')`" from the acceptance criteria: this
 // package is ESM-only (`"type": "module"`, and its sole `exports` entry resolves
-// to the ESM `dist/notebook.js`), so a CommonJS `require()` is not a supported
+// to the ESM `dist/index.js`), so a CommonJS `require()` is not a supported
 // consumption path and `require(esm)` support varies across the Node 20/22 lines
 // CI runs. We therefore verify the supported shape — loading the package by its
 // bare specifier so Node's `exports`-map resolution runs — which is the thing the
@@ -138,12 +138,13 @@ describe('install from the packed tarball [slow]', () => {
       ).toBe(true);
     }
     // And the acceptance-criteria files specifically (#268): bin, main and types
-    // are exactly dist/cli.js, dist/notebook.js and dist/notebook.d.ts.
+    // are exactly dist/cli.js, dist/index.js and dist/index.d.ts. (Before #478
+    // the root was dist/notebook.*; it is now the dist/index.* barrel.)
     expect(targets).toEqual(
       expect.arrayContaining([
         'dist/cli.js',
-        'dist/notebook.js',
-        'dist/notebook.d.ts',
+        'dist/index.js',
+        'dist/index.d.ts',
       ]),
     );
   });
@@ -165,7 +166,7 @@ describe('install from the packed tarball [slow]', () => {
 
   test('the package main export loads and resolves by its bare specifier', () => {
     // Import the package the way a consumer does — by name, so Node's `exports`
-    // map (`.` -> dist/notebook.js) has to resolve from the consumer's
+    // map (`.` -> dist/index.js) has to resolve from the consumer's
     // node_modules — and confirm the module actually executes and surfaces its
     // public API. A path import would bypass the very resolution the gap is about.
     const consumer = dirname(dirname(installed)); // .../consumer

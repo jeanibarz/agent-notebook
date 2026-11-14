@@ -23,12 +23,12 @@
   "bin": {
     "nb": "dist/cli.js"
   },
-  "main": "dist/notebook.js",
-  "types": "dist/notebook.d.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/notebook.d.ts",
-      "default": "./dist/notebook.js"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "files": [

@@ -10,7 +10,7 @@ and carry a MoSCoW priority (**Must**, **Should**, **Could**, **Won't**). Each
 load-bearing behavior links to the test that proves it; if you change a behavior,
 change the requirement and its test together (see [Keeping this document honest](#keeping-this-document-honest)).
 
-- **Source of truth for behavior:** `src/notebook.ts` (library) and `src/cli.ts` (CLI).
+- **Source of truth for behavior:** `src/notebook.ts` (library: storage, cap-and-vote, search), `src/usage.ts` (the usage log), `src/stats.ts` (`nb stats`) and `src/cli.ts` (CLI). `src/index.ts` is the package root that re-exports the three library modules.
 - **Tests:** `src/notebook.test.ts`, `src/cli.test.ts`.
 - **Design rationale (signals & self-observation):** [`self-observing-notebook.md`](./self-observing-notebook.md) — why the tool instruments itself and how engagement / coverage / recall / precision / serendipity are told apart.
 
@@ -1490,7 +1490,8 @@ on every shelf-to-path conversion.
 
 <a id="nfr-maint-001"></a>
 **NFR-MAINT-001 (Should).** The whole mechanism SHALL stay in `src/notebook.ts` (the
-library) with `src/cli.ts` a thin wrapper; behavior SHALL be covered by `vitest`
+library), with the self-monitoring layer (`src/usage.ts`, `src/stats.ts`) beside it and
+never imported by it, and `src/cli.ts` a thin wrapper; behavior SHALL be covered by `vitest`
 tests runnable with `npm test`.
 
 <a id="nfr-obs-001"></a>

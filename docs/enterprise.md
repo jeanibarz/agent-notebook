@@ -39,7 +39,10 @@ flowchart LR
 
 Supply chain: pin the version you vetted (`agent-notebook@<x.y.z>`), and because
 there are no transitive runtime deps, the audit surface is one small package you
-can read end to end (`src/notebook.ts` is the whole mechanism).
+can read end to end. `src/notebook.ts` is the whole mechanism. `src/usage.ts` writes the
+usage log (one row per call, which can hold search query text and the `NB_SESSION`
+value) and `src/stats.ts` reads it for `nb stats`. A review of what the package records
+should read all three.
 
 ---
 

@@ -613,7 +613,7 @@ console.log(report.totalCalls, report.anomalies);
 console.log(render(dir, 'build-and-test')); // highest-scored first
 ```
 
-The CLI is a thin wrapper over this library — `src/notebook.ts` is the whole mechanism, with zero runtime dependencies.
+The CLI is a thin wrapper over this library — `src/notebook.ts` is the whole mechanism, with zero runtime dependencies. The self-monitoring layer lives beside it: `src/usage.ts` writes the usage log (one row per call, which can hold search query text and the `NB_SESSION` value) and `src/stats.ts` reads it back for `nb stats`. A review of what the package records should read all three files.
 
 ## Status
 
