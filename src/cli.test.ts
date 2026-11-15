@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS, MUTATING_COMMANDS, scopedHelp } from './cli.js';
-import { drainPendingRecovery, entryId, usageFile } from './notebook.js';
+import { drainPendingRecovery, entryId, readShelf, usageFile } from './notebook.js';
 import { parseUsage } from './usage.js';
 import type { IntTunable, RateTunable } from './notebook.js';
 
@@ -5445,6 +5445,33 @@ describe('nb doctor (issue #338)', () => {
     process.env.NB_MAX_LINES = '1';
     shelf('a', '+1\tone\n+1\t\n');
     expect((await codes()).findings).toEqual([]);
+  });
+
+  // The doctor parses shelves with its own loop that repeats readShelf's BOM strip,
+  // `\r?\n` split and leading-metadata rule (issue #492). Feed both the same file and
+  // compare lesson counts, observed through shelf-over-cap: a cap of n is clean and
+  // n − 1 reports exactly n. Conflict-marker fixtures are left out on purpose —
+  // readShelf keeps marker lines as entries while the doctor skips them.
+  // `lessons` is the hand count, so a regression shared by both parsers still fails.
+  test.each([
+    { name: 'BOM before # desc:', body: '\uFEFF# desc: d\n+1\tone\n+2\ttwo\n', lessons: 2 },
+    { name: 'CRLF line endings', body: '# desc: d\r\n# k: v\r\n+1\tone\r\n+1\ttwo\r\n', lessons: 2 },
+    { name: 'BOM and CRLF together', body: '\uFEFF# desc: d\r\n+1\tone\r\n+1\ttwo\r\n', lessons: 2 },
+    { name: '# k: v after the first lesson', body: '# desc: d\n+1\tone\n# k: v\n+1\ttwo\n', lessons: 3 },
+    { name: 'blank lines', body: '# desc: d\n\n+1\tone\n\n\n+1\ttwo\n\n', lessons: 2 },
+    { name: 'a line without a tab', body: '# desc: d\n+1\tone\nno tab here\n', lessons: 2 },
+    { name: 'an empty-text entry', body: '# desc: d\n+1\tone\n+1\t\n+1\ttwo\n', lessons: 2 },
+  ])('counts the same lessons as readShelf: $name (issue #492)', async ({ body, lessons }) => {
+    shelf('s', body);
+    const n = readShelf(dir, 's').entries.length;
+    expect(n).toBe(lessons);
+    const overCap = async () => (await codes()).findings.filter((f) => f.code === 'shelf-over-cap');
+    process.env.NB_MAX_LINES = String(n);
+    expect(await overCap()).toEqual([]);
+    process.env.NB_MAX_LINES = String(n - 1);
+    expect(await overCap()).toEqual([
+      expect.objectContaining({ shelf: 's', message: `${n} lessons; cap is ${n - 1}` }),
+    ]);
   });
 
   test('a leniently-parsed score like `3x` is flagged without claiming it loads as 0', async () => {
