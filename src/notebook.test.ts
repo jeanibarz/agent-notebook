@@ -6057,6 +6057,93 @@ describe('one unreadable shelf does not abort the stats inventory (issue #332)',
   });
 });
 
+describe('a scoped stats survives an unreadable OTHER shelf (issue #482)', () => {
+  // With no vote in the window, `stats` diagnoses engagement over the lessons of
+  // EVERY shelf — so the scoped call reads shelves outside its scope, and one
+  // damaged file there used to abort `nb stats <shelf>` while the unscoped call
+  // skipped it. Both must count the same lessons and both must return a report.
+  const seed = async (): Promise<void> => {
+    await addEntry(dir, 'alpha', 'a lesson about lint');
+    await addEntry(dir, 'beta', 'another lesson about lint');
+  };
+
+  test('a directory named weird.md: scoped stats returns a report with the unscoped lesson count', async () => {
+    await seed();
+    mkdirSync(join(dir, 'weird.md'));
+    const scoped = stats(dir, { now: Date.now(), shelf: 'alpha' });
+    const unscoped = stats(dir, { now: Date.now() });
+    expect(scoped.notebooks.map((n) => n.shelf)).toEqual(['alpha']);
+    expect(scoped.surfacing.engagementDiagnosis?.storedLessons).toBe(2);
+    expect(scoped.surfacing.engagementDiagnosis?.storedLessons).toBe(
+      unscoped.surfacing.engagementDiagnosis?.storedLessons,
+    );
+    // Surfaced, never silent (FR-LIST-006): the skip the count relied on is reported.
+    expect(scoped.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
+  });
+
+  test('the scoped shelf itself unreadable: reported once, not twice', async () => {
+    await addEntry(dir, 'alpha', 'a lesson about lint');
+    mkdirSync(join(dir, 'weird.md'));
+    const scoped = stats(dir, { now: Date.now(), shelf: 'weird' });
+    expect(scoped.notebooks).toEqual([]);
+    expect(scoped.skipped).toEqual([{ shelf: 'weird', code: 'EISDIR' }]);
+    expect(scoped.surfacing.engagementDiagnosis?.storedLessons).toBe(1);
+  });
+
+  test('a file without read permission (EACCES): scoped stats returns a report with the unscoped lesson count', async (ctx) => {
+    if (process.getuid?.() === 0) ctx.skip(); // root reads a 0o000 file anyway
+    await seed();
+    writeFileSync(join(dir, 'denied.md'), '1\tlesson about lint\n');
+    chmodSync(join(dir, 'denied.md'), 0o000);
+    try {
+      const scoped = stats(dir, { now: Date.now(), shelf: 'alpha' });
+      const unscoped = stats(dir, { now: Date.now() });
+      expect(scoped.notebooks.map((n) => n.shelf)).toEqual(['alpha']);
+      expect(scoped.surfacing.engagementDiagnosis?.storedLessons).toBe(2);
+      expect(scoped.surfacing.engagementDiagnosis?.storedLessons).toBe(
+        unscoped.surfacing.engagementDiagnosis?.storedLessons,
+      );
+      expect(scoped.skipped).toEqual([{ shelf: 'denied', code: 'EACCES' }]);
+    } finally {
+      chmodSync(join(dir, 'denied.md'), 0o600);
+    }
+  });
+
+  test('a healthy store: the scoped diagnosis still counts every shelf', async () => {
+    await seed();
+    const scoped = stats(dir, { now: Date.now(), shelf: 'alpha' });
+    expect(scoped.surfacing.engagementDiagnosis?.storedLessons).toBe(2);
+    expect(scoped.skipped).toEqual([]);
+  });
+
+  test('a session voted: the scoped report reads no other shelf, so names no skip', async () => {
+    await seed();
+    mkdirSync(join(dir, 'weird.md'));
+    logUsage(dir, 'beta', 'vote', true, 1, { session: 's1', outcome: 'up', entries: ['b1'] });
+    const scoped = stats(dir, { now: Date.now(), shelf: 'alpha' });
+    expect(scoped.surfacing.engagementDiagnosis).toBeNull();
+    expect(scoped.skipped).toEqual([]);
+  });
+
+  test('an invalid shelf name is left out of the scoped count without a skipped entry', async () => {
+    await seed();
+    writeFileSync(join(dir, 'review copy.md'), '1\tlesson about lint\n');
+    const scoped = stats(dir, { now: Date.now(), shelf: 'alpha' });
+    expect(scoped.surfacing.engagementDiagnosis?.storedLessons).toBe(2);
+    expect(scoped.skipped).toEqual([]);
+  });
+
+  test('nb stats <shelf> exits 0 with a directory named weird.md', async () => {
+    await seed();
+    mkdirSync(join(dir, 'weird.md'));
+    const { stdout, stderr } = await execFileAsync(process.execPath, [CLI, 'stats', 'alpha'], {
+      env: { ...process.env, NB_DIR: dir },
+    });
+    expect(stdout).toContain('alpha');
+    expect(stderr).toContain('nb stats: skipped shelf "weird" — could not read weird.md (EISDIR)');
+  });
+});
+
 describe('skipUnreadable only swallows real errno read failures (issue #332)', () => {
   // Finding: guarding EVERY throw converts a parser/programming bug (no errno
   // `code`) into a silent "shelf skipped, code EUNKNOWN" and a success exit — the

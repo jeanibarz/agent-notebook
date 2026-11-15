@@ -610,6 +610,12 @@ output stays byte-identical. A prefix or search scope whose only match is a skip
 SHALL report that the matching shelf was unreadable, not "no match". A single-shelf command that names the bad shelf explicitly
 (e.g. `nb show <bad-shelf>`) SHALL still fail loudly — the resilience applies only to
 scans, so an error for an explicitly requested shelf is never hidden.
+The deployment-wide lesson count a shelf-scoped `nb stats <shelf>` reads for its engagement
+diagnosis (only when no session voted in the window) is such a scan too: an unreadable shelf outside the scope SHALL count 0 lessons and be
+added to `StatsReport.skipped` the same way, so the scoped report exits `0` and counts the same
+lessons as the unscoped one (issue #482). Unlike the other scans, that count leaves out
+a stem that is not a legal shelf name (below) without a `skipped` entry, since such a file holds
+no lessons.
 A `*.md` file whose stem is not a legal shelf name (`review copy.md`, `résumé.md`, left by a
 file manager, sync tool or editor) is not a shelf: the same scans SHALL skip it the same way
 (`skipped` carries `{shelf: <stem>, code: "INVALID_NAME"}`, the stderr line says the name is
@@ -621,7 +627,7 @@ run) previously turned every accumulated lesson into "nb failed" for `nb list`,
 `nb search`, and the session-start index agents use to decide which shelves to open
 (#332). Degrading to "one shelf is unreadable, here it is" preserves the rest of the
 memory and keeps the failure actionable.
-*Proven by:* `notebook.test.ts` → `describe('one unreadable shelf does not abort list/search (issue #332)')` and `describe('one unreadable shelf does not abort the stats inventory (issue #332)')`; `cli.test.ts` → the `list …` / `nb search …` / `nb stats …` `issue #332` cases.
+*Proven by:* `notebook.test.ts` → `describe('one unreadable shelf does not abort list/search (issue #332)')`, `describe('one unreadable shelf does not abort the stats inventory (issue #332)')` and `describe('a scoped stats survives an unreadable OTHER shelf (issue #482)')`; `cli.test.ts` → the `list …` / `nb search …` / `nb stats …` `issue #332` cases.
 
 <a id="fr-list-007"></a>
 **FR-LIST-007 (Should).** Only a missing notebooks directory (`ENOENT`) SHALL count as an
