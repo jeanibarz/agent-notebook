@@ -313,7 +313,9 @@ export interface StatsReport {
    * operator's health scan survives one damaged file instead of aborting. Additive
    * to the report (`notebooks`/`notebookTotals` count only the healthy shelves; the
    * CLI prints one stderr line per entry); `STATS_SCHEMA_VERSION` does not bump. See
-   * `SkippedShelf`.
+   * `SkippedShelf`. A shelf-scoped report with no voting session in the window also
+   * lists an unreadable shelf outside its scope, which the engagement diagnosis's
+   * store-wide lesson count had to skip (issue #482).
    */
   skipped: SkippedShelf[];
   /**
@@ -549,10 +551,30 @@ export function diagnoseEngagement(recent: UsageRow[], storedLessons: number): E
  * *anywhere*". Reuses the already-built per-shelf `notebooks` when `stats` is
  * unscoped (then it already covers every shelf); otherwise sums each shelf
  * afresh. Only called on the zero-engagement path, so the extra reads are rare.
+ *
+ * A shelf outside the scope that cannot be read counts 0 lessons and is appended
+ * to `skipped` (unless already there), the same as the unscoped inventory does, so one
+ * damaged file elsewhere in the store cannot abort `nb stats <shelf>` and the skip
+ * is still reported (issue #482, FR-LIST-006). A codeless throw still propagates
+ * (see `skipUnreadable`).
  */
-function globalStoredLessons(dir: string, notebooks: NotebookStat[], scope: string | undefined): number {
+function globalStoredLessons(
+  dir: string,
+  notebooks: NotebookStat[],
+  scope: string | undefined,
+  skipped: SkippedShelf[],
+): number {
   if (!scope) return notebooks.reduce((sum, n) => sum + n.lines, 0);
-  return listShelves(dir).filter(isValidShelfName).reduce((sum, shelf) => sum + readEntries(dir, shelf).length, 0);
+  let total = 0;
+  for (const shelf of listShelves(dir).filter(isValidShelfName)) {
+    const read = skipUnreadable(shelf, () => readEntries(dir, shelf));
+    if (read.error) {
+      if (!skipped.some((s) => s.shelf === shelf)) skipped.push(read.error);
+      continue;
+    }
+    total += read.value!.length;
+  }
+  return total;
 }
 
 /**
@@ -1141,7 +1163,7 @@ export function stats(
   }
   const engagementDiagnosis =
     engagedAll.size === 0
-      ? diagnoseEngagement(recentAll, globalStoredLessons(dir, notebooks, scope))
+      ? diagnoseEngagement(recentAll, globalStoredLessons(dir, notebooks, scope, skipped))
       : null;
 
   const surfacing: SurfacingMetrics = {
