@@ -110,7 +110,7 @@ describe('nb-git-wrapper git-section lock (issue #271)', () => {
     expect(source).toMatch(/async function autoCommit[\s\S]*?withGitLock\(/);
   });
 
-  test('concurrent mutating commands each produce their own one-change commit (no bundling, no dropped commit)', async () => {
+  test('concurrent mutating commands each produce their own one-change commit (no bundling, no dropped commit) [timing]', async () => {
     // Warm up so `.gitignore` is already seeded and committed: a clean tree means
     // each later commit adds exactly ONE shelf file, making the no-bundling
     // assertion sharp.
@@ -136,9 +136,12 @@ describe('nb-git-wrapper git-section lock (issue #271)', () => {
     for (const s of shelves) {
       expect(filesInCommitBySubject(nbDir, `nb add ${s}`)).toEqual([`${s}.md`]);
     }
-  });
+    // 10 wrapper runs (node + several git spawns each), 9 of them at once: over
+    // Vitest's 5 s default on a loaded macOS runner (issue #485), so size the
+    // timeout for it.
+  }, 30_000);
 
-  test('a global flag before the shelf (--json / --reason) still commits exactly that shelf, never dropped', () => {
+  test('a global flag before the shelf (--json / --reason) still commits exactly that shelf, never dropped [timing]', () => {
     // Per-change staging must resolve the shelf the way the CLI does: --json,
     // --reason <code>, and --note <text> may precede the shelf, so reading raw
     // argv[1] would miss it, stage nothing, and DROP the commit (the file stays
@@ -158,7 +161,9 @@ describe('nb-git-wrapper git-section lock (issue #271)', () => {
     expect(existsSync(join(nbDir, 'viareason.md'))).toBe(true);
     expect(commitCount(nbDir)).toBe(before + 1);
     expect(filesInCommitBySubject(nbDir, 'nb add viareason')).toEqual(['viareason.md']);
-  });
+    // Three sequential wrapper runs took 7.9 s on a loaded macOS runner, past
+    // Vitest's 5 s default (issue #485).
+  }, 30_000);
 
   test("a crashed wrapper's stale lock is reclaimed, so one dead process cannot wedge commits", () => {
     const lock = join(nbDir, '.nb-git.lock');
@@ -176,7 +181,7 @@ describe('nb-git-wrapper git-section lock (issue #271)', () => {
     expect(existsSync(lock)).toBe(false);
   });
 
-  test('a held `.nb-git.lock` blocks the COMMIT but NOT the lesson write (lesson-first invariant)', async () => {
+  test('a held `.nb-git.lock` blocks the COMMIT but NOT the lesson write (lesson-first invariant) [timing]', async () => {
     const lock = join(nbDir, '.nb-git.lock');
     mkdirSync(lock); // a fresh (not stale) holder, so the wrapper waits rather than stealing
     const before = commitCount(nbDir);
@@ -198,5 +203,7 @@ describe('nb-git-wrapper git-section lock (issue #271)', () => {
     rmdirSync(lock);
     expect(await done).toBe(0);
     expect(commitCount(nbDir)).toBe(before + 1);
-  });
+    // Real-clock polling (up to 2 s for the lesson, 1 s of held lock) on top of a
+    // wrapper run: wall-clock sensitive on a loaded runner (issue #485).
+  }, 30_000);
 });
