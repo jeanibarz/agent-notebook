@@ -17,7 +17,7 @@ const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 // throws. Everything delegates to the real fs; when `events` is null and
 // `failDirFsync` is false (the default, reset in afterEach) behavior is identical
 // to the unwrapped module, so every other test is unaffected.
-const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null, failReadOnceCode: null as string | null, failCodelessRead: false, failReaddirCode: null as string | null }));
+const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null, failReadOnceCode: null as string | null, failCodelessRead: false, failReaddirCode: null as string | null, lockProbe: null as { op: 'rename' | 'unlink'; path: string; locked: boolean }[] | null }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
@@ -56,6 +56,11 @@ vi.mock('node:fs', async (importOriginal) => {
     },
     renameSync: ((from: Parameters<typeof actual.renameSync>[0], to: Parameters<typeof actual.renameSync>[1]) => {
       fsHook.events?.push('rename');
+      // Opt-in lock probe (issue #490): at each shelf publish (`<shelf>.md`),
+      // record whether `.nb.lock` exists in the shelf's directory right now.
+      if (fsHook.lockProbe !== null && String(to).endsWith('.md')) {
+        fsHook.lockProbe.push({ op: 'rename', path: String(to), locked: actual.existsSync(String(to).replace(/[^/\\]+$/, '.nb.lock')) });
+      }
       fsHook.renames?.push(String(from)); // capture the temp source path (opt-in; null by default)
       // Opt-in crash injection: fail the atomic rename for exactly one target
       // file (the final `<shelf>.md`, not the temp), so a test can simulate an
@@ -66,6 +71,15 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       return actual.renameSync(from, to);
     }) as typeof actual.renameSync,
+    unlinkSync: ((path: Parameters<typeof actual.unlinkSync>[0]) => {
+      // Same probe for the phantom-reap path (issue #490): a mutation that leaves
+      // a shelf with no lesson and no metadata unlinks `<shelf>.md` instead of
+      // renaming a temp over it.
+      if (fsHook.lockProbe !== null && String(path).endsWith('.md')) {
+        fsHook.lockProbe.push({ op: 'unlink', path: String(path), locked: actual.existsSync(String(path).replace(/[^/\\]+$/, '.nb.lock')) });
+      }
+      return actual.unlinkSync(path);
+    }) as typeof actual.unlinkSync,
     mkdirSync: ((path: Parameters<typeof actual.mkdirSync>[0], opts?: Parameters<typeof actual.mkdirSync>[1]) => {
       // Opt-in fault injection for withLock's acquire path (issue #263): make the
       // `mkdirSync(.nb.lock)` that acquires the lock throw a specific errno code
@@ -214,6 +228,7 @@ afterEach(() => {
   fsHook.failReadOnceCode = null; // clear one-shot read fault injection (issue #300)
   fsHook.failCodelessRead = false; // clear codeless-throw fault injection (issue #332)
   fsHook.failReaddirCode = null; // clear readdir fault injection (issue #383)
+  fsHook.lockProbe = null; // clear the lock-held-at-write probe (issue #490)
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -4577,6 +4592,55 @@ describe('locking (mkdir spinlock)', () => {
     const expected = Array.from({ length: N }, (_, i) => `cross process lesson ${i}`).sort();
     expect(texts).toEqual(expected); // all N present, none lost
   }, 30_000);
+
+  test('every mutating function holds .nb.lock at each shelf write: rename and phantom-reap unlink (issue #490)', async () => {
+    // The cross-process test above covers only `nb add`, and the in-process
+    // suite cannot catch a missing lock (see the NOTE). This probe checks the
+    // invariant directly instead: at every moment a mutation publishes a shelf
+    // file — the atomic rename onto `<shelf>.md`, or the unlink that reaps an
+    // emptied shelf — the `.nb.lock` directory must exist. Deleting the withLock
+    // wrapper from any one function below makes its row record `locked: false`.
+    // It checks the lock is present, not who owns it (ownership: issue #331).
+    const p = (s: string) => join(dir, `${s}.md`);
+    const seed = async () => {
+      for (const t of ['alpha lesson one', 'beta lesson two', 'gamma lesson three', 'delta lesson four']) {
+        await addEntry(dir, 'lk', t);
+      }
+      await addEntry(dir, 'solo', 'only lesson here');
+    };
+    // [label, operation, shelf files it must write, expected write kind]
+    const cases: [string, () => Promise<unknown>, string[], 'rename' | 'unlink'][] = [
+      ['addEntry', () => addEntry(dir, 'lk', 'epsilon lesson five'), [p('lk')], 'rename'],
+      ['vote', () => vote(dir, 'lk', 'alpha', 1), [p('lk')], 'rename'],
+      ['voteMany', () => voteMany(dir, 'lk', ['alpha', 'beta'], 1), [p('lk')], 'rename'],
+      ['merge', () => merge(dir, 'lk', 'alpha', 'beta', 'alpha and beta merged'), [p('lk')], 'rename'],
+      ['split', () => split(dir, 'lk', 'gamma', 'gamma part a', 'gamma part b'), [p('lk')], 'rename'],
+      ['remove (shelf stays non-empty)', () => remove(dir, 'lk', 'delta'), [p('lk')], 'rename'],
+      ['remove (last lesson: phantom reap)', () => remove(dir, 'solo', 'only'), [p('solo')], 'unlink'],
+      ['move (both shelves)', () => move(dir, 'lk', 'dest', 'gamma'), [p('lk'), p('dest')], 'rename'],
+      ['setDescription', () => setDescription(dir, 'lk', 'probe shelf'), [p('lk')], 'rename'],
+    ];
+    for (const [label, op, files, kind] of cases) {
+      rmSync(dir, { recursive: true, force: true });
+      mkdirSync(dir, { recursive: true });
+      await seed(); // fresh store per case, seeded without the probe
+      fsHook.lockProbe = [];
+      try {
+        await op();
+        const rows = fsHook.lockProbe;
+        // The probe saw the expected write(s) for this function — guards against
+        // a vacuous pass where the op wrote nothing the probe could observe.
+        expect([...new Set(rows.map((r) => r.path))].sort(), label).toEqual([...files].sort());
+        expect(rows.every((r) => r.op === kind), label).toBe(true);
+        expect(rows.map((r) => r.locked), label).toEqual(rows.map(() => true));
+      } finally {
+        fsHook.lockProbe = null;
+      }
+      // And the lock is released again afterwards, so the probe is not just
+      // seeing a lock that leaked from an earlier step.
+      expect(existsSync(join(dir, '.nb.lock')), label).toBe(false);
+    }
+  });
 
   test('cross-process: concurrent writers to one shelf under a steal-prone lock leave a whole, non-torn file and no stray temp (issue #270) [timing]', async () => {
     // The acceptance scenario for #270: overlapping writes to the SAME shelf with
