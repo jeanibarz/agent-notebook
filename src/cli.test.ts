@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS, scopedHelp } from './cli.js';
+import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS, MUTATING_COMMANDS, scopedHelp } from './cli.js';
 import { drainPendingRecovery, entryId, usageFile } from './notebook.js';
 import { parseUsage } from './usage.js';
 import type { IntTunable, RateTunable } from './notebook.js';
@@ -4888,6 +4888,30 @@ describe('nb completion (shell completion, issue #187)', () => {
     expect(out).toMatch(/case "\$cmd" in[\s\S]*\bshow\b/);
   });
 
+  test('every mutating command completes a shelf name in both shells (issue #491)', async () => {
+    // Derived from `MUTATING_COMMANDS`, so a new write command left out of the
+    // shelf-first list loses completion with a failing test, not silently. The
+    // first arm of each script's `case` is the interpolated shelf-first list;
+    // `move` has its own arm (both of its operands are shelves).
+    const firstArm: Record<string, RegExp> = {
+      bash: /case "\$cmd" in\n\s*([^)\n]+)\)/,
+      zsh: /case \$cmd in\n\s*([^)\n]+)\)/,
+    };
+    for (const shell of ['bash', 'zsh'] as const) {
+      const out = (await run(['completion', shell])).out;
+      const arm = out.match(firstArm[shell]);
+      expect(arm, `${shell}: shelf-first case arm not found`).not.toBeNull();
+      const shelfFirst = arm![1].split('|').map((c) => c.trim());
+      for (const cmd of MUTATING_COMMANDS) {
+        if (cmd === 'move') {
+          expect(out, `${shell}: move) arm`).toMatch(/^\s*move\)/m);
+        } else {
+          expect(shelfFirst, `${shell}: ${cmd} in shelf-first case`).toContain(cmd);
+        }
+      }
+    }
+  });
+
   test('bash: sourcing the script completes commands and shelf names end-to-end', async () => {
     // The behavioral guard the string-match tests above can't give: it sources
     // the real emitted script and drives `_nb_complete` with stubbed COMP_WORDS,
@@ -5462,6 +5486,21 @@ describe('surplus operands are rejected, not silently dropped (issue #378)', () 
     await run(['add', 's', 'beta lesson']);
     const before = stored('s');
     const r = await run(argv);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('unexpected extra argument');
+    expect(stored('s')).toBe(before);
+  });
+
+  // Drift guard (issue #491): the rows above are hand-picked, so a new mutating
+  // command added without a `MAX_ARGS` row would silently drop surplus operands
+  // with no failing test. Deriving the cases from `MUTATING_COMMANDS` makes that
+  // omission turn this red.
+  test.each(MUTATING_COMMANDS)('every mutating command (%s) refuses a dozen surplus operands', async (cmd) => {
+    await run(['add', 's', 'alpha lesson']);
+    await run(['add', 's', 'beta lesson']);
+    const before = stored('s');
+    const surplus = Array.from({ length: 12 }, (_, i) => `w${i + 1}`);
+    const r = await run([cmd, 's', ...surplus]);
     expect(r.code).toBe(1);
     expect(r.err).toContain('unexpected extra argument');
     expect(stored('s')).toBe(before);
