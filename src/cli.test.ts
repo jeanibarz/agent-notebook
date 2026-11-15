@@ -1612,6 +1612,47 @@ describe('runNbCli', () => {
     expect(r.err).toContain('unknown command');
   });
 
+  // The command tables are plain objects, so a word every object inherits must
+  // not be read as a known command (issue #483): it used to crash `new Set` with
+  // a TypeError and exit 1, logged as errorClass `other`.
+  describe.each(['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf'])(
+    'inherited Object member %s is an unknown command (issue #483)',
+    (word) => {
+      test('exits 2 with the unknown-command error and logs unknown_subcommand', async () => {
+        const r = await run([word]);
+        expect(r.code).toBe(2);
+        expect(r.err).toMatch(new RegExp(`^nb: unknown command "${word}"\\.`));
+        expect(r.err).not.toContain('TypeError');
+        expect(r.err).not.toContain('iterable');
+        expect(parseUsage(dir).at(-1)!.errorClass).toBe('unknown_subcommand');
+      });
+
+      test('under --json emits the structured unknown_subcommand error and exits 2', async () => {
+        const r = await run([word, '--json']);
+        expect(r.code).toBe(2);
+        const obj = JSON.parse(r.out) as { ok: boolean; command: string; error: { class: string } };
+        expect(obj.ok).toBe(false);
+        expect(obj.command).toBe(word);
+        expect(obj.error.class).toBe('unknown_subcommand');
+        expect(parseUsage(dir).at(-1)!.errorClass).toBe('unknown_subcommand');
+      });
+
+      test('with --help exits 2 like an unknown word does', async () => {
+        const bogus = await run(['bogus', '--help']);
+        const r = await run([word, '--help']);
+        expect(bogus.code).toBe(2);
+        expect(r.code).toBe(2);
+        expect(r.err).toContain(`unknown command "${word}"`);
+      });
+
+      test('with extra operands still exits 2 (the operand cap is an own-key lookup too)', async () => {
+        const r = await run([word, 'a', 'b', 'c', 'd', 'e', 'f']);
+        expect(r.code).toBe(2);
+        expect(r.err).toContain(`unknown command "${word}"`);
+      });
+    },
+  );
+
   test('a typo of a real command suggests the nearest one, keeping exit 2 and the --help pointer', async () => {
     const r = await run(['stat']);
     expect(r.code).toBe(2); // exit code is unchanged by the suggestion
