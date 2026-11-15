@@ -3,7 +3,8 @@
   "compilerOptions": {
     "noEmit": true,
     "rootDir": ".",
-    "declaration": false
+    "declaration": false,
+    "noUnusedLocals": false
   },
   "include": ["src/**/*.ts", "vitest*.config.ts"],
   "exclude": ["node_modules", "dist"]
