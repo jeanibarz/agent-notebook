@@ -670,7 +670,10 @@ const VALUE_FLAGS = new Set(['--reason', '--note', '--limit', '--since']);
  * close, so `--exitcode` points at `--exit-code` in one line.
  */
 function assertKnownFlags(cmd: string, head: string[]): void {
-  const known = KNOWN_FLAGS[cmd];
+  // Own-property lookup: a plain-object table also "contains" every inherited
+  // member (`constructor`, `toString`, `__proto__`, …), which would otherwise be
+  // read as a known command and crash `new Set` with a TypeError (issue #483).
+  const known = Object.hasOwn(KNOWN_FLAGS, cmd) ? KNOWN_FLAGS[cmd] : undefined;
   if (!known) return; // unknown command → handled by the dispatch default (exit 2)
   const accepted = new Set<string>(known);
   accepted.add('--json'); // parsed globally for every command (see `json` below)
@@ -710,7 +713,12 @@ const MAX_ARGS: Record<string, number> = {
 /** `search <query> [prefix]`: command word + query + optional prefix. */
 const SEARCH_MAX_ARGS = 3;
 
-function assertOperandCount(cmd: string, args: string[], max: number | undefined = MAX_ARGS[cmd]): void {
+function assertOperandCount(
+  cmd: string,
+  args: string[],
+  // Own-property lookup, as in `assertKnownFlags` (issue #483).
+  max: number | undefined = Object.hasOwn(MAX_ARGS, cmd) ? MAX_ARGS[cmd] : undefined,
+): void {
   if (max === undefined || args.length <= max) return;
   throw new NbError(
     'bad_args',
