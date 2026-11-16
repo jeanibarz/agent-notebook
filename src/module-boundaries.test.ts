@@ -109,6 +109,17 @@ describe('module boundaries (issue #478)', () => {
     }
   });
 
+  // Issue #493 moved the CLI's non-dispatch code out of cli.ts. Each helper
+  // module sits below the dispatcher: cli.ts imports them, never the reverse.
+  test('the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)', () => {
+    const graph = importGraph();
+    expect(graph.get('cli')).toEqual(expect.arrayContaining(['suggest']));
+    expect(graph.get('suggest')).toEqual([]);
+    for (const [mod, deps] of graph) {
+      expect(deps, `${mod}.ts imports the CLI entry point`).not.toContain('cli');
+    }
+  });
+
   test('the root re-exports every module export except the named internals', () => {
     // index.ts lists notebook.ts names explicitly (so the internals stay off the
     // root). This catches the other direction: a new public export in a module
