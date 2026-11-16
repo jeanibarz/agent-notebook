@@ -619,180 +619,15 @@ function errorClassBreakdown(errRows: UsageRow[]): string {
  * command (stuck), a command that went silent (it probably broke), and a
  * command erroring often (not behaving as expected).
  */
-export function stats(
-  dir: string,
-  opts: {
-    shelf?: string;
-    /** @deprecated use `shelf`; honoured when `shelf` is absent */
-    role?: string;
-    windowMs?: number;
-    now?: number;
-  } = {},
-): StatsReport {
-  const scope = opts.shelf ?? opts.role;
-  const now = opts.now ?? Date.now();
-  const windowMs = opts.windowMs ?? 7 * 24 * 3600_000;
-  const parsed = parseUsage(dir);
-  const inWindow = (r: UsageRow): boolean => now - Date.parse(r.ts) <= windowMs;
-  // Deployment-wide (unscoped) windowed rows: the engagement diagnosis (issue
-  // #105) reads these, since NB_SESSION / the hook / the retrospective nudge are
-  // deployment-level and the hook's `nb list` is logged globally (shelf `-`).
-  const recentAll = parsed.filter(inWindow);
-  const all = scope ? parsed.filter((r) => r.role === scope) : parsed;
-  const recent = all.filter(inWindow);
-
-  // Every shelf with a notebook file, read once (unscoped). browse-without-use
-  // (issue #480) skips shelves absent from it; the inventory below narrows it to
-  // the scope. A shelf whose file is unreadable is still listed here — it exists.
-  const existingShelves = new Set(listShelves(dir));
-
-  const byCmd = new Map<string, UsageRow[]>();
-  for (const r of recent) {
-    const arr = byCmd.get(r.command) ?? [];
-    arr.push(r);
-    byCmd.set(r.command, arr);
-  }
-  // Per-command error-cause breakdown (issue #223): name the lever behind each
-  // command's err% so `add` over-cap rejections and `vote` selector misses are
-  // surfaced in the header, not only when the high-error-rate anomaly fires. A
-  // row's cause comes from `errorCause` — the same resolver the anomaly detail
-  // uses — so `add`'s dominant cause reads correctly even on an older log.
-  // A couple of stray errors (e.g. a one-off unknown-subcommand guess) is noise,
-  // not a rate; only a handful is a pattern worth naming. This keeps the readout
-  // to the commands that actually have an err% worth diagnosing (add, vote).
-  const ERROR_CAUSE_MIN = 3;
-  const errorCauses: ErrorCause[] = [...byCmd.entries()]
-    .map(([command, rows]): ErrorCause => {
-      const errRows = rows.filter((r) => !r.ok);
-      const counts = new Map<string, number>();
-      for (const r of errRows) counts.set(errorCause(r), (counts.get(errorCause(r)) ?? 0) + 1);
-      // Fold in batch-vote partial misses (issue #310): a ≥1-landed batch `vote`
-      // exits 0 (`ok=true`), so it is NOT an error row, yet each stale id it
-      // skipped is a genuine selector miss the err-rate table can't see. Count
-      // each as a `no_match` cause — the same class a wholly-failed vote stamps —
-      // so the vote selector-miss readout is no longer blind to them. `misses` is
-      // only ever recorded on vote rows, so this is a no-op for every other
-      // command. The per-command error *rate* (perCommand) is untouched: it keeps
-      // counting error ROWS, so a batch that limped to exit 0 stays a success
-      // there — only this cause readout surfaces the laundered misses.
-      let partialMisses = 0;
-      for (const r of rows) partialMisses += r.misses;
-      if (partialMisses > 0) counts.set('no_match', (counts.get('no_match') ?? 0) + partialMisses);
-      const errors = errRows.length + partialMisses;
-      const breakdown = [...counts.entries()]
-        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-        .map(([cause, n]) => ({ cause, pct: Math.round((n / errors) * 100) }));
-      return { command, errors, breakdown };
-    })
-    .filter((e) => e.errors >= ERROR_CAUSE_MIN)
-    .sort((a, b) => b.errors - a.errors || a.command.localeCompare(b.command));
-
-  const perCommand: CommandStat[] = [...byCmd.entries()]
-    .map(([command, rows]) => {
-      const lat = rows.map((r) => r.ms).sort((a, b) => a - b);
-      const errors = rows.filter((r) => !r.ok).length;
-      const lastUsed = rows.map((r) => r.ts).sort().at(-1) ?? '';
-      return {
-        command,
-        calls: rows.length,
-        errors,
-        errorRate: rows.length ? errors / rows.length : 0,
-        p50ms: percentile(lat, 50),
-        p95ms: percentile(lat, 95),
-        lastUsed,
-      };
-    })
-    .sort((a, b) => b.calls - a.calls);
-
-  const anomalies: Anomaly[] = [];
-
-  // (1) loop: same shelf+command on the SAME target ≥ LOOP_N times inside
-  //     LOOP_WINDOW_MS. The key includes the touched entry id(s) so a legitimate
-  //     retrospective — many rapid `vote`s across DISTINCT entries in one session
-  //     — is not mistaken for a stuck agent, while hammering a single entry (or a
-  //     repeated entry-less call such as `show <shelf>`) still trips it. Entry-less
-  //     calls share the empty target, preserving the original shelf+command grouping.
-  const LOOP_N = loopN();
-  const LOOP_WINDOW_MS = loopWindowSec() * 1000;
-  const byShelfCmd = new Map<string, number[]>();
-  for (const r of recent) {
-    // A `search` row carries the surfaced entry ids since issue #114 (for the
-    // serendipity provenance join), but the loop detector must keep treating it
-    // as entry-less: searches are grouped by shelf+command so a stuck agent
-    // hammering `search` with VARYING queries still trips the loop, exactly as
-    // before #114. Only the serendipity computation reads a search row's entries.
-    const target = r.command === 'search' ? '' : r.entries.slice().sort().join(',');
-    // Issue #372: a non-blank session is part of the key, so N agents each making
-    // one call inside the window are not reported as one stuck agent. Blank-session
-    // rows keep the original grouping.
-    const k = `${r.role}\u0000${r.command}\u0000${target}\u0000${r.session}`;
-    const arr = byShelfCmd.get(k) ?? [];
-    arr.push(Date.parse(r.ts));
-    byShelfCmd.set(k, arr);
-  }
-  for (const [k, tsList] of byShelfCmd) {
-    const sortedTs = tsList.sort((a, b) => a - b);
-    for (let i = 0; i + LOOP_N - 1 < sortedTs.length; i++) {
-      if (sortedTs[i + LOOP_N - 1] - sortedTs[i] <= LOOP_WINDOW_MS) {
-        const [shelf, command] = k.split('\u0000');
-        anomalies.push({
-          kind: 'loop',
-          command,
-          role: shelf,
-          shelf,
-          detail: `${LOOP_N}+ calls within ${Math.round(LOOP_WINDOW_MS / 1000)}s — the agent may be stuck/looping`,
-        });
-        break;
-      }
-    }
-  }
-
-  // (2) went-silent: a command used historically but not at all in the recent window.
-  const SILENT_MS = silentHours() * 3600_000;
-  const lastSeen = new Map<string, number>();
-  for (const r of all) {
-    // Issue #372: a mistyped command is logged under the typed token; it is not a
-    // real command that broke, so it never counts as "used historically".
-    if (r.errorClass === 'unknown_subcommand') continue;
-    const t = Date.parse(r.ts);
-    lastSeen.set(r.command, Math.max(lastSeen.get(r.command) ?? 0, t));
-  }
-  for (const [command, last] of lastSeen) {
-    const age = now - last;
-    if (age > SILENT_MS && !byCmd.has(command)) {
-      anomalies.push({
-        kind: 'went-silent',
-        command,
-        detail: `last used ${Math.round(age / 3600_000)}h ago, 0 calls in the window — it may have broken or been abandoned`,
-      });
-    }
-  }
-
-  // (3) high-error-rate: enough calls and a high failure fraction.
-  const ERR_MIN = errMin();
-  const ERR_RATE = errRate(); // bad value → default, not NaN (which disables detection)
-  for (const c of perCommand) {
-    if (c.calls >= ERR_MIN && c.errorRate >= ERR_RATE) {
-      // Break the rate down by error class (issue #176) so the anomaly names a
-      // lever: `too_long 78%, bad_args 14%, other 8%` tells the operator the
-      // single likely cause instead of a dead-end "broken". Falls back to the
-      // generic phrase only when there are no error rows to classify (a
-      // degenerate NB_ERR_RATE=0 config flags a 0-error command).
-      const errRows = (byCmd.get(c.command) ?? []).filter((r) => !r.ok);
-      const breakdown = errRows.length
-        ? errorClassBreakdown(errRows)
-        : 'broken or not behaving as expected';
-      anomalies.push({
-        kind: 'high-error-rate',
-        command: c.command,
-        detail: `${Math.round(c.errorRate * 100)}% errors over ${c.calls} calls — ${breakdown}`,
-      });
-    }
-  }
-
-  // Free diagnostic signals (issue #72): three memory-quality observations read
-  // straight from the windowed, shelf-scoped `recent` rows — no new agent action.
-  // Each is implied by behavior the agent already performs for its own reasons.
+/**
+ * Free diagnostic signals (issue #72): five memory-quality observations read
+ * straight from the windowed, shelf-scoped `recent` rows — no new agent action.
+ * Each is implied by behavior the agent already performs for its own reasons.
+ * `existingShelves` (the shelves with a notebook file) is read only by (A), to
+ * skip a shelf that was never created (issue #480). Returns the signals in
+ * their deterministic report order.
+ */
+function diagnosticSignals(recent: UsageRow[], existingShelves: ReadonlySet<string>): DiagnosticSignal[] {
   const signals: DiagnosticSignal[] = [];
 
   // (A) browse-without-use: a notebook `show`n in a session with no `vote` on any
@@ -1015,6 +850,192 @@ export function stats(
       a.shelf.localeCompare(b.shelf) ||
       (a.entry ?? a.session ?? '').localeCompare(b.entry ?? b.session ?? ''),
   );
+  return signals;
+}
+
+/** Sessions that cast at least one `up` or `down` vote among `rows` — the engagement gate. */
+function engagedSessions(rows: UsageRow[]): Set<string> {
+  const engaged = new Set<string>();
+  for (const r of rows) {
+    if (r.command === 'vote' && r.session !== '' && (r.outcome === 'up' || r.outcome === 'down')) {
+      engaged.add(r.session);
+    }
+  }
+  return engaged;
+}
+
+export function stats(
+  dir: string,
+  opts: {
+    shelf?: string;
+    /** @deprecated use `shelf`; honoured when `shelf` is absent */
+    role?: string;
+    windowMs?: number;
+    now?: number;
+  } = {},
+): StatsReport {
+  const scope = opts.shelf ?? opts.role;
+  const now = opts.now ?? Date.now();
+  const windowMs = opts.windowMs ?? 7 * 24 * 3600_000;
+  const parsed = parseUsage(dir);
+  const inWindow = (r: UsageRow): boolean => now - Date.parse(r.ts) <= windowMs;
+  // Deployment-wide (unscoped) windowed rows: the engagement diagnosis (issue
+  // #105) reads these, since NB_SESSION / the hook / the retrospective nudge are
+  // deployment-level and the hook's `nb list` is logged globally (shelf `-`).
+  const recentAll = parsed.filter(inWindow);
+  const all = scope ? parsed.filter((r) => r.role === scope) : parsed;
+  const recent = all.filter(inWindow);
+
+  // Every shelf with a notebook file, read once (unscoped). browse-without-use
+  // (issue #480) skips shelves absent from it; the inventory below narrows it to
+  // the scope. A shelf whose file is unreadable is still listed here — it exists.
+  const existingShelves = new Set(listShelves(dir));
+
+  const byCmd = new Map<string, UsageRow[]>();
+  for (const r of recent) {
+    const arr = byCmd.get(r.command) ?? [];
+    arr.push(r);
+    byCmd.set(r.command, arr);
+  }
+  // Per-command error-cause breakdown (issue #223): name the lever behind each
+  // command's err% so `add` over-cap rejections and `vote` selector misses are
+  // surfaced in the header, not only when the high-error-rate anomaly fires. A
+  // row's cause comes from `errorCause` — the same resolver the anomaly detail
+  // uses — so `add`'s dominant cause reads correctly even on an older log.
+  // A couple of stray errors (e.g. a one-off unknown-subcommand guess) is noise,
+  // not a rate; only a handful is a pattern worth naming. This keeps the readout
+  // to the commands that actually have an err% worth diagnosing (add, vote).
+  const ERROR_CAUSE_MIN = 3;
+  const errorCauses: ErrorCause[] = [...byCmd.entries()]
+    .map(([command, rows]): ErrorCause => {
+      const errRows = rows.filter((r) => !r.ok);
+      const counts = new Map<string, number>();
+      for (const r of errRows) counts.set(errorCause(r), (counts.get(errorCause(r)) ?? 0) + 1);
+      // Fold in batch-vote partial misses (issue #310): a ≥1-landed batch `vote`
+      // exits 0 (`ok=true`), so it is NOT an error row, yet each stale id it
+      // skipped is a genuine selector miss the err-rate table can't see. Count
+      // each as a `no_match` cause — the same class a wholly-failed vote stamps —
+      // so the vote selector-miss readout is no longer blind to them. `misses` is
+      // only ever recorded on vote rows, so this is a no-op for every other
+      // command. The per-command error *rate* (perCommand) is untouched: it keeps
+      // counting error ROWS, so a batch that limped to exit 0 stays a success
+      // there — only this cause readout surfaces the laundered misses.
+      let partialMisses = 0;
+      for (const r of rows) partialMisses += r.misses;
+      if (partialMisses > 0) counts.set('no_match', (counts.get('no_match') ?? 0) + partialMisses);
+      const errors = errRows.length + partialMisses;
+      const breakdown = [...counts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([cause, n]) => ({ cause, pct: Math.round((n / errors) * 100) }));
+      return { command, errors, breakdown };
+    })
+    .filter((e) => e.errors >= ERROR_CAUSE_MIN)
+    .sort((a, b) => b.errors - a.errors || a.command.localeCompare(b.command));
+
+  const perCommand: CommandStat[] = [...byCmd.entries()]
+    .map(([command, rows]) => {
+      const lat = rows.map((r) => r.ms).sort((a, b) => a - b);
+      const errors = rows.filter((r) => !r.ok).length;
+      const lastUsed = rows.map((r) => r.ts).sort().at(-1) ?? '';
+      return {
+        command,
+        calls: rows.length,
+        errors,
+        errorRate: rows.length ? errors / rows.length : 0,
+        p50ms: percentile(lat, 50),
+        p95ms: percentile(lat, 95),
+        lastUsed,
+      };
+    })
+    .sort((a, b) => b.calls - a.calls);
+
+  const anomalies: Anomaly[] = [];
+
+  // (1) loop: same shelf+command on the SAME target ≥ LOOP_N times inside
+  //     LOOP_WINDOW_MS. The key includes the touched entry id(s) so a legitimate
+  //     retrospective — many rapid `vote`s across DISTINCT entries in one session
+  //     — is not mistaken for a stuck agent, while hammering a single entry (or a
+  //     repeated entry-less call such as `show <shelf>`) still trips it. Entry-less
+  //     calls share the empty target, preserving the original shelf+command grouping.
+  const LOOP_N = loopN();
+  const LOOP_WINDOW_MS = loopWindowSec() * 1000;
+  const byShelfCmd = new Map<string, number[]>();
+  for (const r of recent) {
+    // A `search` row carries the surfaced entry ids since issue #114 (for the
+    // serendipity provenance join), but the loop detector must keep treating it
+    // as entry-less: searches are grouped by shelf+command so a stuck agent
+    // hammering `search` with VARYING queries still trips the loop, exactly as
+    // before #114. Only the serendipity computation reads a search row's entries.
+    const target = r.command === 'search' ? '' : r.entries.slice().sort().join(',');
+    // Issue #372: a non-blank session is part of the key, so N agents each making
+    // one call inside the window are not reported as one stuck agent. Blank-session
+    // rows keep the original grouping.
+    const k = `${r.role}\u0000${r.command}\u0000${target}\u0000${r.session}`;
+    const arr = byShelfCmd.get(k) ?? [];
+    arr.push(Date.parse(r.ts));
+    byShelfCmd.set(k, arr);
+  }
+  for (const [k, tsList] of byShelfCmd) {
+    const sortedTs = tsList.sort((a, b) => a - b);
+    for (let i = 0; i + LOOP_N - 1 < sortedTs.length; i++) {
+      if (sortedTs[i + LOOP_N - 1] - sortedTs[i] <= LOOP_WINDOW_MS) {
+        const [shelf, command] = k.split('\u0000');
+        anomalies.push({
+          kind: 'loop',
+          command,
+          role: shelf,
+          shelf,
+          detail: `${LOOP_N}+ calls within ${Math.round(LOOP_WINDOW_MS / 1000)}s — the agent may be stuck/looping`,
+        });
+        break;
+      }
+    }
+  }
+
+  // (2) went-silent: a command used historically but not at all in the recent window.
+  const SILENT_MS = silentHours() * 3600_000;
+  const lastSeen = new Map<string, number>();
+  for (const r of all) {
+    // Issue #372: a mistyped command is logged under the typed token; it is not a
+    // real command that broke, so it never counts as "used historically".
+    if (r.errorClass === 'unknown_subcommand') continue;
+    const t = Date.parse(r.ts);
+    lastSeen.set(r.command, Math.max(lastSeen.get(r.command) ?? 0, t));
+  }
+  for (const [command, last] of lastSeen) {
+    const age = now - last;
+    if (age > SILENT_MS && !byCmd.has(command)) {
+      anomalies.push({
+        kind: 'went-silent',
+        command,
+        detail: `last used ${Math.round(age / 3600_000)}h ago, 0 calls in the window — it may have broken or been abandoned`,
+      });
+    }
+  }
+
+  // (3) high-error-rate: enough calls and a high failure fraction.
+  const ERR_MIN = errMin();
+  const ERR_RATE = errRate(); // bad value → default, not NaN (which disables detection)
+  for (const c of perCommand) {
+    if (c.calls >= ERR_MIN && c.errorRate >= ERR_RATE) {
+      // Break the rate down by error class (issue #176) so the anomaly names a
+      // lever: `too_long 78%, bad_args 14%, other 8%` tells the operator the
+      // single likely cause instead of a dead-end "broken". Falls back to the
+      // generic phrase only when there are no error rows to classify (a
+      // degenerate NB_ERR_RATE=0 config flags a 0-error command).
+      const errRows = (byCmd.get(c.command) ?? []).filter((r) => !r.ok);
+      const breakdown = errRows.length
+        ? errorClassBreakdown(errRows)
+        : 'broken or not behaving as expected';
+      anomalies.push({
+        kind: 'high-error-rate',
+        command: c.command,
+        detail: `${Math.round(c.errorRate * 100)}% errors over ${c.calls} calls — ${breakdown}`,
+      });
+    }
+  }
+
+  const signals = diagnosticSignals(recent, existingShelves);
 
   // Surfacing metrics (issue #81): the NAMED recall-miss / precision-miss rates
   // and the coverage×surfacing readout of §4, engagement-gated. The gate: a
@@ -1022,12 +1043,7 @@ export function stats(
   // instructed), so a vote-less session — a setup/plumbing gap — is excluded
   // rather than mis-scored as "healthy quiet". Rows with a blank session can't be
   // attributed to a session and are skipped (same as the session-scoped signals).
-  const engaged = new Set<string>();
-  for (const r of recent) {
-    if (r.command === 'vote' && r.session !== '' && (r.outcome === 'up' || r.outcome === 'down')) {
-      engaged.add(r.session);
-    }
-  }
+  const engaged = engagedSessions(recent);
   // Serendipity provenance (issue #114): which entry ids each session PULLED via
   // `search`. Built from the deployment-wide `recentAll`, NOT the (possibly
   // shelf-scoped) `recent`, because a `search` row is logged under shelf `-` and
@@ -1155,12 +1171,7 @@ export function stats(
   // why a shelf-scoped `nb stats <shelf>` whose shelf is quiet but whose
   // deployment is healthy shows the plain "no engaged sessions" line, not a
   // false "hook not wired".
-  const engagedAll = new Set<string>();
-  for (const r of recentAll) {
-    if (r.command === 'vote' && r.session !== '' && (r.outcome === 'up' || r.outcome === 'down')) {
-      engagedAll.add(r.session);
-    }
-  }
+  const engagedAll = engagedSessions(recentAll);
   const engagementDiagnosis =
     engagedAll.size === 0
       ? diagnoseEngagement(recentAll, globalStoredLessons(dir, notebooks, scope, skipped))
