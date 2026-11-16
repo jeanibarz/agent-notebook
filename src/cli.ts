@@ -851,11 +851,11 @@ export async function runNbCli(
   const json = head.includes('--json');
   let args = json ? head.filter((a) => a !== '--json') : head;
   // `--reason <code>` / `--note "<text>"` attach an optional, never-required
-  // reason to a mutating op, logged (never stored in the notebook). Every
-  // mutating op consumes them — `merge` (duplicate · other), `rm` (wrong ·
+  // reason to a mutating op, logged (never stored in the notebook). The ops
+  // that take them are the `KNOWN_FLAGS` rows listing `--reason` (see the gate
+  // below); the per-op codes are e.g. `merge` (duplicate · other), `rm` (wrong ·
   // obsolete · other), `split` (overloaded · other), `move` (consolidate ·
-  // other), `add` (free text only, no enum yet), and `describe` (free text only,
-  // like `add`). Pulling them out
+  // other), while `add` and `describe` take free text only. Pulling them out
   // of `args` BEFORE positional parsing keeps them from being mistaken for a
   // lesson/operand — otherwise `nb describe <shelf> --reason x "text"` would
   // silently store `--reason` as the description (issue #91, a DP-5 violation);

@@ -796,6 +796,11 @@ describe('runNbCli', () => {
     test('every KNOWN_FLAGS row with `--reason` has a consumption case (drift guard)', () => {
       expect(REASON_CMDS.length).toBeGreaterThan(0); // anti-vacuous
       expect(REASON_CMDS.filter((c) => !Object.hasOwn(REASON_ARGV, c))).toEqual([]);
+      // The gate keys on `--reason` but extracts `--note` too, so the two flags
+      // must always travel together: a `--reason`-only row would extract a
+      // `--note` it rejects, and a `--note`-only row would store `--note` as text.
+      const noteCmds = Object.keys(KNOWN_FLAGS).filter((c) => KNOWN_FLAGS[c].includes('--note'));
+      expect(noteCmds).toEqual(REASON_CMDS);
     });
     test.each(REASON_CMDS)('%s consumes --reason and --note instead of storing them', async (cmd) => {
       await run(['add', 's', 'alpha lesson']);
@@ -811,6 +816,8 @@ describe('runNbCli', () => {
         expect(text).not.toContain('--note');
       }
     });
+    // This pins KNOWN_FLAGS validation (`assertKnownFlags` runs before the gate),
+    // not the gate's own scope: an over-broad gate is unobservable today.
     test.each(Object.keys(KNOWN_FLAGS).filter((c) => !KNOWN_FLAGS[c].includes('--reason')))(
       '%s still rejects --reason as an unknown option',
       async (cmd) => {
