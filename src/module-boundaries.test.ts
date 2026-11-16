@@ -113,8 +113,9 @@ describe('module boundaries (issue #478)', () => {
   // module sits below the dispatcher: cli.ts imports them, never the reverse.
   test('the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)', () => {
     const graph = importGraph();
-    expect(graph.get('cli')).toEqual(expect.arrayContaining(['suggest']));
+    expect(graph.get('cli')).toEqual(expect.arrayContaining(['suggest', 'config-report']));
     expect(graph.get('suggest')).toEqual([]);
+    expect(graph.get('config-report')?.slice().sort()).toEqual(['notebook', 'stats', 'suggest']);
     for (const [mod, deps] of graph) {
       expect(deps, `${mod}.ts imports the CLI entry point`).not.toContain('cli');
     }
