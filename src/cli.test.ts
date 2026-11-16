@@ -778,6 +778,48 @@ describe('runNbCli', () => {
       expect(needRow.length).toBeGreaterThan(0);
     });
 
+    // issue #487 — the `--reason`/`--note` extraction gate is derived from
+    // KNOWN_FLAGS. Iterating the table (not a hand-typed list) means a command
+    // that gains `--reason` there is covered here automatically: it must also
+    // CONSUME the flags, never store them as lesson/description text (#378).
+    const REASON_CMDS = Object.keys(KNOWN_FLAGS).filter((c) => KNOWN_FLAGS[c].includes('--reason'));
+    // A valid invocation per command, with the flags spliced in right after the
+    // shelf so an unconsumed flag would land in a positional (the stored text).
+    const REASON_ARGV: Record<string, string[]> = {
+      add: ['add', 's', '<F>', 'fresh lesson text'],
+      merge: ['merge', 's', '<F>', 'alpha lesson', 'beta lesson', 'merged lesson text'],
+      split: ['split', 's', '<F>', 'alpha lesson', 'first half text', 'second half text'],
+      rm: ['rm', 's', '<F>', 'alpha lesson'],
+      move: ['move', 's', '<F>', 't', 'alpha lesson'],
+      describe: ['describe', 's', '<F>', 'a shelf description'],
+    };
+    test('every KNOWN_FLAGS row with `--reason` has a consumption case (drift guard)', () => {
+      expect(REASON_CMDS.length).toBeGreaterThan(0); // anti-vacuous
+      expect(REASON_CMDS.filter((c) => !Object.hasOwn(REASON_ARGV, c))).toEqual([]);
+    });
+    test.each(REASON_CMDS)('%s consumes --reason and --note instead of storing them', async (cmd) => {
+      await run(['add', 's', 'alpha lesson']);
+      await run(['add', 's', 'beta lesson']);
+      const argv = REASON_ARGV[cmd].flatMap((t) => (t === '<F>' ? ['--reason', 'other', '--note', 'why'] : [t]));
+      const r = await run(argv);
+      expect(r.code, r.err).toBe(0);
+      const md = readdirSync(dir).filter((f) => f.endsWith('.md'));
+      expect(md.length).toBeGreaterThan(0);
+      for (const f of md) {
+        const text = readFileSync(join(dir, f), 'utf-8');
+        expect(text).not.toContain('--reason');
+        expect(text).not.toContain('--note');
+      }
+    });
+    test.each(Object.keys(KNOWN_FLAGS).filter((c) => !KNOWN_FLAGS[c].includes('--reason')))(
+      '%s still rejects --reason as an unknown option',
+      async (cmd) => {
+        const r = await run([cmd, '--reason', 'other']);
+        expect(r.code).toBe(1);
+        expect(r.err).toContain(`unknown option "--reason" for \`nb ${cmd}\``);
+      },
+    );
+
     test('behavioral drift guard: every command rejects a nonsense `--flag`', async () => {
       // Independently of the KNOWN_FLAGS table, prove each real command actually
       // runs the guard: a nonsense flag must exit 1 with "unknown option".

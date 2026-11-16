@@ -867,7 +867,11 @@ export async function runNbCli(
     // parsing consumes it, so it can never degrade silently (issue #267). Scans
     // `head` only — operands after a `--` terminator stay literals (issue #277).
     assertKnownFlags(cmd, head);
-    if (cmd === 'add' || cmd === 'merge' || cmd === 'rm' || cmd === 'split' || cmd === 'describe' || cmd === 'move') {
+    // The commands that take `--reason`/`--note` are exactly those whose own
+    // `KNOWN_FLAGS` row lists `--reason` — one source of truth, so a command
+    // cannot pass validation yet have the flag stored as text (issue #487).
+    // Own-property lookup, as in `assertKnownFlags` (issue #483).
+    if (Object.hasOwn(KNOWN_FLAGS, cmd) && KNOWN_FLAGS[cmd].includes('--reason')) {
       // Inside the try so a malformed flag (e.g. `--reason` with no value)
       // becomes a handled exit-1 error, not an uncaught rejection.
       ({ value: reasonArg, rest: args } = extractOption(args, '--reason'));
