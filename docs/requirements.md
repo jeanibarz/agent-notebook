@@ -10,7 +10,7 @@ and carry a MoSCoW priority (**Must**, **Should**, **Could**, **Won't**). Each
 load-bearing behavior links to the test that proves it; if you change a behavior,
 change the requirement and its test together (see [Keeping this document honest](#keeping-this-document-honest)).
 
-- **Source of truth for behavior:** `src/notebook.ts` (library: storage, cap-and-vote, search), `src/usage.ts` (the usage log), `src/stats.ts` (`nb stats`) and `src/cli.ts` (CLI). `src/index.ts` is the package root that re-exports the three library modules.
+- **Source of truth for behavior:** `src/notebook.ts` (library: storage, cap-and-vote, search), `src/usage.ts` (the usage log), `src/stats.ts` (`nb stats`) and `src/cli.ts` (CLI: argument parsing, dispatch, help, shell completion, stdin reading and process guards), with the CLI's helpers in `src/render.ts` (the read-side report text), `src/config-report.ts` (`nb config`), `src/suggest.ts` (did-you-mean) and `src/doctor.ts` (`nb doctor`). `src/index.ts` is the package root that re-exports the three library modules.
 - **Tests:** `src/notebook.test.ts`, `src/cli.test.ts`; the module layout and the published export list are pinned by `src/module-boundaries.test.ts` and `src/package-exports.test.ts`.
 - **Design rationale (signals & self-observation):** [`self-observing-notebook.md`](./self-observing-notebook.md) — why the tool instruments itself and how engagement / coverage / recall / precision / serendipity are told apart.
 
@@ -1510,8 +1510,13 @@ on every shelf-to-path conversion.
 <a id="nfr-maint-001"></a>
 **NFR-MAINT-001 (Should).** The whole mechanism SHALL stay in `src/notebook.ts` (the
 library), with the self-monitoring layer (`src/usage.ts`, `src/stats.ts`) beside it and
-never imported by it, and `src/cli.ts` a thin wrapper; behavior SHALL be covered by `vitest`
-tests runnable with `npm test`.
+never imported by it, and `src/cli.ts` a thin wrapper (argument parsing, dispatch, help,
+shell completion, stdin reading and process guards). The read-side report renderers (`src/render.ts`), the
+`nb config` report (`src/config-report.ts`), the did-you-mean helpers (`src/suggest.ts`) and
+`nb doctor` (`src/doctor.ts`) SHALL live in modules that `src/cli.ts` imports and that never
+import it. Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
+
+*Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)".
 
 <a id="nfr-obs-001"></a>
 **NFR-OBS-001 (Could).** Operational state SHALL be observable without extra tooling
