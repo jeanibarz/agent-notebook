@@ -1827,6 +1827,12 @@ describe('runNbCli', () => {
       const decayed = res.decayed ? `${entryId(res.decayed.text)}:${res.decayed.score}` : '';
       if (cmd === 'rm' || cmd === 'describe') expect(evicted, cmd).toBe('');
       else expect(evicted, `${cmd} should evict under the lowered cap`).not.toBe('');
+      // The aging step docks the stalest surviving non-newcomer, so it fires for
+      // add, merge and move here; pin that, or the `decayed` check below could
+      // quietly become '' === ''. split cannot dock under a cap of 2: its two
+      // survivors are both protected newcomers.
+      if (cmd === 'add' || cmd === 'merge' || cmd === 'move') expect(decayed, `${cmd} should dock a survivor`).not.toBe('');
+      else expect(decayed, cmd).toBe('');
       expect(row.evicted, cmd).toBe(evicted);
       expect(row.decayed, cmd).toBe(decayed);
     }

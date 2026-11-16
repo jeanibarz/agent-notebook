@@ -1653,12 +1653,15 @@ function recordEvictionUsage(meta: UsageMeta, r: { evictedAll: Entry[]; decayed:
   if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
 }
 
+/** The mutations that accept `--reason`/`--note`; a typo in a call site is a compile error. */
+type ReasonOp = 'add' | 'merge' | 'split' | 'rm' | 'move' | 'describe';
+
 /**
  * Record the normalized `--reason`/`--note` of a mutation `op` in its usage-log
  * row (the reason lives in the usage log only, never in the notebook). An empty
  * reason or note leaves its column blank.
  */
-function recordReasonUsage(meta: UsageMeta, op: string, reasonArg: string | undefined, noteArg: string | undefined): void {
+function recordReasonUsage(meta: UsageMeta, op: ReasonOp, reasonArg: string | undefined, noteArg: string | undefined): void {
   const { reason, note } = normalizeReason(op, reasonArg, noteArg);
   if (reason) meta.reason = reason;
   if (note) meta.note = note;
