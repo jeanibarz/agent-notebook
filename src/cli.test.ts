@@ -4337,10 +4337,18 @@ describe('shelf terminology (role kept as a deprecated alias)', () => {
     expect(readme).not.toContain('<role>.md'); // nor the old storage path
   });
 
-  test('the cli.ts source — command comments and storage-path line — uses <shelf>, never <role> (issue #140)', () => {
+  test('the src sources — cli.ts storage-path line plus every module (comments and strings) — use <shelf>, never <role> (issues #140, #493)', () => {
     const cliSrc = readFileSync(join(REPO_ROOT, 'src', 'cli.ts'), 'utf8');
     expect(cliSrc).toContain('notebooks/<shelf>.md'); // the storage-path line
-    expect(cliSrc).not.toContain('<role>'); // no <role> in comments, HELP, or anywhere in source
+    // Issue #493 moved CLI helpers (renderers, the config report, did-you-mean)
+    // out of cli.ts, so the <role> ban covers every non-test src module, not
+    // just cli.ts: comments and strings in a split-out file are the same surface.
+    const srcDir = join(REPO_ROOT, 'src');
+    const modules = readdirSync(srcDir).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.endsWith('.d.ts'));
+    expect(modules).toContain('cli.ts');
+    for (const f of modules) {
+      expect(readFileSync(join(srcDir, f), 'utf8'), `src/${f}`).not.toContain('<role>');
+    }
   });
 
   // Issue #139: the README's one-line "who this is for" must stay consistent
