@@ -1785,6 +1785,52 @@ describe('runNbCli', () => {
     expect(loudRow.evicted).toBe(`${entryId('filler lesson')}:1`);
   });
 
+  test('add, merge, split, move, rm and describe write the evicted/decayed and reason/note columns by one rule (issue #489)', async () => {
+    // The six mutations share the usage-log bookkeeping for these columns. Each
+    // runs on its own shelf, seeded under the default cap and then squeezed by a
+    // LOWERED cap so the four growing ops evict, with the same unrecognized
+    // `--reason` (bucketed to `other`, its code kept in the note). Every row
+    // must carry the columns derived from that op's own `--json` result by the
+    // same rule, so a format drift in any one command fails here.
+    const flags = ['--reason', 'zzcode', '--note', 'why it changed', '--json'];
+    const seed = async (shelf: string, lessons: string[]) => {
+      for (const l of lessons) expect((await run(['add', shelf, l])).code).toBe(0);
+    };
+    await seed('sa', ['alpha kettle boils', 'bravo ladder climbs', 'charlie mirror shines']);
+    await seed('sm', ['delta violin tunes', 'echo garden grows', 'foxtrot engine idles', 'uniform basket weaves']);
+    await seed('ss', ['golf canyon echoes', 'hotel parcel ships', 'india lantern glows']);
+    await seed('sv', ['juliet compass points']);
+    await seed('tv', ['kilo glacier melts', 'lima harbor fills', 'mike orchard ripens']);
+    await seed('sr', ['november pencil draws']);
+    process.env.NB_MAX_LINES = '2';
+
+    const ops: Array<[string, string, string[]]> = [
+      ['add', 'sa', ['add', 'sa', 'oscar rocket launches', ...flags]],
+      ['merge', 'sm', ['merge', 'sm', 'delta', 'echo', 'papa merged violin garden', ...flags]],
+      ['split', 'ss', ['split', 'ss', 'golf', 'quebec canyon part', 'romeo echo part', ...flags]],
+      ['move', 'sv', ['move', 'sv', 'tv', 'juliet', ...flags]],
+      ['rm', 'sr', ['rm', 'sr', 'november', ...flags]],
+      ['describe', 'sd', ['describe', 'sd', 'sierra shelf about tango', ...flags]],
+    ];
+    for (const [cmd, shelf, argv] of ops) {
+      const r = await run(argv);
+      expect(r.code, `${cmd}: ${r.err}`).toBe(0);
+      const res = JSON.parse(r.out) as {
+        evictedAll?: Array<{ text: string; score: number }>;
+        decayed?: { text: string; score: number } | null;
+      };
+      const row = parseUsage(dir).filter((x) => x.command === cmd && x.role === shelf).at(-1)!;
+      expect(row.reason, cmd).toBe('other');
+      expect(row.note, cmd).toBe('zzcode: why it changed');
+      const evicted = (res.evictedAll ?? []).map((e) => `${entryId(e.text)}:${e.score}`).join(',');
+      const decayed = res.decayed ? `${entryId(res.decayed.text)}:${res.decayed.score}` : '';
+      if (cmd === 'rm' || cmd === 'describe') expect(evicted, cmd).toBe('');
+      else expect(evicted, `${cmd} should evict under the lowered cap`).not.toBe('');
+      expect(row.evicted, cmd).toBe(evicted);
+      expect(row.decayed, cmd).toBe(decayed);
+    }
+  });
+
   test('add past NB_MAX_LINES evicts the lowest-scored entry and names it in the output', async () => {
     // Drive the CLI's eviction branch end to end: with a tiny cap, a third `add`
     // must evict the lowest-scored existing entry AND report it in the `added`

@@ -84,6 +84,7 @@ import {
   vote,
   voteMany,
   type ConflictShelf,
+  type Entry,
   type IntTunable,
   type RateTunable,
   type SearchResult,
@@ -1057,19 +1058,12 @@ export async function runNbCli(
         // (outcome=accepted ∧ collided≠'') is the measurable near-duplicate /
         // paraphrase-miss signal, distinct from a hard `dedup-blocked`.
         else if (r.nearId) meta.collided = r.nearId;
-        // Record EVERY evicted entry (a cap decrease can evict many at once —
-        // issue #306), not just the first, so the usage log never undercounts.
-        if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
-        if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
+        recordEvictionUsage(meta, r);
         // `add` has no seeded enum yet (free text only): a `--note` records
         // free text, and a stray `--reason` buckets to `other` so its vocabulary
         // can emerge from mined notes. Set BEFORE the output branch below, which
         // can `throw`/`return` on 'too-long' — the finally still logs meta.
-        {
-          const { reason, note } = normalizeReason('add', reasonArg, noteArg);
-          if (reason) meta.reason = reason;
-          if (note) meta.note = note;
-        }
+        recordReasonUsage(meta, 'add', reasonArg, noteArg);
         if (json) {
           // One result object on stdout; `too-long` keeps exit 1 (below) while
           // still emitting its `reason`, so a supervisor sees why it failed.
@@ -1180,16 +1174,9 @@ export async function runNbCli(
         const r = await merge(dir, shelf, a, b, merged);
         meta.entries = [...(r.sources ?? []), ...(r.id ? [r.id] : [])];
         meta.outcome = 'merged';
-        // Record EVERY evicted entry (a cap decrease can evict many at once —
-        // issue #306), not just the first, so the usage log never undercounts.
-        if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
-        if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
+        recordEvictionUsage(meta, r);
         // Reason lives in the usage log only (merge enum: duplicate · other).
-        {
-          const { reason, note } = normalizeReason('merge', reasonArg, noteArg);
-          if (reason) meta.reason = reason;
-          if (note) meta.note = note;
-        }
+        recordReasonUsage(meta, 'merge', reasonArg, noteArg);
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else {
           process.stdout.write(`merged two entries into one — ${plural(r.size, 'line')}`);
@@ -1218,17 +1205,12 @@ export async function runNbCli(
         const lessonB = need(args[4], 'lessonB');
         requireExistingShelf(dir, shelf);
         const r = await split(dir, shelf, selector, lessonA, lessonB);
-        const { reason, note } = normalizeReason('split', reasonArg, noteArg);
         // Log the source + both produced ids, the outcome, and the reason/note —
         // the reason lives in the usage log only, never in the notebook.
         meta.entries = [r.source, ...r.ids];
         meta.outcome = 'split';
-        // Record EVERY evicted entry (a cap decrease can evict many at once —
-        // issue #306), not just the first, so the usage log never undercounts.
-        if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
-        if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
-        if (reason) meta.reason = reason;
-        if (note) meta.note = note;
+        recordEvictionUsage(meta, r);
+        recordReasonUsage(meta, 'split', reasonArg, noteArg);
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else {
           process.stdout.write(`split one entry into two — ${plural(r.size, 'line')}`);
@@ -1253,11 +1235,7 @@ export async function runNbCli(
         meta.entries = [entryId(r.text)];
         meta.outcome = 'removed';
         // Reason lives in the usage log only (rm enum: wrong · obsolete · other).
-        {
-          const { reason, note } = normalizeReason('rm', reasonArg, noteArg);
-          if (reason) meta.reason = reason;
-          if (note) meta.note = note;
-        }
+        recordReasonUsage(meta, 'rm', reasonArg, noteArg);
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else process.stdout.write(`removed — [${fmt(r.score)}] ${r.text}\n`);
         break;
@@ -1278,16 +1256,9 @@ export async function runNbCli(
         meta.entries = [r.id];
         meta.outcome = r.reason === 'moved' ? 'moved' : 'move-blocked';
         if (r.collidedId) meta.collided = r.collidedId;
-        // Record EVERY evicted entry (a cap decrease can evict many at once —
-        // issue #306), not just the first, so the usage log never undercounts.
-        if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
-        if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
+        recordEvictionUsage(meta, r);
         // Reason lives in the usage log only (move enum: consolidate · other).
-        {
-          const { reason, note } = normalizeReason('move', reasonArg, noteArg);
-          if (reason) meta.reason = reason;
-          if (note) meta.note = note;
-        }
+        recordReasonUsage(meta, 'move', reasonArg, noteArg);
         if (json) process.stdout.write(JSON.stringify(r) + '\n');
         else if (r.reason === 'duplicate') {
           process.stdout.write(
@@ -1333,11 +1304,7 @@ export async function runNbCli(
           // for the description text); record them in the usage log, never in
           // the notebook — `describe` has no seeded enum, so a stray code
           // buckets to `other` with its text kept in the note (like `add`).
-          {
-            const { reason, note } = normalizeReason('describe', reasonArg, noteArg);
-            if (reason) meta.reason = reason;
-            if (note) meta.note = note;
-          }
+          recordReasonUsage(meta, 'describe', reasonArg, noteArg);
           if (json) process.stdout.write(JSON.stringify(r) + '\n');
           else if (r.desc === null) process.stdout.write(`description cleared for shelf "${shelf}"\n`);
           else process.stdout.write(`description set for shelf "${shelf}": ${r.desc}\n`);
@@ -1753,6 +1720,29 @@ export async function runNbCli(
 function need(v: string | undefined, name: string): string {
   if (v == null || v === '') throw new NbError('bad_args', `missing <${name}> argument`);
   return v;
+}
+
+/**
+ * Record a mutation's cap side effects in its usage-log row: every evicted
+ * entry and the entry the aging step docked. Shared by add, merge, split and
+ * move so the `evicted`/`decayed` columns `nb stats` reads have one format.
+ */
+function recordEvictionUsage(meta: UsageMeta, r: { evictedAll: Entry[]; decayed: Entry | null }): void {
+  // Record EVERY evicted entry (a cap decrease can evict many at once —
+  // issue #306), not just the first, so the usage log never undercounts.
+  if (r.evictedAll.length) meta.evicted = formatEvictedUsage(r.evictedAll);
+  if (r.decayed) meta.decayed = `${entryId(r.decayed.text)}:${r.decayed.score}`;
+}
+
+/**
+ * Record the normalized `--reason`/`--note` of a mutation `op` in its usage-log
+ * row (the reason lives in the usage log only, never in the notebook). An empty
+ * reason or note leaves its column blank.
+ */
+function recordReasonUsage(meta: UsageMeta, op: string, reasonArg: string | undefined, noteArg: string | undefined): void {
+  const { reason, note } = normalizeReason(op, reasonArg, noteArg);
+  if (reason) meta.reason = reason;
+  if (note) meta.note = note;
 }
 
 /**
