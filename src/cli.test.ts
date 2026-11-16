@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, closestShelf, KNOWN_COMMANDS, KNOWN_FLAGS, MUTATING_COMMANDS, scopedHelp } from './cli.js';
+import { runNbCli, readBoundedStream, settleCliExit, installPipeGuards, closestCommand, KNOWN_COMMANDS, KNOWN_FLAGS, MUTATING_COMMANDS, scopedHelp } from './cli.js';
+import { closestShelf } from './suggest.js';
 import { drainPendingRecovery, entryId, readShelf, usageFile } from './notebook.js';
 import { parseUsage } from './usage.js';
 import type { IntTunable, RateTunable } from './notebook.js';
