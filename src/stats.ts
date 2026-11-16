@@ -614,12 +614,6 @@ function errorClassBreakdown(errRows: UsageRow[]): string {
 }
 
 /**
- * Monitoring without a monitoring system: read the usage ring, roll up per
- * command, and flag the three anomalies that matter — an agent looping on a
- * command (stuck), a command that went silent (it probably broke), and a
- * command erroring often (not behaving as expected).
- */
-/**
  * Free diagnostic signals (issue #72): five memory-quality observations read
  * straight from the windowed, shelf-scoped `recent` rows — no new agent action.
  * Each is implied by behavior the agent already performs for its own reasons.
@@ -864,6 +858,12 @@ function engagedSessions(rows: UsageRow[]): Set<string> {
   return engaged;
 }
 
+/**
+ * Monitoring without a monitoring system: read the usage ring, roll up per
+ * command, and flag the three anomalies that matter — an agent looping on a
+ * command (stuck), a command that went silent (it probably broke), and a
+ * command erroring often (not behaving as expected).
+ */
 export function stats(
   dir: string,
   opts: {
