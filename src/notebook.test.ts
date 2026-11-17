@@ -5710,6 +5710,75 @@ describe('stats add rate, retention window and add-burst (issue #353)', () => {
     expect(stats(dir, { now: Date.now() + 30 * 86_400_000 }).notebooks.find((x) => x.shelf === 'a')!.adds).toBe(0);
   });
 
+  // Issue #511: a log of `total` rows whose oldest is `spanDays` old and whose others are
+  // all in the last few minutes, the newest `adds` of them accepted adds to `full` (so a
+  // window shorter than the span still holds every add).
+  const writeLog = (now: number, spanDays: number, adds: number, total: number): void => {
+    const lines: string[] = [];
+    for (let i = 0; i < total; i++) {
+      const ts = new Date(i === 0 ? now - spanDays * 86_400_000 : now - (total - i) * 1000).toISOString();
+      lines.push(i >= total - adds ? `${ts}\tfull\tadd\tok\t1\ts1\te${i}\taccepted` : `${ts}\tfull\tshow\tok\t1`);
+    }
+    writeFileSync(join(dir, '.nb-usage.log'), lines.join('\n') + '\n');
+  };
+  const fullRow = (now: number, windowMs?: number) => {
+    const n = stats(dir, { now, windowMs }).notebooks.find((x) => x.shelf === 'full')!;
+    return [n.adds, n.addsPerDay, n.retentionDays];
+  };
+
+  test('a full log reaching back half the window gives twice the rate and half the retention (issue #511)', () => {
+    process.env.NB_MAX_LINES = '3';
+    writeFileSync(join(dir, 'full.md'), '1\ta\n1\tb\n1\tc\n', 'utf-8');
+    const now = Date.now();
+    writeLog(now, 3.5, 7, 100);
+    // Ring below capacity: the log covers the 7d window, so the rate divides by 7 days.
+    process.env.NB_USAGE_RING = '200';
+    expect(fullRow(now)).toEqual([7, 1, 3]);
+    // Ring at capacity, oldest row 3.5d old: the same rows divide by the 3.5 days recorded.
+    process.env.NB_USAGE_RING = '100';
+    expect(stats(dir, { now }).usageRing.coversWindow).toBe(false);
+    expect(fullRow(now)).toEqual([7, 2, 1.5]);
+  });
+
+  test('a full log that still reaches back past the window start divides by the window (issue #511)', () => {
+    process.env.NB_MAX_LINES = '3';
+    process.env.NB_USAGE_RING = '100';
+    writeFileSync(join(dir, 'full.md'), '1\ta\n1\tb\n1\tc\n', 'utf-8');
+    const now = Date.now();
+    writeLog(now, 8, 7, 100); // at capacity, but the oldest row predates the 7d window
+    expect(stats(dir, { now }).usageRing).toEqual({ rows: 100, cap: 100 });
+    expect(fullRow(now)).toEqual([7, 1, 3]);
+  });
+
+  test('under a day of full log: the rate divides by one day and retention is withheld (issue #511)', () => {
+    process.env.NB_MAX_LINES = '3';
+    process.env.NB_USAGE_RING = '100';
+    writeFileSync(join(dir, 'full.md'), '1\ta\n1\tb\n1\tc\n', 'utf-8');
+    const now = Date.now();
+    writeLog(now, 0.25, 7, 100); // the log filled 6 hours ago
+    // Not 7 ÷ 0.25 = 28/day: the one-day floor keeps a short burst from reading as a daily
+    // pace. 7/day is then a lower bound, so the matching retention (an over-estimate) is null.
+    expect(fullRow(now)).toEqual([7, 7, null]);
+    // Exactly one day of log is enough: divide by it and estimate retention.
+    writeLog(now, 1, 7, 100);
+    expect(fullRow(now)).toEqual([7, 7, 0.4]);
+  });
+
+  test('a window shorter than a day is never divided by more than the window (issue #511)', () => {
+    process.env.NB_MAX_LINES = '3';
+    writeFileSync(join(dir, 'full.md'), '1\ta\n1\tb\n1\tc\n', 'utf-8');
+    const now = Date.now();
+    const hour = 3_600_000;
+    writeLog(now, 0.5 / 24, 7, 100); // oldest row 30 minutes old
+    // Covering log (ring below capacity): 7 adds over a 1h window, as before #511.
+    process.env.NB_USAGE_RING = '200';
+    expect(fullRow(now, hour)).toEqual([7, 168, 0.1]);
+    // Full log covering only half the hour: still ÷ 1h (the floor is capped at the window),
+    // so the rate is a lower bound and no retention is given.
+    process.env.NB_USAGE_RING = '100';
+    expect(fullRow(now, hour)).toEqual([7, 168, null]);
+  });
+
   test('add-burst fires only ABOVE NB_ADD_BURST_N, per (session, shelf)', () => {
     process.env.NB_ADD_BURST_N = '3';
     addRows('s-exact', 'at-threshold', 3); // exactly N: not a burst

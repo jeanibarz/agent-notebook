@@ -437,10 +437,15 @@ export function renderStats(rep: StatsReport, shelf: string | undefined): string
   lines.push(`  usage ring: ${ring.rows}/${ring.cap} rows${ringFull}`);
   if (ring.oldest !== undefined) {
     // Issue #406: the log was trimmed to its row cap and no longer reaches back
-    // to the window start, so the per-day rates above divide by a longer span.
+    // to the window start. The per-day rates above divide by the span it covers
+    // (issue #511), with a one-day floor: under a day, they are lower bounds and
+    // no retention is estimated. Same one-day threshold as `stats()`.
     const ageDays = Math.max(0, (Date.parse(rep.generatedAt) - Date.parse(ring.oldest)) / 86_400_000);
     const reach = ageDays >= 1 ? `${Math.floor(ageDays)}d` : 'under a day';
-    lines.push(`  usage log reaches back only ${reach} (oldest row ${ring.oldest}); rates for the ${rep.window} window are computed over a longer span than is recorded`);
+    const windowDays = (Date.parse(rep.generatedAt) - Date.parse(rep.windowStart)) / 86_400_000;
+    const floor = windowDays < 1 ? `the ${rep.window} window` : 'one day';
+    const rates = ageDays >= 1 ? 'per-day rates use that span' : `per-day rates divide by ${floor}, so they are lower bounds, and retention is not estimated`;
+    lines.push(`  usage log reaches back only ${reach} (oldest row ${ring.oldest}); ${rates}`);
   }
   // Crash-recovery readout (issue #309): the two previously-silent signs a prior
   // nb died mid-write — stale locks stolen and leftover temps reaped — summed over

@@ -1148,6 +1148,33 @@ describe('runNbCli', () => {
     expect(Object.keys(JSON.parse((await run(['stats', '--since', '1d', '--json'])).out).usageRing)).toEqual(['rows', 'cap']);
   });
 
+  test('stats divides the adds in a short full log by the span it covers and says so on the note line (issue #511)', async () => {
+    process.env.NB_USAGE_RING = '100';
+    process.env.NB_MAX_LINES = '3';
+    writeFileSync(join(dir, 'patcher.md'), '1\ta\n1\tb\n1\tc\n', 'utf-8');
+    const log = (spanDays: number): void => {
+      const now = Date.now();
+      const rows = Array.from({ length: 100 }, (_, i) => {
+        const ts = new Date(now - spanDays * 86_400_000 + i * 1000).toISOString();
+        return i >= 93 ? `${ts}\tpatcher\tadd\tok\t1ms\ts1\te${i}\taccepted` : `${ts}\tpatcher\tshow\tok\t1ms`;
+      });
+      writeFileSync(join(dir, '.nb-usage.log'), rows.join('\n') + '\n', 'utf-8');
+    };
+    log(3.5); // 7 adds in a log reaching back 3.5d of the default 7d window
+    const s = await run(['stats']);
+    expect(s.out).toMatch(/patcher\s+3\/3 {2}FULL {2}7 adds \(2\/day\), ~1\.5d retention/);
+    expect(s.out).toContain('usage log reaches back only 3d (oldest row ');
+    expect(s.out).toContain('); per-day rates use that span');
+    log(0.25); // the log filled 6 hours ago
+    const short = await run(['stats']);
+    expect(short.out).toMatch(/patcher\s+3\/3 {2}FULL {2}7 adds \(7\/day\)\n/);
+    expect(short.out).toContain('reaches back only under a day');
+    expect(short.out).toContain('per-day rates divide by one day, so they are lower bounds, and retention is not estimated');
+    log(0.5 / 24); // oldest row 30 minutes old, inside a 1h window
+    const hour = await run(['stats', '--since', '1h']);
+    expect(hour.out).toContain('per-day rates divide by the 1h window, so they are lower bounds');
+  });
+
   test('a clean ring reports zero crash recovery, shown not omitted, with no warning marker (issue #309)', async () => {
     await run(['add', 'patcher', 'a lesson with no crash in sight']);
     const s = await run(['stats']);

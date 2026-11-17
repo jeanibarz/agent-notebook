@@ -134,14 +134,22 @@ export interface NotebookStat {
   cap: number;
   /** Accepted `add` rows for this shelf inside the stats window (issue #353), read from the usage log. */
   adds: number;
-  /** `adds` per day of the window (`adds ÷ window days`). Not adjusted for a shelf younger than the window. */
+  /**
+   * `adds` per day the usage log covers: `adds ÷ window days`, or, when a full log no
+   * longer reaches back to the window start (`usageRing.coversWindow: false`), `adds ÷`
+   * the days from its oldest row to now (issue #511). The divisor is at least one day
+   * (or the whole window, if shorter), so under a day of log this is a lower bound.
+   * Not adjusted for a shelf younger than the window.
+   */
   addsPerDay: number;
   /**
    * Estimated retention window of a FULL shelf, in days: `cap ÷ addsPerDay` — each
    * add to a full shelf evicts one line, so a lesson that never gets a vote lasts about
    * `cap` adds at most. A vote buys more time: each point is one more dock the
    * lesson can absorb before it reaches the bottom score (issue #437). `null` when the shelf is below its cap or took no
-   * adds in the window (no rate to divide by) — never a misleading 0 or Infinity.
+   * adds in the window (no rate to divide by), or when the log covers less than the
+   * one-day floor of the `addsPerDay` divisor (the estimate would be too long, issue #511)
+   * — never a misleading 0 or Infinity.
    */
   retentionDays: number | null;
 }
@@ -363,9 +371,10 @@ export interface StatsReport {
    * `oldest` (ISO timestamp of the oldest retained row) and `coversWindow: false`
    * are present ONLY when the ring is at capacity and that row is newer than the
    * window start (issue #406): the log no longer reaches back as far as the
-   * requested `--since`, so the per-day add rates and retention estimates are
-   * computed over a longer span than is recorded. Otherwise the shape is exactly
-   * `{ rows, cap }`.
+   * requested `--since`, so the per-day add rates and retention estimates divide
+   * by the span from `oldest` to now instead of the window (issue #511; see
+   * `NotebookStat.addsPerDay` for the one-day floor). Otherwise the shape is
+   * exactly `{ rows, cap }`.
    */
   usageRing: { rows: number; cap: number; oldest?: string; coversWindow?: false };
   /**
@@ -1136,7 +1145,31 @@ export function stats(
   for (const r of recent) {
     if (r.command === 'add' && r.outcome === 'accepted') acceptedAdds.set(r.role, (acceptedAdds.get(r.role) ?? 0) + 1);
   }
+  // Window coverage (issue #406): same condition as nb-janitor's #275 guard — ring
+  // at capacity AND the oldest retained row newer than the window start. Computed
+  // here, before the inventory, because it also sets the add-rate divisor (#511).
+  const ringCap = usageRing();
+  let uncoveredOldest: number | null = null;
+  if (parsed.length >= ringCap) {
+    let oldest: number | null = null;
+    for (const r of parsed) {
+      const t = Date.parse(r.ts);
+      if (Number.isFinite(t) && (oldest === null || t < oldest)) oldest = t;
+    }
+    if (oldest !== null && oldest > now - windowMs) uncoveredOldest = oldest;
+  }
+  // Per-day add rates divide by the days the log actually covers (issue #511): the
+  // window, or — when a full log no longer reaches back that far — the span from its
+  // oldest row to `now`. Dividing a shorter log's adds by the whole window
+  // understates the rate and overstates retention. The divisor never goes below one
+  // day (nor above the window), so a log that filled minutes ago cannot turn a
+  // handful of adds into a huge per-day rate. When that floor makes the divisor
+  // longer than the span the log covers, the rate is a lower bound and retention,
+  // which would then be an over-estimate, is not given (`null`).
   const windowDays = windowMs / 86_400_000;
+  const spanDays = uncoveredOldest === null ? windowDays : (now - uncoveredOldest) / 86_400_000;
+  const rateDays = Math.min(windowDays, Math.max(spanDays, 1));
+  const retentionKnown = rateDays <= spanDays;
   for (const shelf of inventoryShelves) {
     const read = skipUnreadable(shelf, () => readShelf(dir, shelf));
     if (read.error) {
@@ -1146,7 +1179,7 @@ export function stats(
     if (read.value!.conflict !== null) conflicts.push({ shelf, marker: read.value!.conflict });
     const lineCount = read.value!.entries.length;
     const adds = acceptedAdds.get(shelf) ?? 0;
-    const addsPerDay = adds / windowDays;
+    const addsPerDay = adds / rateDays;
     notebooks.push({
       role: shelf,
       shelf,
@@ -1154,7 +1187,7 @@ export function stats(
       cap,
       adds,
       addsPerDay: Math.round(addsPerDay * 100) / 100,
-      retentionDays: lineCount >= cap && adds > 0 ? Math.max(0.1, Math.round((cap / addsPerDay) * 10) / 10) : null, // floor 0.1d: never a misleading 0
+      retentionDays: lineCount >= cap && adds > 0 && retentionKnown ? Math.max(0.1, Math.round((cap / addsPerDay) * 10) / 10) : null, // floor 0.1d: never a misleading 0
     });
   }
   const notebookTotals: NotebookTotals = {
@@ -1216,20 +1249,11 @@ export function stats(
     crashTempReaps += Number.parseInt(t ?? '', 10) || 0;
   }
 
-  // Window-coverage note (issue #406): same condition as nb-janitor's #275 guard —
-  // ring at capacity AND the oldest retained row newer than the window start.
-  const ringCap = usageRing();
+  // Window-coverage note (issue #406), from the scan done before the inventory.
   const ringReport: StatsReport['usageRing'] = { rows: parsed.length, cap: ringCap };
-  if (parsed.length >= ringCap) {
-    let oldest: number | null = null;
-    for (const r of parsed) {
-      const t = Date.parse(r.ts);
-      if (Number.isFinite(t) && (oldest === null || t < oldest)) oldest = t;
-    }
-    if (oldest !== null && oldest > now - windowMs) {
-      ringReport.oldest = new Date(oldest).toISOString();
-      ringReport.coversWindow = false;
-    }
+  if (uncoveredOldest !== null) {
+    ringReport.oldest = new Date(uncoveredOldest).toISOString();
+    ringReport.coversWindow = false;
   }
 
   return {
