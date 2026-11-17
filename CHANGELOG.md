@@ -9,6 +9,8 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-17
+
 ### Fixed
 
 - **`nb stats` no longer overstates how long a lesson lasts on a full shelf when the usage log is shorter than the window (#511).** Each shelf's adds per day was computed by dividing its adds by the whole `--since` window (7 days by default), even when the usage log had reached its row cap and its oldest row was newer than the window start. The adds had then been recorded over fewer days, so the rate read low and the `~Nd retention` estimate long: on one host whose log reached back 5.19 of 7 days, a 50-line shelf printed 20.29 adds/day and `~2.5d retention` instead of about 27.4 adds/day and `~1.8d retention`. In that case the rate now divides by the days from the oldest row to now. The divisor is never less than one day (or the whole window, if that is shorter). When the log covers less than the divisor, the printed rate is a lower bound on the true rate and no retention is printed (`retentionDays: null`). The note under the `usage ring` line now says which span the rates use (`per-day rates divide by the time since that row`), replacing the old `computed over a longer span than is recorded` wording; a script matching that text sees the new one. When the log reaches back to the window start, the numbers are unchanged. `addsPerDay` and `retentionDays` keep their names and types in `--json`.
@@ -28,6 +30,9 @@ versions are listed plainly.
 - `nb stats` now raises `eviction-while-still-voted` for a lesson that was upvoted in the usage window and then evicted at 0 or above, not only one evicted above +1. The staleness dock takes an upvoted lesson down to +1 or 0 before it leaves a full shelf, so the old test never fired (0 of 191 evictions measured). The detail line gives the upvote count (a lower bound: older votes are outside the log window) (#438). The example janitor reads shelf git history, not this signal, so its "2 or more" threshold is unchanged.
 - **A large batch `nb vote` no longer holds the lock for seconds (#463).** A batch vote computed the id of every lesson on the shelf again for each id it resolved, so its cost grew with ids × lessons. It now computes them once per call. On a 5000-line shelf (`NB_MAX_LINES=5000`), a 50-id vote went from about 1.0–1.1 s to 0.15–0.20 s and a 200-id vote from 4.0–4.8 s to 0.20–0.26 s. At the default cap of 50 lines the difference is negligible. Which lesson each id selects, and every error message, are unchanged.
 - `examples/nb-janitor.mjs`: section 2 (near-duplicate shelf names) now prints at most 25 similar-name pairs, strongest first, then `…(N more pairs — run with --json)`, like the other capped sections (#461). Pairs grow quadratically, so 60 shelves `issue-101` … `issue-160` used to print 411 pairs and push the later sections off-screen. `--json` still lists every pair.
+- **`nb add` no longer suggests `nb merge` for a resembling lesson that the same add evicted (#451).** When the new lesson resembled a line and that line was the one evicted to make room, the `note: resembles …` hint named an id that was no longer on the shelf, so the suggested `nb merge` failed. The note now reads `note: resembles a lesson this add evicted: "…"` with no merge command; a resembling lesson that survives gets the usual hint.
+- **The git merge-conflict marker quoted in `nb` warnings and errors is now escaped (#441, #445).** The read-side warning and the refusal that `add`, `vote` and the other mutating commands print quoted the marker line with `JSON.stringify` only, which left DEL, C1 controls (such as U+009B), U+2028/U+2029 and Tag characters raw on the terminal. Both messages now escape it the way skipped-file lines and `nb doctor` already do. Ordinary markers print the same as before.
+- **AGENTS.md now says only identical lessons are skipped (#452).** It said near-duplicates were skipped, but a reworded lesson is stored with a `note: resembles …` on stderr. The text now says so and tells the agent to consolidate with `nb merge` rather than keep both variants.
 
 ### Changed
 
@@ -837,7 +842,8 @@ versions are listed plainly.
 ### Added
 - Initial release: a bounded, voted, plain-text memory for AI agents. Commands: `nb add`, `show`, `vote`, `merge`, `rm`, `stats`. Each role's notebook holds at most 200 lines, each at most 200 characters, and the lowest-scored line is evicted first when full. The library has zero runtime dependencies.
 
-[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.5.0...v0.6.0
