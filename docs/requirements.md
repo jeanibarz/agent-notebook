@@ -1203,7 +1203,8 @@ unchanged, and it adds no field to a lesson ([NG-004](#ng-004)).
 When the ring is at capacity and its oldest retained row is newer than the window start
 (the log no longer reaches back to `--since`; issue #406), `usageRing` SHALL additionally
 carry `oldest` (that row's ISO timestamp) and `coversWindow: false`, and the table SHALL
-print one extra line under the ring line stating how far back the log reaches; otherwise
+print one extra line under the ring line stating how far back the log reaches and which span the
+per-day add rates divide by ([FR-STATS-010](#fr-stats-010), issue #511); otherwise
 `usageRing` is exactly `{ rows, cap }` and the text output is unchanged.
 **Rationale:** The notebook inventory (issue #40) made per-shelf cap pressure visible,
 but the usage ring — whose fill decides when the oldest monitoring history is dropped —
@@ -1211,7 +1212,8 @@ had no such readout; "why did my window lose older data?" otherwise needs readin
 log by hand.
 *Proven by:* `notebook.test.ts` → `describe('usage log + stats')` →
 `test('reports usage-ring occupancy (rows/cap), total and window-independent (issue #206)')`,
-and `cli.test.ts` → `test('the human stats table shows the usage-ring occupancy line (issue #206)')`.
+and `cli.test.ts` → `test('the human stats table shows the usage-ring occupancy line (issue #206)')`
+and `test('stats divides the adds in a short full log by the span it covers and says so on the note line (issue #511)')`.
 
 <a id="fr-stats-007"></a>
 **FR-STATS-007 (Should).** The two interrupt-recovery actions that each mean a previous
@@ -1278,10 +1280,17 @@ inflating the error rate, and respects the noise floor on miss events).
 
 <a id="fr-stats-010"></a>
 **FR-STATS-010 (Should).** The `stats` notebook inventory SHALL carry, per shelf, `adds` (the
-`accepted` `add` rows for that shelf in the window), `addsPerDay` (`adds ÷ window days`, two
-decimals) and `retentionDays` — `cap ÷ addsPerDay` to one decimal when the shelf is at its cap and
-took at least one add, else `null` (never 0 or Infinity, [DP-5]). The human table prints
-`N adds (R/day)` on every shelf row and `, ~Dd retention` on a full one. `stats` SHALL also emit an
+`accepted` `add` rows for that shelf in the window), `addsPerDay` (`adds ÷` the days the usage log
+covers, at most the window, two decimals) and `retentionDays` — `cap ÷ addsPerDay` to one decimal
+when the shelf is at its cap and took at least one add, else `null` (never 0 or Infinity, [DP-5]).
+The days the log covers are the window days, unless the log does not reach back to the window
+start (`usageRing.coversWindow: false`, [FR-STATS-006](#fr-stats-006)); then they are the days
+from its oldest row to the report's `now` (issue #511). The divisor SHALL be at least one day, or
+the window days if the window is shorter, so a log that filled minutes ago cannot print a huge
+rate; when that floor exceeds the days the log covers, `addsPerDay` is a lower bound and
+`retentionDays` SHALL be `null`, since the estimate would be too long. The human table prints
+`N adds (R/day)` on every shelf row and `, ~Dd retention` on a full one when `retentionDays` is
+not `null`. `stats` SHALL also emit an
 `add-burst` diagnostic signal for each (session, shelf) pair whose accepted adds exceed
 `NB_ADD_BURST_N` (default 15); a blank session is skipped. The change only counts rows
 [FR-USAGE-002](#fr-usage-002) already writes: no field is added to a lesson ([NG-004]), no aging
@@ -1290,7 +1299,8 @@ rule or scheduler ([NG-005]), and `STATS_SCHEMA_VERSION` SHALL NOT bump (additiv
 has to earn a vote is at most about `cap ÷ add rate`. Nothing showed that rate, so "a full shelf is normal"
 could not be told from "this shelf forgets a lesson in ten days" (issue #353).
 *Proven by:* `notebook.test.ts` → `describe('stats add rate, retention window and add-burst (issue #353)')`
-and `cli.test.ts` → the `stats table shows the notebook inventory` tests.
+and `cli.test.ts` → the `stats table shows the notebook inventory` tests and
+`test('stats divides the adds in a short full log by the span it covers and says so on the note line (issue #511)')`.
 
 <a id="fr-stats-009"></a>
 **FR-STATS-009 (Should).** When `stats` is scoped to a shelf operand that has no
