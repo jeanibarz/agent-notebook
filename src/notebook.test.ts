@@ -182,6 +182,7 @@ function usageRow(over: Partial<UsageRow> = {}): UsageRow {
   };
 }
 import { runNbCli } from './cli.js';
+import { renderStats } from './render.js';
 
 let dir: string;
 const SAVED = { ...process.env };
@@ -5762,6 +5763,22 @@ describe('stats add rate, retention window and add-burst (issue #353)', () => {
     // Exactly one day of log is enough: divide by it and estimate retention.
     writeLog(now, 1, 7, 100);
     expect(fullRow(now)).toEqual([7, 7, 0.4]);
+  });
+
+  test('the note line switches wording at exactly one day of log, where stats() starts estimating retention (issue #511)', () => {
+    process.env.NB_MAX_LINES = '3';
+    process.env.NB_USAGE_RING = '100';
+    writeFileSync(join(dir, 'full.md'), '1\ta\n1\tb\n1\tc\n', 'utf-8');
+    const now = Date.now();
+    writeLog(now, 1, 7, 100); // exactly one day of log: retention is estimated
+    const day = renderStats(stats(dir, { now }), undefined);
+    expect(day).toContain('~0.4d retention');
+    expect(day).toContain('reaches back only 1d');
+    expect(day).toContain('per-day rates divide by the time since that row');
+    writeLog(now, 1 - 1 / 86_400_000, 7, 100); // one millisecond short of a day: withheld
+    const short = renderStats(stats(dir, { now }), undefined);
+    expect(short).not.toMatch(/~[\d.]+d retention/);
+    expect(short).toContain('per-day rates divide by one day, so they are lower bounds, and retention is not estimated');
   });
 
   test('a window shorter than a day is never divided by more than the window (issue #511)', () => {

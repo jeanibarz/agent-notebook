@@ -444,7 +444,7 @@ export function renderStats(rep: StatsReport, shelf: string | undefined): string
     const reach = ageDays >= 1 ? `${Math.floor(ageDays)}d` : 'under a day';
     const windowDays = (Date.parse(rep.generatedAt) - Date.parse(rep.windowStart)) / 86_400_000;
     const floor = windowDays < 1 ? `the ${rep.window} window` : 'one day';
-    const rates = ageDays >= 1 ? 'per-day rates use that span' : `per-day rates divide by ${floor}, so they are lower bounds, and retention is not estimated`;
+    const rates = ageDays >= 1 ? 'per-day rates divide by the time since that row' : `per-day rates divide by ${floor}, so they are lower bounds, and retention is not estimated`;
     lines.push(`  usage log reaches back only ${reach} (oldest row ${ring.oldest}); ${rates}`);
   }
   // Crash-recovery readout (issue #309): the two previously-silent signs a prior

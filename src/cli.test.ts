@@ -1164,7 +1164,7 @@ describe('runNbCli', () => {
     const s = await run(['stats']);
     expect(s.out).toMatch(/patcher\s+3\/3 {2}FULL {2}7 adds \(2\/day\), ~1\.5d retention/);
     expect(s.out).toContain('usage log reaches back only 3d (oldest row ');
-    expect(s.out).toContain('); per-day rates use that span');
+    expect(s.out).toContain('); per-day rates divide by the time since that row');
     log(0.25); // the log filled 6 hours ago
     const short = await run(['stats']);
     expect(short.out).toMatch(/patcher\s+3\/3 {2}FULL {2}7 adds \(7\/day\)\n/);
