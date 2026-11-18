@@ -5028,7 +5028,7 @@ describe('nb completion (shell completion, issue #187)', () => {
     const out = (await run(['completion', 'bash'])).out;
     // Shelf names come from `nb list`, and the lookup swallows stderr/failure so
     // it can never hang or error the shell (the issue's load-bearing risk).
-    expect(out).toContain('nb list --limit 1000000 2>/dev/null');
+    expect(out).toContain('NB_ENABLED=1 nb list --limit 1000000 2>/dev/null');
     // `show` (the acceptance-criteria example) is among the shelf-completing cmds.
     expect(out).toMatch(/case "\$cmd" in[\s\S]*\bshow\b/);
   });
@@ -5116,7 +5116,7 @@ describe('nb completion (shell completion, issue #187)', () => {
   test('both emitted scripts ask `nb list` for more than its default 50 rows (issue #456)', async () => {
     for (const shell of ['bash', 'zsh']) {
       const out = (await run(['completion', shell])).out;
-      expect(out).toContain('nb list --limit 1000000 2>/dev/null');
+      expect(out).toContain('NB_ENABLED=1 nb list --limit 1000000 2>/dev/null');
       expect(out).not.toMatch(/nb list 2>/);
     }
   });

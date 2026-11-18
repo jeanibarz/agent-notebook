@@ -15,7 +15,9 @@ You have a bounded, voted, plain-text memory via the `nb` command. Use it:
 - **At the start of a task**, run `nb list` to see the richest 50 notebooks (a trailing `#` line names any left out) and its one-line
   description, then `nb show <shelf>` the one(s) whose description fits your task,
   and keep their lessons in front of you. (Surfacing from the index is the primary
-  path; `nb search "<keywords>"` is a fallback for a known-item lookup.)
+  path; `nb search "<keywords>"` is a fallback for a known-item lookup.) If `nb list`
+  says agent-notebook is switched off for this repository, skip every notebook step,
+  the retrospective included.
 - **At the end of the task — a short retrospective (do this before you finish),**
   on the notebooks you opened:
   1. `nb vote <shelf> <id> +1` for each lesson that actually helped. (The `<id>` is

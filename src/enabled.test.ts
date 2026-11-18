@@ -327,3 +327,96 @@ describe('the README recipe: off everywhere except one repository (issue #514)',
     expect(readdirSync(join(tmp, 'store')).filter((f) => !f.startsWith('.'))).toEqual([]);
   });
 });
+
+describe('nb list answers off here (issue #514 slice 2)', () => {
+  const OFF_LINE =
+    'agent-notebook is switched off for this repository: skip the notebook steps (no `nb show`, no end-of-task retrospective). ' +
+    '`nb enabled --why` shows which setting decided; `NB_ENABLED=1 nb list` shows the index anyway.\n';
+
+  /** A repository switched off in its own .git/config, with one shelf in the store. */
+  function offRepo(): string {
+    const r = repo('off-repo');
+    git(r, 'config', 'nb.enabled', 'false');
+    expect(nb(r, ['add', 'some-shelf', 'a lesson worth keeping']).code).toBe(0);
+    return r;
+  }
+
+  /** A `bin` dir holding only an `nb` wrapper around the built CLI (no `git` on it). */
+  function nbOnlyBin(): string {
+    const binDir = join(tmp, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'nb'), `#!/usr/bin/env bash\nexec '${process.execPath}' '${CLI}' "$@"\n`);
+    chmodSync(join(binDir, 'nb'), 0o755);
+    return binDir;
+  }
+
+  test('off: every alias, with a prefix or --limit, prints the one flush-left line and exits 0', () => {
+    const r = offRepo();
+    for (const args of [['list'], ['ls'], ['shelves'], ['roles'], ['list', 'some'], ['list', '--limit', '5']]) {
+      const res = nb(r, args);
+      expect(res.code, args.join(' ')).toBe(0);
+      expect(res.out, args.join(' ')).toBe(OFF_LINE);
+      // `roles` is a deprecated alias with its own stderr note; nothing else is added.
+      if (args[0] !== 'roles') expect(res.err, args.join(' ')).toBe('');
+    }
+  });
+
+  test('off: the usage row is logged with outcome `off`', () => {
+    const r = offRepo();
+    nb(r, ['list']);
+    const rows = execFileSync('cat', [join(tmp, 'store', '.nb-usage.log')], { encoding: 'utf-8' }).trim().split('\n');
+    const last = rows[rows.length - 1].split('\t');
+    expect(last[2]).toBe('list');
+    expect(last[7]).toBe('off');
+  });
+
+  test('NB_ENABLED=1 shows the index in an off repository, and --json never consults the switch', () => {
+    const r = offRepo();
+    const on = repo('on-repo');
+    expect(nb(r, ['list'], { NB_ENABLED: '1' }).out).toContain('some-shelf');
+    const offJson = nb(r, ['list', '--json']);
+    expect(offJson.code).toBe(0);
+    expect(offJson.out).toBe(nb(on, ['list', '--json']).out);
+    expect(JSON.parse(offJson.out).rows.map((x: { shelf: string }) => x.shelf)).toEqual(['some-shelf']);
+  });
+
+  test('on, or a check that fails open, prints the same index as before, with no warning', () => {
+    const r = offRepo();
+    const expected = nb(r, ['list'], { NB_ENABLED: '1' });
+    expect(expected.out).toContain('some-shelf');
+    const plain = repo('plain');
+    const invalid = repo('invalid');
+    git(invalid, 'config', 'nb.enabled', 'maybe');
+    for (const [label, cwd, extra] of [
+      ['key unset', plain, {}],
+      ['invalid value', invalid, {}],
+      ['no git on PATH', r, { PATH: nbOnlyBin() }],
+    ] as const) {
+      const res = nb(cwd, ['list'], extra);
+      expect(res.out, label).toBe(expected.out);
+      expect(res.err, label).toBe(expected.err);
+    }
+  });
+
+  test('bash completion still offers shelf names in an off repository', () => {
+    const r = offRepo();
+    const binDir = nbOnlyBin();
+    const script = 'eval "$(nb completion bash)"; COMP_WORDS=(nb show ""); COMP_CWORD=2; _nb_complete; echo "${COMPREPLY[@]}"';
+    const out = execFileSync('bash', ['-c', script], {
+      cwd: r,
+      env: childEnv({ PATH: `${binDir}:${process.env.PATH}` }),
+      encoding: 'utf-8',
+    });
+    expect(out.trim()).toBe('some-shelf');
+  });
+
+  test('session start: on in CLAUDE_PROJECT_DIR shows the real index even from an off working directory', () => {
+    const r = offRepo();
+    const proj = repo('proj');
+    const bin = join(nbOnlyBin(), 'nb');
+    const out = sessionStart({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, r);
+    expect(out).toContain('## Your agent-notebook index');
+    expect(out).toContain('some-shelf');
+    expect(out).not.toContain('switched off');
+  });
+});

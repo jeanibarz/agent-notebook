@@ -105,6 +105,16 @@ import {
 const LIST_DEFAULT_LIMIT = 50;
 
 /**
+ * What a text `nb list` prints in place of the index when `nb enabled` says off
+ * (slice 2 of issue #514). It starts flush-left, so the completion scripts,
+ * which read only indented rows, take no shelf name from it.
+ * `NB_ENABLED=1` is the escape hatch: it overrides git config for one command.
+ */
+const LIST_OFF_LINE =
+  'agent-notebook is switched off for this repository: skip the notebook steps (no `nb show`, no end-of-task retrospective). ' +
+  '`nb enabled --why` shows which setting decided; `NB_ENABLED=1 nb list` shows the index anyway.';
+
+/**
  * Row cap the emitted shell-completion scripts pass to `nb list` (issue #456). A
  * bare `nb list` stops at `LIST_DEFAULT_LIMIT` rows, so on a larger store the
  * newest, smallest shelves would never tab-complete. `--limit 0` returns no rows
@@ -235,6 +245,8 @@ notes:
     convention, e.g. \`nb list review.\`); \`--limit N\` bounds the rows (default ${LIST_DEFAULT_LIMIT}) so discovery
     cost stays flat as notebooks grow; \`--json\` emits the raw NotebookListing. An empty (zero-lesson,
     no-description) notebook is hidden — it is phantom debris with nothing to discover.
+    Where \`nb enabled\` says off, the text form prints one line telling the agent to skip the notebook
+    steps instead of the index (\`NB_ENABLED=1 nb list\` shows it anyway); \`--json\` is unaffected.
   - \`nb search <query> [prefix]\` is a DEMOTED, SECONDARY keyword fallback — the primary path is
     *surfacing* (a notebook is shown to you at session start, and \`nb list\` helps you pick one),
     because the lesson you most need is the one you would not think to search for. Reach for search
@@ -304,7 +316,7 @@ notes:
     = off, any other non-blank value = on); otherwise \`git config nb.enabled\` (\`git config nb.enabled false\` in
     one repository, \`--global\` for all of them); otherwise on. A missing \`git\` or an invalid value resolves to
     on, with a warning on stderr. \`--why\` adds which input decided. Read-only; it switches off only the hooks
-    that ask it, never \`nb\` itself.
+    that ask it and the text \`nb list\` index, never the other \`nb\` commands.
   - \`nb completion <bash|zsh>\` prints a static, dependency-free completion script to stdout.
     Source it with \`eval "$(nb completion bash)"\` (or the zsh form) to tab-complete the command set
     and, where a command takes a shelf, existing shelf names (looked up via \`nb list\`, guarded so it
@@ -425,8 +437,10 @@ _nb_complete() {
   # line is flush-left, so the leading-space match skips it). stderr and any
   # failure are swallowed, so a broken or absent \`nb\` yields no completions
   # rather than an error.
+  # NB_ENABLED=1 keeps the index on in a repository where the notebook is switched
+  # off (\`nb enabled\`), so shelf names still complete there.
   local shelves
-  shelves="$(nb list --limit ${COMPLETION_LIST_LIMIT} 2>/dev/null | awk '/^[[:space:]]/ {print $1}')" || return 0
+  shelves="$(NB_ENABLED=1 nb list --limit ${COMPLETION_LIST_LIMIT} 2>/dev/null | awk '/^[[:space:]]/ {print $1}')" || return 0
   COMPREPLY=( $(compgen -W "$shelves" -- "$cur") )
   return 0
 }
@@ -470,8 +484,10 @@ _nb() {
     # Shelf names = the first field of each indented row of \`nb list\` (its header
     # line is flush-left, so the leading-space match skips it). Only split and add
     # when the lookup produced output, so an empty list adds no empty candidate.
+    # NB_ENABLED=1 keeps the index on in a repository where the notebook is switched
+    # off (\`nb enabled\`), so shelf names still complete there.
     local _nb_list
-    _nb_list="$(nb list --limit ${COMPLETION_LIST_LIMIT} 2>/dev/null | awk '/^[[:space:]]/ {print $1}')"
+    _nb_list="$(NB_ENABLED=1 nb list --limit ${COMPLETION_LIST_LIMIT} 2>/dev/null | awk '/^[[:space:]]/ {print $1}')"
     if [[ -n $_nb_list ]]; then
       local -a _nb_shelves
       _nb_shelves=(\${(f)_nb_list})
@@ -1593,6 +1609,15 @@ export async function runNbCli(
             ) + '\n',
           );
           process.stderr.write(renderConflicts('list', listing.conflicts));
+        } else if (!resolveEnabled().enabled) {
+          // Slice 2 of issue #514: an instruction-only setup (Codex CLI, or a
+          // contract with no hooks) has no hook to ask `nb enabled`, so the
+          // agent's own `nb list` answers "off here" in place of the index. One
+          // unindented line (shell completion reads only indented rows), exit 0.
+          // `--json` is left out of this on purpose: it is the scripts' surface.
+          // A failed check is not printed here: it fails open, so the index shows.
+          meta.outcome = 'off';
+          process.stdout.write(`${LIST_OFF_LINE}\n`);
         } else {
           const { out, err } = renderList(dir, prefix, limit, explicitLimitGiven);
           if (out) process.stdout.write(out);

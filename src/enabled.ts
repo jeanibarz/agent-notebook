@@ -20,8 +20,10 @@
  * kept in `warning` so `nb enabled --why` and `nb config` can show it.
  *
  * Read-only. This is the only module that spawns a process (the `git config`
- * call in `readGitKey`), and only
- * `nb enabled` and `nb config` call it; no notebook command depends on it.
+ * call in `readGitKey`). Three commands call it: `nb enabled`, `nb config`, and
+ * the text form of `nb list`, which prints a "switched off" line in place of the
+ * index (slice 2, for setups whose only surface is the instruction). `nb list
+ * --json` and every other notebook command never call it.
  */
 import { spawnSync } from 'node:child_process';
 

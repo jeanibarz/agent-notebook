@@ -36,8 +36,10 @@ _nb_complete() {
   # line is flush-left, so the leading-space match skips it). stderr and any
   # failure are swallowed, so a broken or absent `nb` yields no completions
   # rather than an error.
+  # NB_ENABLED=1 keeps the index on in a repository where the notebook is switched
+  # off (`nb enabled`), so shelf names still complete there.
   local shelves
-  shelves="$(nb list --limit 1000000 2>/dev/null | awk '/^[[:space:]]/ {print $1}')" || return 0
+  shelves="$(NB_ENABLED=1 nb list --limit 1000000 2>/dev/null | awk '/^[[:space:]]/ {print $1}')" || return 0
   COMPREPLY=( $(compgen -W "$shelves" -- "$cur") )
   return 0
 }
