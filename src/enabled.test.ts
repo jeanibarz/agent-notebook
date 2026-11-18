@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, existsSync, readdirSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, existsSync, readdirSync, symlinkSync, realpathSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +15,9 @@ const HOOKS = join(here, '..', 'examples', 'hooks', 'claude-code');
 let tmp: string;
 let globalCfg: string;
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), 'nb-enabled-'));
+  // realpath: on macOS tmpdir() is under the /var -> /private/var symlink, and git
+  // matches an includeIf `gitdir:` pattern against the real path.
+  tmp = realpathSync(mkdtempSync(join(tmpdir(), 'nb-enabled-')));
   globalCfg = join(tmp, 'global.gitconfig');
   writeFileSync(globalCfg, '');
 });
@@ -57,7 +59,7 @@ describe('NB_ENABLED and git config nb.enabled resolve the on/off state (issue #
     let called = false;
     const run = () => {
       called = true;
-      return { status: 0, stdout: 'local\tfile:.git/config\ttrue\n', stderr: '' };
+      return { status: 0, stdout: 'file:.git/config\ttrue\n', stderr: '' };
     };
     const st = resolveEnabled({ NB_ENABLED: 'off' }, '/x', run);
     expect(st).toMatchObject({ enabled: false, source: 'env', value: 'off' });
@@ -65,13 +67,13 @@ describe('NB_ENABLED and git config nb.enabled resolve the on/off state (issue #
   });
 
   test('a blank NB_ENABLED defers to git config', () => {
-    const st = resolveEnabled({ NB_ENABLED: ' ' }, '/x', gitRun(0, 'global\tfile:/h/.gitconfig\tfalse\n'));
-    expect(st).toMatchObject({ enabled: false, source: 'git', value: 'false', origin: 'global file:/h/.gitconfig' });
+    const st = resolveEnabled({ NB_ENABLED: ' ' }, '/x', gitRun(0, 'file:/h/.gitconfig\tfalse\n'));
+    expect(st).toMatchObject({ enabled: false, source: 'git', value: 'false', origin: 'file:/h/.gitconfig' });
   });
 
   test('git config true/false decides; an unset key (exit 1) is the default, on', () => {
-    expect(resolveEnabled({}, '/x', gitRun(0, 'local\tfile:.git/config\ttrue\n'))).toMatchObject({ enabled: true, source: 'git' });
-    expect(resolveEnabled({}, '/x', gitRun(0, 'local\tfile:.git/config\tfalse\n'))).toMatchObject({ enabled: false, source: 'git' });
+    expect(resolveEnabled({}, '/x', gitRun(0, 'file:.git/config\ttrue\n'))).toMatchObject({ enabled: true, source: 'git' });
+    expect(resolveEnabled({}, '/x', gitRun(0, 'file:.git/config\tfalse\n'))).toMatchObject({ enabled: false, source: 'git' });
     expect(resolveEnabled({}, '/x', gitRun(1))).toEqual({ enabled: true, source: 'default', value: null, origin: null, warning: null });
   });
 
@@ -79,17 +81,20 @@ describe('NB_ENABLED and git config nb.enabled resolve the on/off state (issue #
     const bad = resolveEnabled({}, '/x', gitRun(128, '', "fatal: bad boolean config value 'maybe' for 'nb.enabled'\n"));
     expect(bad).toMatchObject({ enabled: true, source: 'default' });
     expect(bad.warning).toContain("bad boolean config value 'maybe'");
-    const odd = resolveEnabled({}, '/x', gitRun(0, 'local\tfile:.git/config\tmaybe\n'));
+    const odd = resolveEnabled({}, '/x', gitRun(0, 'file:.git/config\tmaybe\n'));
     expect(odd).toMatchObject({ enabled: true, source: 'default' });
     expect(odd.warning).not.toBeNull();
+    // A git too old for a flag exits 129: still on, and the warning says so.
+    const old = resolveEnabled({}, '/x', gitRun(129, '', "error: unknown option `type=bool'\n"));
+    expect(old).toMatchObject({ enabled: true, source: 'default', warning: "git config nb.enabled ignored: error: unknown option `type=bool'" });
     const missing = resolveEnabled({}, '/x', () => ({ status: null, stdout: '', stderr: '', error: 'ENOENT' }));
     expect(missing).toMatchObject({ enabled: true, source: 'default', warning: 'git not found; only NB_ENABLED applies' });
   });
 
   test('describeSource names the deciding input', () => {
     expect(describeSource(resolveEnabled({ NB_ENABLED: '0' }, '/x', gitRun(1)))).toBe('env NB_ENABLED=0');
-    expect(describeSource(resolveEnabled({}, '/x', gitRun(0, 'local\tfile:.git/config\tfalse\n')))).toBe(
-      'git config nb.enabled=false, local file:.git/config',
+    expect(describeSource(resolveEnabled({}, '/x', gitRun(0, 'file:.git/config\tfalse\n')))).toBe(
+      'git config nb.enabled=false, file:.git/config',
     );
     expect(describeSource(resolveEnabled({}, '/x', gitRun(1)))).toBe('default: neither NB_ENABLED nor git config nb.enabled is set');
   });
@@ -158,14 +163,14 @@ describe('NB_ENABLED and git config nb.enabled resolve the on/off state (issue #
   test('--why and --json name the deciding input', () => {
     const r = repo('r');
     git(r, 'config', 'nb.enabled', 'false');
-    expect(nb(r, ['enabled', '--why']).out).toBe('off (git config nb.enabled=false, local file:.git/config)\n');
+    expect(nb(r, ['enabled', '--why']).out).toBe('off (git config nb.enabled=false, file:.git/config)\n');
     expect(nb(r, ['enabled', '--why'], { NB_ENABLED: 'on' }).out).toBe('on (env NB_ENABLED=on)\n');
     expect(JSON.parse(nb(r, ['enabled', '--json']).out)).toEqual({
       enabled: false,
       state: 'off',
       source: 'git',
       value: 'false',
-      origin: 'local file:.git/config',
+      origin: 'file:.git/config',
       warning: null,
     });
   });
@@ -182,14 +187,14 @@ describe('nb config reports the on/off state (issue #514)', () => {
     const r = repo('r');
     expect(nb(r, ['config']).out).toMatch(/\n\nenabled=on {2}\(default: neither NB_ENABLED nor git config nb\.enabled is set\)\n$/);
     git(r, 'config', 'nb.enabled', 'false');
-    expect(nb(r, ['config']).out).toMatch(/\nenabled=off {2}\(git config nb\.enabled=false, local file:\.git\/config\)\n$/);
+    expect(nb(r, ['config']).out).toMatch(/\nenabled=off {2}\(git config nb\.enabled=false, file:\.git\/config\)\n$/);
   });
 
   test('--json carries an additive `enabled` object', () => {
     const r = repo('r');
     git(r, 'config', 'nb.enabled', 'false');
     const j = JSON.parse(nb(r, ['config', '--json']).out);
-    expect(j.enabled).toEqual({ value: 'off', source: 'git', origin: 'local file:.git/config', warning: null });
+    expect(j.enabled).toEqual({ value: 'off', source: 'git', origin: 'file:.git/config', warning: null });
     expect(j.maxLines.value).toBe(50);
   });
 
@@ -245,8 +250,8 @@ describe('the example hooks honour nb enabled (issue #514)', () => {
     expect(callLog(log)).not.toContain(' list');
   });
 
-  test('session start: `on`, or an old nb without the subcommand (exit 2, no stdout), shows the index', () => {
-    for (const [state, code] of [['on\n', 0], ['', 2]] as const) {
+  test('session start: `on`, an old nb without the subcommand (exit 2, no stdout), or any other answer shows the index', () => {
+    for (const [state, code] of [['on\n', 0], ['', 2], ['offline\n', 0], ['error: off\n', 1]] as const) {
       const { bin } = stubNb(state, code);
       const out = sessionStart({ NB_BIN: bin });
       expect(out, `state=${JSON.stringify(state)}`).toContain('some-shelf');
@@ -269,12 +274,23 @@ describe('the example hooks honour nb enabled (issue #514)', () => {
     expect(callLog(log).match(/ enabled/g)).toHaveLength(1);
   });
 
-  test('stop: `on`, an old nb, or a missing nb still nudges once', () => {
-    for (const [i, [state, code]] of ([['on\n', 0], ['', 2]] as const).entries()) {
+  test('stop: `on`, an old nb, any other answer, or a missing nb still nudges once', () => {
+    for (const [i, [state, code]] of ([['on\n', 0], ['', 2], ['offline\n', 0], ['error: off\n', 1]] as const).entries()) {
       const { bin } = stubNb(state, code);
       expect(JSON.parse(stopHook({ NB_BIN: bin }, `on-${i}`)).decision).toBe('block');
     }
     expect(JSON.parse(stopHook({ NB_BIN: join(tmp, 'missing-nb') }, 'missing')).decision).toBe('block');
+  });
+
+  test('stop: when off, old sentinels are still pruned (issue #165)', () => {
+    mkdirSync(join(tmp, 'store'), { recursive: true });
+    const stale = join(tmp, 'store', '.retro-old');
+    writeFileSync(stale, 'x');
+    const t = (Date.now() - 30 * 86400000) / 1000;
+    utimesSync(stale, t, t);
+    const { bin } = stubNb('off\n');
+    expect(stopHook({ NB_BIN: bin })).toBe('');
+    expect(existsSync(stale)).toBe(false);
   });
 
   test('stop: asks from CLAUDE_PROJECT_DIR when set', () => {
@@ -299,7 +315,7 @@ describe('the README recipe: off everywhere except one repository (issue #514)',
 
     const env = { NB_BIN: bin };
     expect(nb(pilot, ['enabled']).out).toBe('on\n');
-    expect(nb(other, ['enabled', '--why']).out).toBe(`off (git config nb.enabled=false, global file:${globalCfg})\n`);
+    expect(nb(other, ['enabled', '--why']).out).toBe(`off (git config nb.enabled=false, file:${globalCfg})\n`);
 
     expect(sessionStart(env, pilot)).toContain('## Your agent-notebook index');
     expect(sessionStart(env, other)).toContain('switched off for this repository');

@@ -60,22 +60,6 @@ try {
   // Non-EEXIST (e.g. permission): fail open — fall through and nudge anyway.
 }
 
-// Per-repository switch (issue #514): ask `nb enabled` once, on the stop that
-// would nudge (later stops already exit on the sentinel above, so this costs one
-// `nb` start per session, not one per turn). Only the literal word `off` lets the
-// stop through silently; a missing `nb`, an older `nb` without the subcommand,
-// or any error keeps the nudge.
-{
-  const { spawnSync } = require('node:child_process');
-  const r = spawnSync(process.env.NB_BIN || 'nb', ['enabled'], {
-    cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
-    encoding: 'utf-8',
-    timeout: 10000,
-    stdio: ['ignore', 'pipe', 'ignore'],
-  });
-  if (!r.error && (r.stdout || '').trim() === 'off') process.exit(0);
-}
-
 // Bound the sentinel pile (issue #165): having claimed this session's sentinel,
 // sweep `.retro-*` files older than a TTL so they never accumulate without
 // bound. Best-effort only — every step is wrapped so a failed readdir/stat/
@@ -93,6 +77,23 @@ try {
     try { if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p); } catch {}
   }
 } catch {}
+
+// Per-repository switch (issue #514): ask `nb enabled` once, on the stop that
+// would nudge (later stops already exit on the sentinel claim above, so this
+// costs one `nb` start per session, not one per turn). It runs after the prune,
+// so old sentinels are still reaped in an off repository. Only the literal word `off` lets the
+// stop through silently; a missing `nb`, an older `nb` without the subcommand,
+// or any error keeps the nudge.
+{
+  const { spawnSync } = require('node:child_process');
+  const r = spawnSync(process.env.NB_BIN || 'nb', ['enabled'], {
+    cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+    encoding: 'utf-8',
+    timeout: 10000,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (!r.error && (r.stdout || '').trim() === 'off') process.exit(0);
+}
 
 const reason = [
   `Before finishing, run the agent-notebook retrospective on the notebooks you opened this task (one pass, then stop):`,

@@ -19,7 +19,8 @@
  * boolean (exit 128 on `nb.enabled = maybe`) all resolve to on, with the problem
  * kept in `warning` so `nb enabled --why` and `nb config` can show it.
  *
- * Read-only. This is the only module that spawns a process, and only
+ * Read-only. This is the only module that spawns a process (the `git config`
+ * call in `readGitKey`), and only
  * `nb enabled` and `nb config` call it; no notebook command depends on it.
  */
 import { spawnSync } from 'node:child_process';
@@ -33,7 +34,7 @@ export interface EnabledState {
   source: EnabledSource;
   /** The deciding raw value: the `NB_ENABLED` string, or git's normalised `true`/`false`; `null` for the default. */
   value: string | null;
-  /** For `source: 'git'`: the scope and file as git reports them, e.g. `local file:.git/config`; otherwise `null`. */
+  /** For `source: 'git'`: the file as `git config --show-origin` reports it, e.g. `file:.git/config`; otherwise `null`. */
   origin: string | null;
   /** Why the git key was ignored (invalid value, git missing or failing), or `null`. The state is then the default, on. */
   warning: string | null;
@@ -61,9 +62,14 @@ export interface GitRun {
   error?: string;
 }
 
-/** Run `git config --type=bool --show-scope --show-origin --get nb.enabled` in `cwd`. */
+/**
+ * Run `git config --type=bool --show-origin --get nb.enabled` in `cwd`.
+ * `--type=bool` needs git 2.18 and `--show-origin` 2.8; `--show-scope` is
+ * deliberately not used, since git before 2.26 rejects it (exit 129) and the
+ * switch would then be silently ignored.
+ */
 export function readGitKey(cwd: string): GitRun {
-  const r = spawnSync('git', ['config', '--type=bool', '--show-scope', '--show-origin', '--get', 'nb.enabled'], {
+  const r = spawnSync('git', ['config', '--type=bool', '--show-origin', '--get', 'nb.enabled'], {
     cwd,
     encoding: 'utf-8',
     timeout: 5000,

@@ -307,7 +307,7 @@ function statusNote(row: ConfigRow, kind: 'int' | 'rate'): string {
  * block follows with the per-repository on/off state and the input that decided
  * it (issue #514). A final block lists unrecognized `NB_*`
  * vars (issue #336) when any exist. With no problems the output is byte-identical
- * to the pre-#336 renderer. Returns `{ out }` (stdout only) — there is no
+ * to the pre-#336 renderer, apart from the `enabled=` line. Returns `{ out }` (stdout only) — there is no
  * error/empty state, the table is fixed.
  */
 export function renderConfig(

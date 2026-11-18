@@ -11,7 +11,7 @@ load-bearing behavior links to the test that proves it; if you change a behavior
 change the requirement and its test together (see [Keeping this document honest](#keeping-this-document-honest)).
 
 - **Source of truth for behavior:** `src/notebook.ts` (library: storage, cap-and-vote, search), `src/usage.ts` (the usage log), `src/stats.ts` (`nb stats`) and `src/cli.ts` (CLI: argument parsing, dispatch, help, shell completion, stdin reading and process guards), with the CLI's helpers in `src/render.ts` (the read-side report text), `src/config-report.ts` (`nb config`), `src/suggest.ts` (did-you-mean), `src/doctor.ts` (`nb doctor`) and `src/enabled.ts` (`nb enabled`). `src/index.ts` is the package root that re-exports the three library modules.
-- **Tests:** `src/notebook.test.ts`, `src/cli.test.ts`; the module layout and the published export list are pinned by `src/module-boundaries.test.ts` and `src/package-exports.test.ts`.
+- **Tests:** `src/notebook.test.ts`, `src/cli.test.ts`, `src/enabled.test.ts`; the module layout and the published export list are pinned by `src/module-boundaries.test.ts` and `src/package-exports.test.ts`.
 - **Design rationale (signals & self-observation):** [`self-observing-notebook.md`](./self-observing-notebook.md) — why the tool instruments itself and how engagement / coverage / recall / precision / serendipity are told apart.
 
 ---
@@ -820,7 +820,8 @@ e.g. `(env NB_NEAR_DUP: clamped to 1 from 2)` or `(env NB_MAX_LINES: ignored "ab
 using default)` — and `--json` gains the additive `status` (`"honored"`/`"clamped"`/`"ignored"`,
 `null` when unset or derived) and `rawValue` (the raw env string, `null` when unset) fields, leaving
 `source` and every existing key unchanged. Output for a config with no problems SHALL be
-byte-identical to the pre-#336 form. `nb config` SHALL further list every `NB_*` environment
+byte-identical to the pre-#336 form, apart from the `enabled=` line that
+[FR-ENABLED-002](#fr-enabled-002) appends. `nb config` SHALL further list every `NB_*` environment
 variable it does not read as *not read by `nb`* (with a nearest-name `did you mean` suggestion when
 one is close) — in the human output as a trailing block and in `--json` as an additive top-level
 `unrecognized` array — derived from the SAME registry `effectiveConfig` uses, informational only
@@ -1506,7 +1507,8 @@ surrounding space) mean off, any other value means on; (2) otherwise
 `git config --type=bool --get nb.enabled` run in the working directory, so git's own scopes and
 precedence apply (repository over `--global`, `includeIf`, worktrees sharing the repository's
 `.git/config`); (3) otherwise on. It SHALL fail open: a missing `git`, a git error, or a value git
-refuses as a boolean resolves to on, exit code `0`, with a warning on stderr naming the problem
+refuses as a boolean resolves to on, exit code `0`, with a warning naming the problem (on stderr in
+the plain form; inside the line or object with `--why`/`--json`)
 ([DP-5](#dp-5): the typo is visible, never silently obeyed or silently dropped). `--why` SHALL
 append the deciding input on the same line (e.g. `off (git config nb.enabled=false, local
 file:.git/config)`); `--json` SHALL emit `{ enabled, state, source, value, origin, warning }`
