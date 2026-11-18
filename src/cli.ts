@@ -20,7 +20,7 @@
 //   nb doctor [--json] [--exit-code]        read-only structural check of the notebooks dir (conflict markers, bad lines, control chars, case collisions, over-cap, 0-byte, temps, stale lock; --exit-code = exit 3 when any found)
 //   nb path   [<shelf> | --usage] [--json]   print the notebooks dir, a shelf's file path, or the usage-log path (--json = {dir, shelf, path} object)
 //   nb config [--json]                      print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json = object keyed by name, string vars under `environment`)
-//   nb enabled [--why] [--json]             print `on` or `off`: whether the agent-facing loop (hooks, retrospective) is on here (NB_ENABLED, then git config nb.enabled, default on)
+//   nb enabled [--why] [--json]             print `on` or `off`: whether the agent-facing loop (hooks, retrospective, text `nb list`) is on here (NB_ENABLED, then git config nb.enabled, default on)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
 //   nb ls / nb shelves / nb roles          aliases of `nb list` (`roles` is deprecated)
 //   nb completion <bash|zsh>               print a static shell-completion script to source
@@ -164,7 +164,7 @@ usage:
   nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's resolved file path (--json emits a {dir, shelf, path} object)
   nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
   nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under \`environment\`)
-  nb enabled [--why] [--json]              print \`on\` or \`off\`: whether the agent-facing loop (hooks, retrospective) is on in this directory
+  nb enabled [--why] [--json]              print \`on\` or \`off\`: whether the agent-facing loop (hooks, retrospective, text \`nb list\`) is on in this directory
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
   nb shelves [prefix] [--limit N]         alias of \`nb list\`

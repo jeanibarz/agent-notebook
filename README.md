@@ -223,7 +223,7 @@ nb doctor [--json] [--exit-code]         read-only check of the notebooks dir fo
 nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's resolved file path (--json emits a {dir, shelf, path} object)
 nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
 nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under `environment`)
-nb enabled [--why] [--json]              print `on` or `off`: whether the agent-facing loop (hooks, retrospective) is on in this directory
+nb enabled [--why] [--json]              print `on` or `off`: whether the agent-facing loop (hooks, retrospective, text `nb list`) is on in this directory
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
 nb ls     [prefix] [--limit N]          alias of `nb list`
 nb shelves [prefix] [--limit N]         alias of `nb list`

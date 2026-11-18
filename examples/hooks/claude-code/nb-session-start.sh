@@ -35,9 +35,10 @@ if [ "$state" = off ]; then
   exit 0
 fi
 # The check above already decided "on" (or could not tell), from the project
-# directory. NB_ENABLED=1 on the hook's own `nb list` calls below keeps the index
-# from asking again from this process's working directory, which may differ from
-# CLAUDE_PROJECT_DIR. An `nb` older than the check ignores the variable.
+# directory. NB_ENABLED=1 on the flat index's `nb list` below keeps it from asking
+# again from this process's working directory, which may differ from
+# CLAUDE_PROJECT_DIR (`nb list --json`, used by the layered index, never asks).
+# An `nb` older than the check ignores the variable.
 
 echo "## Your agent-notebook index"
 echo "These are the available notebooks (bounded, voted, one-line lessons; each name is a shelf),"
@@ -65,7 +66,7 @@ echo
 # it also runs under macOS's bash 3.2.
 layered_index() {
   local json
-  json="$(NB_ENABLED=1 "$NB" list --json --limit 1000 2>/dev/null)" || return 1
+  json="$("$NB" list --json --limit 1000 2>/dev/null)" || return 1
   printf '%s' "$json" | LAYER_SLUG="$1" LAYER_GLOBAL="${NB_GLOBAL_SHELF:-global}" node -e '
     const fs = require("fs");
     let data;

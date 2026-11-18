@@ -521,7 +521,7 @@ same way.
 notebook index — one `NotebookSummary {shelf, role, lessons, desc, auto}` per notebook (`role` is a deprecated copy of `shelf`, filled from the same value) —
 ordered **richest-first** (descending `lessons`), ties broken by `shelf` name
 ascending. `nb list` SHALL render it as a header line plus one aligned row per
-notebook (name, lesson count, description); `ls`, `shelves` and the deprecated `roles` are aliases. When the default 50-row cap (no explicit `--limit`) leaves notebooks out, the output SHALL end with one flush-left `#` footer giving the number not shown and an `nb list [prefix] --limit <total>` command that lists them (issue #407); an explicit `--limit` and `--json` output are unchanged.
+notebook (name, lesson count, description); `ls`, `shelves` and the deprecated `roles` are aliases. When the default 50-row cap (no explicit `--limit`) leaves notebooks out, the output SHALL end with one flush-left `#` footer giving the number not shown and an `nb list [prefix] --limit <total>` command that lists them (issue #407); an explicit `--limit` and `--json` output are unchanged. Where the per-repository switch is off, the text form prints one line in place of the index ([FR-ENABLED-004](#fr-enabled-004)).
 **Rationale:** Level 1 of progressive disclosure for epic [#73](https://github.com/jeanibarz/agent-notebook/issues/73) — the always-readable index an agent consults to decide *which* notebook to open without reading any notebook's lessons. More lessons ⇒ more worth reusing, so it leads.
 *Proven by:* `notebook.test.ts` → "listNotebooks — the notebook index (issue #71)"; `cli.test.ts` → "list / ls / shelves — the notebook index (issue #71)".
 
@@ -1497,8 +1497,9 @@ and `describe('nb-janitor sections 2 & 8 — read-only and neutral (issue #362)'
 A machine-wide install (hooks in `~/.claude/settings.json`, the contract in
 `~/.claude/CLAUDE.md`) turns the agent-facing loop on in every repository. These
 requirements let a user switch it off in some repositories, or keep it off everywhere and
-switch it on in one. The switch is read by the shipped hooks; it is not an access lock on
-the store, and no notebook command changes behavior with it.
+switch it on in one. The switch is read by the shipped hooks and by the text form of `nb list`
+([FR-ENABLED-004](#fr-enabled-004)); it is not an access lock on the store, and no other notebook
+command changes behavior with it.
 
 <a id="fr-enabled-001"></a>
 **FR-ENABLED-001 (Should).** `nb enabled` SHALL print `on` or `off`, and nothing else on
@@ -1514,7 +1515,8 @@ the plain form; inside the line or object with `--why`/`--json`)
 append the deciding input on the same line (e.g. `off (git config nb.enabled=false,
 file:.git/config)`); `--json` SHALL emit `{ enabled, state, source, value, origin, warning }`
 with `source` one of `env`/`git`/`default`. It is read-only and writes no notebook. Only
-`nb enabled` and `nb config` read the switch or spawn `git`; reading a local git config is offline
+`nb enabled`, `nb config` and the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)) read the
+switch or spawn `git`; `nb list --json` and every other command do not; reading a local git config is offline
 and deterministic for the same files, so [DP-6](#dp-6) holds.
 **Rationale:** git config already gives the three scopes a user asks for (one repository, every
 repository, a folder) without a new file format, and its per-repository value is never committed,
