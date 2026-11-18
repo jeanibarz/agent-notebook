@@ -34,6 +34,11 @@ if [ "$state" = off ]; then
   echo "agent-notebook is switched off for this repository: skip the notebook steps (no \`nb list\`, no end-of-task retrospective). \`nb enabled --why\` shows which setting decided."
   exit 0
 fi
+# The check above already decided "on" (or could not tell), from the project
+# directory. NB_ENABLED=1 on the flat index's `nb list` below keeps it from asking
+# again from this process's working directory, which may differ from
+# CLAUDE_PROJECT_DIR (`nb list --json`, used by the layered index, never asks).
+# An `nb` older than the check ignores the variable.
 
 echo "## Your agent-notebook index"
 echo "These are the available notebooks (bounded, voted, one-line lessons; each name is a shelf),"
@@ -115,7 +120,7 @@ fi
 
 # Capture first so a FAILING `nb list` (corrupt store, EACCES, …) is told apart
 # from a genuinely EMPTY one — a pipeline `|| echo` would conflate them.
-out="$("$NB" list 2>/dev/null)"
+out="$(NB_ENABLED=1 "$NB" list 2>/dev/null)"
 rc=$?
 if [ "$rc" -ne 0 ]; then
   echo "  (WARNING: \`nb list\` failed with exit $rc — the notebook store may be broken; run \`nb list\` yourself to investigate)"

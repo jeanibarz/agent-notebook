@@ -32,8 +32,10 @@ _nb() {
     # Shelf names = the first field of each indented row of `nb list` (its header
     # line is flush-left, so the leading-space match skips it). Only split and add
     # when the lookup produced output, so an empty list adds no empty candidate.
+    # NB_ENABLED=1 keeps the index on in a repository where the notebook is switched
+    # off (`nb enabled`), so shelf names still complete there.
     local _nb_list
-    _nb_list="$(nb list --limit 1000000 2>/dev/null | awk '/^[[:space:]]/ {print $1}')"
+    _nb_list="$(NB_ENABLED=1 nb list --limit 1000000 2>/dev/null | awk '/^[[:space:]]/ {print $1}')"
     if [[ -n $_nb_list ]]; then
       local -a _nb_shelves
       _nb_shelves=(${(f)_nb_list})

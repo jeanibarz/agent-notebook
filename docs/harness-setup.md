@@ -151,8 +151,9 @@ hooks off for everyone working there. The README section
 full precedence, the folder (`includeIf`) recipe and what "off" covers. Hook scripts copied
 before this switch existed do not check it: copy them again.
 
-The switch reaches only the hooks. On Codex CLI, which has no hooks, put the snippet in the
-`AGENTS.md` of the repositories where you want the notebook rather than in `~/.codex/AGENTS.md`.
+On Codex CLI, which has no hooks, the switch works through `nb list`: in an off repository it
+prints one line telling the agent to skip the notebook steps in place of the index, so the snippet
+can go in `~/.codex/AGENTS.md`.
 
 ---
 

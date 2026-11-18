@@ -521,7 +521,7 @@ same way.
 notebook index — one `NotebookSummary {shelf, role, lessons, desc, auto}` per notebook (`role` is a deprecated copy of `shelf`, filled from the same value) —
 ordered **richest-first** (descending `lessons`), ties broken by `shelf` name
 ascending. `nb list` SHALL render it as a header line plus one aligned row per
-notebook (name, lesson count, description); `ls`, `shelves` and the deprecated `roles` are aliases. When the default 50-row cap (no explicit `--limit`) leaves notebooks out, the output SHALL end with one flush-left `#` footer giving the number not shown and an `nb list [prefix] --limit <total>` command that lists them (issue #407); an explicit `--limit` and `--json` output are unchanged.
+notebook (name, lesson count, description); `ls`, `shelves` and the deprecated `roles` are aliases. When the default 50-row cap (no explicit `--limit`) leaves notebooks out, the output SHALL end with one flush-left `#` footer giving the number not shown and an `nb list [prefix] --limit <total>` command that lists them (issue #407); an explicit `--limit` and `--json` output are unchanged. Where the per-repository switch is off, the text form prints one line in place of the index ([FR-ENABLED-004](#fr-enabled-004)).
 **Rationale:** Level 1 of progressive disclosure for epic [#73](https://github.com/jeanibarz/agent-notebook/issues/73) — the always-readable index an agent consults to decide *which* notebook to open without reading any notebook's lessons. More lessons ⇒ more worth reusing, so it leads.
 *Proven by:* `notebook.test.ts` → "listNotebooks — the notebook index (issue #71)"; `cli.test.ts` → "list / ls / shelves — the notebook index (issue #71)".
 
@@ -959,7 +959,8 @@ then not computed), `entry-ids` is the comma-joined stable id(s) the call touche
 `up`/`down` for `vote`, `removed` for `rm`, `merged` for `merge`, `split` for `split`,
 `moved`/`move-blocked` for `move` (the latter when the target already held a
 near-duplicate), `no-shelf` for a `show` of a shelf with no notebook file (issue #480;
-for `nb show a b` the row names the first shelf, so the outcome is about that one), and blank for a
+for `nb show a b` the row names the first shelf, so the outcome is about that one), `off` for a
+text `nb list` that printed the switched-off line ([FR-ENABLED-004](#fr-enabled-004)), and blank for a
 read-only command otherwise, `collided-id` is the id of the existing entry that blocked a
 `dedup-blocked` add or a `move-blocked` move, and `evicted-id:score` records the
 entry/entries an `add`/`merge`/`split`/`move` evicted, each as `<id>:<finalScore>`.
@@ -1496,8 +1497,9 @@ and `describe('nb-janitor sections 2 & 8 — read-only and neutral (issue #362)'
 A machine-wide install (hooks in `~/.claude/settings.json`, the contract in
 `~/.claude/CLAUDE.md`) turns the agent-facing loop on in every repository. These
 requirements let a user switch it off in some repositories, or keep it off everywhere and
-switch it on in one. The switch is read by the shipped hooks; it is not an access lock on
-the store, and no notebook command changes behavior with it.
+switch it on in one. The switch is read by the shipped hooks and by the text form of `nb list`
+([FR-ENABLED-004](#fr-enabled-004)); it is not an access lock on the store, and no other notebook
+command changes behavior with it.
 
 <a id="fr-enabled-001"></a>
 **FR-ENABLED-001 (Should).** `nb enabled` SHALL print `on` or `off`, and nothing else on
@@ -1513,7 +1515,8 @@ the plain form; inside the line or object with `--why`/`--json`)
 append the deciding input on the same line (e.g. `off (git config nb.enabled=false,
 file:.git/config)`); `--json` SHALL emit `{ enabled, state, source, value, origin, warning }`
 with `source` one of `env`/`git`/`default`. It is read-only and writes no notebook. Only
-`nb enabled` and `nb config` read the switch or spawn `git`; reading a local git config is offline
+`nb enabled`, `nb config` and the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)) read the
+switch or spawn `git`; `nb list --json` and every other command do not; reading a local git config is offline
 and deterministic for the same files, so [DP-6](#dp-6) holds.
 **Rationale:** git config already gives the three scopes a user asks for (one repository, every
 repository, a folder) without a new file format, and its per-repository value is never committed,
@@ -1536,12 +1539,24 @@ output `off`, so a missing `nb`, an older `nb` without the subcommand (no stdout
 keeps today's behavior. When off, `nb-session-start.sh` SHALL print one line telling the agent to skip
 the notebook steps instead of the index (silence would leave a machine-wide contract in force), and
 `nb-retrospective.sh` SHALL let the stop through without a nudge, asking `nb enabled` at most once per
-session (on the stop that claims the sentinel). An instruction-only setup (Codex CLI, or a contract
-without hooks) is not covered: `nb list` does not consult the switch.
+session (on the stop that claims the sentinel). The session-start hook SHALL run its own `nb list`
+calls with `NB_ENABLED=1`, so its index never disagrees with the check it made from
+`CLAUDE_PROJECT_DIR` ([FR-ENABLED-004](#fr-enabled-004)).
 *Proven by:* `enabled.test.ts` → `describe('the example hooks honour nb enabled (issue #514)')` and
 `describe('the README recipe: off everywhere except one repository (issue #514)')`.
 
----
+<a id="fr-enabled-004"></a>
+**FR-ENABLED-004 (Should).** The text form of `nb list` (and its aliases `ls`, `shelves`, `roles`,
+with or without a prefix operand or `--limit`) SHALL, when `nb enabled` would print `off` for the
+working directory, print on stdout one flush-left line telling the agent to skip the notebook steps,
+naming `nb enabled --why` and `NB_ENABLED=1 nb list`, in place of the index, and exit `0`. This
+reaches an instruction-only setup (Codex CLI, or a contract without hooks), where no hook asks
+`nb enabled`. It SHALL log its usage row with outcome `off`. When the state is on, including a
+failed check that fails open, the output SHALL be byte-identical to the index, with no added
+warning. `nb list --json` SHALL NOT consult the switch, so scripts that parse it see the same object
+everywhere. The completion scripts SHALL run their `nb list` with `NB_ENABLED=1`, so shelf names
+still complete in an off repository.
+*Proven by:* `enabled.test.ts` → `describe('nb list answers off here (issue #514 slice 2)')`.
 
 ## 5. Non-functional requirements
 
@@ -1648,7 +1663,7 @@ to the default (integer vars also fall back on a non-numeric string).
 | `NB_ERR_MIN` | 5 | 1–10000 | High-error-rate anomaly: min calls. |
 | `NB_ADD_BURST_N` | 15 | 1–100000 | `add-burst` signal ([FR-STATS-010](#fr-stats-010)): a session with more than this many accepted adds to one shelf. |
 | `NB_ERR_RATE` | 0.3 | 0–1 | High-error-rate anomaly: min failure fraction. |
-| `NB_ENABLED` | _(unset → `git config nb.enabled`, else on)_ | — | Per-process override of the per-repository on/off state ([FR-ENABLED-001](#fr-enabled-001)): `0`, `false`, `no`, `off` = off; any other non-blank value = on; blank defers to git config. Read only by `nb enabled` and `nb config`. |
+| `NB_ENABLED` | _(unset → `git config nb.enabled`, else on)_ | — | Per-process override of the per-repository on/off state ([FR-ENABLED-001](#fr-enabled-001)): `0`, `false`, `no`, `off` = off; any other non-blank value = on; blank defers to git config. Read only by `nb enabled`, `nb config` and the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)). |
 | `NB_ASCII` | _(unset → locale decides)_ | — | Force the activity sparkline's glyph ramp to ASCII (truthy) or Unicode (`''`, `0`, `false`, `no`, `off`); unset, the locale decides. |
 | `NB_STALE_LOCK_MS` | 10000 | 100–600000 | `.nb.lock` age (ms) past which a lock is treated as abandoned by a crashed `nb` and stolen. |
 | `NB_LOCK_GRACE_MS` | 2000 | 0–600000 | Extra wait past `NB_STALE_LOCK_MS` to notice and steal an abandoned lock before failing with `notebook is locked`. |

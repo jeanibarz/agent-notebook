@@ -20,10 +20,11 @@ cat AGENTS.snippet.md >> ~/.codex/AGENTS.md
 ```
 
 The per-repository switch (`git config nb.enabled false`, see the
-[README](../../../README.md#turn-it-on-or-off-per-repository)) is read by the
-Claude Code hooks only; Codex has none, so a global snippet stays in force in
-every repository. To keep the notebook to some repositories, paste the snippet
-into their `AGENTS.md` instead of `~/.codex/AGENTS.md`.
+[README](../../../README.md#turn-it-on-or-off-per-repository)) also reaches Codex,
+which has no hooks, through `nb list`: the snippet starts the task with `nb list`,
+and in an off repository that prints one line telling the agent to skip the
+notebook steps instead of the index. So a global snippet is fine; switch the
+repositories you don't want with git config.
 
 (If you also use Claude Code, note that `CLAUDE.md` can be a symlink to
 `AGENTS.md` — one file, both tools, as this repository itself does.)

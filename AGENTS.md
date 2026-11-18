@@ -63,6 +63,10 @@ nb list                    # the index: the richest 50 notebooks, their lesson c
 nb list "<prefix>."        # scoped to a namespace, e.g. nb list review.
 ```
 
+If `nb list` (or your session-start context) says agent-notebook is switched off for
+this repository, skip all four moments, the retrospective included. The person who set
+it up turned the notebook off here on purpose.
+
 ### ② Open the notebooks that fit — **show and use**
 
 Open the one or few whose description matches your task, and keep their lessons in
