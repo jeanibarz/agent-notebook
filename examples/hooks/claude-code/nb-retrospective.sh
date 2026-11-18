@@ -81,9 +81,9 @@ try {
 // Per-repository switch (issue #514): ask `nb enabled` once, on the stop that
 // would nudge (later stops already exit on the sentinel claim above, so this
 // costs one `nb` start per session, not one per turn). It runs after the prune,
-// so old sentinels are still reaped in an off repository. Only the literal word `off` lets the
-// stop through silently; a missing `nb`, an older `nb` without the subcommand,
-// or any error keeps the nudge.
+// so old sentinels are still reaped in an off repository. Only the literal word
+// `off` lets the stop through silently; a missing `nb`, an older `nb` without
+// the subcommand, or any error keeps the nudge.
 {
   const { spawnSync } = require('node:child_process');
   const r = spawnSync(process.env.NB_BIN || 'nb', ['enabled'], {

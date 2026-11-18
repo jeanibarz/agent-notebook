@@ -1510,7 +1510,7 @@ precedence apply (repository over `--global`, `includeIf`, worktrees sharing the
 refuses as a boolean resolves to on, exit code `0`, with a warning naming the problem (on stderr in
 the plain form; inside the line or object with `--why`/`--json`)
 ([DP-5](#dp-5): the typo is visible, never silently obeyed or silently dropped). `--why` SHALL
-append the deciding input on the same line (e.g. `off (git config nb.enabled=false, local
+append the deciding input on the same line (e.g. `off (git config nb.enabled=false,
 file:.git/config)`); `--json` SHALL emit `{ enabled, state, source, value, origin, warning }`
 with `source` one of `env`/`git`/`default`. It is read-only and writes no notebook. Only
 `nb enabled` and `nb config` read the switch or spawn `git`; reading a local git config is offline
