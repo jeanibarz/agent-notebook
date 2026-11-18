@@ -10,7 +10,7 @@ and carry a MoSCoW priority (**Must**, **Should**, **Could**, **Won't**). Each
 load-bearing behavior links to the test that proves it; if you change a behavior,
 change the requirement and its test together (see [Keeping this document honest](#keeping-this-document-honest)).
 
-- **Source of truth for behavior:** `src/notebook.ts` (library: storage, cap-and-vote, search), `src/usage.ts` (the usage log), `src/stats.ts` (`nb stats`) and `src/cli.ts` (CLI: argument parsing, dispatch, help, shell completion, stdin reading and process guards), with the CLI's helpers in `src/render.ts` (the read-side report text), `src/config-report.ts` (`nb config`), `src/suggest.ts` (did-you-mean) and `src/doctor.ts` (`nb doctor`). `src/index.ts` is the package root that re-exports the three library modules.
+- **Source of truth for behavior:** `src/notebook.ts` (library: storage, cap-and-vote, search), `src/usage.ts` (the usage log), `src/stats.ts` (`nb stats`) and `src/cli.ts` (CLI: argument parsing, dispatch, help, shell completion, stdin reading and process guards), with the CLI's helpers in `src/render.ts` (the read-side report text), `src/config-report.ts` (`nb config`), `src/suggest.ts` (did-you-mean), `src/doctor.ts` (`nb doctor`) and `src/enabled.ts` (`nb enabled`). `src/index.ts` is the package root that re-exports the three library modules.
 - **Tests:** `src/notebook.test.ts`, `src/cli.test.ts`; the module layout and the published export list are pinned by `src/module-boundaries.test.ts` and `src/package-exports.test.ts`.
 - **Design rationale (signals & self-observation):** [`self-observing-notebook.md`](./self-observing-notebook.md) — why the tool instruments itself and how engagement / coverage / recall / precision / serendipity are told apart.
 
@@ -656,6 +656,7 @@ shelves; `--json` emits a lone object for one shelf, an array for several),
 `rm`, `move <from> <to> <id|query>`, `describe <shelf> ["<text>"|-]`,
 `search <query> [prefix] [--any] [--limit <N>]`,
 `stats [<shelf>] [--since <N{d,h,m}>] [--json] [--exit-code]`, `doctor [--json] [--exit-code]`, `path [<shelf>] [--usage] [--json]`, `config [--json]`,
+`enabled [--why] [--json]` ([FR-ENABLED-001](#fr-enabled-001)),
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`),
 `completion <bash|zsh>` ([FR-CLI-010](#fr-cli-010)), `--help`, `--version`. Every command
 dispatched by `src/cli.ts` SHALL be named in this paragraph (guarded by `cli.test.ts` →
@@ -1489,6 +1490,55 @@ and `describe('nb-janitor section 8 — exact duplicate lessons across shelves s
 (including the parity test against `nb show --json` and the test that runs the printed commands),
 and `describe('nb-janitor sections 2 & 8 — read-only and neutral (issue #362)')`.
 
+### 4.16 Per-repository on/off switch (issue #514)
+
+A machine-wide install (hooks in `~/.claude/settings.json`, the contract in
+`~/.claude/CLAUDE.md`) turns the agent-facing loop on in every repository. These
+requirements let a user switch it off in some repositories, or keep it off everywhere and
+switch it on in one. The switch is read by the shipped hooks; it is not an access lock on
+the store, and no notebook command changes behavior with it.
+
+<a id="fr-enabled-001"></a>
+**FR-ENABLED-001 (Should).** `nb enabled` SHALL print `on` or `off`, and nothing else on
+stdout, for the agent-facing loop in the working directory, resolved in this order:
+(1) `NB_ENABLED`, when set and not blank: `0`, `false`, `no`, `off` (ignoring case and
+surrounding space) mean off, any other value means on; (2) otherwise
+`git config --type=bool --get nb.enabled` run in the working directory, so git's own scopes and
+precedence apply (repository over `--global`, `includeIf`, worktrees sharing the repository's
+`.git/config`); (3) otherwise on. It SHALL fail open: a missing `git`, a git error, or a value git
+refuses as a boolean resolves to on, exit code `0`, with a warning on stderr naming the problem
+([DP-5](#dp-5): the typo is visible, never silently obeyed or silently dropped). `--why` SHALL
+append the deciding input on the same line (e.g. `off (git config nb.enabled=false, local
+file:.git/config)`); `--json` SHALL emit `{ enabled, state, source, value, origin, warning }`
+with `source` one of `env`/`git`/`default`. It is read-only and writes no notebook. Only
+`nb enabled` and `nb config` read the switch or spawn `git`; reading a local git config is offline
+and deterministic for the same files, so [DP-6](#dp-6) holds.
+**Rationale:** git config already gives the three scopes a user asks for (one repository, every
+repository, a folder) without a new file format, and its per-repository value is never committed,
+so a cloned repository cannot configure a tool that writes to the user's own memory. The
+environment variable covers one process (a session, a CI job) and the harness's committed settings.
+*Proven by:* `enabled.test.ts` → `describe('NB_ENABLED and git config nb.enabled resolve the on/off state (issue #514)')`.
+
+<a id="fr-enabled-002"></a>
+**FR-ENABLED-002 (Should).** `nb config` SHALL print, after the string variables, one
+`enabled=on|off` line tagged with the deciding input (the `--why` text), and `nb config --json`
+SHALL carry an additive top-level `enabled` object `{ value, source, origin, warning }`. A git value
+`nb enabled` ignored SHALL appear in the tag. `NB_ENABLED` SHALL count as a variable `nb` reads, so
+it is never listed as not read by `nb` ([FR-CONFIG-001](#fr-config-001)).
+*Proven by:* `enabled.test.ts` → `describe('nb config reports the on/off state (issue #514)')`.
+
+<a id="fr-enabled-003"></a>
+**FR-ENABLED-003 (Should).** The shipped Claude Code hooks SHALL ask `nb enabled` from
+`CLAUDE_PROJECT_DIR` when it is set, else from their working directory, and act only on the literal
+output `off`, so a missing `nb`, an older `nb` without the subcommand (no stdout, exit 2) or any error
+keeps today's behavior. When off, `nb-session-start.sh` SHALL print one line telling the agent to skip
+the notebook steps instead of the index (silence would leave a machine-wide contract in force), and
+`nb-retrospective.sh` SHALL let the stop through without a nudge, asking `nb enabled` at most once per
+session (on the stop that claims the sentinel). An instruction-only setup (Codex CLI, or a contract
+without hooks) is not covered: `nb list` does not consult the switch.
+*Proven by:* `enabled.test.ts` → `describe('the example hooks honour nb enabled (issue #514)')` and
+`describe('the README recipe: off everywhere except one repository (issue #514)')`.
+
 ---
 
 ## 5. Non-functional requirements
@@ -1522,8 +1572,8 @@ on every shelf-to-path conversion.
 library), with the self-monitoring layer (`src/usage.ts`, `src/stats.ts`) beside it and
 never imported by it, and `src/cli.ts` a thin wrapper (argument parsing, dispatch, help,
 shell completion, stdin reading and process guards). The read-side report renderers (`src/render.ts`), the
-`nb config` report (`src/config-report.ts`), the did-you-mean helpers (`src/suggest.ts`) and
-`nb doctor` (`src/doctor.ts`) SHALL live in modules that `src/cli.ts` imports and that never
+`nb config` report (`src/config-report.ts`), the did-you-mean helpers (`src/suggest.ts`),
+`nb doctor` (`src/doctor.ts`) and the `nb enabled` resolver (`src/enabled.ts`) SHALL live in modules that `src/cli.ts` imports and that never
 import it. Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
 
 *Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)".
@@ -1596,6 +1646,7 @@ to the default (integer vars also fall back on a non-numeric string).
 | `NB_ERR_MIN` | 5 | 1–10000 | High-error-rate anomaly: min calls. |
 | `NB_ADD_BURST_N` | 15 | 1–100000 | `add-burst` signal ([FR-STATS-010](#fr-stats-010)): a session with more than this many accepted adds to one shelf. |
 | `NB_ERR_RATE` | 0.3 | 0–1 | High-error-rate anomaly: min failure fraction. |
+| `NB_ENABLED` | _(unset → `git config nb.enabled`, else on)_ | — | Per-process override of the per-repository on/off state ([FR-ENABLED-001](#fr-enabled-001)): `0`, `false`, `no`, `off` = off; any other non-blank value = on; blank defers to git config. Read only by `nb enabled` and `nb config`. |
 | `NB_ASCII` | _(unset → locale decides)_ | — | Force the activity sparkline's glyph ramp to ASCII (truthy) or Unicode (`''`, `0`, `false`, `no`, `off`); unset, the locale decides. |
 | `NB_STALE_LOCK_MS` | 10000 | 100–600000 | `.nb.lock` age (ms) past which a lock is treated as abandoned by a crashed `nb` and stolen. |
 | `NB_LOCK_GRACE_MS` | 2000 | 0–600000 | Extra wait past `NB_STALE_LOCK_MS` to notice and steal an abandoned lock before failing with `notebook is locked`. |

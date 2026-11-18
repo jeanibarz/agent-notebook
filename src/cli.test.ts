@@ -2111,13 +2111,18 @@ describe('runNbCli', () => {
     ];
     const savedTunables: Record<string, string | undefined> = {};
     beforeEach(() => {
-      for (const k of TUNABLES) {
+      for (const k of [...TUNABLES, 'NB_ENABLED']) {
         savedTunables[k] = process.env[k];
         delete process.env[k];
       }
+      // `nb config` also resolves the per-repository switch (issue #514), which
+      // spawns `git` unless NB_ENABLED decides first. Some tests below call
+      // `config` a hundred-odd times, so set it here to keep them fast; the git
+      // path is covered in enabled.test.ts.
+      process.env.NB_ENABLED = '1';
     });
     afterEach(() => {
-      for (const k of TUNABLES) {
+      for (const k of [...TUNABLES, 'NB_ENABLED']) {
         if (savedTunables[k] === undefined) delete process.env[k];
         else process.env[k] = savedTunables[k];
       }
@@ -2165,8 +2170,9 @@ describe('runNbCli', () => {
       const obj = JSON.parse(r.out);
       // The 15 numeric rows keep their exact keys; issue #312 adds ONE new
       // top-level `environment` key (a new section, not a changed row shape) and
-      // issue #336 adds the informational `unrecognized` array. Nothing else.
-      expect(Object.keys(obj).sort()).toEqual([...DEFAULTS.map(([n]) => n), 'environment', 'unrecognized'].sort());
+      // issue #336 adds the informational `unrecognized` array, and issue #514
+      // the per-repository `enabled` state. Nothing else.
+      expect(Object.keys(obj).sort()).toEqual([...DEFAULTS.map(([n]) => n), 'enabled', 'environment', 'unrecognized'].sort());
       expect(obj.maxLines).toEqual({ value: 50, source: 'default', env: 'NB_MAX_LINES', status: null, rawValue: null });
       // The derived value has no env var of its own.
       expect(obj.usageRingSlack).toEqual({ value: 312, source: 'derived', env: null, status: null, rawValue: null });
@@ -2447,6 +2453,8 @@ describe('runNbCli', () => {
             .map((v) => v.env)
             .filter((e): e is string => e !== null),
           ...Object.keys(j0.environment),
+          // The `enabled` object reports NB_ENABLED (issue #514).
+          ...(j0.enabled ? ['NB_ENABLED'] : []),
         ]);
         const names = new Set<string>(j0.unrecognized.map((u: { name: string }) => u.name));
         // Every documented tunable must be surfaced by `nb config` and must not

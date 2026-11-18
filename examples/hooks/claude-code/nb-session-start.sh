@@ -23,6 +23,18 @@ NB="${NB_BIN:-nb}"   # point NB_BIN at the git-versioning wrapper if you use one
 # Fail-open: if `nb` is missing, inject nothing rather than erroring the session.
 command -v "$NB" >/dev/null 2>&1 || exit 0
 
+# Per-repository switch (issue #514): `nb enabled` prints `on` or `off` for the
+# project directory (NB_ENABLED, then `git config nb.enabled`, default on). Only
+# the literal word `off` silences the index: an older `nb` without the subcommand
+# prints nothing on stdout, so the hook stays on. When off, say so in one line
+# rather than print nothing, so a machine-wide AGENTS.md/CLAUDE.md contract does
+# not make the agent run `nb list` and the retrospective on its own.
+state="$( { cd "${CLAUDE_PROJECT_DIR:-.}" 2>/dev/null || true; } && "$NB" enabled 2>/dev/null )"
+if [ "$state" = off ]; then
+  echo "agent-notebook is switched off for this repository: skip the notebook steps (no \`nb list\`, no end-of-task retrospective). \`nb enabled --why\` shows which setting decided."
+  exit 0
+fi
+
 echo "## Your agent-notebook index"
 echo "These are the available notebooks (bounded, voted, one-line lessons; each name is a shelf),"
 echo "written by you and by other agents. Open the one(s) whose description fits this"

@@ -90,6 +90,59 @@ The copy-paste **reference integration** — SessionStart + retrospective hooks 
 
 These are **reference integrations to adapt and test in your own setup**, not a certified, supported matrix. **Claude Code is the primary target**: the hooks are written against it. The Codex CLI pieces and any other harness are a lighter-touch starting point to verify in place. There is **no MCP server** and no network call — `nb` is a plain offline CLI, and the harness drives it through the hooks or the AGENTS.md instruction.
 
+### Turn it on or off per repository
+
+Once the hooks are installed machine-wide (in `~/.claude/settings.json`), the notebook loop runs in **every** repository by default. You can switch it off where you don't want it, or keep it off everywhere and switch it on only where you do. The setting lives in **git config** under the key `nb.enabled`, so git's own scopes do the work: `--global` for every repository, a plain `git config` for one repository (stored in its `.git/config`: never committed, and shared by all its worktrees), `includeIf` for a folder.
+
+`nb enabled` prints `on` or `off` for the current directory, and the two example hooks ask it before doing anything. It decides in this order:
+
+1. `NB_ENABLED` in the environment, if set and not blank: `0`, `false`, `no` or `off` mean off; any other value means on.
+2. Otherwise `git config nb.enabled` (`true`/`false`, also `yes`/`no`, `on`/`off`, `1`/`0`), the most specific git scope winning: the repository over `--global`.
+3. Otherwise **on**.
+
+**Example: off everywhere except one repository.** You want to try agent-notebook in `~/git/my-pilot` only:
+
+```sh
+git config --global nb.enabled false           # off by default, in every repository
+git -C ~/git/my-pilot config nb.enabled true   # on in this one (and in all its worktrees)
+```
+
+Check it:
+
+```sh
+$ cd ~/git/my-pilot && nb enabled
+on
+$ cd ~/git/another-repo && nb enabled --why
+off (git config nb.enabled=false, global file:/home/you/.gitconfig)
+```
+
+Use git config for this, not `export NB_ENABLED=0` in your shell profile: the environment variable wins over git config, so it would also switch off `my-pilot`. Once you want it everywhere, remove the global setting with `git config --global --unset nb.enabled` (and the pilot's own `true` becomes harmless).
+
+**Other cases:**
+
+```sh
+# On everywhere (the default), off in one repository:
+git -C ~/git/some-repo config nb.enabled false
+
+# Off for every repository under a folder:
+mkdir -p ~/.config/git
+printf '[nb]\n\tenabled = false\n' > ~/.config/git/nb-off.inc
+git config --global 'includeIf.gitdir:~/clients/.path' ~/.config/git/nb-off.inc
+
+# Off for one session only:
+NB_ENABLED=0 claude
+
+# Why is it off here? (also shown on the `enabled=` line of `nb config`)
+nb enabled --why
+git config --show-origin --get nb.enabled
+```
+
+To switch it off for **everyone** working in a repository, a git config setting won't do, since it is never committed. Commit `"env": { "NB_ENABLED": "0" }` in that repository's `.claude/settings.json` instead: Claude Code passes it to the `SessionStart` and `Stop` hooks (checked with Claude Code 2.1.327).
+
+**What "off" covers.** In an off repository the session-start hook prints one line telling the agent to skip the notebook steps, instead of the index, and the retrospective hook lets the agent stop without the nudge. The one line matters: a contract in `~/.claude/CLAUDE.md` would otherwise still tell the agent to run `nb list` and the retrospective. `nb` itself is not locked: `nb show`, `nb add`, the git wrapper and the backup keep working from any directory. If you copied the hook scripts before this version, copy them again to get the check.
+
+**Not covered yet: an instruction with no hooks.** On Codex CLI, or with the contract in a global `CLAUDE.md` but no hooks, nothing asks `nb enabled`, so the switch has no effect there. For Codex, paste the snippet into the `AGENTS.md` of the repositories where you want the notebook instead of `~/.codex/AGENTS.md`.
+
 ## Install
 
 Requires Node.js 18+.
@@ -168,6 +221,7 @@ nb doctor [--json] [--exit-code]         read-only check of the notebooks dir fo
 nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's resolved file path (--json emits a {dir, shelf, path} object)
 nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
 nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under `environment`)
+nb enabled [--why] [--json]              print `on` or `off`: whether the agent-facing loop (hooks, retrospective) is on in this directory
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
 nb ls     [prefix] [--limit N]          alias of `nb list`
 nb shelves [prefix] [--limit N]         alias of `nb list`
@@ -463,6 +517,7 @@ The anomaly detection in `nb stats` (loop / went-silent / high-error-rate flags)
 A few more env vars tune rendering and concurrency rather than `nb stats`. Like the knobs above, the lock timings are clamped to their stated bounds, and an unset or unparseable value falls back to the default:
 
 - `NB_ASCII` — force the [activity sparkline](#activity-sparkline)'s glyph ramp to ASCII digits instead of the Unicode blocks, for accessibility or a non-UTF-8 terminal. Any **truthy** value forces ASCII; any **falsey** one (`''`, `0`, `false`, `no`, `off`) forces Unicode; both override locale autodetection. **Unset**, the effective locale (`LC_ALL` → `LC_CTYPE` → `LANG`, first set wins) decides — a locale that is set but does not name UTF-8 (e.g. `C`, `POSIX`) selects ASCII, while an unset or UTF-8 locale keeps the Unicode default.
+- `NB_ENABLED` — switch the agent-facing loop (the example hooks) off (`0`, `false`, `no`, `off`) or on (any other non-blank value) for one process, over any `git config nb.enabled` setting. Unset or blank, git config decides, and the default is on. See [Turn it on or off per repository](#turn-it-on-or-off-per-repository).
 - `NB_STALE_LOCK_MS` — milliseconds a `.nb.lock` may go untouched before it is treated as abandoned by a crashed `nb` process and stolen, so a crash can't wedge the notebook (default `10000`, range `100`–`600000`).
 - `NB_LOCK_GRACE_MS` — extra time, past the stale threshold, a caller waits to notice and steal an abandoned lock before giving up with `notebook is locked`; the acquire budget is derived as `NB_STALE_LOCK_MS + NB_LOCK_GRACE_MS`, never set independently (default `2000`, range `0`–`600000`).
 
@@ -489,6 +544,8 @@ coverageHi=0.5      (default)
 recallMissHi=0.2    (default)
 ```
 
+After the numeric knobs, `nb config` prints the string variables (`NB_DIR`, `NB_SESSION`, `NB_ASCII`) and then one `enabled=on` or `enabled=off` line naming what decided it, e.g. `enabled=off  (git config nb.enabled=false, local file:.git/config)` (see [Turn it on or off per repository](#turn-it-on-or-off-per-repository)).
+
 Each line is one effective tunable as `name=value`, read from the same getter the hot path uses — so what `nb config` prints is exactly what the caps, the near-dup advisory, the lock timings, and the `nb stats` anomaly/readout thresholds run with. The tag names the source: `(default)` when the env var is unset, `(env NB_*)` when it is set (the printed value is still the post-clamp effective one, so a value you set out of range shows up corrected), or `(derived …)` for a value computed from another (`usageRingSlack`).
 
 A set env var is further annotated with how its value was actually resolved, so a setting that was silently rewritten or thrown away can never read as if it were in force:
@@ -499,7 +556,7 @@ A set env var is further annotated with how its value was actually resolved, so 
 
 Output with no problems is byte-identical to the pre-annotation form. Any `NB_*` variable that `nb` does not read (e.g. a typo like `NB_MAX_LINE`) is listed at the end as `not read by nb`, with a `did you mean …?` hint when a real variable is close. This is **informational only** — other tools may legitimately set `NB_*` variables, so it is never an error and the exit code stays `0`. The knobs read by the tooling this repo ships under [`examples/`](examples/README.md) (`NB_BIN`, `NB_RETRO_TTL_DAYS`, `NB_GIT_AUTOCOMMIT`, `NB_GIT_SESSION_TRAILER`, `NB_BACKUP_PUSH_TIMEOUT`, `NB_BACKUP_GIT_LOCK_WAIT`) are not listed: they belong to those tools, not to `nb`.
 
-`nb config --json` emits one object keyed by tunable name — `{ "maxLines": { "value": 50, "source": "default", "env": "NB_MAX_LINES", "status": null, "rawValue": null }, … }` — for a supervisor to read without parsing the lines. `status` is `"honored"`/`"clamped"`/`"ignored"` when the var is set (`null` when it is unset or for the derived row), and `rawValue` is the raw env string (`null` when unset). An `unrecognized` array — `[{ "name": "NB_MAX_LINE", "suggestion": "NB_MAX_LINES" }, …]` — lists the same unknown variables. Both are **additive**: the existing `{ value, source, env }` fields and the `source` values (`env`/`default`/`derived`) are unchanged. It is read-only, and scoped to *configuration* (the knobs), distinct from `nb stats` (usage, anomalies, engagement).
+`nb config --json` emits one object keyed by tunable name — `{ "maxLines": { "value": 50, "source": "default", "env": "NB_MAX_LINES", "status": null, "rawValue": null }, … }` — for a supervisor to read without parsing the lines. `status` is `"honored"`/`"clamped"`/`"ignored"` when the var is set (`null` when it is unset or for the derived row), and `rawValue` is the raw env string (`null` when unset). An `unrecognized` array — `[{ "name": "NB_MAX_LINE", "suggestion": "NB_MAX_LINES" }, …]` — lists the same unknown variables, and an `enabled` object — `{ "value": "on", "source": "default", "origin": null, "warning": null }` — gives the per-repository state (`source` is `env`, `git` or `default`). All three are **additive**: the existing `{ value, source, env }` fields and the `source` values (`env`/`default`/`derived`) are unchanged. It is read-only, and scoped to *configuration* (the knobs), distinct from `nb stats` (usage, anomalies, engagement).
 
 ## Programmatic use
 

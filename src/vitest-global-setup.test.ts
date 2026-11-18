@@ -1,9 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync, rmSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { devNull, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isDistStale, scrubInheritedEnv } from '../scripts/vitest-global-setup.mjs';
+import { isDistStale, isolateGitConfig, scrubInheritedEnv } from '../scripts/vitest-global-setup.mjs';
 
 // Issue #420: bare `npx vitest run` must not test a stale `dist/`. The global
 // setup rebuilds only when dist/cli.js is missing or older than a src/ file.
@@ -92,5 +92,26 @@ describe('scrubInheritedEnv', () => {
     const body = src.slice(src.indexOf('export default function setup'));
     expect(body.indexOf('scrubInheritedEnv()')).toBeGreaterThan(-1);
     expect(body.indexOf('scrubInheritedEnv()')).toBeLessThan(body.indexOf('isDistStale()'));
+  });
+});
+
+// Issue #514: the suites must not see the developer's own `git config --global
+// nb.enabled`, so the setup points git at an empty global config.
+describe('isolateGitConfig', () => {
+  test('points git at an empty global config and skips the system one', () => {
+    const env: NodeJS.ProcessEnv = { PATH: '/bin' };
+    isolateGitConfig(env);
+    expect(env).toEqual({ PATH: '/bin', GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_NOSYSTEM: '1' });
+  });
+
+  test('the default export isolates git config after the scrub', () => {
+    const src = readFileSync(join(repo, 'scripts', 'vitest-global-setup.mjs'), 'utf8');
+    const body = src.slice(src.indexOf('export default function setup'));
+    expect(body.indexOf('isolateGitConfig()')).toBeGreaterThan(body.indexOf('scrubInheritedEnv()'));
+  });
+
+  test('a test worker reads no global git config', () => {
+    expect(process.env.GIT_CONFIG_GLOBAL).toBe(devNull);
+    expect(process.env.GIT_CONFIG_NOSYSTEM).toBe('1');
   });
 });
