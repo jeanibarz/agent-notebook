@@ -128,6 +128,32 @@ on the session id — so the first stop (a subagent's or the main agent's) gets 
 nudge and later stops are suppressed. It is a backstop, not a per-subagent driver;
 the reliable place for the subagent's retrospective is the contract it was given.
 
+### Per-repository on/off
+
+Where you install decides where the loop runs. The simplest way to try agent-notebook in
+one repository is to install the hooks and the contract in that repository only
+(`.claude/settings.json` and its `CLAUDE.md`), not in `~/.claude/`; no setting is needed.
+
+Once the hooks are installed machine-wide, switch the loop per repository with git
+config, which both example hooks read through `nb enabled`:
+
+```sh
+git config --global nb.enabled false           # off in every repository...
+git -C ~/git/my-pilot config nb.enabled true   # ...except this one
+git -C ~/git/some-repo config nb.enabled false # or: on everywhere, off in this one
+nb enabled --why                               # on or off here, and which setting decided
+```
+
+`NB_ENABLED=0` (or `1`) in the environment overrides git config for one process; committed
+as `"env": { "NB_ENABLED": "0" }` in a repository's `.claude/settings.json`, it switches the
+hooks off for everyone working there. The README section
+[Turn it on or off per repository](../README.md#turn-it-on-or-off-per-repository) has the
+full precedence, the folder (`includeIf`) recipe and what "off" covers. Hook scripts copied
+before this switch existed do not check it: copy them again.
+
+The switch reaches only the hooks. On Codex CLI, which has no hooks, put the snippet in the
+`AGENTS.md` of the repositories where you want the notebook rather than in `~/.codex/AGENTS.md`.
+
 ---
 
 ## Git-versioning

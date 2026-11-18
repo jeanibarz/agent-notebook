@@ -50,7 +50,9 @@ function seedSentinel(name: string, daysAgo: number): string {
 // only an explicit `env` override here is seen. Returns the block decision JSON
 // written to stdout (or '').
 function runHook(input: Record<string, unknown>, env: Record<string, string> = {}): string {
-  const base = { ...process.env, NB_DIR: dir } as Record<string, string>;
+  // NB_BIN points at a missing binary so the hook's `nb enabled` check (issue #514)
+  // fails open without running whatever `nb` the host has on PATH.
+  const base = { ...process.env, NB_DIR: dir, NB_BIN: join(dir, 'no-nb') } as Record<string, string>;
   delete base.NB_RETRO_TTL_DAYS;
   return execFileSync('bash', [hook], {
     input: JSON.stringify(input),
@@ -71,7 +73,9 @@ function raceHooks(
   input: Record<string, unknown>,
   env: Record<string, string> = {},
 ): Promise<Array<{ out: string; code: number | null }>> {
-  const base = { ...process.env, NB_DIR: dir } as Record<string, string>;
+  // NB_BIN points at a missing binary so the hook's `nb enabled` check (issue #514)
+  // fails open without running whatever `nb` the host has on PATH.
+  const base = { ...process.env, NB_DIR: dir, NB_BIN: join(dir, 'no-nb') } as Record<string, string>;
   delete base.NB_RETRO_TTL_DAYS;
   const payload = JSON.stringify(input);
 

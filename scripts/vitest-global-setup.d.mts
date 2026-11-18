@@ -2,4 +2,5 @@
 // can see its exports instead of treating the module as an implicit `any`.
 export function isDistStale(rootDir?: string): boolean;
 export function scrubInheritedEnv(env?: NodeJS.ProcessEnv): string[];
+export function isolateGitConfig(env?: NodeJS.ProcessEnv): void;
 export default function setup(): void;

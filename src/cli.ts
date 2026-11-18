@@ -20,6 +20,7 @@
 //   nb doctor [--json] [--exit-code]        read-only structural check of the notebooks dir (conflict markers, bad lines, control chars, case collisions, over-cap, 0-byte, temps, stale lock; --exit-code = exit 3 when any found)
 //   nb path   [<shelf> | --usage] [--json]   print the notebooks dir, a shelf's file path, or the usage-log path (--json = {dir, shelf, path} object)
 //   nb config [--json]                      print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json = object keyed by name, string vars under `environment`)
+//   nb enabled [--why] [--json]             print `on` or `off`: whether the agent-facing loop (hooks, retrospective) is on here (NB_ENABLED, then git config nb.enabled, default on)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
 //   nb ls / nb shelves / nb roles          aliases of `nb list` (`roles` is deprecated)
 //   nb completion <bash|zsh>               print a static shell-completion script to source
@@ -82,6 +83,7 @@ import {
   type ConfigSource,
   type ConfigStatus,
 } from './config-report.js';
+import { describeSource, resolveEnabled, stateWord } from './enabled.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import {
   fmt,
@@ -152,6 +154,7 @@ usage:
   nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's resolved file path (--json emits a {dir, shelf, path} object)
   nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
   nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under \`environment\`)
+  nb enabled [--why] [--json]              print \`on\` or \`off\`: whether the agent-facing loop (hooks, retrospective) is on in this directory
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
   nb shelves [prefix] [--limit N]         alias of \`nb list\`
@@ -296,6 +299,12 @@ notes:
     \`{ value, source, env, status, rawValue }\`, plus an \`environment\` key holding the string vars
     (\`{ value, source }\` each) and an \`unrecognized\` array. Read-only — it mutates nothing, and is
     scoped to CONFIGURATION (the knobs), distinct from \`nb stats\` (usage, anomalies, engagement).
+  - \`nb enabled\` prints \`on\` or \`off\` for the current directory, so a harness hook can stay quiet in a
+    repository where the notebook loop is switched off. \`NB_ENABLED\` decides first (\`0\`/\`false\`/\`no\`/\`off\`
+    = off, any other non-blank value = on); otherwise \`git config nb.enabled\` (\`git config nb.enabled false\` in
+    one repository, \`--global\` for all of them); otherwise on. A missing \`git\` or an invalid value resolves to
+    on, with a warning on stderr. \`--why\` adds which input decided. Read-only; it switches off only the hooks
+    that ask it, never \`nb\` itself.
   - \`nb completion <bash|zsh>\` prints a static, dependency-free completion script to stdout.
     Source it with \`eval "$(nb completion bash)"\` (or the zsh form) to tab-complete the command set
     and, where a command takes a shelf, existing shelf names (looked up via \`nb list\`, guarded so it
@@ -332,7 +341,7 @@ function parseDelta(arg: string): number {
  */
 export const KNOWN_COMMANDS = [
   'show', 'stale', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
-  'search', 'stats', 'doctor', 'path', 'config', 'completion', 'list', 'ls', 'shelves', 'roles',
+  'search', 'stats', 'doctor', 'path', 'config', 'enabled', 'completion', 'list', 'ls', 'shelves', 'roles',
   'help', 'version',
 ] as const;
 
@@ -548,6 +557,7 @@ export const KNOWN_FLAGS: Record<string, readonly string[]> = {
   doctor: ['--exit-code'],
   path: ['--usage'],
   config: [],
+  enabled: ['--why'],
   list: ['--limit'],
   ls: ['--limit'],
   shelves: ['--limit'],
@@ -1480,6 +1490,8 @@ export async function runNbCli(
         const rows = effectiveConfig();
         const envRows = environmentRows();
         const unknown = unknownEnvVars();
+        // Per-repository on/off state (issue #514), resolved for the working directory.
+        const enabledState = resolveEnabled();
         if (json) {
           // One object keyed by tunable name; each carries the effective value,
           // its source (env/default/derived), and the env var that overrides it,
@@ -1501,10 +1513,36 @@ export async function runNbCli(
           const environment: Record<string, { value: string; source: ConfigSource }> = {};
           for (const r of envRows) environment[r.name] = { value: r.value, source: configSource(r.name) };
           const unrecognized = unknown.map((u) => ({ name: u.name, suggestion: u.suggestion ?? null }));
-          process.stdout.write(JSON.stringify({ ...obj, environment, unrecognized }) + '\n');
+          // Issue #514 adds a third top-level key, `enabled`, with the on/off state
+          // for this directory and the input that decided it.
+          const enabled = {
+            value: stateWord(enabledState),
+            source: enabledState.source,
+            origin: enabledState.origin,
+            warning: enabledState.warning,
+          };
+          process.stdout.write(JSON.stringify({ ...obj, environment, enabled, unrecognized }) + '\n');
         } else {
-          const { out } = renderConfig(rows, envRows, unknown);
+          const { out } = renderConfig(rows, envRows, unknown, enabledState);
           process.stdout.write(out);
+        }
+        break;
+      }
+      case 'enabled': {
+        // Per-repository on/off (issue #514): resolve NB_ENABLED, then
+        // `git config nb.enabled` in the working directory, then the default (on).
+        // Read-only and fail-open. The hooks compare stdout to the literal word
+        // `off`, so the plain output is exactly `on` or `off`; `--why` appends the
+        // deciding input on the same line. Exit 0 either way.
+        const st = resolveEnabled();
+        if (json) {
+          process.stdout.write(
+            JSON.stringify({ enabled: st.enabled, state: stateWord(st), source: st.source, value: st.value, origin: st.origin, warning: st.warning }) + '\n',
+          );
+        } else {
+          const why = flagArgs.slice(1).includes('--why');
+          process.stdout.write(why ? `${stateWord(st)} (${describeSource(st)})\n` : `${stateWord(st)}\n`);
+          if (!why && st.warning !== null) process.stderr.write(`nb enabled: warning: ${st.warning}\n`);
         }
         break;
       }

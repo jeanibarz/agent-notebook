@@ -4,6 +4,7 @@
 // current `dist/` (e.g. right after `npm test`'s own `pretest` build) costs nothing.
 import { execFileSync } from 'node:child_process';
 import { readdirSync, statSync } from 'node:fs';
+import { devNull } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -44,8 +45,20 @@ export function scrubInheritedEnv(env = process.env) {
   return removed;
 }
 
+// Issue #514: `nb enabled` and `nb config` read `git config nb.enabled`, and the
+// example hooks call `nb enabled`, so a developer's own `git config --global
+// nb.enabled false` (the README's opt-in recipe) would flip what those suites
+// see. Point git at an empty global config and skip the system one, after the
+// scrub above removed any inherited GIT_*. Tests that need a git setting set it
+// in their own fixture repository, which still applies.
+export function isolateGitConfig(env = process.env) {
+  env.GIT_CONFIG_GLOBAL = devNull;
+  env.GIT_CONFIG_NOSYSTEM = '1';
+}
+
 export default function setup() {
   scrubInheritedEnv();
+  isolateGitConfig();
   if (!isDistStale()) return;
   console.log('dist/ is missing or older than src/; running `npm run build` first');
   execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], {

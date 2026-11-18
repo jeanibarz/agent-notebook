@@ -11,7 +11,8 @@
 # notebooks it opened this task (moment ②) and votes/adds to those.
 #
 # Reads the hook JSON on stdin (session_id, stop_hook_active). Requires `node`
-# (already needed for `nb`) to parse/emit JSON safely.
+# (already needed for `nb`) to parse/emit JSON safely. In a repository where
+# `nb enabled` prints `off` (issue #514) it lets the stop through without a nudge.
 set -uo pipefail
 
 # A leading `~` / `~/` in NB_DIR is expanded here, exactly like the package does (issue #334):
@@ -76,6 +77,23 @@ try {
     try { if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p); } catch {}
   }
 } catch {}
+
+// Per-repository switch (issue #514): ask `nb enabled` once, on the stop that
+// would nudge (later stops already exit on the sentinel claim above, so this
+// costs one `nb` start per session, not one per turn). It runs after the prune,
+// so old sentinels are still reaped in an off repository. Only the literal word
+// `off` lets the stop through silently; a missing `nb`, an older `nb` without
+// the subcommand, or any error keeps the nudge.
+{
+  const { spawnSync } = require('node:child_process');
+  const r = spawnSync(process.env.NB_BIN || 'nb', ['enabled'], {
+    cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
+    encoding: 'utf-8',
+    timeout: 10000,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (!r.error && (r.stdout || '').trim() === 'off') process.exit(0);
+}
 
 const reason = [
   `Before finishing, run the agent-notebook retrospective on the notebooks you opened this task (one pass, then stop):`,

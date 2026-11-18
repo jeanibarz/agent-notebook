@@ -9,6 +9,10 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Added
+
+- **A per-repository on/off switch for the agent-facing loop: `nb enabled` and `git config nb.enabled` (#514).** With the hooks installed machine-wide, the notebook ran in every repository. `git config nb.enabled false` now switches it off in one repository (stored in `.git/config`, so never committed and shared by its worktrees), `git config --global nb.enabled false` switches it off everywhere, and a repository's own `git config nb.enabled true` switches it back on there, so "off everywhere except one repository" is two commands; `includeIf` covers a folder. `NB_ENABLED` (`0`/`false`/`no`/`off` = off, any other non-blank value = on) overrides git config for one process, for example `"env": { "NB_ENABLED": "0" }` in a committed `.claude/settings.json`. The default stays on. `nb enabled` prints `on` or `off` (`--why` adds which setting decided, `--json` a structured object) and fails open: a missing `git` or an invalid value resolves to on, with a warning. `nb config` gains an `enabled=` line and an additive `enabled` key in `--json`. Both Claude Code example hooks now ask `nb enabled`: when off, the session-start hook prints one line telling the agent to skip the notebook steps instead of the index, and the retrospective hook lets the stop through. **If you copied the hook scripts, copy them again** to get the check. `nb` itself is not locked, and an instruction-only setup (Codex CLI) is not switched off yet. See the README section "Turn it on or off per repository".
+
 ## [0.9.0] - 2026-11-17
 
 ### Fixed

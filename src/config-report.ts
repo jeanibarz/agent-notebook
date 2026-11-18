@@ -3,7 +3,8 @@
  * moved it here from `cli.ts`). It lists every numeric `NB_*` tunable at the
  * value its live getter resolves to right now, says whether a set value was
  * honored, clamped or ignored, shows the string variables (`NB_DIR`,
- * `NB_SESSION`, `NB_ASCII`), and names any `NB_*` variable `nb` does not read.
+ * `NB_SESSION`, `NB_ASCII`), the per-repository on/off state (issue #514), and
+ * names any `NB_*` variable `nb` does not read.
  *
  * The tunable registry here is the single list of variables `nb` recognises;
  * each resolver reproduces its `notebook.ts` getter, and `cli.test.ts` checks
@@ -35,6 +36,7 @@ import {
 } from './notebook.js';
 import { asciiMode } from './stats.js';
 import { closestMatch } from './suggest.js';
+import { describeSource, stateWord, type EnabledState } from './enabled.js';
 
 /** Where a tunable's effective value came from: a set env var, the built-in default, or a derived value with no own env var. */
 export type ConfigSource = 'env' | 'default' | 'derived';
@@ -190,7 +192,8 @@ export function environmentRows(): EnvRow[] {
  * and a new tunable is automatically recognised; issue #336).
  */
 function recognizedEnvVars(): string[] {
-  return [...TUNABLE_REGISTRY.map((t) => t.env), ...environmentRows().map((r) => r.name)];
+  // NB_ENABLED (issue #514) is read by `nb enabled` and reported on the `enabled=` line.
+  return [...TUNABLE_REGISTRY.map((t) => t.env), ...environmentRows().map((r) => r.name), 'NB_ENABLED'];
 }
 
 /**
@@ -300,12 +303,19 @@ function statusNote(row: ConfigRow, kind: 'int' | 'rate'): string {
  * #336) so a value that was rewritten or thrown away can never read as honored.
  * A blank line then separates a `NB_*=value` block for the string env vars
  * (issue #312), tagged `(env)`/`(default)` — the var name is already the row
- * label, so the tag need not repeat it. A final block lists unrecognized `NB_*`
+ * label, so the tag need not repeat it. When `enabled` is given, a one-line
+ * block follows with the per-repository on/off state and the input that decided
+ * it (issue #514). A final block lists unrecognized `NB_*`
  * vars (issue #336) when any exist. With no problems the output is byte-identical
- * to the pre-#336 renderer. Returns `{ out }` (stdout only) — there is no
+ * to the pre-#336 renderer, apart from the `enabled=` line. Returns `{ out }` (stdout only) — there is no
  * error/empty state, the table is fixed.
  */
-export function renderConfig(rows: ConfigRow[], envRows: EnvRow[], unknown: UnknownEnv[]): { out: string } {
+export function renderConfig(
+  rows: ConfigRow[],
+  envRows: EnvRow[],
+  unknown: UnknownEnv[],
+  enabled?: EnabledState,
+): { out: string } {
   const pairW = rows.reduce((w, r) => Math.max(w, `${r.name}=${r.value}`.length), 0);
   const lines = rows.map((r) => {
     const src = configSource(r.env);
@@ -323,6 +333,10 @@ export function renderConfig(rows: ConfigRow[], envRows: EnvRow[], unknown: Unkn
     return `${`${r.name}=${r.value}`.padEnd(envPairW)}  ${tag}`;
   });
   let out = lines.join('\n') + '\n\n' + envLines.join('\n') + '\n';
+  if (enabled !== undefined) {
+    // Issue #514: whether the agent-facing loop is on in this directory, and why.
+    out += `\nenabled=${stateWord(enabled)}  (${describeSource(enabled)})\n`;
+  }
   if (unknown.length > 0) {
     // Keep the tag the same width as the historical `(unrecognized by nb)` so a
     // pure typo re-renders identically. A var with NO close match is still shown
