@@ -1541,9 +1541,12 @@ the notebook steps instead of the index (silence would leave a machine-wide cont
 `nb-retrospective.sh` SHALL let the stop through without a nudge, asking `nb enabled` at most once per
 session (on the stop that claims the sentinel). The session-start hook SHALL run its own `nb list`
 calls with `NB_ENABLED=1`, so its index never disagrees with the check it made from
-`CLAUDE_PROJECT_DIR` ([FR-ENABLED-004](#fr-enabled-004)).
+`CLAUDE_PROJECT_DIR` ([FR-ENABLED-004](#fr-enabled-004)). `nb-subagent-start.sh` SHALL hand a
+subagent exactly what `nb-session-start.sh` prints, so a subagent in an off repository receives that
+same one line and not the index.
 *Proven by:* `enabled.test.ts` → `describe('the example hooks honour nb enabled (issue #514)')` and
-`describe('the README recipe: off everywhere except one repository (issue #514)')`.
+`describe('the README recipe: off everywhere except one repository (issue #514)')`;
+`nb-subagent-start.test.ts` → `describe('nb-subagent-start.sh')`.
 
 <a id="fr-enabled-004"></a>
 **FR-ENABLED-004 (Should).** The text form of `nb list` (and its aliases `ls`, `shelves`, `roles`,

@@ -84,6 +84,9 @@ nb search "<keywords>"     # SECONDARY keyword fallback — only for a known-ite
 A subagent doing specialised work (reviewing, patching, reproducing a bug) does
 the same ① → ② for its own job: point it at this same contract so it runs
 `nb list`, opens the notebooks that fit, and runs the retrospective at its end.
+Write that into its brief: a subagent does not see the index your session started
+with, and may get no end-of-task reminder of its own. Ask it to finish with its
+full report, after the retrospective, since its last message is all you receive.
 Reuse an existing shelf rather than minting a near-duplicate — shelf names match
 exactly, so `build-and-test` and `build-and-tests` become two unrelated memories.
 

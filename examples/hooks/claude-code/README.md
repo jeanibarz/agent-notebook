@@ -2,21 +2,25 @@
 
 These hooks are **optional conveniences**. The required integration is just the
 [AGENTS.md / CLAUDE.md contract](../../../AGENTS.md) — once that is in context,
-the agent runs `nb list` and opens the notebooks it needs on its own. These two
-scripts save it a call and keep the retrospective from being forgotten.
+the agent runs `nb list` and opens the notebooks it needs on its own. These
+scripts save it a call and keep the retrospective from being forgotten. They are
+built for a short, single-agent session: read
+[what the hooks do not cover](../../../docs/harness-setup.md#what-the-hooks-do-not-cover)
+before relying on them in long sessions or with subagents.
 
 | File | Hook event | What it adds |
 |---|---|---|
 | `nb-session-start.sh` | `SessionStart` | injects the `nb list` **index** (every notebook + its "open me when…" description) into context, so the agent sees it without a call. It never picks a notebook for the agent, so it is the same script in every project. An opt-in [layered variant](#optional-layered-index-project--domain--global) groups the index by project / domain / global. |
-| `nb-retrospective.sh` | `Stop` / `SubagentStop` | once per session, nudges the agent to vote / prune / add on the notebooks it used before finishing. |
-| `settings.json` | — | the config that registers the two scripts. |
+| `nb-subagent-start.sh` | `SubagentStart` | hands the same index to each **subagent**, which never sees the `SessionStart` one. See [below](#give-subagents-the-index-subagentstart) for when to prefer a line in the brief. |
+| `nb-retrospective.sh` | `Stop` / `SubagentStop` | once per session, at the session's first stop, nudges the agent to vote / prune / add on the notebooks it used. |
+| `settings.json` | — | the config that registers the three scripts. |
 
 ## Install (per project, recommended first)
 
 ```sh
 # 1. Copy the scripts somewhere stable and make them executable.
 mkdir -p ~/.agent-notebook/hooks
-cp nb-session-start.sh nb-retrospective.sh ~/.agent-notebook/hooks/
+cp nb-session-start.sh nb-subagent-start.sh nb-retrospective.sh ~/.agent-notebook/hooks/
 chmod +x ~/.agent-notebook/hooks/*.sh
 
 # 2. Merge the `hooks` block from settings.json into .claude/settings.json,
@@ -69,15 +73,43 @@ in the script that does nothing unless the variable is set, falls back to the
 flat index (with a warning) if `nb list --json` fails, and needs only `bash` and
 `node`, so it also runs under macOS's bash 3.2.
 
-## The two moments the hooks don't drive — and why that's fine
+## The moment the hooks don't drive — and why that's fine
 
 - **② "this looks familiar" mid-task.** There is no "the agent is about to start a
   sub-task" event. The session-start index plus the AGENTS.md instruction cover it;
   the agent re-checks `nb list` or `nb search` on its own. A `UserPromptSubmit`
   nudge is possible but usually just noise.
-- **③ subagent start.** Claude Code has no `SubagentStart` hook, and none is needed:
-  a subagent reads the same contract and runs `nb list` for its own task. See
-  [harness-setup › Subagents](../../../docs/harness-setup.md#subagents).
+
+## Give subagents the index (`SubagentStart`)
+
+Moment ③ needs help. `SessionStart` runs for the main session only, so a subagent
+starts from its brief and never sees the index. Unless the lead agent writes the
+contract into each brief, the subagent does not know the notebooks exist. Two
+ways to close the gap:
+
+| | A line in every brief | The `SubagentStart` hook |
+|---|---|---|
+| How | the lead's standing instruction says: brief each subagent to run `nb list`, open what fits, and run the retrospective before its final report | register `nb-subagent-start.sh` under `SubagentStart` (the example `settings.json` does) |
+| Cost per subagent | one sentence, plus the `nb list` call the subagent makes | the whole index in its context, whether its job needs it or not |
+| Fails when | the lead forgets the line | the index is long and subagents are many |
+
+`nb-subagent-start.sh` runs `nb-session-start.sh` (keep the two files together)
+and wraps its output as `hookSpecificOutput.additionalContext`. The wrapper is
+needed because a `SubagentStart` hook's **plain stdout is not added to the
+subagent's context**: registering `nb-session-start.sh` itself under
+`SubagentStart` runs it, injects nothing and reports no error (checked on Claude
+Code 2.1.328). To confirm the hook reaches a subagent, look in its transcript
+for a `hook_additional_context` record from `SubagentStart`:
+
+```sh
+cd ~/.claude/projects/<project-dir>/<session-id>/subagents
+for f in agent-*.jsonl; do
+  printf '%s ' "$f"; grep '"hook_additional_context"' "$f" | grep -c '"SubagentStart"'
+done            # 1 = the index was injected; 0 = the hook ran without effect, or did not run
+```
+
+The index gives a subagent the notebooks to read. It does not make the
+retrospective happen at the subagent's end: see the next section.
 
 ## How the retrospective nudge avoids looping
 
@@ -89,6 +121,21 @@ the first stop in a session — whether a subagent's or the main agent's — cla
 sentinel: **one nudge per whole session**, not one per subagent. Treat it as a
 backstop; the reliable driver of each subagent's retrospective is the contract it
 was given.
+
+Two consequences are easy to miss, because neither produces an error:
+
+- **The nudge is spent at the first stop, not at the end of the task.** A lead
+  that starts background subagents stops for the first time when it begins
+  waiting for them. That stop takes the nudge. Later stops, including the real
+  end of the task, get none.
+- **A nudged subagent's report can be displaced.** Blocking `SubagentStop` makes
+  the subagent continue, and its answer to the nudge becomes the last message,
+  which is what the lead receives as the subagent's result. If your subagents get
+  the contract from their brief, remove the `SubagentStop` entry from
+  `settings.json` so the nudge always goes to the lead.
+
+[What the hooks do not cover](../../../docs/harness-setup.md#what-the-hooks-do-not-cover)
+lists all four gaps and what to do about each.
 
 Nothing used to remove those `.retro-<session>` files, so on a busy machine they
 piled up unbounded — invisible to `nb list` (dotfiles are filtered) but real
