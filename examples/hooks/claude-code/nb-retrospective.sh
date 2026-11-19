@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Claude Code Stop / SubagentStop hook — nudge the end-of-task RETROSPECTIVE once.
+# Claude Code Stop / SubagentStop hook — nudge the RETROSPECTIVE once per session.
 #
-# Optional convenience for moment ④. When the agent tries to finish, this fires
+# Optional convenience for moment ④. The first time an agent in the session stops
+# (the end of a turn, which is not always the end of the task: see "What the hooks
+# do not cover" in docs/harness-setup.md), this fires
 # ONCE per session and asks it to maintain the notebooks it used (vote the lessons
 # that helped, prune what misled, add at most one new lesson) before stopping. It
 # blocks the stop a single time by emitting a `block` decision whose reason the

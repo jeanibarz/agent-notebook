@@ -145,9 +145,9 @@ Each one is silent: nothing errors, and `nb stats` still reports engaged session
 (Behaviour observed with Claude Code 2.1.328.)
 
 1. **The nudge marks the first stop, not the end of the task.** The retrospective
-   hook fires the first time any agent in the session stops, then never again:
-   nothing removes its `.retro-<session_id>` file while the session runs. A "stop"
-   is the end of a turn. For a lead that started background subagents, the first
+   hook fires the first time any agent in the session stops, then not again until
+   its `.retro-<session_id>` file is pruned, which happens after
+   `NB_RETRO_TTL_DAYS` (7 days by default). A "stop" is the end of a turn. For a lead that started background subagents, the first
    stop is the moment it begins waiting for them, a few minutes into the task. In
    an interactive session it is the end of the first reply. Whatever is learned
    after that gets no nudge.
@@ -380,8 +380,8 @@ next to its session's, one file per subagent:
 ```sh
 cd ~/.claude/projects/<project-dir>/<session-id>/subagents
 
-# 1. Which subagents called nb at all? `:0` on every line means none did.
-grep -c '"command":"[^"]*nb \(list\|show\|add\|vote\)' agent-*.jsonl
+# 1. Which subagents called nb at all? A count of 0 for every file means none did.
+grep -cE '"command":"[^"]*nb (list|show|add|vote)' agent-*.jsonl
 
 # 2. Which agent got the one retrospective nudge? No file listed means the lead
 #    got it, or nobody did.
@@ -391,13 +391,14 @@ grep -l 'run the agent-notebook retrospective' agent-*.jsonl
 cat "$(nb path)/.retro-<session-id>"; echo
 ```
 
-Both `grep`s are rough: they also match a subagent that only quotes those words
-in a command or a message, so open any file that surprises you. Read the three
-results together:
+Both `grep`s are rough. They also match a subagent that only quotes those words
+in a command or a message, and the first one misses an `nb` call that follows a
+quoted argument on the same command line. Open any file that surprises you. Read
+the three results together:
 
 | You see | It means | Remedy |
 |---|---|---|
-| `:0` for every subagent | no subagent used a notebook. The usual cause is that none had the index or the contract in front of it | carry the contract in the brief, or add the [`SubagentStart` hook](../examples/hooks/claude-code/README.md#give-subagents-the-index-subagentstart) |
+| a count of 0 for every subagent | no subagent used a notebook. The usual cause is that none had the index or the contract in front of it | carry the contract in the brief, or add the [`SubagentStart` hook](../examples/hooks/claude-code/README.md#give-subagents-the-index-subagentstart) |
 | the nudge time is minutes after the session started, hours before it ended | the nudge was spent on the lead's first stop ([gap 1](#what-the-hooks-do-not-cover)) | make the retrospective the lead's explicit last step |
 | a subagent's file is listed, and its result reached the lead as a remark about notebooks | its report was displaced by the answer to the nudge ([gap 3](#what-the-hooks-do-not-cover)) | ask for the full report last, or drop `SubagentStop` from the hook config |
 
