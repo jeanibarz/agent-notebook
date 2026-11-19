@@ -57,9 +57,13 @@ There is no per-project notebook name to configure.
   `chmod +x`, and merge the `settings.json` `hooks` block into `.claude/settings.json`,
   replacing `/ABSOLUTE/PATH`. Explain they are *conveniences*: `SessionStart`
   injects the `nb list` index (it does not choose a notebook for the agent); `Stop`/`SubagentStop` nudges the
-  retrospective once per session. Skipping them changes nothing essential.
-- **Subagents:** no hook, and no notebook is assigned to a subagent — a subagent reads the same
-  contract and runs `nb list` for its own task (`docs/harness-setup.md#subagents`).
+  retrospective once per session, at the session's first stop. Skipping them changes nothing essential.
+- **Subagents:** no notebook is assigned to a subagent, and a subagent does **not** see the
+  `SessionStart` index or get its own retrospective nudge. Ask whether their agents delegate to
+  subagents. If so, either the lead's instruction must tell it to put the contract in each brief,
+  or they register `nb-subagent-start.sh` under `SubagentStart`. Walk them through
+  `docs/harness-setup.md#subagents` and `#what-the-hooks-do-not-cover`, then have them run the
+  audit in `#check-that-subagents-take-part` on one real session.
 
 ## 4. git-versioning (optional)
 
@@ -84,7 +88,8 @@ weekly cadence. It is read-only and safe.
 Run the checklist in `docs/harness-setup.md#verify-its-working`. Then tell them to
 start a fresh harness session and confirm the agent runs `nb list` and opens a
 relevant notebook on its own (and, if they added the optional hooks, that the index
-is injected at the top and a retrospective is nudged at the end). Also run `nb stats`:
+is injected at the top and a retrospective is nudged the first time the agent stops,
+which is not always the end of the task). Also run `nb stats`:
 each shelf shows its adds and, once full, its retention window (`cap ÷ adds per day`). If that
 window is short, the first remedy is fewer adds per session (the `add-burst` signal names the
 sessions), before dividing a shelf or raising `NB_MAX_LINES`.

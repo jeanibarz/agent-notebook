@@ -26,7 +26,7 @@ flowchart TB
     subgraph layer["The layer you set up (all optional except the instruction)"]
         I["the instruction<br/>(list & open; retrospect) — in AGENTS.md / CLAUDE.md"]
         H1["index hook (optional)<br/>inject nb list at session start"]
-        H2["retrospective hook (optional)<br/>nudge vote / prune / add at task end"]
+        H2["retrospective hook (optional)<br/>nudge vote / prune / add, once per session"]
         H3["git wrapper (optional)<br/>a commit per change"]
         H4["backup job (optional)<br/>daily push to a remote"]
         H5["janitor (optional)<br/>offline diagnostics"]
@@ -85,7 +85,8 @@ at the start of a task and open what fits.
 | Hook | What it adds | Moment |
 |---|---|---|
 | `SessionStart` → `nb-session-start.sh` | injects the `nb list` **index** into context so the agent sees it without spending a call — the hook never picks a notebook, so it is the same for every project | ① |
-| `Stop` / `SubagentStop` → `nb-retrospective.sh` | nudges the retrospective once per session so it isn't forgotten | ④ |
+| `SubagentStart` → `nb-subagent-start.sh` | hands the same index to each subagent, which never sees the `SessionStart` one ([Subagents](#subagents)) | ③ |
+| `Stop` / `SubagentStop` → `nb-retrospective.sh` | nudges the retrospective once per session, at the session's **first** stop (not at the end of the task: see [what the hooks do not cover](#what-the-hooks-do-not-cover)) | ④ |
 
 The index hook injects the *index of descriptions*, not a guessed notebook for the current project
 — so it stays generic across every project and never has to answer "which notebook
@@ -112,10 +113,20 @@ the [git wrapper](#git-versioning) if you want per-change history. Full notes in
 ### Subagents
 
 When your agent spawns a specialised subagent (reviewer, patcher, repro-builder),
-the subagent does the **same ① → ② → ④** for its own task — no notebook is
-assigned to a subagent type, and there is no "subagent started" hook to rely on. Just point
-the subagent at the same contract (its definition, or the prompt you spawn it
-with, references `AGENTS.md`), and it will:
+the subagent does the **same ① → ② → ④** for its own task. No notebook is assigned
+to a subagent type. But the `SessionStart` and retrospective hooks do not reach a
+subagent the way they reach the main agent, so a subagent uses the notebooks only
+if you arrange it:
+
+| The subagent needs | Why the main-session hooks do not give it | What to do |
+|---|---|---|
+| the index, or at least the contract, when it starts | `SessionStart` runs for the main session only. A subagent starts from its brief (the prompt it was spawned with) and never sees the injected index | have the lead put the contract in every brief, or register [`nb-subagent-start.sh`](../examples/hooks/claude-code/README.md#give-subagents-the-index-subagentstart) under `SubagentStart`, which injects the index into each subagent |
+| a retrospective when it ends | the retrospective hook nudges once per *session*, and every subagent shares its parent's session id, so at most one agent in the whole session is nudged | put the retrospective in the brief; treat the hook as a backstop |
+
+A brief that carries the contract can be one sentence: *"Run `nb list`, open the
+shelves that fit your job, and before your final report run the notebook
+retrospective (vote, prune, add at most one lesson to the shelf that fits, new or
+existing). End with your full report."* With that in its context the subagent will:
 
 1. run `nb list`, open the notebooks that fit *its* job, and use them;
 2. **reuse an existing shelf** rather than mint a near-duplicate — shelf names
@@ -123,10 +134,52 @@ with, references `AGENTS.md`), and it will:
    (the [janitor](#the-janitor) flags this);
 3. run its own retrospective at the end.
 
-If you installed the retrospective hook, note it fires **once per session**, keyed
-on the session id — so the first stop (a subagent's or the main agent's) gets the
-nudge and later stops are suppressed. It is a backstop, not a per-subagent driver;
-the reliable place for the subagent's retrospective is the contract it was given.
+Do not assume a `CLAUDE.md` in the project does this for you: check it with the
+[subagent audit](#check-that-subagents-take-part).
+
+### What the hooks do not cover
+
+The hooks are conveniences built for a short, single-agent session. In a long
+session, or one where a lead agent delegates to subagents, they leave four gaps.
+Each one is silent: nothing errors, and `nb stats` still reports engaged sessions.
+(Behaviour observed with Claude Code 2.1.328.)
+
+1. **The nudge marks the first stop, not the end of the task.** The retrospective
+   hook fires the first time any agent in the session stops, then not again until
+   its `.retro-<session_id>` file is pruned, which happens after
+   `NB_RETRO_TTL_DAYS` (7 days by default). A "stop" is the end of a turn. For a lead that started background subagents, the first
+   stop is the moment it begins waiting for them, a few minutes into the task. In
+   an interactive session it is the end of the first reply. Whatever is learned
+   after that gets no nudge.
+2. **One agent per session gets the nudge.** If the lead stops first, no subagent
+   is nudged. If a subagent stops first, it takes the nudge and the lead gets none.
+3. **A nudged subagent can lose its report.** A blocked `SubagentStop` makes the
+   subagent continue. Its answer to the nudge becomes its last message, and the
+   last message is what the lead receives as the subagent's result. The report it
+   wrote just before can come back shortened, or replaced by "I opened no
+   notebooks, so I skipped the retrospective". If you keep the hook on
+   `SubagentStop`, tell subagents in the brief to end with their full report again.
+   If your subagents get the contract from their brief, you can leave
+   `SubagentStop` out of `settings.json`: the lead then always gets the one nudge.
+4. **An agent that opened no notebook rarely adds a lesson.** The nudge asks about
+   "the notebooks you opened". An agent that opened none tends to answer that
+   there is nothing to do, even when the task taught it something worth a line.
+   Rewording the nudge does not fix this by itself. What helps is earlier: an
+   agent that read the index at the start (moments ① and ② of the
+   [contract](../AGENTS.md#2-the-four-moments--what-to-do-and-when)) knows which
+   shelf a new lesson belongs on, or that none fits and a new shelf is justified.
+
+What to do about it, with the example scripts as they are:
+
+- **Put moment ④ in the standing instruction, not only in the hook.** An agent
+  that has the contract runs the retrospective when the task is finished, whether
+  or not a nudge arrived at that moment.
+- **For delegated work, make the retrospective the lead's last step.** Ask each
+  subagent to list, in its report, anything it learned that a later task would
+  need. After the last subagent returns, the lead runs one retrospective for the
+  whole task and decides which of those lessons earn a line.
+- **Audit real sessions** with the [subagent audit](#check-that-subagents-take-part)
+  after you change anything. These gaps do not show up in `nb stats`.
 
 ### Per-repository on/off
 
@@ -314,9 +367,40 @@ nb rm smoke "setup check"            # clean up the smoke lesson
 In your harness, start a fresh session and give it a task: the agent should run
 `nb list` and open a relevant notebook on its own (the contract is in context),
 and — if you added the optional hooks — you'll also see the index injected at the
-top and a retrospective nudge when the task ends.
+top and a retrospective nudge the first time the agent stops.
 
 If `nb stats` later shows a full shelf with a short retention window (a few days), the first remedy is fewer adds per session, before dividing the shelf or raising `NB_MAX_LINES`; the `add-burst` signal names the sessions that add in bursts.
+
+### Check that subagents take part
+
+The smoke test above exercises the main agent only. After a real task that used
+subagents, look at what each one did. Claude Code keeps a subagent's transcript
+next to its session's, one file per subagent:
+
+```sh
+cd ~/.claude/projects/<project-dir>/<session-id>/subagents
+
+# 1. Which subagents called nb at all? A count of 0 for every file means none did.
+grep -cE '"command":"[^"]*nb (list|show|add|vote)' agent-*.jsonl
+
+# 2. Which agent got the one retrospective nudge? No file listed means the lead
+#    got it, or nobody did.
+grep -l 'run the agent-notebook retrospective' agent-*.jsonl
+
+# 3. When was the nudge spent? Compare with when the task really ended.
+cat "$(nb path)/.retro-<session-id>"; echo
+```
+
+Both `grep`s are rough. They also match a subagent that only quotes those words
+in a command or a message, and the first one misses an `nb` call that follows a
+quoted argument on the same command line. Open any file that surprises you. Read
+the three results together:
+
+| You see | It means | Remedy |
+|---|---|---|
+| a count of 0 for every subagent | no subagent used a notebook. The usual cause is that none had the index or the contract in front of it | carry the contract in the brief, or add the [`SubagentStart` hook](../examples/hooks/claude-code/README.md#give-subagents-the-index-subagentstart) |
+| the nudge time is minutes after the session started, hours before it ended | the nudge was spent on the lead's first stop ([gap 1](#what-the-hooks-do-not-cover)) | make the retrospective the lead's explicit last step |
+| a subagent's file is listed, and its result reached the lead as a remark about notebooks | its report was displaced by the answer to the nudge ([gap 3](#what-the-hooks-do-not-cover)) | ask for the full report last, or drop `SubagentStop` from the hook config |
 
 ---
 
@@ -348,6 +432,13 @@ activity, which is the deployment-wide picture these symptoms live in.)
 These are the same root causes `nb stats` exposes machine-readably as
 `surfacing.engagementDiagnosis` in `--json` (`null` once any session is engaged) —
 the table is the operator's reading of them.
+
+An `N engaged session(s)` reading proves less than it seems to. A session counts
+as engaged from its first vote, whenever that vote was cast and whichever agent
+cast it. A deployment where every lead answers one nudge at its first stop, and
+no subagent ever opens a notebook, reads as fully engaged. If long or delegated
+tasks leave no lessons behind, read [what the hooks do not cover](#what-the-hooks-do-not-cover)
+and run the [subagent audit](#check-that-subagents-take-part) on one such session.
 
 **Hook self-check** — does the SessionStart hook actually inject anything?
 

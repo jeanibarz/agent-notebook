@@ -9,6 +9,14 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Added
+
+- **`examples/hooks/claude-code/nb-subagent-start.sh`: give subagents the notebook index.** Claude Code runs `SessionStart` hooks for the main session only, so a subagent never saw the index and, unless its brief mentioned the notebooks, never opened one. The new optional `SubagentStart` hook hands each subagent the same index. It wraps `nb-session-start.sh` because a `SubagentStart` hook's plain stdout is not added to the subagent's context; only JSON `additionalContext` is. The example `settings.json` registers it.
+
+### Changed
+
+- **The harness docs now say what the example hooks do not cover in long sessions and with subagents.** `docs/harness-setup.md` and `examples/hooks/claude-code/README.md` stated that Claude Code has no `SubagentStart` hook; it has one. They also described the retrospective nudge as arriving "when the task ends". It arrives at the session's first stop: for a lead agent that delegates to background subagents, that is when it starts waiting for them. The docs now list four silent gaps (the early nudge, one nudge per session, a nudged subagent's report displaced by its answer to the nudge, and agents that opened no notebook adding nothing), what to do about each, and a transcript audit that shows whether subagents take part. `nb stats` cannot show these: it reports a session as engaged from its first vote. `AGENTS.md` §③ now tells the lead to put the contract in each subagent's brief.
+
 ## [0.10.0] - 2026-11-18
 
 ### Added
