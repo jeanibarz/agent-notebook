@@ -1,0 +1,50 @@
+/* Vertical 9:16 cut (1080x1920). Loaded after film.css: it re-lays the shell around a tall canvas
+   and leaves every scene style alone. The 1920x1080 #stage is the same live stage as in film.html;
+   it sits in a clipping window and vertical.js decides, as a function of t, which part shows.
+   No transitions, no animations: every value here is static, every moving value comes from seek(). */
+:root {
+  --v-canvas: #06080c;       /* a step darker than the stage, so the window reads as a lit screen */
+  --v-left: 64px;            /* one left edge for the brand line, the headline and the captions */
+}
+html, body { background: var(--v-canvas); }
+
+/* ---------- shell (live playback) ---------- */
+#shell { max-width: none; align-items: center; }
+#fit { position: relative; flex: none; overflow: hidden; border-radius: 14px;
+  width: calc(1080px * var(--fit, 1)); height: calc(1920px * var(--fit, 1)); }
+#frame { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; aspect-ratio: auto;
+  border: 0; border-radius: 0; overflow: hidden; background: var(--v-canvas);
+  transform-origin: 0 0; transform: scale(var(--fit, 1)); }
+#controls { width: calc(1080px * var(--fit, 1)); min-width: min(300px, 100%); }
+/* the burned captions replace the page caption line */
+#caption { display: none; }
+.nocc #v-caption { visibility: hidden; }
+
+/* render mode: only the bare canvas, at 1:1 */
+.render #fit { border-radius: 0; width: 1080px; height: 1920px; }
+.render #frame { width: 1080px; height: 1920px; transform: none; }
+
+/* ---------- the canvas ---------- */
+/* Platform overlays: nothing to read above y = 250, below y = 1500, or right of x = 950 under y = 960. */
+#v-title { position: absolute; left: var(--v-left); top: 254px; width: 952px; margin: 0; }
+#v-brand { margin: 0 0 10px; font: 500 30px/36px var(--font-mono); letter-spacing: 0.04em; color: var(--muted);
+  display: flex; align-items: center; gap: 14px; white-space: nowrap; }
+#v-brand::before { content: ""; flex: none; width: 34px; height: 4px; border-radius: 2px; background: var(--accent); }
+#v-headline { margin: 0; font: 600 58px/64px var(--font-display); letter-spacing: -0.018em; color: var(--fg);
+  -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
+#v-headline span { display: block; white-space: nowrap; }
+#v-headline span + span { color: var(--accent); }
+
+/* the picture window: full bleed, 1080 x 680 (the widest crop, 1700 stage px, is then 1070 px tall:
+   the window never looks past the stage). Hairlines top and bottom frame both worlds. */
+#v-window { position: absolute; left: 0; top: 452px; width: 1080px; height: 680px; overflow: hidden; background: var(--bg); }
+#v-window::after { content: ""; position: absolute; inset: 0; z-index: 5; pointer-events: none;
+  border-top: 2px solid var(--line); border-bottom: 2px solid var(--line); }
+/* player.js writes an inline transform on #stage (its fit-to-frame scale): the crop wins over it. */
+#stage { transform: var(--crop, none) !important; }
+
+/* burned captions: two fixed lines under the window, left-aligned with the title, clear of the right strip */
+#v-caption { position: absolute; left: var(--v-left); top: 1180px; width: 886px; height: 156px;
+  font: 600 64px/78px var(--font-body); letter-spacing: -0.012em; color: #fff;
+  -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
+#v-caption span { display: block; height: 78px; white-space: nowrap; }

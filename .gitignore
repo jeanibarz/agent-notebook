@@ -5,3 +5,10 @@ junit.xml
 *.log
 .DS_Store
 .npmrc
+
+# launch film: build output and third-party files that are fetched, not committed
+media/launch-video/out/
+media/launch-video/vendor/
+media/launch-video/artifact/
+media/launch-video/distribution/
+__pycache__/

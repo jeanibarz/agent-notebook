@@ -1,0 +1,156 @@
+/* Scenes S6, S7, S8, S10, S9 (builder B), storyboard v2. Every class here is prefixed b-.
+   Fixed stage pixels only. No CSS animations or transitions: all motion comes from scenes-b.js.
+   Size floors (v2): nothing under 36 px; terminal text and captions that must be read 44 px. */
+
+.b-layer { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+.b-svg { position: absolute; left: 0; top: 0; overflow: visible; }
+/* no cached compositor layers in these scenes: every frame is painted from its state alone */
+.b-scene .row, .b-scene .hl-line, .b-scene .split-part { will-change: auto; }
+.b-flash { position: absolute; inset: 0; }
+
+/* ---------- S6: shown, not searched ---------- */
+.b-strike { position: relative; display: inline-block; }
+.b-strike i { position: absolute; left: -8px; right: -3px; top: 56%; height: 9px; margin-top: -4.5px; border-radius: 4.5px;
+  background: var(--fg); transform-origin: 0 50%; }
+
+.b-note { position: absolute; font: 500 44px/52px var(--font-body); letter-spacing: -0.005em; color: var(--accent); white-space: nowrap; }
+.b-leader path { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.b-leader-dot { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 0 5px var(--bg-2); }
+
+.b-search { position: absolute; height: 84px; display: flex; align-items: center; padding: 0 30px 0 26px;
+  background: var(--bg-2); border: 2px solid #3a4658; border-radius: 42px; white-space: nowrap; }
+.b-search svg { flex: none; margin-right: 20px; }
+.b-search svg * { fill: none; stroke: var(--muted); stroke-width: 4; stroke-linecap: round; }
+.b-caret { flex: none; width: 4px; height: 50px; margin-right: 6px; border-radius: 2px; background: var(--fg); }
+.b-ph { font: 500 44px var(--font-mono); color: var(--dim); }
+.b-search-label { position: absolute; font: 500 44px/84px var(--font-body); letter-spacing: -0.005em; color: var(--muted); white-space: nowrap; }
+
+.b-tags { position: absolute; display: flex; gap: 20px; }
+.b-tag { height: 80px; padding: 0 30px; font: 600 44px/76px var(--font-body); letter-spacing: -0.005em; color: var(--fg);
+  background: var(--panel); border: 2px solid var(--line); border-radius: 12px; white-space: nowrap; }
+.b-tag span { font-weight: 500; color: var(--muted); }
+
+/* ---------- S7: the paper world ---------- */
+.b-wipe { position: absolute; top: 0; height: 1080px; overflow: hidden; }
+.b-paper { position: absolute; top: 0; width: 1920px; height: 1080px; background: var(--paper); color: var(--ink);
+  --b-ink-2: #665d52; --b-rule: #e4dccd; --b-red: #a12f29; --b-red-bg: #f5d9d1; --b-green: #1b6638; --b-green-bg: #d5e8d2;
+  --b-amber: #955708; }
+.b-ink .hl-line { color: var(--ink); }
+.b-ink .hl-line.hl-sub { color: var(--b-ink-2); }
+
+.b-sheet { position: absolute; background: #fdfbf6; border: 2px solid var(--ink); border-radius: 18px; }
+.b-sheet-head { position: absolute; left: 0; right: 0; top: 0; height: 68px; display: flex; align-items: center; gap: 18px;
+  padding: 0 26px; background: #ebe5d8; border-bottom: 2px solid var(--ink); border-radius: 16px 16px 0 0; }
+.b-sheet-dots { display: inline-flex; gap: 10px; flex: none; margin-right: 10px; }
+.b-sheet-dots i { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--ink); }
+.b-cmds { position: relative; flex: 1; height: 68px; }
+.b-cmd { position: absolute; left: 0; top: 0; font: 500 44px/66px var(--font-mono); color: var(--ink); white-space: pre; }
+.b-cmd b { font-weight: 500; color: var(--ink-teal); }
+
+.b-cat { position: absolute; left: 40px; right: 40px; height: 72px; font: 500 44px/70px var(--font-mono); color: var(--ink);
+  white-space: pre; border-bottom: 2px solid var(--b-rule); }
+.b-cat.b-cmt { color: var(--b-ink-2); }
+.b-cat b { font-weight: 700; color: var(--b-amber); }
+
+.b-diff { position: absolute; height: 54px; padding-left: 6px; border-radius: 6px;
+  font: 500 44px/54px var(--font-mono); white-space: pre; }
+.b-diff.b-del { color: var(--b-red); background: var(--b-red-bg); }
+.b-diff.b-add { color: var(--b-green); background: var(--b-green-bg); }
+.b-diff.b-ctx { color: var(--b-ink-2); }
+
+.b-ann { position: absolute; left: 0; top: 0; }
+.b-ann svg { position: absolute; left: 0; top: 0; overflow: visible; }
+.b-ann path { fill: none; stroke: var(--ink-teal); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.b-ann path.b-head { fill: var(--ink-teal); stroke-width: 2; }
+.b-ann span { position: absolute; font: 600 44px/54px var(--font-body); letter-spacing: -0.012em; color: var(--ink-teal); white-space: nowrap; }
+
+.b-foot { position: absolute; font: 500 36px/46px var(--font-body); color: var(--b-ink-2); white-space: nowrap; }
+
+/* ---------- S8: a store, not a loop ---------- */
+.b-outline rect { fill: none; stroke: #4a5870; stroke-width: 2; stroke-dasharray: 14 10; }
+.b-outline-label { position: absolute; height: 54px; padding: 0 16px; background: var(--bg); white-space: nowrap;
+  font: 500 44px/54px var(--font-body); letter-spacing: -0.005em; color: var(--muted); }
+.b-outline-label b { font: 500 44px/54px var(--font-mono); letter-spacing: 0.1em; color: var(--fg); }
+
+.b-card { position: absolute; padding: 22px 24px; background: var(--panel); border: 2px solid var(--line);
+  border-radius: 14px; white-space: nowrap; }
+.b-card-t { display: flex; align-items: center; gap: 18px; height: 56px; font: 600 44px/56px var(--font-body);
+  letter-spacing: -0.005em; color: var(--fg); }
+.b-badge { flex: none; width: 56px; height: 56px; border: 2px solid var(--accent); border-radius: 50%; text-align: center;
+  font: 700 36px/52px var(--font-mono); color: var(--accent); }
+.b-card-c { margin-top: 18px; font: 500 44px/56px var(--font-mono); color: var(--accent); }
+.b-sep { letter-spacing: -0.3em; margin-right: 0.3em; color: var(--muted); white-space: pre; }
+.b-card-bars { margin-top: 18px; height: 56px; display: flex; align-items: center; gap: 12px; }
+.b-card-bars i { height: 12px; border-radius: 6px; background: #33404f; }
+
+.b-arrow path, .b-conn path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.b-arrow path { stroke: var(--muted); stroke-width: 3; }
+.b-conn path { stroke: var(--accent); stroke-width: 3; }
+
+/* the notebook as a small block: a shelf reduced to a title and four bars */
+.b-block { position: absolute; border-style: solid; }
+.b-block-head { position: absolute; left: 0; right: 0; top: 0; background: var(--panel); border-bottom: 2px solid var(--line); }
+.b-block-label { position: absolute; left: 24px; top: 0; white-space: nowrap; font: 500 44px/64px var(--font-body); letter-spacing: -0.005em; color: var(--muted); }
+.b-block-label b { font: 500 44px/64px var(--font-mono); letter-spacing: 0; color: var(--fg); }
+.b-block i { position: absolute; }
+.b-block i b { position: absolute; top: 0; bottom: 0; border-radius: 8px; }
+.b-block i b:first-child { left: 0; width: 44px; background: var(--score); }
+.b-block i b:last-child { left: 58px; right: 0; background: #56637a; }
+
+.b-quiet { position: absolute; font: 500 44px/56px var(--font-body); letter-spacing: -0.005em; color: var(--muted); white-space: nowrap; }
+
+/* ---------- S10: the payoff. Looks mirror builder A's S1 (.a-day, .a-slot, .a-term, .a-tline, .a-sub);
+   positions and sizes are set inline from the S1 geometry constants. ---------- */
+.b-world { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+.b-eyebrow1 { position: absolute; margin: 0; white-space: nowrap; }
+.b-day-mask { position: absolute; overflow: hidden; }
+.b-day { position: absolute; top: 0; font-family: var(--font-display); font-weight: 600; white-space: nowrap; color: var(--fg); }
+.b-slot { position: absolute; border: 2px solid var(--line); background: var(--bg-2);
+  display: flex; align-items: center; justify-content: center; }
+.b-slot svg { display: block; }
+.b-slot.b-failed { border-color: var(--warn); }
+.b-x { stroke: var(--warn); stroke-width: 3.2; stroke-linecap: round; fill: none; }
+.b-ok { stroke: var(--pos); stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+.b-slot-pass { position: absolute; inset: -2px; border: 2px solid var(--pos); display: flex; align-items: center; justify-content: center; }
+
+.b-noterow { position: absolute; }
+.b-noterow .row { left: 0; right: 0; top: 0; }
+
+.b-term { position: absolute; background: var(--bg-2); border: 2px solid var(--line); }
+.b-term-pass { position: absolute; inset: -2px; border: 2px solid var(--pos); pointer-events: none; }
+.b-tline { position: absolute; font-family: var(--font-mono); font-weight: 500; white-space: pre; color: var(--fg); }
+.b-tline.b-l2 { color: var(--pos); }
+.b-prompt { color: var(--accent); }
+.b-tcaret { display: inline-block; width: 30px; height: 60px; margin-left: 8px; vertical-align: -12px; background: var(--fg); }
+.b-xch { display: inline-block; width: 1ch; }
+.b-xch svg { width: 0.64em; height: 0.64em; display: block; margin: 0 auto; transform: translateY(0.04em); }
+.b-xch .b-ok { stroke-width: 3.6; }
+.b-sub-mask { position: absolute; overflow: hidden; }
+.b-sub { font-family: var(--font-body); font-weight: 500; letter-spacing: -0.012em; white-space: nowrap; color: var(--fg); }
+
+/* ---------- S9: end card ---------- */
+.b-endbg { position: absolute; inset: 0; background: var(--bg); }
+.b-endbg canvas { position: absolute; left: 0; top: 0; }
+.b-mark { position: absolute; border: 7px solid var(--fg); border-radius: 30px; background: var(--bg-2); }
+.b-mark i { position: absolute; left: 24px; height: 12px; }
+.b-mark i b { position: absolute; top: 0; bottom: 0; border-radius: 6px; }
+.b-mark i b:first-child { left: 0; width: 19px; background: var(--score); }
+.b-mark i b:last-child { left: 29px; right: 0; background: var(--fg); }
+
+.b-mask { position: absolute; overflow: hidden; }
+.b-wm { position: absolute; font: 600 196px/250px var(--font-display); letter-spacing: -0.025em; color: var(--fg); white-space: nowrap; }
+.b-tagline { font: 500 110px/136px var(--font-display); letter-spacing: -0.02em; color: #c9cfda; white-space: nowrap; }
+.b-pill { position: absolute; height: 96px; padding: 0 30px; background: var(--panel); border: 2px solid var(--line);
+  border-radius: 12px; font: 500 44px/92px var(--font-mono); color: var(--fg); white-space: pre; }
+.b-pill b { font-weight: 500; color: var(--accent); }
+.b-hint { position: absolute; font: 500 44px/56px var(--font-body); letter-spacing: -0.005em; color: var(--muted); white-space: nowrap; }
+.b-hint b { font: 500 44px/56px var(--font-mono); letter-spacing: 0; color: var(--fg); }
+.b-small { position: absolute; font: 500 36px/46px var(--font-body); color: var(--muted); white-space: nowrap; }
+.b-url { position: absolute; font: 500 44px/56px var(--font-mono); color: var(--fg); white-space: nowrap; }
+.b-rule { position: absolute; height: 2px; background: var(--line); }
+
+/* ---------- last on purpose: the `font` shorthand above resets these ---------- */
+/* mono text is terminal text: no programming ligatures (++, -+ and && must stay separate characters) */
+.b-ph, .b-cmd, .b-cat, .b-diff, .b-card-c, .b-badge, .b-outline-label b, .b-block-label b, .b-tline, .b-pill, .b-hint b, .b-url {
+  font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }

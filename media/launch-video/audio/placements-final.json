@@ -1,0 +1,97 @@
+[
+ {
+  "id": "l01a",
+  "start": 0.279,
+  "gain_db": 0
+ },
+ {
+  "id": "l01b",
+  "start": 2.055,
+  "gain_db": 0
+ },
+ {
+  "id": "l03a",
+  "start": 4.391,
+  "gain_db": 0
+ },
+ {
+  "id": "l04a",
+  "start": 7.43,
+  "gain_db": 0
+ },
+ {
+  "id": "l04b",
+  "start": 8.98,
+  "gain_db": 0
+ },
+ {
+  "id": "l05a",
+  "start": 10.834,
+  "gain_db": 0
+ },
+ {
+  "id": "l05b",
+  "start": 14.115,
+  "gain_db": 0
+ },
+ {
+  "id": "l06a",
+  "start": 17.024,
+  "gain_db": 0
+ },
+ {
+  "id": "l06b",
+  "start": 18.36,
+  "gain_db": 0
+ },
+ {
+  "id": "l06c",
+  "start": 20.395,
+  "gain_db": 0
+ },
+ {
+  "id": "l07a",
+  "start": 23.864,
+  "gain_db": 0
+ },
+ {
+  "id": "l08a",
+  "start": 26.102,
+  "gain_db": 0
+ },
+ {
+  "id": "l09a",
+  "start": 31.382,
+  "gain_db": 0
+ },
+ {
+  "id": "l09b",
+  "start": 32.83,
+  "gain_db": 0
+ },
+ {
+  "id": "l10a",
+  "start": 36.378,
+  "gain_db": 0
+ },
+ {
+  "id": "l10b",
+  "start": 38.0,
+  "gain_db": 0
+ },
+ {
+  "id": "l12a",
+  "start": 40.333,
+  "gain_db": 0
+ },
+ {
+  "id": "l11a",
+  "start": 44.09,
+  "gain_db": 0
+ },
+ {
+  "id": "l11b",
+  "start": 45.18,
+  "gain_db": 0
+ }
+]

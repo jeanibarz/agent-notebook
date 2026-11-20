@@ -1,0 +1,687 @@
+{
+ "duration": 49.0,
+ "bpm": 120,
+ "seed": 7,
+ "narration": [
+  {
+   "id": "l01a",
+   "start": 0.279,
+   "gain_db": 0
+  },
+  {
+   "id": "l01b",
+   "start": 2.055,
+   "gain_db": 0
+  },
+  {
+   "id": "l03a",
+   "start": 4.391,
+   "gain_db": 0
+  },
+  {
+   "id": "l04a",
+   "start": 7.43,
+   "gain_db": 0
+  },
+  {
+   "id": "l04b",
+   "start": 8.98,
+   "gain_db": 0
+  },
+  {
+   "id": "l05a",
+   "start": 10.834,
+   "gain_db": 0
+  },
+  {
+   "id": "l05b",
+   "start": 14.115,
+   "gain_db": 0
+  },
+  {
+   "id": "l06a",
+   "start": 17.024,
+   "gain_db": 0
+  },
+  {
+   "id": "l06b",
+   "start": 18.36,
+   "gain_db": 0
+  },
+  {
+   "id": "l06c",
+   "start": 20.395,
+   "gain_db": 0
+  },
+  {
+   "id": "l07a",
+   "start": 23.864,
+   "gain_db": 0
+  },
+  {
+   "id": "l08a",
+   "start": 26.102,
+   "gain_db": 0
+  },
+  {
+   "id": "l09a",
+   "start": 31.382,
+   "gain_db": 0
+  },
+  {
+   "id": "l09b",
+   "start": 32.83,
+   "gain_db": 0
+  },
+  {
+   "id": "l10a",
+   "start": 36.378,
+   "gain_db": 0
+  },
+  {
+   "id": "l10b",
+   "start": 38.0,
+   "gain_db": 0
+  },
+  {
+   "id": "l12a",
+   "start": 40.333,
+   "gain_db": 0
+  },
+  {
+   "id": "l11a",
+   "start": 44.09,
+   "gain_db": 0
+  },
+  {
+   "id": "l11b",
+   "start": 45.18,
+   "gain_db": 0
+  }
+ ],
+ "sfx": [
+  {
+   "type": "tick",
+   "t": 0.9,
+   "gain_db": -15,
+   "pan": 0.0
+  },
+  {
+   "type": "vote_down",
+   "t": 0.9,
+   "gain_db": -20,
+   "pan": 0.0
+  },
+  {
+   "type": "tick",
+   "t": 2.8,
+   "gain_db": -13,
+   "pan": 0.0
+  },
+  {
+   "type": "vote_down",
+   "t": 2.8,
+   "gain_db": -17,
+   "pan": 0.0
+  },
+  {
+   "type": "riser",
+   "t": 3.0,
+   "gain_db": -14,
+   "pan": 0.0,
+   "args": {
+    "duration": 1.0
+   }
+  },
+  {
+   "type": "tick",
+   "t": 3.5,
+   "gain_db": -11,
+   "pan": 0.0
+  },
+  {
+   "type": "vote_down",
+   "t": 3.5,
+   "gain_db": -14,
+   "pan": 0.0
+  },
+  {
+   "type": "impact",
+   "t": 4.0,
+   "gain_db": -4,
+   "pan": 0.0
+  },
+  {
+   "type": "stamp",
+   "t": 5.9,
+   "gain_db": -14,
+   "pan": 0.0
+  },
+  {
+   "type": "stamp",
+   "t": 6.2,
+   "gain_db": -14,
+   "pan": 0.0
+  },
+  {
+   "type": "stamp",
+   "t": 6.5,
+   "gain_db": -14,
+   "pan": 0.0
+  },
+  {
+   "type": "key",
+   "t": 7.6,
+   "gain_db": -26,
+   "pan": -0.15
+  },
+  {
+   "type": "key",
+   "t": 7.692,
+   "gain_db": -26,
+   "pan": 0.060000000000000026
+  },
+  {
+   "type": "key",
+   "t": 7.783,
+   "gain_db": -26,
+   "pan": -0.03
+  },
+  {
+   "type": "key",
+   "t": 7.875,
+   "gain_db": -26,
+   "pan": -0.12
+  },
+  {
+   "type": "key",
+   "t": 7.967,
+   "gain_db": -26,
+   "pan": 0.09
+  },
+  {
+   "type": "key",
+   "t": 8.058,
+   "gain_db": -26,
+   "pan": 0.0
+  },
+  {
+   "type": "key",
+   "t": 8.15,
+   "gain_db": -26,
+   "pan": -0.09
+  },
+  {
+   "type": "key",
+   "t": 8.242,
+   "gain_db": -26,
+   "pan": 0.11999999999999997
+  },
+  {
+   "type": "key",
+   "t": 8.333,
+   "gain_db": -26,
+   "pan": 0.03
+  },
+  {
+   "type": "key",
+   "t": 8.425,
+   "gain_db": -26,
+   "pan": -0.06
+  },
+  {
+   "type": "key",
+   "t": 8.517,
+   "gain_db": -26,
+   "pan": -0.15
+  },
+  {
+   "type": "key",
+   "t": 8.608,
+   "gain_db": -26,
+   "pan": 0.060000000000000026
+  },
+  {
+   "type": "enter",
+   "t": 8.8,
+   "gain_db": -16,
+   "pan": 0.0
+  },
+  {
+   "type": "stamp",
+   "t": 9.2,
+   "gain_db": -11,
+   "pan": 0.0
+  },
+  {
+   "type": "tick",
+   "t": 12.0,
+   "gain_db": -18,
+   "pan": -0.2
+  },
+  {
+   "type": "tick",
+   "t": 12.2,
+   "gain_db": -18,
+   "pan": -0.07
+  },
+  {
+   "type": "tick",
+   "t": 12.4,
+   "gain_db": -18,
+   "pan": 0.06
+  },
+  {
+   "type": "tick",
+   "t": 12.6,
+   "gain_db": -18,
+   "pan": 0.19
+  },
+  {
+   "type": "vote_up",
+   "t": 14.3,
+   "gain_db": -10,
+   "pan": 0.0,
+   "args": {
+    "step": 0
+   }
+  },
+  {
+   "type": "vote_up",
+   "t": 14.9,
+   "gain_db": -9,
+   "pan": 0.0,
+   "args": {
+    "step": 2
+   }
+  },
+  {
+   "type": "vote_down",
+   "t": 15.7,
+   "gain_db": -9,
+   "pan": 0.0
+  },
+  {
+   "type": "key",
+   "t": 17.1,
+   "gain_db": -26,
+   "pan": -0.15
+  },
+  {
+   "type": "key",
+   "t": 17.171,
+   "gain_db": -26,
+   "pan": 0.060000000000000026
+  },
+  {
+   "type": "key",
+   "t": 17.243,
+   "gain_db": -26,
+   "pan": -0.03
+  },
+  {
+   "type": "riser",
+   "t": 17.3,
+   "gain_db": -17,
+   "pan": 0.0,
+   "args": {
+    "duration": 0.8
+   }
+  },
+  {
+   "type": "key",
+   "t": 17.314,
+   "gain_db": -26,
+   "pan": -0.12
+  },
+  {
+   "type": "key",
+   "t": 17.386,
+   "gain_db": -26,
+   "pan": 0.09
+  },
+  {
+   "type": "key",
+   "t": 17.457,
+   "gain_db": -26,
+   "pan": 0.0
+  },
+  {
+   "type": "key",
+   "t": 17.529,
+   "gain_db": -26,
+   "pan": -0.09
+  },
+  {
+   "type": "key",
+   "t": 17.6,
+   "gain_db": -26,
+   "pan": 0.11999999999999997
+  },
+  {
+   "type": "key",
+   "t": 17.671,
+   "gain_db": -26,
+   "pan": 0.03
+  },
+  {
+   "type": "key",
+   "t": 17.743,
+   "gain_db": -26,
+   "pan": -0.06
+  },
+  {
+   "type": "key",
+   "t": 17.814,
+   "gain_db": -26,
+   "pan": -0.15
+  },
+  {
+   "type": "key",
+   "t": 17.886,
+   "gain_db": -26,
+   "pan": 0.060000000000000026
+  },
+  {
+   "type": "key",
+   "t": 17.957,
+   "gain_db": -26,
+   "pan": -0.03
+  },
+  {
+   "type": "key",
+   "t": 18.029,
+   "gain_db": -26,
+   "pan": -0.12
+  },
+  {
+   "type": "enter",
+   "t": 18.4,
+   "gain_db": -14,
+   "pan": 0.0
+  },
+  {
+   "type": "impact",
+   "t": 18.4,
+   "gain_db": -3,
+   "pan": 0.0
+  },
+  {
+   "type": "tick",
+   "t": 18.9,
+   "gain_db": -15,
+   "pan": 0.0
+  },
+  {
+   "type": "tick",
+   "t": 19.4,
+   "gain_db": -14,
+   "pan": 0.0
+  },
+  {
+   "type": "tick",
+   "t": 19.9,
+   "gain_db": -13,
+   "pan": 0.0
+  },
+  {
+   "type": "evict",
+   "t": 20.4,
+   "gain_db": -7,
+   "pan": 0.4
+  },
+  {
+   "type": "impact",
+   "t": 20.4,
+   "gain_db": -13,
+   "pan": 0.0
+  },
+  {
+   "type": "stamp",
+   "t": 21.1,
+   "gain_db": -11,
+   "pan": 0.0
+  },
+  {
+   "type": "tick",
+   "t": 21.6,
+   "gain_db": -13,
+   "pan": 0.0
+  },
+  {
+   "type": "vote_down",
+   "t": 21.6,
+   "gain_db": -17,
+   "pan": 0.0
+  },
+  {
+   "type": "impact",
+   "t": 23.8,
+   "gain_db": -7,
+   "pan": 0.0
+  },
+  {
+   "type": "whoosh",
+   "t": 24.75,
+   "gain_db": -16,
+   "pan": 0.0,
+   "args": {
+    "duration": 0.3,
+    "direction": "up"
+   }
+  },
+  {
+   "type": "pop",
+   "t": 29.3,
+   "gain_db": -15,
+   "pan": -0.3
+  },
+  {
+   "type": "pop",
+   "t": 29.7,
+   "gain_db": -15,
+   "pan": 0.0
+  },
+  {
+   "type": "pop",
+   "t": 30.1,
+   "gain_db": -15,
+   "pan": 0.3
+  },
+  {
+   "type": "whoosh",
+   "t": 30.95,
+   "gain_db": -15,
+   "pan": 0.0,
+   "args": {
+    "duration": 0.5,
+    "direction": "up"
+   }
+  },
+  {
+   "type": "stamp",
+   "t": 33.1,
+   "gain_db": -15,
+   "pan": 0.0
+  },
+  {
+   "type": "whoosh",
+   "t": 35.95,
+   "gain_db": -15,
+   "pan": 0.0,
+   "args": {
+    "duration": 0.5,
+    "direction": "down"
+   }
+  },
+  {
+   "type": "tick",
+   "t": 36.3,
+   "gain_db": -17,
+   "pan": 0.0
+  },
+  {
+   "type": "tick",
+   "t": 36.6,
+   "gain_db": -17,
+   "pan": 0.0
+  },
+  {
+   "type": "tick",
+   "t": 36.9,
+   "gain_db": -17,
+   "pan": 0.0
+  },
+  {
+   "type": "key",
+   "t": 41.0,
+   "gain_db": -26,
+   "pan": -0.15
+  },
+  {
+   "type": "key",
+   "t": 41.1,
+   "gain_db": -26,
+   "pan": 0.060000000000000026
+  },
+  {
+   "type": "key",
+   "t": 41.2,
+   "gain_db": -26,
+   "pan": -0.03
+  },
+  {
+   "type": "key",
+   "t": 41.3,
+   "gain_db": -26,
+   "pan": -0.12
+  },
+  {
+   "type": "key",
+   "t": 41.4,
+   "gain_db": -26,
+   "pan": 0.09
+  },
+  {
+   "type": "key",
+   "t": 41.5,
+   "gain_db": -26,
+   "pan": 0.0
+  },
+  {
+   "type": "key",
+   "t": 41.6,
+   "gain_db": -26,
+   "pan": -0.09
+  },
+  {
+   "type": "key",
+   "t": 41.7,
+   "gain_db": -26,
+   "pan": 0.11999999999999997
+  },
+  {
+   "type": "enter",
+   "t": 41.85,
+   "gain_db": -17,
+   "pan": 0.0
+  },
+  {
+   "type": "vote_up",
+   "t": 42.1,
+   "gain_db": -8,
+   "pan": 0.0,
+   "args": {
+    "step": 3
+   }
+  },
+  {
+   "type": "shimmer",
+   "t": 42.1,
+   "gain_db": -14,
+   "pan": 0.0,
+   "args": {
+    "duration": 1.4
+   }
+  },
+  {
+   "type": "impact",
+   "t": 43.8,
+   "gain_db": -8,
+   "pan": 0.0
+  },
+  {
+   "type": "shimmer",
+   "t": 43.85,
+   "gain_db": -11,
+   "pan": 0.0
+  },
+  {
+   "type": "pop",
+   "t": 45.6,
+   "gain_db": -16,
+   "pan": 0.0
+  }
+ ],
+ "music": {
+  "gain_db": -9,
+  "duck_db": 10,
+  "sections": [
+   {
+    "from": 0.0,
+    "to": 4.0,
+    "energy": 0.25
+   },
+   {
+    "from": 4.0,
+    "to": 17.0,
+    "energy": 0.8
+   },
+   {
+    "from": 17.0,
+    "to": 18.0,
+    "energy": 0.55
+   },
+   {
+    "from": 18.0,
+    "to": 18.5,
+    "energy": 0.0
+   },
+   {
+    "from": 18.5,
+    "to": 23.5,
+    "energy": 1.0
+   },
+   {
+    "from": 23.5,
+    "to": 31.0,
+    "energy": 0.5
+   },
+   {
+    "from": 31.0,
+    "to": 36.0,
+    "energy": 0.3
+   },
+   {
+    "from": 36.0,
+    "to": 40.0,
+    "energy": 0.6
+   },
+   {
+    "from": 40.0,
+    "to": 43.5,
+    "energy": 0.8
+   },
+   {
+    "from": 43.5,
+    "to": 48.0,
+    "energy": 0.45
+   },
+   {
+    "from": 48.0,
+    "to": 49.0,
+    "energy": 0.0
+   }
+  ]
+ }
+}
