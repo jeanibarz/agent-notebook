@@ -11,6 +11,8 @@ versions are listed plainly.
 
 ### Added
 
+- **A 49-second film at the top of the README, with its source in `media/launch-video/`.** It shows one notebook being added to, voted on and capped. The commands and output it shows are a real capture of `nb`; the failing and passing test at its start and end are an illustration. The folder is not part of the npm package.
+
 - **`examples/hooks/claude-code/nb-subagent-start.sh`: give subagents the notebook index.** Claude Code runs `SessionStart` hooks for the main session only, so a subagent never saw the index and, unless its brief mentioned the notebooks, never opened one. The new optional `SubagentStart` hook hands each subagent the same index. It wraps `nb-session-start.sh` because a `SubagentStart` hook's plain stdout is not added to the subagent's context; only JSON `additionalContext` is. The example `settings.json` registers it.
 
 ### Changed

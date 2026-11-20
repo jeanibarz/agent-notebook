@@ -1,0 +1,82 @@
+/* Scenes S1–S5 (builder A), storyboard v2. Every class here is prefixed a-. Stage pixels throughout.
+   No CSS animations or transitions: all motion comes from scenes-a.js as a function of time.
+   Positions and sizes of the S1 layout are NOT here: they are set inline from the S1_GEOMETRY
+   constants at the top of scenes-a.js, so S10 can rebuild the same picture from one source. */
+
+/* Seek-determinism. An element with will-change keeps a compositor layer that is rasterised once
+   and then re-used at whatever scale and sub-pixel offset it first had, so a frame's pixels would
+   depend on the frames rendered before it. Inside these five scenes nothing keeps such a layer. */
+#scene-s1 *, #scene-s2 *, #scene-s3 *, #scene-s4 *, #scene-s5 * { will-change: auto; }
+
+.a-world { left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 960px 540px; }
+.a-full { left: 0; top: 0; width: 1920px; height: 1080px; pointer-events: none; }
+
+/* ---------- S1: the hook (geometry inline, from S1_GEOMETRY) ---------- */
+.a-eyebrow1 { margin: 0; white-space: nowrap; }
+.a-day-mask { overflow: hidden; }
+.a-day { position: absolute; top: 0; font-family: var(--font-display); font-weight: 600; white-space: nowrap; color: var(--fg); }
+.a-tally { }
+.a-slot { position: absolute; top: 0; border: 2px solid var(--line); background: var(--bg-2);
+  display: flex; align-items: center; justify-content: center; }
+.a-slot.a-on { border-color: var(--warn); }
+.a-slot svg { display: block; }
+.a-x { stroke: var(--warn); stroke-width: 3.2; stroke-linecap: round; fill: none; }
+
+.a-term { background: var(--bg-2); border: 2px solid var(--line); }
+.a-term-flash { position: absolute; inset: 0; background: var(--warn); pointer-events: none; }
+.a-term-fail { position: absolute; inset: -2px; border: 2px solid var(--warn); pointer-events: none; }
+.a-tline { position: absolute; font-family: var(--font-mono); font-weight: 500; white-space: nowrap; color: var(--fg); }
+.a-tline.a-l2 { color: var(--warn); }
+.a-prompt { color: var(--accent); }
+.a-tcaret { display: inline-block; width: 30px; height: 60px; margin-left: 8px; vertical-align: -12px; background: var(--fg); }
+.a-xch { display: inline-block; width: 1ch; }
+.a-xch svg { width: 0.64em; height: 0.64em; display: block; margin: 0 auto; transform: translateY(0.04em); }
+.a-xch .a-x { stroke-width: 3.6; }
+
+.a-sub-mask { overflow: hidden; }
+.a-sub { font-family: var(--font-body); font-weight: 500; letter-spacing: -0.012em; white-space: nowrap; color: var(--fg); }
+.a-sub span { color: var(--muted); }
+
+/* ---------- S2: the reveal ---------- */
+.a-violet { background: var(--id); }
+.a-wm { font: 600 150px/180px var(--font-display); letter-spacing: -0.02em; white-space: nowrap; color: var(--fg);
+  transform-origin: 0 0; }
+.a-wmsub-mask { left: 260px; top: 262px; width: 1400px; height: 78px; overflow: hidden; }
+.a-wmsub { font: 500 56px/70px var(--font-body); letter-spacing: -0.005em; white-space: nowrap; color: var(--muted); }
+.a-draw { left: 0; top: 0; }
+.a-draw rect { fill: none; stroke: var(--id); stroke-width: 3; stroke-dasharray: 1; }
+
+/* ---------- shelf add-ons (S2–S5): overlays inside a row, never the row itself ---------- */
+.a-edge { position: absolute; inset: -2px; border: 2px solid var(--accent); border-radius: 12px; pointer-events: none; }
+.a-fill { position: absolute; inset: 0; background: var(--accent); border-radius: 10px; pointer-events: none; }
+.a-fill.a-fill-warn { background: var(--warn); }
+.a-sweep { position: absolute; inset: 0; background: rgba(70, 191, 166, 0.2); border-radius: 10px; transform-origin: 0 50%; pointer-events: none; }
+.a-streak-arm { height: 0; transform-origin: 0 0; }
+.a-streak { position: absolute; left: 0; top: -2px; width: 100%; height: 4px; border-radius: 2px; transform-origin: 0 50%; }
+.a-streak-pos { background: var(--pos); }
+.a-streak-neg { background: var(--neg); }
+.a-pos { color: var(--pos); font-weight: 700; }
+.a-neg { color: var(--neg); font-weight: 700; }
+.a-eyebrow2 { position: absolute; left: 0; top: 0; margin: 0; }
+.a-hl2 { position: absolute; left: 0; top: 0; }
+.a-warn { color: var(--warn); }
+.a-score { color: var(--score); }
+.a-src { color: var(--accent); }
+
+/* who runs it: a label chip hanging in the left gutter, in place of the prompt */
+.a-who { position: absolute; right: 100%; margin-right: 14px; top: 5px; height: 54px; padding: 0 11px; border-radius: 10px;
+  background: var(--panel); border: 2px solid var(--line); font: 600 36px/48px var(--font-body); letter-spacing: -0.01em;
+  color: var(--muted); white-space: nowrap; }
+
+/* S3: the lesson's text lifting from the command into its row */
+.a-lift { box-sizing: border-box; height: 63.8px; padding: 0 12px; border: 2px solid var(--accent); border-radius: 10px; background: var(--panel);
+  font: 500 44px/59.8px var(--font-mono); white-space: nowrap; color: var(--fg); }
+
+/* ---------- S5: the cap ---------- */
+.a-note { right: 260px; top: 226px; height: 146px; padding-right: 24px; border-right: 2px solid var(--line); text-align: right;
+  font: 500 44px/56px var(--font-body); letter-spacing: -0.008em; color: var(--muted); white-space: nowrap; }
+.a-note b { font-weight: 600; color: var(--fg); }
+.a-agecap { right: 272px; height: 66px; padding: 0 20px; border-radius: 12px; background: var(--bg); border: 2px solid var(--line);
+  font: 500 44px/60px var(--font-body); letter-spacing: -0.008em; color: var(--fg); white-space: nowrap; }
+.a-lifted { position: absolute; inset: -2px; border-radius: 12px; box-shadow: 0 14px 30px rgba(0, 0, 0, 0.6); pointer-events: none; }
+.a-white { background: #f4f1ea; }

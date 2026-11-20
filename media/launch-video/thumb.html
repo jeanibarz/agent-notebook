@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>thumbnails</title>
+<link rel="stylesheet" href="vendor/fonts.css">
+<link rel="stylesheet" href="film.css">
+<style>
+/* Thumbnails are stills, rendered through the same engine: one "scene" per option, one second each.
+   Rule: at most five words in the headline, readable when the image is 168 px wide. */
+.t-scene { background: var(--bg); }
+.t-brand { position: absolute; left: 110px; top: 78px; font: 600 54px var(--font-mono); color: var(--accent); letter-spacing: 0.02em; }
+.t-h { position: absolute; left: 104px; font: 600 214px/0.98 var(--font-display); letter-spacing: -0.03em; color: var(--fg); white-space: nowrap; }
+.t-h em { font-style: normal; color: var(--accent); }
+.t-h code { font: 700 190px var(--font-mono); color: var(--accent); letter-spacing: -0.04em; font-variant-ligatures: none; }
+.t-file { position: absolute; left: 110px; right: 110px; top: 668px; background: var(--bg-2); border: 3px solid var(--line); border-radius: 26px; padding: 34px 44px; display: flex; flex-direction: column; gap: 18px; }
+.t-line { font: 600 72px/1.15 var(--font-mono); color: var(--fg); white-space: nowrap; font-variant-ligatures: none; }
+.t-line b { color: var(--score); font-weight: 700; margin-right: 44px; }
+.t-line.t-dim { color: var(--muted); }
+.t-tally { position: absolute; left: 110px; top: 690px; display: flex; gap: 44px; }
+.t-box { width: 250px; height: 250px; border-radius: 34px; border: 6px solid var(--warn); background: rgba(224, 112, 138, 0.14); display: flex; align-items: center; justify-content: center; }
+.t-box.t-ok { border-color: var(--pos); background: rgba(74, 222, 128, 0.16); }
+.t-box svg { width: 150px; height: 150px; }
+.t-note { position: absolute; left: 1310px; top: 742px; width: 520px; font: 600 70px/1.12 var(--font-body); color: var(--fg); }
+.t-note span { color: var(--pos); }
+</style>
+</head>
+<body>
+<main id="shell">
+  <div id="frame"><div id="stage"></div></div>
+  <p id="caption"></p>
+  <div id="controls"><button id="play" type="button">Play</button><input id="scrub" type="range" min="0" max="1000" value="0"><span id="clock"></span><input id="cc" type="checkbox" checked></div>
+  <audio id="audio"></audio>
+</main>
+<script src="vendor/gsap.min.js"></script>
+<script src="engine.js"></script>
+<script>
+const CROSS = '<svg viewBox="0 0 100 100"><path d="M20 20 L80 80 M80 20 L20 80" stroke="#e0708a" stroke-width="14" stroke-linecap="round" fill="none"/></svg>';
+const CHECK = '<svg viewBox="0 0 100 100"><path d="M16 54 L40 78 L86 24" stroke="#4ade80" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+
+// Option A (t = 0): the promise. "Agent memory you can cat." over two lines of the real file.
+FILM.scene('ta', 0, 1, (root, tl, h) => {
+  root.classList.add('t-scene');
+  h.el('div', 't-brand', root, 'agent-notebook');
+  const h1 = h.el('div', 't-h', root, 'Agent memory'); h1.style.top = '170px';
+  const h2 = h.el('div', 't-h', root, 'you can <code>cat</code>.'); h2.style.top = '392px';
+  const file = h.el('div', 't-file', root);
+  h.el('div', 't-line', file, '<b>+3</b>run the build before the tests');
+  h.el('div', 't-line t-dim', file, '<b>+1</b>release by tag: CI publishes it');
+});
+
+// Option B (t = 1): the story. Three failures, then a pass.
+FILM.scene('tb', 1, 2, (root, tl, h) => {
+  root.classList.add('t-scene');
+  h.el('div', 't-brand', root, 'agent-notebook');
+  const h1 = h.el('div', 't-h', root, 'Same trap,'); h1.style.top = '170px';
+  const h2 = h.el('div', 't-h', root, 'every <em>session?</em>'); h2.style.top = '392px';
+  const tally = h.el('div', 't-tally', root);
+  for (let i = 0; i < 3; i++) h.el('div', 't-box', tally, CROSS);
+  h.el('div', 't-box t-ok', tally, CHECK);
+  h.el('div', 't-note', root, 'Give your AI agent <span>a notebook.</span>');
+});
+</script>
+<script src="player.js"></script>
+</body>
+</html>

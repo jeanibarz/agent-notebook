@@ -1,0 +1,49 @@
+{
+ "lines": [
+  {
+   "id": "l01",
+   "text": "Monday, your agent hit a trap. Tuesday. Same trap."
+  },
+  {
+   "id": "l03",
+   "text": "Agent notebook gives it a page of lessons."
+  },
+  {
+   "id": "l04",
+   "text": "One plain text file. One lesson per line."
+  },
+  {
+   "id": "l05",
+   "text": "When a task starts, your harness shows it that file. When it ends, the agent votes on what helped."
+  },
+  {
+   "id": "l06",
+   "text": "The file is capped. A new lesson always gets in. The lowest score drops out."
+  },
+  {
+   "id": "l07",
+   "text": "Lessons are shown, not searched."
+  },
+  {
+   "id": "l08",
+   "text": "Because the one that matters most, is the one your agent would never think to search for.",
+   "caption": "Because the one that matters most is the one your agent would never think to search for."
+  },
+  {
+   "id": "l09",
+   "text": "And it's plain text. You can read it, fix it, and review every change."
+  },
+  {
+   "id": "l10",
+   "text": "It's a store, not a loop. Your harness drives it."
+  },
+  {
+   "id": "l12",
+   "text": "Thursday, it reads the note first."
+  },
+  {
+   "id": "l11",
+   "text": "Agent notebook. Small memory, on purpose."
+  }
+ ]
+}

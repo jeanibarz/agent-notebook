@@ -1,0 +1,97 @@
+/* Layout: a fixed 1920x1080 stage, scaled to fit its frame; every scene is an absolutely
+   positioned full-stage section. Treatment: the repo's terminal identity (deep slate,
+   mono type, amber scores, violet ids, teal accent) with one warm-paper world for the
+   notebook itself. Green/red are reserved for +1/-1 votes. All sizes are stage pixels. */
+:root {
+  --bg: #0b0f15;        /* terminal black-slate */
+  --bg-2: #111722;
+  --panel: #1d2531;
+  --line: #2a3340;
+  --fg: #e7ebf2;
+  --muted: #8c97a8;
+  --dim: #5a6675;
+  --id: #8d8af0;        /* lesson id violet */
+  --score: #e8b05a;     /* score amber */
+  --accent: #46bfa6;    /* teal */
+  --warn: #e0708a;      /* red-pink: full / evicted */
+  --pos: #4ade80;       /* +1 */
+  --neg: #f0836b;       /* -1 */
+  --paper: #f4f1ea;
+  --ink: #241f1a;
+  --ink-teal: #0f766e;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); }
+
+/* ---------- shell (live playback only) ---------- */
+#shell { max-width: 1280px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+#frame { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+#stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; overflow: hidden;
+  background: var(--bg); font-family: var(--font-mono); -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
+#controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font: 500 14px var(--font-body); color: var(--muted); }
+#controls button { font: 600 14px var(--font-body); color: var(--bg); background: var(--accent); border: 0; border-radius: 6px;
+  padding: 8px 18px; min-width: 84px; cursor: pointer; }
+#controls button:focus-visible, #controls input:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+#scrub { flex: 1 1 200px; min-width: 0; accent-color: var(--accent); }
+#clock { font-variant-numeric: tabular-nums; }
+.cc { display: inline-flex; align-items: center; gap: 6px; }
+
+/* render mode: the frame grabber sees only the bare stage at 1:1 */
+.render body { overflow: hidden; }
+.render #shell { max-width: none; padding: 0; margin: 0; display: block; }
+.render #frame { width: 1920px; height: 1080px; aspect-ratio: auto; border: 0; border-radius: 0; }
+.render #controls, .render #audio { display: none; }
+
+/* ---------- scene base ---------- */
+.scene { position: absolute; inset: 0; visibility: hidden; overflow: hidden; }
+.abs { position: absolute; }
+.split-mask { display: inline-block; overflow: hidden; vertical-align: bottom; padding-bottom: 0.12em; margin-bottom: -0.12em; }
+.split-part { display: inline-block; will-change: transform; }
+
+/* verbatim caption: a line of page text under the picture, never inside it */
+#caption { margin: 0; min-height: 2.9em; font: 500 17px/1.45 var(--font-body); color: var(--fg); text-align: center; text-wrap: balance; }
+.nocc #caption, .render #caption { display: none; }
+
+/* ---------- shared picture elements (geometry lives in components.js) ---------- */
+#backdrop { position: absolute; inset: 0; z-index: 0; }
+.scene { z-index: 1; }
+
+.shelf { background: var(--bg-2); border: 2px solid var(--line); border-radius: 18px; }
+.shelf-head { position: absolute; left: 0; right: 0; top: 0; height: 68px; display: flex; align-items: center; gap: 18px;
+  padding: 0 26px; background: var(--panel); border-bottom: 2px solid var(--line); border-radius: 16px 16px 0 0;
+  font: 500 36px var(--font-mono); color: var(--muted); }
+.shelf-dots { display: inline-flex; gap: 10px; }
+.shelf-dots i { width: 16px; height: 16px; border-radius: 50%; background: var(--warn); }
+.shelf-dots i:nth-child(2) { background: var(--score); }
+.shelf-dots i:nth-child(3) { background: var(--accent); }
+.shelf-gauge { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.shelf-gauge.full { color: var(--warn); }
+.row { position: absolute; left: 14px; right: 14px; height: 92px; display: flex; align-items: center; gap: 0;
+  padding: 0 26px; background: var(--panel); border: 2px solid var(--line); border-radius: 12px;
+  font: 500 44px var(--font-mono); white-space: nowrap; will-change: transform; }
+.row-id { color: var(--id); width: 212px; flex: none; }
+.row-score { color: var(--score); width: 158px; flex: none; font-weight: 700; display: inline-block; transform-origin: 30% 50%; }
+.row-text { color: var(--fg); }
+.row.hot { border-color: var(--accent); }
+.row.out { border-color: var(--warn); }
+
+.strip { font: 500 44px/1.45 var(--font-mono); color: var(--fg); white-space: nowrap; }
+.strip-prompt { color: var(--accent); }
+.strip-caret { display: inline-block; width: 22px; height: 44px; margin-left: 4px; vertical-align: -8px; background: var(--fg); opacity: 0.85; }
+.strip-out { color: var(--muted); min-height: 0; }
+.strip-out em { font-style: normal; color: var(--warn); }
+.strip-out b { font-weight: 500; color: var(--pos); }
+
+.headline { color: var(--fg); }
+.eyebrow { font: 500 36px var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); min-height: 40px; margin-bottom: 14px; }
+.hl-mask { overflow: hidden; padding-bottom: 0.14em; margin-bottom: -0.14em; }
+.hl-line { font: 600 108px/1.08 var(--font-display); letter-spacing: -0.02em; white-space: nowrap; will-change: transform; }
+.hl-line.hl-sub { font: 500 56px/1.25 var(--font-body); letter-spacing: -0.005em; color: var(--muted); margin-top: 10px; }
+.hl-line em { font-style: normal; color: var(--accent); }
+.hl-line s { text-decoration: none; position: relative; color: var(--muted); }
+.note { font: 500 36px var(--font-mono); color: var(--dim); }
