@@ -6,7 +6,7 @@ usage (needs a Python with numpy, scipy and soundfile, and ffmpeg on PATH):
 
 Writes <outBase>.wav (48 kHz stereo 16-bit), <outBase>.mp3 (128 kbps), <outBase>.report.json and
 <outBase>.stems/{voice,music,sfx}.wav (pre-master, float) and <outBase>.stems/limited.wav (the
-master before loudness normalization). Timeline contract: see README.md.
+master before loudness normalization). The timeline's shape: see make-timeline.py, which writes it.
 
 Signal flow:  voice ──────────────────────────────┐
               bed -> sidechain duck (voice env) ──┼─> sum -> soft limiter -> loudnorm 2-pass -> wav/mp3

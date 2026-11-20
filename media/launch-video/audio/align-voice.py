@@ -11,7 +11,7 @@ usage: align-voice.py <script.json> <referenceDir> <newVoiceDir> <outDir> <place
   outDir                      receives one clip per sentence: <id>a.wav, <id>b.wav, ...
   placements.json             [{"id", "start"}] for make-timeline.py
   captions.js                 the caption track rebuilt from the placements
-Line start times are read from audio/make-timeline.py's REFERENCE_STARTS.
+Line start times are read from REFERENCE_STARTS in audio/reference_starts.py.
 """
 import json
 import os
@@ -60,8 +60,12 @@ os.makedirs(out_dir, exist_ok=True)
 placements, captions, report = [], [], []
 for line in json.load(open(script_path))["lines"]:
     lid, text = line["id"], line["text"]
-    sentences = [s.strip() for s in re.split(r"(?<=[.?!])\s+", text) if s.strip()]
-    n = len(sentences)
+    # "caption" is what the viewer reads, when the spoken text carries punctuation only to pace the voice.
+    shown = line.get("caption", text)
+    sentences = [s.strip() for s in re.split(r"(?<=[.?!])\s+", shown) if s.strip()]
+    n = len([s for s in re.split(r"(?<=[.?!])\s+", text) if s.strip()])
+    if len(sentences) != n:
+        sys.exit(f"{lid}: caption and text must have the same number of sentences")
     ref_runs, ref_x, ref_sr = pauses(os.path.join(ref_dir, lid + ".wav"))
     new_runs, new_x, new_sr = pauses(os.path.join(new_dir, lid + ".wav"))
     # A voice may run two short sentences together ("Tuesday. Same trap."). Cut only at the pauses
@@ -70,7 +74,7 @@ for line in json.load(open(script_path))["lines"]:
     ref_cuts = sorted(ref_runs[:cuts])
     new_cuts = sorted(new_runs[:cuts])
     if cuts < n - 1:
-        sentences = [text] if cuts == 0 else None
+        sentences = [shown] if cuts == 0 else None
     ref_lead, _ = lead_trail(ref_x, ref_sr)
     # where each sentence of the reference voice starts, in film seconds
     ref_onsets = [REFERENCE_STARTS[lid] + ref_lead] + [REFERENCE_STARTS[lid] + end for _, end in ref_cuts]
@@ -79,7 +83,7 @@ for line in json.load(open(script_path))["lines"]:
     whole_line = sentences is None            # cuts exist, but do not map one-to-one onto sentences
     line_first = len(captions)
     for k in range(cuts + 1):
-        sentence = text if whole_line else sentences[k]
+        sentence = shown if whole_line else sentences[k]
         seg = new_x[int(edges[k] * new_sr): int(edges[k + 1] * new_sr)].copy()
         # keep only 30 ms of silence around the speech, so neighbouring clips never overlap
         lead, trail = lead_trail(seg, new_sr)
@@ -99,7 +103,7 @@ for line in json.load(open(script_path))["lines"]:
     if whole_line:                            # one caption for the whole line
         t0, t1 = captions[line_first][0], captions[-1][1]
         del captions[line_first:]
-        captions.append((t0, t1, text))
+        captions.append((t0, t1, shown))
 
 for a, b in zip(report, report[1:]):
     if a[3] > b[2]:

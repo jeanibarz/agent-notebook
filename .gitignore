@@ -6,9 +6,10 @@ junit.xml
 .DS_Store
 .npmrc
 
-# launch film: build output and third-party files that are fetched, not committed
+# launch film: build output (out/), third-party files that are fetched (vendor/), and two
+# working folders that are not source: the review page (artifact/) and the launch posts (distribution/)
 media/launch-video/out/
 media/launch-video/vendor/
 media/launch-video/artifact/
 media/launch-video/distribution/
-__pycache__/
+media/launch-video/**/__pycache__/

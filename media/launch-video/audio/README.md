@@ -1,8 +1,9 @@
 # Launch film audio
 
-All audio is synthesized locally (numpy/scipy). No samples, no network, nothing licensed.
+All audio is made locally, with no network call. The music and sound effects are synthesized with
+numpy and scipy: no samples, nothing licensed. The voice is the Kokoro speech model, which is
+downloaded separately under its own licence and read from the folder named by `KOKORO_DIR`.
 Needs a Python with numpy, scipy and soundfile (plus `kokoro_onnx` for narration) and ffmpeg.
-Narration reads the Kokoro model from the folder named by `KOKORO_DIR`.
 
 | File | What it does |
 |---|---|

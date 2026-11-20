@@ -8,7 +8,6 @@ v2 answers the first review round (four simulated viewers, a craft critic, a fac
 the payoff is now shown (Thursday: the test passes), the blank-page beat and the three-word
 "Bounded. Voted. Plain text." beat are gone, the demo has fewer and slower votes, every command says
 who runs it, the aging tick is explained, small text is bigger, and the four big cuts are louder.
-`storyboard-v1.md` is the previous version.
 
 All on-screen terminal text inside the shelf, the strip, the `cat` and the `git diff` is real output
 of `nb` 0.10.0 (capture: `demo-film.txt`, the THIRD capture). The failing and passing test lines in

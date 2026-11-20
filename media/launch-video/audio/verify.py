@@ -2,7 +2,7 @@
 """Numerical quality checks for synth.py / mix.py. Prints a PASS/FAIL table.
 
 usage: python audio/verify.py <mixBase> <narrationDir>
-   e.g. python audio/verify.py out/mix out/vo
+   e.g. python audio/verify.py out/mix-final out/vo-final
 
 Checks the report and stems of a finished mix (<mixBase>.report.json, <mixBase>.stems/), then the
 synthesizer itself. The last check times a fixed 46 s mix and needs two short clips named d01.wav

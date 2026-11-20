@@ -2,7 +2,7 @@
 """Voice audition clips, including Kokoro voice blends (a weighted sum of two voice embeddings).
 usage: audition.py <outDir> <name> <speed> <soften:0|1> <voice[:weight]> [<voice:weight> ...]
 Renders the first three lines of script.json as <outDir>/<name>-<id>.wav. `soften` turns ". " into "... ",
-the longer sentence pause Kookr's speech service applies to Kokoro voices."""
+which makes Kokoro voices pause longer between sentences."""
 import json, os, re, sys
 import soundfile as sf
 from kokoro_onnx import Kokoro

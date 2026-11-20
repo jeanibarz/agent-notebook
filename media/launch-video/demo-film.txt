@@ -1,3 +1,5 @@
+Note: on the `nb list` line, the notebook folder was shortened by hand to `~/.agent-notebook/notebooks` (nb prints the full absolute path). Everything else is unedited output.
+
 ## REAL TERMINAL OUTPUT, THIRD CAPTURE — the one film draft 2 uses (nb 0.10.0 from origin/main, shelf 'build', NB_MAX_LINES=4, notebook dir is a git repo; commands shown without the shell quotes around the lesson)
 ```
 $ nb add build run the build before the tests

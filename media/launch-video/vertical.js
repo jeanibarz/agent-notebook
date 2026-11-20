@@ -14,7 +14,8 @@
  * WHY THE WINDOW IS 680 px TALL. The bounds below were measured, not guessed: for every frame of
  * every scene, the union of the client rects of all visible text nodes and painted boxes inside the
  * scene root (opacity under 0.08, full-stage layers and anything hidden behind an opaque wipe are
- * ignored; overflow masks are honoured). Script: out/v-measure/measure.mjs, data: bounds.json.
+ * ignored; overflow masks are honoured). (The measuring script and
+ * its data were build scratch and are not committed.)
  * The film is not centred in a narrow column: every scene has something to read across 1400-1680
  * stage px, so the WIDTH is what limits the scale, at 0.635-0.74 (the 16:9 film letterboxed in the
  * same canvas is 0.5625). The widest window is 1715 stage px; at 680 px tall it shows 1080 stage px
@@ -50,7 +51,7 @@
  *
  * How a window was chosen from a union:
  *  - it contains every text rect and every chip, label, caption and tally box of its part on every
- *    frame (checked for all 1470 frames by out/v-measure/check.mjs); only the single frames in the
+ *    frame (checked for all 1470 frames by a script that is not committed); only the single frames in the
  *    "may clip" column lose a few px of a box edge or of a row that is already leaving;
  *  - text that lands under canvas y = 960 must end left of canvas x = 950 (the like / comment column).
  *    That, not containment, sets the scale in S5 (the 55-character output line), in S4b-S5a (the typed
