@@ -243,7 +243,9 @@ export interface SurfacingMetrics {
  * are deployment-level, not per-shelf. "Read" is defined twice on purpose (the
  * risk the issue flags — "don't double-count the hook's own `nb list`"):
  *   - `reads` counts `show`/`list`/`search` — ANY read, so `0` means even the
- *     SessionStart hook's auto-injected `nb list` never ran (the hook cause).
+ *     SessionStart hook's auto-injected `nb list` never ran (the hook cause). A
+ *     `list` that printed the "switched off here" line (outcome `off`) showed no
+ *     index, so it is not counted (issue #517).
  *   - `readOnlySessions` counts only `show`/`search` — a *deliberate* open of
  *     notebook content, EXCLUDING the hook's automatic `nb list`, so a session
  *     where the hook injected the index but the agent never opened a notebook is
@@ -254,7 +256,7 @@ export interface EngagementDiagnosis {
   blankSessionCalls: number;
   /** Distinct NON-blank sessions that `show`/`search`ed a notebook (deliberate reads, excluding the hook's auto `nb list`) but — since this is only populated when nothing engaged — cast no vote. */
   readOnlySessions: number;
-  /** `show`/`list`/`search` rows in the window (any read, across all shelves). `0` with stored lessons ⇒ the injection hook probably never ran. */
+  /** `show`/`list`/`search` rows in the window (any read, across all shelves), except a `list` row with outcome `off` (it showed no index). `0` with stored lessons ⇒ the injection hook probably never ran. */
   reads: number;
   /** Lessons currently stored across ALL notebooks (deployment-wide); gates the hook diagnosis (nothing to surface anywhere ⇒ no "hook not wired" claim). */
   storedLessons: number;
@@ -517,10 +519,25 @@ export function parseWindowMs(raw: string | undefined): number {
   return n * (m[2] === 'd' ? 86_400_000 : m[2] === 'h' ? 3_600_000 : 60_000);
 }
 
-/** Reads for the injection-hook check (cause 3): ANY read, so the hook's auto `nb list` counts. */
+/**
+ * Reads for the injection-hook check (cause 3): ANY read, so the hook's auto `nb list` counts.
+ * A `list` row with outcome `off` is left out (see `isRead`): it printed the "switched off
+ * here" line, not the index (issue #517).
+ */
 const READ_COMMANDS = new Set(['show', 'list', 'search']);
 /** Deliberate reads for the retrospective check (cause 2): opening content, EXCLUDING the hook's auto `nb list`. */
 const DELIBERATE_READ_COMMANDS = new Set(['show', 'search']);
+
+/**
+ * Whether a row counts as a read for the injection-hook check. An `nb list` that
+ * answered "off here" (outcome `off`, FR-ENABLED-004) showed no index, so it is no
+ * evidence that the index reaches the agent. Leaving it out also matches the hook
+ * path: in an off repository the SessionStart hook prints its skip line without
+ * running `nb list`, so it logs no row at all (issue #517).
+ */
+function isRead(r: UsageRow): boolean {
+  return READ_COMMANDS.has(r.command) && !(r.command === 'list' && r.outcome === 'off');
+}
 
 /**
  * Split a **zero-engagement** window into its root cause(s) (issue #105). Called
@@ -543,7 +560,7 @@ export function diagnoseEngagement(recent: UsageRow[], storedLessons: number): E
   const readOnly = new Set<string>(); // distinct non-blank sessions with a deliberate read
   for (const r of recent) {
     if (r.session === '') blankSessionCalls++;
-    if (READ_COMMANDS.has(r.command)) reads++;
+    if (isRead(r)) reads++;
     if (r.session !== '' && DELIBERATE_READ_COMMANDS.has(r.command)) readOnly.add(r.session);
   }
   const readOnlySessions = readOnly.size;

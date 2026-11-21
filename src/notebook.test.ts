@@ -4279,6 +4279,32 @@ describe('zero-engagement root-cause diagnosis (issue #105)', () => {
     expect(d.causes).toEqual([]);
   });
 
+  test('an `nb list` that answered "off here" is not a read, so it cannot hide the hook cause (issue #517)', () => {
+    // FR-ENABLED-004: in an off repository the text `nb list` prints one skip
+    // line in place of the index and logs outcome `off`. No index was shown, so
+    // the row must not count as a read: injection-hook still fires.
+    const d = diagnoseEngagement(
+      [usageRow({ command: 'list', session: 's1', outcome: 'off' })],
+      5,
+    );
+    expect(d.reads).toBe(0);
+    expect(d.causes).toEqual(['injection-hook']);
+  });
+
+  test('the off exclusion is narrow: a list with any other outcome, or a show logged `off`, still counts', () => {
+    // Pins both halves of `command === 'list' && outcome === 'off'`: dropping
+    // either half would drop one of these reads.
+    const d = diagnoseEngagement(
+      [
+        usageRow({ command: 'list', session: 's1', outcome: '' }),
+        usageRow({ command: 'show', session: 's1', outcome: 'off' }),
+      ],
+      5,
+    );
+    expect(d.reads).toBe(2);
+    expect(d.causes).toEqual(['retrospective-not-landing']); // NOT injection-hook
+  });
+
   test('search counts as a deliberate read (retrospective cause)', () => {
     const d = diagnoseEngagement(
       [usageRow({ command: 'search', session: 's1', outcome: 'no-match', note: 'q' })],

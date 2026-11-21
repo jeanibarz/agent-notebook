@@ -370,6 +370,21 @@ describe('nb list answers off here (issue #514 slice 2)', () => {
     expect(last[7]).toBe('off');
   });
 
+  test('off: the `nb list` row is not a read in the engagement diagnosis (issue #517)', () => {
+    // The off line showed no index, so in a store used only from off
+    // repositories `nb stats` still names the "hook not wired" cause.
+    const r = offRepo();
+    expect(nb(r, ['list']).out).toBe(OFF_LINE);
+    const diag = JSON.parse(nb(r, ['stats', '--json']).out).surfacing.engagementDiagnosis;
+    expect(diag.reads).toBe(0);
+    expect(diag.causes).toContain('injection-hook');
+    // The same `nb list` with the index shown is a read, and the cause goes.
+    expect(nb(r, ['list'], { NB_ENABLED: '1' }).out).toContain('some-shelf');
+    const after = JSON.parse(nb(r, ['stats', '--json']).out).surfacing.engagementDiagnosis;
+    expect(after.reads).toBe(1);
+    expect(after.causes).not.toContain('injection-hook');
+  });
+
   test('NB_ENABLED=1 shows the index in an off repository, and --json never consults the switch', () => {
     const r = offRepo();
     const on = repo('on-repo');
