@@ -228,12 +228,12 @@ function sessionStart(env: Record<string, string>, cwd = tmp): string {
   return execFileSync('bash', [join(HOOKS, 'nb-session-start.sh')], { cwd, env: childEnv(env), encoding: 'utf-8' });
 }
 
-function stopHook(env: Record<string, string>, session = 's1', cwd = tmp): string {
+function stopHook(env: Record<string, string>, session = 's1', cwd = tmp, payload: Record<string, unknown> = {}): string {
   mkdirSync(join(tmp, 'store'), { recursive: true });
   return execFileSync('bash', [join(HOOKS, 'nb-retrospective.sh')], {
     cwd,
     env: childEnv(env),
-    input: JSON.stringify({ session_id: session, stop_hook_active: false }),
+    input: JSON.stringify({ session_id: session, stop_hook_active: false, ...payload }),
     encoding: 'utf-8',
   });
 }
@@ -328,6 +328,97 @@ describe('the README recipe: off everywhere except one repository (issue #514)',
   });
 });
 
+describe('the Stop hook: off in the project directory or in the payload cwd wins (issue #517)', () => {
+  // The session-start hook asks from the project directory; the agent's own
+  // `nb list` runs in its working directory, which Claude Code passes to the Stop
+  // hook as the payload `cwd`. Either may have told the agent to skip the
+  // retrospective, so the hook lets the stop through when either says `off`.
+  // These run the real CLI against two git repositories (a stub answers the same
+  // everywhere, so it could not show which directory decided).
+  function realNb(): string {
+    const bin = join(tmp, 'nb-real');
+    writeFileSync(bin, `#!/usr/bin/env bash\nexec '${process.execPath}' '${CLI}' "$@"\n`);
+    chmodSync(bin, 0o755);
+    return bin;
+  }
+  function twoRepos(): { on: string; off: string } {
+    const on = repo('on-repo');
+    const off = repo('off-repo');
+    git(off, 'config', 'nb.enabled', 'false');
+    return { on, off };
+  }
+
+  test('project on, payload cwd off: no nudge', () => {
+    const { on, off } = twoRepos();
+    expect(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: on }, 's1', tmp, { cwd: off })).toBe('');
+  });
+
+  test('a stop in an off cwd does not use up the nudge: a later stop back in the on project still nudges once', () => {
+    // The payload cwd changes per turn while the sentinel lasts the session, so
+    // an off answer from the cwd alone must release the sentinel.
+    const { on, off } = twoRepos();
+    const env = { NB_BIN: realNb(), CLAUDE_PROJECT_DIR: on };
+    expect(stopHook(env, 's1', tmp, { cwd: off })).toBe('');
+    expect(existsSync(join(tmp, 'store', '.retro-s1'))).toBe(false);
+    expect(JSON.parse(stopHook(env, 's1', tmp, { cwd: on })).decision).toBe('block');
+    expect(stopHook(env, 's1', tmp, { cwd: on })).toBe(''); // still only once
+  });
+
+  test('project off, payload cwd on: no nudge (session start already said skip), and the sentinel is kept', () => {
+    const { on, off } = twoRepos();
+    expect(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: off }, 's1', tmp, { cwd: on })).toBe('');
+    // The project directory does not change during a session, so its off
+    // answer keeps the sentinel and later stops exit without asking again.
+    expect(existsSync(join(tmp, 'store', '.retro-s1'))).toBe(true);
+  });
+
+  test('both on: the nudge still fires', () => {
+    const on = repo('on-repo');
+    const other = repo('another-on-repo');
+    expect(JSON.parse(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: on }, 's1', tmp, { cwd: other })).decision).toBe('block');
+  });
+
+  test('a payload cwd that no longer exists fails only its own check', () => {
+    const { on, off } = twoRepos();
+    const gone = join(tmp, 'removed-worktree');
+    expect(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: off }, 'a', tmp, { cwd: gone })).toBe('');
+    expect(JSON.parse(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: on }, 'b', tmp, { cwd: gone })).decision).toBe('block');
+    // The failed check may come first, too: a missing project directory still
+    // lets an off payload cwd decide.
+    expect(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: gone }, 'c', tmp, { cwd: off })).toBe('');
+  });
+
+  test('without CLAUDE_PROJECT_DIR the hook working directory is the project side', () => {
+    const { on, off } = twoRepos();
+    expect(stopHook({ NB_BIN: realNb() }, 'a', on, { cwd: off })).toBe('');
+    expect(stopHook({ NB_BIN: realNb() }, 'b', off, { cwd: on })).toBe('');
+  });
+
+  test('asks once when the payload cwd is the project directory, from each directory otherwise', () => {
+    const proj = join(tmp, 'proj');
+    const elsewhere = join(tmp, 'elsewhere');
+    mkdirSync(proj);
+    mkdirSync(elsewhere);
+    const { bin, log } = stubNb('on\n');
+    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 'same', tmp, { cwd: `${proj}/` })).decision).toBe('block');
+    expect(callLog(log)).toBe(`${proj} enabled\n`);
+    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 'diff', tmp, { cwd: elsewhere })).decision).toBe('block');
+    expect(callLog(log)).toBe(`${proj} enabled\n${proj} enabled\n${elsewhere} enabled\n`);
+    // A trailing slash on the project side, or an empty payload cwd, is still one directory.
+    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: `${proj}/` }, 'slash', tmp, { cwd: proj })).decision).toBe('block');
+    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 'empty', tmp, { cwd: '' })).decision).toBe('block');
+    expect(callLog(log)).toBe(`${proj} enabled\n${proj} enabled\n${elsewhere} enabled\n${proj} enabled\n${proj} enabled\n`);
+  });
+
+  test('a non-string payload cwd is ignored', () => {
+    const proj = join(tmp, 'proj');
+    mkdirSync(proj);
+    const { bin, log } = stubNb('on\n');
+    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 's1', tmp, { cwd: 42 })).decision).toBe('block');
+    expect(callLog(log)).toBe(`${proj} enabled\n`);
+  });
+});
+
 describe('nb list answers off here (issue #514 slice 2)', () => {
   const OFF_LINE =
     'agent-notebook is switched off for this repository: skip the notebook steps (no `nb show`, no end-of-task retrospective). ' +
@@ -368,6 +459,21 @@ describe('nb list answers off here (issue #514 slice 2)', () => {
     const last = rows[rows.length - 1].split('\t');
     expect(last[2]).toBe('list');
     expect(last[7]).toBe('off');
+  });
+
+  test('off: the `nb list` row is not a read in the engagement diagnosis (issue #517)', () => {
+    // The off line showed no index, so in a store used only from off
+    // repositories `nb stats` still names the "hook not wired" cause.
+    const r = offRepo();
+    expect(nb(r, ['list']).out).toBe(OFF_LINE);
+    const diag = JSON.parse(nb(r, ['stats', '--json']).out).surfacing.engagementDiagnosis;
+    expect(diag.reads).toBe(0);
+    expect(diag.causes).toContain('injection-hook');
+    // The same `nb list` with the index shown is a read, and the cause goes.
+    expect(nb(r, ['list'], { NB_ENABLED: '1' }).out).toContain('some-shelf');
+    const after = JSON.parse(nb(r, ['stats', '--json']).out).surfacing.engagementDiagnosis;
+    expect(after.reads).toBe(1);
+    expect(after.causes).not.toContain('injection-hook');
   });
 
   test('NB_ENABLED=1 shows the index in an off repository, and --json never consults the switch', () => {

@@ -12,9 +12,10 @@
 # It does not guess a notebook. The agent already knows which
 # notebooks it opened this task (moment ②) and votes/adds to those.
 #
-# Reads the hook JSON on stdin (session_id, stop_hook_active). Requires `node`
-# (already needed for `nb`) to parse/emit JSON safely. In a repository where
-# `nb enabled` prints `off` (issue #514) it lets the stop through without a nudge.
+# Reads the hook JSON on stdin (session_id, stop_hook_active, cwd). Requires `node`
+# (already needed for `nb`) to parse/emit JSON safely. When `nb enabled` prints
+# `off` (issue #514) in the project directory or in the payload's `cwd` (issue
+# #517), it lets the stop through without a nudge.
 set -uo pipefail
 
 # A leading `~` / `~/` in NB_DIR is expanded here, exactly like the package does (issue #334):
@@ -80,21 +81,49 @@ try {
   }
 } catch {}
 
-// Per-repository switch (issue #514): ask `nb enabled` once, on the stop that
-// would nudge (later stops already exit on the sentinel claim above, so this
-// costs one `nb` start per session, not one per turn). It runs after the prune,
-// so old sentinels are still reaped in an off repository. Only the literal word
+// Per-repository switch (issue #514): ask `nb enabled` on the stop that would
+// nudge (later stops already exit on the sentinel claim above, so this costs at
+// most two `nb` starts per session, not per turn). It runs after the prune, so
+// old sentinels are still reaped in an off repository. Only the literal word
 // `off` lets the stop through silently; a missing `nb`, an older `nb` without
 // the subcommand, or any error keeps the nudge.
+//
+// Two directories are asked, and `off` from either one wins (issue #517): the
+// project directory (`CLAUDE_PROJECT_DIR`, else this hook's working directory),
+// which is where the session-start hook asked, and the `cwd` Claude Code passes
+// in the hook payload, which is where the agent's own `nb list` ran. Either one
+// may already have told the agent to skip the retrospective, so a nudge would
+// contradict it. The second check is skipped when both are the same directory,
+// and a payload `cwd` that no longer exists (a removed worktree) only fails that
+// one check.
+//
+// The project directory is fixed for the session, so its `off` keeps the
+// sentinel: later stops exit on the claim without asking again. The payload
+// `cwd` changes from turn to turn, so an `off` from it alone releases the
+// sentinel: a turn that ends in an off repository must not use up the one nudge
+// of a session that later goes back to the on project. Such stops ask again,
+// which costs `nb` starts only while the agent stops in an off directory.
 {
   const { spawnSync } = require('node:child_process');
-  const r = spawnSync(process.env.NB_BIN || 'nb', ['enabled'], {
-    cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
-    encoding: 'utf-8',
-    timeout: 10000,
-    stdio: ['ignore', 'pipe', 'ignore'],
-  });
-  if (!r.error && (r.stdout || '').trim() === 'off') process.exit(0);
+  const projectDir = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
+  const dirs = [projectDir];
+  if (typeof data.cwd === 'string' && data.cwd !== '' && path.resolve(data.cwd) !== projectDir) {
+    dirs.push(path.resolve(data.cwd));
+  }
+  for (const [i, cwd] of dirs.entries()) {
+    const r = spawnSync(process.env.NB_BIN || 'nb', ['enabled'], {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 10000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (!r.error && (r.stdout || '').trim() === 'off') {
+      if (i > 0) {
+        try { fs.unlinkSync(sentinel); } catch {}
+      }
+      process.exit(0);
+    }
+  }
 }
 
 const reason = [

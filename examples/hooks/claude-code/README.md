@@ -49,8 +49,13 @@ The session-start and retrospective hooks first run `nb enabled` (from
 answer through `nb-session-start.sh`. When it prints `off` — set with `git config nb.enabled false` in a
 repository, or `--global` for all of them — the session-start hook prints one
 line telling the agent to skip the notebook steps instead of the index, and the
-retrospective hook lets the stop through. Any other answer, including an older
-`nb` that lacks the subcommand, keeps them on.
+retrospective hook lets the stop through. The retrospective hook also asks from
+the `cwd` Claude Code passes in the hook payload, when that is another directory,
+and lets the stop through if either answer is `off`: the agent's own `nb list` ran
+there and may already have told it to skip the retrospective. An `off` from the
+payload `cwd` alone does not use up the session's one nudge, so a later stop back
+in an on directory still asks for the retrospective. Any other answer,
+including an older `nb` that lacks the subcommand, keeps them on.
 
 (There is no `NB_ROLE`: the index hook injects *all* notebooks' descriptions and
 the agent chooses — nothing has to guess which notebook this project uses.)
