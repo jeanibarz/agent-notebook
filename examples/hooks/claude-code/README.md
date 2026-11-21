@@ -12,7 +12,7 @@ before relying on them in long sessions or with subagents.
 |---|---|---|
 | `nb-session-start.sh` | `SessionStart` | injects the `nb list` **index** (every notebook + its "open me when…" description) into context, so the agent sees it without a call. It never picks a notebook for the agent, so it is the same script in every project. An opt-in [layered variant](#optional-layered-index-project--domain--global) groups the index by project / domain / global. |
 | `nb-subagent-start.sh` | `SubagentStart` | hands the same index to each **subagent**, which never sees the `SessionStart` one. See [below](#give-subagents-the-index-subagentstart) for when to prefer a line in the brief. |
-| `nb-retrospective.sh` | `Stop` / `SubagentStop` | once per session, at the session's first stop, nudges the agent to vote / prune / add on the notebooks it used. |
+| `nb-retrospective.sh` | `Stop` | once per session, at the lead agent's first stop with no subagent still running, nudges it to vote / prune / add on the notebooks it used. It never nudges a subagent. |
 | `settings.json` | — | the config that registers the three scripts. |
 
 ## Install (per project, recommended first)
@@ -122,26 +122,45 @@ retrospective happen at the subagent's end: see the next section.
 `nb-retrospective.sh` fires on `Stop`, writes a `.retro-<session_id>` sentinel in
 `NB_DIR`, and blocks the stop exactly once with the retrospective checklist as the
 reason. On the next stop the sentinel exists (and `stop_hook_active` is set), so it
-lets the agent finish. Because `SubagentStop` fires with the *parent* session id,
-the first stop in a session — whether a subagent's or the main agent's — claims the
-sentinel: **one nudge per whole session**, not one per subagent. Treat it as a
-backstop; the reliable driver of each subagent's retrospective is the contract it
-was given.
+lets the agent finish: **one nudge per whole session**. Two kinds of stop are let
+through without writing the sentinel, so they never use up that nudge:
 
-Two consequences are easy to miss, because neither produces an error:
+- **A lead that is waiting for subagents.** When the `Stop` payload's
+  `background_tasks` lists a task of type `subagent` that is still `running`, the
+  lead has stopped to wait for delegated work, not because the task is done. The
+  hook lets that stop through and keeps the nudge for a later stop with no
+  subagent running, typically after the delegated work has come back. Running
+  shells and other background tasks do not count. A Claude Code that sends no
+  `background_tasks` gets the old behaviour: the first stop is nudged.
+- **A subagent.** The hook never nudges on `SubagentStop`, so it is registered
+  under `Stop` only in the example `settings.json`; an older config that still
+  registers it under `SubagentStop` is harmless, as the script exits at once
+  there. It recognises a subagent's stop by `hook_event_name` or by a non-empty
+  `agent_id`. There are two reasons. `SubagentStop` fires with the *parent*
+  session id, so a subagent that stopped first used to take the session's only
+  nudge and leave the lead without one. And blocking `SubagentStop` makes the
+  subagent continue: its answer to the nudge becomes its last message, which is
+  all the lead receives as its result, so the report it had written could come
+  back shortened or replaced. `SubagentStop` also fires for Claude Code's
+  internal agents, where nobody would read a nudge. A subagent gets the
+  retrospective from its brief instead (see
+  [subagents](../../../docs/harness-setup.md#subagents)).
 
-- **The nudge is spent at the first stop, not at the end of the task.** A lead
-  that starts background subagents stops for the first time when it begins
-  waiting for them. That stop takes the nudge. Later stops, including the real
-  end of the task, get none.
-- **A nudged subagent's report can be displaced.** Blocking `SubagentStop` makes
-  the subagent continue, and its answer to the nudge becomes the last message,
-  which is what the lead receives as the subagent's result. If your subagents get
-  the contract from their brief, remove the `SubagentStop` entry from
-  `settings.json` so the nudge always goes to the lead.
+The reason text still asks a subagent to repeat its full final report after the
+retrospective, in case another harness passes it a subagent's stop.
+
+Two limits remain:
+
+- **The nudge still marks one stop, not the end of the task.** In an interactive
+  session the lead's first stop with no subagent running is the end of its first
+  reply, and a lead that starts new subagents after the nudge gets no second one.
+  Treat the hook as a backstop: the reliable driver of the retrospective is
+  moment ④ in the contract.
+- **A subagent that never returns keeps the nudge back.** While a subagent is
+  listed as `running`, every stop of the lead is let through.
 
 [What the hooks do not cover](../../../docs/harness-setup.md#what-the-hooks-do-not-cover)
-lists all four gaps and what to do about each.
+lists the gaps and what to do about each.
 
 Nothing used to remove those `.retro-<session>` files, so on a busy machine they
 piled up unbounded — invisible to `nb list` (dotfiles are filtered) but real

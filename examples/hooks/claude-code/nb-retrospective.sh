@@ -1,18 +1,28 @@
 #!/usr/bin/env bash
-# Claude Code Stop / SubagentStop hook — nudge the RETROSPECTIVE once per session.
+# Claude Code Stop hook — nudge the RETROSPECTIVE once per session.
 #
-# Optional convenience for moment ④. The first time an agent in the session stops
-# (the end of a turn, which is not always the end of the task: see "What the hooks
-# do not cover" in docs/harness-setup.md), this fires
+# Optional convenience for moment ④. The first time the lead agent stops with no
+# subagent still running (the end of a turn, which is not always the end of the
+# task: see "What the hooks do not cover" in docs/harness-setup.md), this fires
 # ONCE per session and asks it to maintain the notebooks it used (vote the lessons
 # that helped, prune what misled, add at most one new lesson) before stopping. It
 # blocks the stop a single time by emitting a `block` decision whose reason the
 # model reads; a per-session sentinel guarantees it never loops.
 #
+# Two kinds of stop never nudge and never use up the session's nudge (issue #520):
+#   - a stop while the payload's `background_tasks` lists a subagent that is still
+#     `running`: the lead is waiting for delegated work, not finished, so the nudge
+#     is kept for a later stop;
+#   - a `SubagentStop`: a subagent gets the retrospective from its brief. Blocking
+#     its stop would make its answer to the nudge its last message, which is all
+#     its caller receives, and would leave the lead without a nudge. Registering
+#     this script under `SubagentStop` is therefore a no-op.
+#
 # It does not guess a notebook. The agent already knows which
 # notebooks it opened this task (moment ②) and votes/adds to those.
 #
-# Reads the hook JSON on stdin (session_id, stop_hook_active, cwd). Requires `node`
+# Reads the hook JSON on stdin (session_id, stop_hook_active, cwd,
+# hook_event_name, agent_id, background_tasks). Requires `node`
 # (already needed for `nb`) to parse/emit JSON safely. When `nb enabled` prints
 # `off` (issue #514) in the project directory or in the payload's `cwd` (issue
 # #517), it lets the stop through without a nudge.
@@ -39,6 +49,30 @@ try { data = JSON.parse(input || '{}'); } catch {}
 // Never loop: if we already blocked once this stop cycle, let it finish.
 if (data.stop_hook_active) process.exit(0);
 
+// A subagent's stop never nudges (issue #520). `SubagentStop` fires with the
+// parent's session_id, so before this check the first subagent to stop took the
+// session's one nudge, and its answer to it replaced the report its caller
+// receives. Internal agents (prompt suggestions, side questions) fire
+// `SubagentStop` too. `agent_id` is only set when a hook fires inside a subagent,
+// so it covers a payload that lacks `hook_event_name`. Both checks sit above the
+// sentinel claim, so a skipped stop leaves the nudge for the lead.
+if (data.hook_event_name === 'SubagentStop') process.exit(0);
+if (typeof data.agent_id === 'string' && data.agent_id !== '') process.exit(0);
+
+// A lead that stops while a subagent it started is still running is waiting,
+// not finished (issue #520): it will be woken when the subagent returns. Let this
+// stop through without claiming the sentinel, so the nudge goes to a later stop
+// with no subagent in flight. Other background tasks (shells, ...) do not count,
+// and a missing or malformed `background_tasks` keeps the old behaviour.
+if (
+  Array.isArray(data.background_tasks) &&
+  data.background_tasks.some(
+    (t) => t !== null && typeof t === 'object' && t.type === 'subagent' && t.status === 'running',
+  )
+) {
+  process.exit(0);
+}
+
 // session_id is untrusted input that becomes part of a file name: keep only
 // [A-Za-z0-9._-] (so a `/` or `../` can never leave the sentinel directory or hit
 // ENOENT and fail open into a nudge on every stop) and cap the length. UUID-shaped
@@ -48,12 +82,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const sentinel = path.join(sentinelDir, `.retro-${session}`);
 
-// Claim this session's sentinel atomically. (SubagentStop fires with the parent
-// session id, so the first stop — a subagent's or the main agent's — claims the
-// sentinel and later stops are let through: one nudge/session.) The `wx` flag
+// Claim this session's sentinel atomically: the first stop that gets here claims
+// it and later stops are let through, one nudge per session. The `wx` flag
 // makes create-if-absent a single OS-atomic step, so two hook processes racing
-// on one parent session_id (parallel subagents stopping at once) can't both see
-// the sentinel absent and both nudge: exactly one `writeFileSync` wins, the
+// on one session_id (the script registered in two settings files, or a
+// subagent stop whose payload carries neither field checked above) can't both
+// see the sentinel absent and both nudge: exactly one `writeFileSync` wins, the
 // other throws EEXIST and allows its stop. Any OTHER write error fails open —
 // fall through and still nudge rather than silently drop the retrospective.
 try {
@@ -134,7 +168,8 @@ const reason = [
   `  4. nb merge/split <shelf> …    — only if lessons repeat or a line holds two`,
   `  5. nb add  <shelf> "<=200-char lesson"   — at MOST one new, non-obvious lesson, to the notebook it fits (or none)`,
   `     Length: aim for ~150 chars / one clause, no preamble — over 200 is rejected, not truncated.`,
-  `Do not pad to hit a quota — "nothing new worth storing" is a valid outcome. Then stop.`,
+  `Do not pad to hit a quota — "nothing new worth storing" is a valid outcome.`,
+  `If you are a subagent, end by repeating your full final report after the retrospective: your last message is all your caller receives. Then stop.`,
 ].join('\n');
 
 process.stdout.write(JSON.stringify({ decision: 'block', reason }));
