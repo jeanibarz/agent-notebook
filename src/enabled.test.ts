@@ -353,13 +353,27 @@ describe('the Stop hook: off in the project directory or in the payload cwd wins
     expect(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: on }, 's1', tmp, { cwd: off })).toBe('');
   });
 
-  test('project off, payload cwd on: no nudge (session start already said skip)', () => {
+  test('a stop in an off cwd does not use up the nudge: a later stop back in the on project still nudges once', () => {
+    // The payload cwd changes per turn while the sentinel lasts the session, so
+    // an off answer from the cwd alone must release the sentinel.
+    const { on, off } = twoRepos();
+    const env = { NB_BIN: realNb(), CLAUDE_PROJECT_DIR: on };
+    expect(stopHook(env, 's1', tmp, { cwd: off })).toBe('');
+    expect(existsSync(join(tmp, 'store', '.retro-s1'))).toBe(false);
+    expect(JSON.parse(stopHook(env, 's1', tmp, { cwd: on })).decision).toBe('block');
+    expect(stopHook(env, 's1', tmp, { cwd: on })).toBe(''); // still only once
+  });
+
+  test('project off, payload cwd on: no nudge (session start already said skip), and the sentinel is kept', () => {
     const { on, off } = twoRepos();
     expect(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: off }, 's1', tmp, { cwd: on })).toBe('');
+    // The project directory does not change during a session, so its off
+    // answer keeps the sentinel and later stops exit without asking again.
+    expect(existsSync(join(tmp, 'store', '.retro-s1'))).toBe(true);
   });
 
   test('both on: the nudge still fires', () => {
-    const { on } = twoRepos();
+    const on = repo('on-repo');
     const other = repo('another-on-repo');
     expect(JSON.parse(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: on }, 's1', tmp, { cwd: other })).decision).toBe('block');
   });
@@ -369,6 +383,9 @@ describe('the Stop hook: off in the project directory or in the payload cwd wins
     const gone = join(tmp, 'removed-worktree');
     expect(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: off }, 'a', tmp, { cwd: gone })).toBe('');
     expect(JSON.parse(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: on }, 'b', tmp, { cwd: gone })).decision).toBe('block');
+    // The failed check may come first, too: a missing project directory still
+    // lets an off payload cwd decide.
+    expect(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: gone }, 'c', tmp, { cwd: off })).toBe('');
   });
 
   test('without CLAUDE_PROJECT_DIR the hook working directory is the project side', () => {
@@ -387,6 +404,10 @@ describe('the Stop hook: off in the project directory or in the payload cwd wins
     expect(callLog(log)).toBe(`${proj} enabled\n`);
     expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 'diff', tmp, { cwd: elsewhere })).decision).toBe('block');
     expect(callLog(log)).toBe(`${proj} enabled\n${proj} enabled\n${elsewhere} enabled\n`);
+    // A trailing slash on the project side, or an empty payload cwd, is still one directory.
+    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: `${proj}/` }, 'slash', tmp, { cwd: proj })).decision).toBe('block');
+    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 'empty', tmp, { cwd: '' })).decision).toBe('block');
+    expect(callLog(log)).toBe(`${proj} enabled\n${proj} enabled\n${elsewhere} enabled\n${proj} enabled\n${proj} enabled\n`);
   });
 
   test('a non-string payload cwd is ignored', () => {

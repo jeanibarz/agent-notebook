@@ -1541,8 +1541,10 @@ the notebook steps instead of the index (silence would leave a machine-wide cont
 `nb-retrospective.sh` SHALL let the stop through without a nudge, asking `nb enabled` only on the stop
 that claims the sentinel. `nb-retrospective.sh` SHALL also ask from the `cwd` in its hook payload when
 that names another directory, and an `off` from either directory SHALL let the stop through: the
-agent's own `nb list` ran there and may have told it to skip the retrospective (issue #517). The session-start hook SHALL run its own `nb list`
-calls with `NB_ENABLED=1`, so its index never disagrees with the check it made from
+agent's own `nb list` ran there and may have told it to skip the retrospective (issue #517). An `off`
+from the payload `cwd` alone SHALL release the session's sentinel, so a later stop from an on
+directory still nudges once. The session-start hook SHALL run its own `nb list` calls with `NB_ENABLED=1`, so its index never
+disagrees with the check it made from
 `CLAUDE_PROJECT_DIR` ([FR-ENABLED-004](#fr-enabled-004)). `nb-subagent-start.sh` SHALL hand a
 subagent exactly what `nb-session-start.sh` prints, so a subagent in an off repository receives that
 same one line and not the index.

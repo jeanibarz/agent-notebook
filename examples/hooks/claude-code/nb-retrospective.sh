@@ -96,6 +96,13 @@ try {
 // contradict it. The second check is skipped when both are the same directory,
 // and a payload `cwd` that no longer exists (a removed worktree) only fails that
 // one check.
+//
+// The project directory is fixed for the session, so its `off` keeps the
+// sentinel: later stops exit on the claim without asking again. The payload
+// `cwd` changes from turn to turn, so an `off` from it alone releases the
+// sentinel: a turn that ends in an off repository must not use up the one nudge
+// of a session that later goes back to the on project. Such stops ask again,
+// which costs `nb` starts only while the agent stops in an off directory.
 {
   const { spawnSync } = require('node:child_process');
   const projectDir = path.resolve(process.env.CLAUDE_PROJECT_DIR || process.cwd());
@@ -103,14 +110,19 @@ try {
   if (typeof data.cwd === 'string' && data.cwd !== '' && path.resolve(data.cwd) !== projectDir) {
     dirs.push(path.resolve(data.cwd));
   }
-  for (const cwd of dirs) {
+  for (const [i, cwd] of dirs.entries()) {
     const r = spawnSync(process.env.NB_BIN || 'nb', ['enabled'], {
       cwd,
       encoding: 'utf-8',
       timeout: 10000,
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    if (!r.error && (r.stdout || '').trim() === 'off') process.exit(0);
+    if (!r.error && (r.stdout || '').trim() === 'off') {
+      if (i > 0) {
+        try { fs.unlinkSync(sentinel); } catch {}
+      }
+      process.exit(0);
+    }
   }
 }
 
