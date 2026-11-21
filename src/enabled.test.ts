@@ -228,12 +228,12 @@ function sessionStart(env: Record<string, string>, cwd = tmp): string {
   return execFileSync('bash', [join(HOOKS, 'nb-session-start.sh')], { cwd, env: childEnv(env), encoding: 'utf-8' });
 }
 
-function stopHook(env: Record<string, string>, session = 's1', cwd = tmp): string {
+function stopHook(env: Record<string, string>, session = 's1', cwd = tmp, payload: Record<string, unknown> = {}): string {
   mkdirSync(join(tmp, 'store'), { recursive: true });
   return execFileSync('bash', [join(HOOKS, 'nb-retrospective.sh')], {
     cwd,
     env: childEnv(env),
-    input: JSON.stringify({ session_id: session, stop_hook_active: false }),
+    input: JSON.stringify({ session_id: session, stop_hook_active: false, ...payload }),
     encoding: 'utf-8',
   });
 }
@@ -325,6 +325,76 @@ describe('the README recipe: off everywhere except one repository (issue #514)',
     expect(nb(pilot, ['enabled'], { NB_ENABLED: '0' }).out).toBe('off\n');
     // Only the retro sentinels landed in the store; the switch wrote no notebook.
     expect(readdirSync(join(tmp, 'store')).filter((f) => !f.startsWith('.'))).toEqual([]);
+  });
+});
+
+describe('the Stop hook: off in the project directory or in the payload cwd wins (issue #517)', () => {
+  // The session-start hook asks from the project directory; the agent's own
+  // `nb list` runs in its working directory, which Claude Code passes to the Stop
+  // hook as the payload `cwd`. Either may have told the agent to skip the
+  // retrospective, so the hook lets the stop through when either says `off`.
+  // These run the real CLI against two git repositories (a stub answers the same
+  // everywhere, so it could not show which directory decided).
+  function realNb(): string {
+    const bin = join(tmp, 'nb-real');
+    writeFileSync(bin, `#!/usr/bin/env bash\nexec '${process.execPath}' '${CLI}' "$@"\n`);
+    chmodSync(bin, 0o755);
+    return bin;
+  }
+  function twoRepos(): { on: string; off: string } {
+    const on = repo('on-repo');
+    const off = repo('off-repo');
+    git(off, 'config', 'nb.enabled', 'false');
+    return { on, off };
+  }
+
+  test('project on, payload cwd off: no nudge', () => {
+    const { on, off } = twoRepos();
+    expect(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: on }, 's1', tmp, { cwd: off })).toBe('');
+  });
+
+  test('project off, payload cwd on: no nudge (session start already said skip)', () => {
+    const { on, off } = twoRepos();
+    expect(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: off }, 's1', tmp, { cwd: on })).toBe('');
+  });
+
+  test('both on: the nudge still fires', () => {
+    const { on } = twoRepos();
+    const other = repo('another-on-repo');
+    expect(JSON.parse(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: on }, 's1', tmp, { cwd: other })).decision).toBe('block');
+  });
+
+  test('a payload cwd that no longer exists fails only its own check', () => {
+    const { on, off } = twoRepos();
+    const gone = join(tmp, 'removed-worktree');
+    expect(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: off }, 'a', tmp, { cwd: gone })).toBe('');
+    expect(JSON.parse(stopHook({ NB_BIN: realNb(), CLAUDE_PROJECT_DIR: on }, 'b', tmp, { cwd: gone })).decision).toBe('block');
+  });
+
+  test('without CLAUDE_PROJECT_DIR the hook working directory is the project side', () => {
+    const { on, off } = twoRepos();
+    expect(stopHook({ NB_BIN: realNb() }, 'a', on, { cwd: off })).toBe('');
+    expect(stopHook({ NB_BIN: realNb() }, 'b', off, { cwd: on })).toBe('');
+  });
+
+  test('asks once when the payload cwd is the project directory, from each directory otherwise', () => {
+    const proj = join(tmp, 'proj');
+    const elsewhere = join(tmp, 'elsewhere');
+    mkdirSync(proj);
+    mkdirSync(elsewhere);
+    const { bin, log } = stubNb('on\n');
+    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 'same', tmp, { cwd: `${proj}/` })).decision).toBe('block');
+    expect(callLog(log)).toBe(`${proj} enabled\n`);
+    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 'diff', tmp, { cwd: elsewhere })).decision).toBe('block');
+    expect(callLog(log)).toBe(`${proj} enabled\n${proj} enabled\n${elsewhere} enabled\n`);
+  });
+
+  test('a non-string payload cwd is ignored', () => {
+    const proj = join(tmp, 'proj');
+    mkdirSync(proj);
+    const { bin, log } = stubNb('on\n');
+    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 's1', tmp, { cwd: 42 })).decision).toBe('block');
+    expect(callLog(log)).toBe(`${proj} enabled\n`);
   });
 });
 

@@ -1538,13 +1538,16 @@ it is never listed as not read by `nb` ([FR-CONFIG-001](#fr-config-001)).
 output `off`, so a missing `nb`, an older `nb` without the subcommand (no stdout, exit 2) or any error
 keeps today's behavior. When off, `nb-session-start.sh` SHALL print one line telling the agent to skip
 the notebook steps instead of the index (silence would leave a machine-wide contract in force), and
-`nb-retrospective.sh` SHALL let the stop through without a nudge, asking `nb enabled` at most once per
-session (on the stop that claims the sentinel). The session-start hook SHALL run its own `nb list`
+`nb-retrospective.sh` SHALL let the stop through without a nudge, asking `nb enabled` only on the stop
+that claims the sentinel. `nb-retrospective.sh` SHALL also ask from the `cwd` in its hook payload when
+that names another directory, and an `off` from either directory SHALL let the stop through: the
+agent's own `nb list` ran there and may have told it to skip the retrospective (issue #517). The session-start hook SHALL run its own `nb list`
 calls with `NB_ENABLED=1`, so its index never disagrees with the check it made from
 `CLAUDE_PROJECT_DIR` ([FR-ENABLED-004](#fr-enabled-004)). `nb-subagent-start.sh` SHALL hand a
 subagent exactly what `nb-session-start.sh` prints, so a subagent in an off repository receives that
 same one line and not the index.
-*Proven by:* `enabled.test.ts` → `describe('the example hooks honour nb enabled (issue #514)')` and
+*Proven by:* `enabled.test.ts` → `describe('the example hooks honour nb enabled (issue #514)')`,
+`describe('the Stop hook: off in the project directory or in the payload cwd wins (issue #517)')` and
 `describe('the README recipe: off everywhere except one repository (issue #514)')`;
 `nb-subagent-start.test.ts` → `describe('nb-subagent-start.sh')`.
 
