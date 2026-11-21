@@ -126,17 +126,19 @@ lets the agent finish: **one nudge per whole session**. Two kinds of stop are le
 through without writing the sentinel, so they never use up that nudge:
 
 - **A lead that is waiting for subagents.** When the `Stop` payload's
-  `background_tasks` lists a task of type `subagent` that is still `running`, the
-  lead has stopped to wait for delegated work, not because the task is done. The
-  hook lets that stop through and keeps the nudge for a later stop with no
-  subagent running, typically after the delegated work has come back. Running
-  shells and other background tasks do not count. A Claude Code that sends no
-  `background_tasks` gets the old behaviour: the first stop is nudged.
+  `background_tasks` lists delegated work that is still `running` or `pending`
+  (a task of type `subagent`, `workflow`, `teammate` or `cloud session`), the
+  lead has stopped to wait for it, not because the task is done. The hook lets
+  that stop through and keeps the nudge for a later stop with nothing delegated
+  in flight, typically after the delegated work has come back. Shells, monitors
+  and other background tasks do not count. A Claude Code that sends no
+  `background_tasks` nudges the lead's first stop, even one where it is waiting
+  for subagents.
 - **A subagent.** The hook never nudges on `SubagentStop`, so it is registered
   under `Stop` only in the example `settings.json`; an older config that still
   registers it under `SubagentStop` is harmless, as the script exits at once
   there. It recognises a subagent's stop by `hook_event_name` or by a non-empty
-  `agent_id`. There are two reasons. `SubagentStop` fires with the *parent*
+  `agent_id`. There are three reasons. `SubagentStop` fires with the *parent*
   session id, so a subagent that stopped first used to take the session's only
   nudge and leave the lead without one. And blocking `SubagentStop` makes the
   subagent continue: its answer to the nudge becomes its last message, which is

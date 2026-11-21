@@ -10,9 +10,10 @@
 # model reads; a per-session sentinel guarantees it never loops.
 #
 # Two kinds of stop never nudge and never use up the session's nudge (issue #520):
-#   - a stop while the payload's `background_tasks` lists a subagent that is still
-#     `running`: the lead is waiting for delegated work, not finished, so the nudge
-#     is kept for a later stop;
+#   - a stop while the payload's `background_tasks` lists delegated work (a
+#     subagent, workflow, teammate or cloud session) that is still `running` or
+#     `pending`: the lead is waiting for it, not finished, so the nudge is kept
+#     for a later stop;
 #   - a `SubagentStop`: a subagent gets the retrospective from its brief. Blocking
 #     its stop would make its answer to the nudge its last message, which is all
 #     its caller receives, and would leave the lead without a nudge. Registering
@@ -59,15 +60,21 @@ if (data.stop_hook_active) process.exit(0);
 if (data.hook_event_name === 'SubagentStop') process.exit(0);
 if (typeof data.agent_id === 'string' && data.agent_id !== '') process.exit(0);
 
-// A lead that stops while a subagent it started is still running is waiting,
-// not finished (issue #520): it will be woken when the subagent returns. Let this
+// A lead that stops while work it delegated is still in flight is waiting, not
+// finished (issue #520): it will be woken when that work comes back. Let this
 // stop through without claiming the sentinel, so the nudge goes to a later stop
-// with no subagent in flight. Other background tasks (shells, ...) do not count,
-// and a missing or malformed `background_tasks` keeps the old behaviour.
+// with nothing delegated in flight. Delegated work is a task whose `type` is one
+// of the labels Claude Code (2.1.330) gives agent work: `subagent`, `workflow`,
+// `teammate` and `cloud session`. It counts while its `status` is `running` or
+// `pending` (started but not yet running). Shells, monitors and other
+// background tasks do not count, and a missing or malformed `background_tasks`
+// keeps the old behaviour.
+const DELEGATED_TYPES = new Set(['subagent', 'workflow', 'teammate', 'cloud session']);
+const IN_FLIGHT = new Set(['running', 'pending']);
 if (
   Array.isArray(data.background_tasks) &&
   data.background_tasks.some(
-    (t) => t !== null && typeof t === 'object' && t.type === 'subagent' && t.status === 'running',
+    (t) => t !== null && typeof t === 'object' && DELEGATED_TYPES.has(t.type) && IN_FLIGHT.has(t.status),
   )
 ) {
   process.exit(0);

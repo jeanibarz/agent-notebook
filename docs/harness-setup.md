@@ -153,7 +153,8 @@ Each one is silent: nothing errors, and `nb stats` still reports engaged session
    an interactive session the first such stop is the end of the first reply, and
    a lead that delegates again after the nudge gets no second one. Whatever is
    learned after the nudge gets none. (A Claude Code that sends no
-   `background_tasks` nudges the session's first stop, as before.)
+   `background_tasks` nudges the lead's first stop, even one where it is waiting
+   for subagents.)
 2. **Subagents are never nudged.** The hook lets every `SubagentStop` through,
    so the only retrospective a subagent runs is the one its brief asks for.
 3. **A blocked subagent stop would cost its report.** This is why the hook stays

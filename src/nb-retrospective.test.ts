@@ -358,8 +358,27 @@ describe('nb-retrospective.sh nudge timing (issue #520)', () => {
   // Only a running subagent means "waiting". Anything else, including a payload
   // from a Claude Code that sends no background_tasks or a malformed one, nudges
   // exactly as before.
+  // Every kind of delegated work Claude Code lists, running or not yet started,
+  // holds the nudge back; the next stop with none in flight still gets it.
+  test.each([
+    ['a pending subagent', [running('subagent', 'pending')]],
+    ['a running workflow', [running('workflow')]],
+    ['a running teammate', [running('teammate')]],
+    ['a running cloud session', [running('cloud session')]],
+    ['a pending workflow next to a completed subagent', [running('subagent', 'completed'), running('workflow', 'pending')]],
+  ])('a stop with %s is not nudged', (_label, tasks) => {
+    expect(runHook({ session_id: 'sess-deleg', hook_event_name: 'Stop', background_tasks: tasks })).toBe('');
+    expect(existsSync(join(dir, '.retro-sess-deleg'))).toBe(false);
+    expect(JSON.parse(runHook({ session_id: 'sess-deleg', hook_event_name: 'Stop', background_tasks: [] })).decision).toBe('block');
+  });
+
   test.each([
     ['a running shell only', [running('shell')]],
+    ['a pending shell', [running('shell', 'pending')]],
+    ['a completed workflow', [running('workflow', 'completed')]],
+    ['a subagent with an unknown status', [running('subagent', 'killed')]],
+    ['a running task of another type', [running('monitor')]],
+    ['a running shell and another running task', [running('shell'), running('monitor')]],
     ['a completed subagent', [running('subagent', 'completed')]],
     ['a failed subagent', [running('subagent', 'failed')]],
     ['an empty list', []],
