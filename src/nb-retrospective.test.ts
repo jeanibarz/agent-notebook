@@ -315,3 +315,149 @@ describe('nb-retrospective.sh session_id sanitizing (issue #460)', () => {
     expect(readdirSync(dir)).toEqual([`.retro-${'a'.repeat(128)}`]);
   });
 });
+
+// Issue #520: the one nudge went to the session's first stop. A lead that
+// delegated to background subagents spent it the moment it began waiting, and a
+// subagent that stopped first took it, its answer to the nudge then replacing the
+// report its caller receives. Now a stop while a subagent is running, and every
+// subagent stop, leave the nudge unspent for a later stop of the lead.
+describe('nb-retrospective.sh nudge timing (issue #520)', () => {
+  const running = (type: string, status = 'running') => ({ id: `t-${type}-${status}`, type, status });
+
+  test('a lead stopping while a background subagent runs is not nudged, and is nudged at the next stop with none running', () => {
+    const waiting = runHook({
+      session_id: 'sess-wait',
+      hook_event_name: 'Stop',
+      background_tasks: [running('subagent'), running('shell')],
+    });
+    expect(waiting).toBe('');
+    // The waiting stop must not use up the nudge.
+    expect(existsSync(join(dir, '.retro-sess-wait'))).toBe(false);
+
+    const done = runHook({
+      session_id: 'sess-wait',
+      hook_event_name: 'Stop',
+      background_tasks: [running('subagent', 'completed')],
+    });
+    expect(JSON.parse(done).decision).toBe('block');
+    expect(existsSync(join(dir, '.retro-sess-wait'))).toBe(true);
+
+    // Still one nudge per session: a third stop is let through.
+    expect(runHook({ session_id: 'sess-wait', hook_event_name: 'Stop', background_tasks: [] })).toBe('');
+  });
+
+  test('several waiting stops in a row never claim the sentinel', () => {
+    for (let i = 0; i < 3; i++) {
+      const out = runHook({ session_id: 'sess-many', hook_event_name: 'Stop', background_tasks: [running('subagent')] });
+      expect(out).toBe('');
+    }
+    expect(readdirSync(dir).filter((n) => n.startsWith('.retro-'))).toEqual([]);
+    expect(JSON.parse(runHook({ session_id: 'sess-many', hook_event_name: 'Stop' })).decision).toBe('block');
+  });
+
+  // Only a running subagent means "waiting". Anything else, including a payload
+  // from a Claude Code that sends no background_tasks or a malformed one, nudges
+  // exactly as before.
+  // Every kind of delegated work Claude Code lists, running or not yet started,
+  // holds the nudge back; the next stop with none in flight still gets it.
+  test.each([
+    ['a pending subagent', [running('subagent', 'pending')]],
+    ['a running workflow', [running('workflow')]],
+    ['a running teammate', [running('teammate')]],
+    ['a running cloud session', [running('cloud session')]],
+    ['a pending workflow next to a completed subagent', [running('subagent', 'completed'), running('workflow', 'pending')]],
+  ])('a stop with %s is not nudged', (_label, tasks) => {
+    expect(runHook({ session_id: 'sess-deleg', hook_event_name: 'Stop', background_tasks: tasks })).toBe('');
+    expect(existsSync(join(dir, '.retro-sess-deleg'))).toBe(false);
+    expect(JSON.parse(runHook({ session_id: 'sess-deleg', hook_event_name: 'Stop', background_tasks: [] })).decision).toBe('block');
+  });
+
+  test.each([
+    ['a running shell only', [running('shell')]],
+    ['a pending shell', [running('shell', 'pending')]],
+    ['a completed workflow', [running('workflow', 'completed')]],
+    ['a subagent with an unknown status', [running('subagent', 'killed')]],
+    ['a running task of another type', [running('monitor')]],
+    ['a running shell and another running task', [running('shell'), running('monitor')]],
+    ['a completed subagent', [running('subagent', 'completed')]],
+    ['a failed subagent', [running('subagent', 'failed')]],
+    ['an empty list', []],
+    ['a string', 'subagent running'],
+    ['null', null],
+    ['an object, not a list', { type: 'subagent', status: 'running' }],
+    ['entries that are not objects', [null, 'subagent', 7, ['subagent', 'running']]],
+  ])('background_tasks with %s still nudges', (_label, tasks) => {
+    const out = runHook({ session_id: 'sess-other', hook_event_name: 'Stop', background_tasks: tasks });
+    expect(out).not.toBe('');
+    expect(JSON.parse(out).decision).toBe('block');
+    expect(existsSync(join(dir, '.retro-sess-other'))).toBe(true);
+  });
+
+  test('a SubagentStop never nudges and leaves the nudge for the lead', () => {
+    // A real SubagentStop payload: the parent's session_id, the subagent's own
+    // id and type, and its own entry still `running` in background_tasks.
+    const sub = runHook({
+      session_id: 'sess-sub',
+      hook_event_name: 'SubagentStop',
+      agent_id: 'agent-123',
+      agent_type: 'general-purpose',
+      background_tasks: [{ id: 'agent-123', type: 'subagent', status: 'running' }],
+    });
+    expect(sub).toBe('');
+    expect(existsSync(join(dir, '.retro-sess-sub'))).toBe(false);
+
+    const lead = runHook({ session_id: 'sess-sub', hook_event_name: 'Stop', background_tasks: [] });
+    expect(JSON.parse(lead).decision).toBe('block');
+  });
+
+  test('a SubagentStop with nothing running is not nudged either', () => {
+    // Guards the event check on its own: with no running subagent listed, only
+    // `hook_event_name` tells this stop apart from the lead's.
+    expect(runHook({ session_id: 'sess-sub2', hook_event_name: 'SubagentStop' })).toBe('');
+    expect(existsSync(join(dir, '.retro-sess-sub2'))).toBe(false);
+  });
+
+  test('a payload with agent_id but no hook_event_name is treated as a subagent stop', () => {
+    expect(runHook({ session_id: 'sess-sub3', agent_id: 'agent-9' })).toBe('');
+    expect(existsSync(join(dir, '.retro-sess-sub3'))).toBe(false);
+    // An empty agent_id is not a subagent: the lead's stop still nudges.
+    expect(JSON.parse(runHook({ session_id: 'sess-sub3', agent_id: '' })).decision).toBe('block');
+  });
+
+  test('a Stop that carries agent_type but no agent_id (a session started with --agent) still nudges', () => {
+    const out = runHook({ session_id: 'sess-agent', hook_event_name: 'Stop', agent_type: 'reviewer' });
+    expect(JSON.parse(out).decision).toBe('block');
+  });
+
+  test('stop_hook_active still wins on a stop that would otherwise nudge', () => {
+    expect(runHook({ session_id: 'sess-active', hook_event_name: 'Stop', stop_hook_active: true })).toBe('');
+    expect(existsSync(join(dir, '.retro-sess-active'))).toBe(false);
+  });
+
+  test('concurrent lead stops after the subagents return produce one nudge [timing]', async () => {
+    const runs = await raceHooks(12, {
+      session_id: 'sess-race-520',
+      hook_event_name: 'Stop',
+      background_tasks: [running('subagent', 'completed')],
+    });
+    expect(runs.filter((r) => r.out.trim() !== '')).toHaveLength(1);
+    expect(runs.every((r) => r.code === 0)).toBe(true);
+  }, 30_000);
+
+  test('the reason asks a subagent to end with its full report', () => {
+    const reason = (JSON.parse(runHook({ session_id: 'sess-reason' })) as { reason: string }).reason;
+    expect(reason).toMatch(/If you are a subagent, end by repeating your full final report after the retrospective/);
+    expect(reason).toMatch(/your last message is all your caller receives/);
+    // The report line comes after the checklist, right before the stop.
+    expect(reason.trimEnd().endsWith('Then stop.')).toBe(true);
+  });
+
+  test('the example settings.json registers the hook under Stop and not under SubagentStop', () => {
+    const settings = JSON.parse(readFileSync(join(dirname(hook), 'settings.json'), 'utf-8')) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const commands = (event: string) => (settings.hooks[event] ?? []).flatMap((g) => g.hooks.map((h) => h.command));
+    expect(commands('Stop').some((c) => c.endsWith('/nb-retrospective.sh'))).toBe(true);
+    expect(settings.hooks.SubagentStop).toBeUndefined();
+  });
+});

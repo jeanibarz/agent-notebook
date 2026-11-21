@@ -5,6 +5,7 @@
   "//3": "them executable: chmod +x nb-session-start.sh nb-subagent-start.sh nb-retrospective.sh",
   "//4": "These hooks are optional; the required integration is the AGENTS.md/CLAUDE.md contract.",
   "//5": "Optionally set env (NB_DIR, NB_SESSION, NB_BIN) in your shell or here.",
+  "//6": "nb-retrospective.sh is registered under Stop only: it never nudges a subagent (SubagentStop), so it is not registered there.",
   "hooks": {
     "SessionStart": [
       {
@@ -27,16 +28,6 @@
       }
     ],
     "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/ABSOLUTE/PATH/examples/hooks/claude-code/nb-retrospective.sh"
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
       {
         "hooks": [
           {
