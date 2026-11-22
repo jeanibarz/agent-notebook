@@ -321,3 +321,30 @@ Votes keep a lesson ahead of the decay; silence lets the decay catch up.
 - **Not dependent on git.** Git versioning and the janitor remain optional harness
   that can do *better*, recency-aware pruning out-of-band; the core needs none of
   it.
+
+## A full shelf is the normal state
+
+*Operating advice that follows from the policy above. It used to live in the README.*
+
+A shelf at its cap is not a problem to fix. Eviction and aging only run on a full shelf: each new lesson pushes out the lowest-scored one, and the stalest survivor loses a point and goes to the back of the queue, so lessons nobody votes for leave over time. That pressure is what keeps a shelf focused, and it is why the default cap is a tight 50 lines.
+
+Do not divide a shelf into two shelves because it is full. (This is not about `nb split`, which cuts one overloaded lesson in two.) Dividing makes two half-empty shelves where nothing is evicted, so stale lessons pile up again, and every new shelf lengthens the index that agents read to choose one. Many small shelves with overlapping descriptions are harder to choose from than one full shelf.
+
+**How long does a lesson get?** On a full shelf each add evicts one line, so a lesson that never gets a vote lasts about `cap ÷ adds per day` at most. A vote buys a lesson time: each point is one more pass of the aging it can absorb before it reaches the bottom score. With a cap of ten, on a shelf of unvoted lessons where nothing else is voted, a lesson is evicted by the 10th add after its last touch at +1, the 19th at +2 and the 37th at +4. A vote on another lesson can shorten a pass, so on a busy shelf a voted lesson can still leave within `cap` adds. `nb stats` prints each shelf's accepted adds in the window and, for a full shelf, that estimate (`~10d retention`): it is the most time a new lesson has to earn its first vote. It can get much less on a shelf where most lessons are voted, because the unvoted ones are evicted first. Read it before reading "FULL" as healthy: a window of days means the shelf forgets unvoted lessons quickly. The first remedy is **fewer adds per session** (the `add-burst` signal names the sessions that wrote more than `NB_ADD_BURST_N` lessons into one shelf), before dividing the shelf or raising the cap. The estimate is calendar days over the `--since` window, and a shelf younger than the window reads longer than it is. The exception is a usage log that has reached its row cap and no longer reaches back to the window start: the rate then divides by the days from its oldest row to now, with a floor of one day (or the window, if shorter), and under that floor the rate is a lower bound and no retention is printed.
+
+Act only when a full shelf loses lessons that agents still use:
+
+- **Signal:** `nb stats` reports `eviction-while-still-voted` for the shelf repeatedly: a lesson was evicted after being upvoted in the window (and not below 0), or with a score above the +1 a new lesson starts at. The [example janitor](harness-setup.md#the-janitor) flags a shelf with 2 or more such evictions, or evicted lessons that were added again, within its window (30 days by default).
+- **If the shelf holds two groups of lessons needed in different situations**, divide it by situation into two shelves (see the [namespace convention](cli-reference.md#grouping-notebooks--the--namespace-convention)).
+- **Otherwise**, merge near-duplicates (`nb merge`) to free lines, or raise `NB_MAX_LINES`.
+
+When the evicted lessons were never voted, or had fallen back to +1 or below through down votes or aging, eviction is working as intended: leave the shelf as it is. Merging small shelves whose lessons are needed together is also fine: it shortens the index.
+
+**Consolidating shelves without losing vote capital.** When you fold one shelf into another, move each lesson with `nb move <from> <to> <id|query>` rather than re-adding it. `add` always enters at the `+1` floor, so a hard-won `+7` lesson would land at `+1`, bottom of the target and eviction-bait, with its vote history thrown away. `move` carries the score across intact. **Illustrative** (a `+7` lesson on a `repo-onboarding` shelf of 3 lines, moved into a 12-line `build-and-test`):
+
+```
+$ nb move repo-onboarding build-and-test "build/test entry points" --reason consolidate
+moved [+7] build/test entry points — "repo-onboarding" now 2 lines, "build-and-test" now 13 lines
+```
+
+The entry is admitted into the target like a newcomer, so a full target ages and evicts its *stalest other* line, never the lesson you just moved. A move is refused — writing nothing to either shelf — if the source and target are the same shelf, the selector is absent or ambiguous (the same unique-match rule as `vote`/`rm`), or the target already holds the same lesson (the same exact-duplicate rule `add` uses to skip duplicates, so a move never creates a duplicate; a merely similar lesson does not block it).

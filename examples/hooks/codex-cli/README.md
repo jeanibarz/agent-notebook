@@ -13,14 +13,15 @@ end" contract in context — which is all Codex needs; the agent runs `nb list`
 itself.
 
 ```sh
-# Global: applies to every project.
-cat AGENTS.snippet.md >> ~/.codex/AGENTS.md
+# Global: applies to every project. The file ships in the npm package; the
+# sed drops its opening comment.
+sed '/^<!--/,/^-->/d' "$(npm root -g)/agent-notebook/examples/hooks/codex-cli/AGENTS.snippet.md" >> ~/.codex/AGENTS.md
 
 # Or per-repo: paste the snippet into the repo's AGENTS.md.
 ```
 
 The per-repository switch (`git config nb.enabled false`, see the
-[README](../../../README.md#turn-it-on-or-off-per-repository)) also reaches Codex,
+[harness guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#per-repository-onoff)) also reaches Codex,
 which has no hooks, through `nb list`: the snippet starts the task with `nb list`,
 and in an off repository that prints one line telling the agent to skip the
 notebook steps instead of the index. So a global snippet is fine; switch the
@@ -35,7 +36,7 @@ Independent of the harness, the [`nb-git-wrapper.mjs`](../../nb-git-wrapper.mjs)
 gives you a commit per notebook change. Install it first on `PATH` as `nb`:
 
 ```sh
-cp ../../nb-git-wrapper.mjs ~/.local/bin/nb-git-wrapper.mjs
+cp "$(npm root -g)/agent-notebook/examples/nb-git-wrapper.mjs" ~/.local/bin/nb-git-wrapper.mjs
 NB_GLOBAL_ROOT="$(npm root -g)"; [ -d "$NB_GLOBAL_ROOT" ] || NB_GLOBAL_ROOT=   # bake the root only if it exists
 printf '#!/bin/sh\nNODE_PATH="%s" exec node "$(dirname "$0")/nb-git-wrapper.mjs" "$@"\n' "$NB_GLOBAL_ROOT" > ~/.local/bin/nb
 chmod +x ~/.local/bin/nb   # keep the .mjs name: an extensionless copy fails on older Node (e.g. 18, 22.5)
@@ -47,7 +48,7 @@ absent — your own file is never touched), so the churning usage log, lock, and
 other transient runtime files stay out of history.
 
 Then schedule [`nb-backup.sh`](../../nb-backup.sh) to publish daily (see the
-[harness guide](../../../docs/harness-setup.md#backup)).
+[harness guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#backup)).
 
 ## 3. (Optional) end-of-turn reminder → `notify`
 

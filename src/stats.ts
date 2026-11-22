@@ -281,7 +281,8 @@ export interface EngagementDiagnosis {
  * ordering that a consumer relies on. Do **not** bump for a purely **additive**
  * change — adding a field, or a new `anomalies`/`signals` kind — which is how
  * this report has grown (issues #18, #40, #72, #81, #106, #132). When you bump,
- * update the README's "Machine-readable `nb stats`" section alongside the number.
+ * update the README's "Machine-readable `nb stats`" section alongside the number,
+ * and the field walk-through in docs/operating.md.
  */
 export const STATS_SCHEMA_VERSION = 1;
 

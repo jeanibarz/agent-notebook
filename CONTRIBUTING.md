@@ -23,6 +23,19 @@ Keep `docs/requirements.md` in sync with any behavior change — the
 [pull-request template](.github/PULL_REQUEST_TEMPLATE.md) has a checklist for
 this.
 
+## Run `nb` from a clone
+
+To develop from source, run `nb` straight from a clone instead of installing the
+package globally:
+
+```
+git clone https://github.com/jeanibarz/agent-notebook.git
+cd agent-notebook
+npm install
+npm run build
+npm link   # puts `nb` on your PATH, pointing at this clone
+```
+
 ## Build and test
 
 ```

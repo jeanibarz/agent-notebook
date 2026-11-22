@@ -1,11 +1,11 @@
 # Claude Code hooks for agent-notebook
 
 These hooks are **optional conveniences**. The required integration is just the
-[AGENTS.md / CLAUDE.md contract](../../../AGENTS.md) — once that is in context,
+[AGENTS.md / CLAUDE.md contract](https://github.com/jeanibarz/agent-notebook/blob/main/AGENTS.md) — once that is in context,
 the agent runs `nb list` and opens the notebooks it needs on its own. These
 scripts save it a call and keep the retrospective from being forgotten. They are
 built for a short, single-agent session: read
-[what the hooks do not cover](../../../docs/harness-setup.md#what-the-hooks-do-not-cover)
+[what the hooks do not cover](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#what-the-hooks-do-not-cover)
 before relying on them in long sessions or with subagents.
 
 | File | Hook event | What it adds |
@@ -18,13 +18,16 @@ before relying on them in long sessions or with subagents.
 ## Install (per project, recommended first)
 
 ```sh
-# 1. Copy the scripts somewhere stable and make them executable.
+# 1. Copy the scripts somewhere stable and make them executable. They ship in
+#    the npm package, so this works from any directory:
 mkdir -p ~/.agent-notebook/hooks
-cp nb-session-start.sh nb-subagent-start.sh nb-retrospective.sh ~/.agent-notebook/hooks/
+cp "$(npm root -g)/agent-notebook/examples/hooks/claude-code/"nb-*.sh ~/.agent-notebook/hooks/
 chmod +x ~/.agent-notebook/hooks/*.sh
 
-# 2. Merge the `hooks` block from settings.json into .claude/settings.json,
-#    pointing `command` at the copied scripts' ABSOLUTE paths.
+# 2. Print the hooks block from settings.json with the `//` comment keys
+#    dropped and your full paths filled in, then merge its `hooks` block into
+#    .claude/settings.json:
+sed -e '/^  "\/\//d' -e "s|/ABSOLUTE/PATH/examples/hooks/claude-code|$HOME/.agent-notebook/hooks|" "$(npm root -g)/agent-notebook/examples/hooks/claude-code/settings.json"
 
 # 3. Restart Claude Code (hooks load at startup).
 ```
@@ -38,11 +41,11 @@ per-project `.claude/settings.json`.
 |---|---|---|
 | `NB_DIR` | `~/.agent-notebook/notebooks` | where notebooks (and retro sentinels) live |
 | `NB_RETRO_TTL_DAYS` | `7` | how many days a `.retro-<session>` sentinel survives before `nb-retrospective.sh` prunes it (see [below](#how-the-retrospective-nudge-avoids-looping)) |
-| `NB_SESSION` | — | set it (e.g. to Claude Code's session id) to unlock the per-session [surfacing metrics](../../../README.md#surfacing-metrics) in `nb stats` |
+| `NB_SESSION` | — | set it (e.g. to Claude Code's session id) to unlock the per-session [surfacing metrics](https://github.com/jeanibarz/agent-notebook/blob/main/docs/operating.md#surfacing-metrics) in `nb stats` |
 | `NB_BIN` | `nb` | point at the [git-versioning wrapper](../../nb-git-wrapper.mjs) to commit each change |
 | `NB_PROJECT_SLUG` | unset | opt in to the [layered index](#optional-layered-index-project--domain--global): the repo's slug, e.g. `acme-app`. Unset keeps the flat index. Read by `nb-session-start.sh` only; `nb` itself never reads it |
 | `NB_GLOBAL_SHELF` | `global` | with `NB_PROJECT_SLUG`: the one bare shelf shown as the global layer |
-| `NB_ENABLED` | unset | `0`/`false`/`no`/`off` switches the hooks (and the text `nb list` index) off for this process, over `git config nb.enabled`; see [per-repository on/off](../../../README.md#turn-it-on-or-off-per-repository) |
+| `NB_ENABLED` | unset | `0`/`false`/`no`/`off` switches the hooks (and the text `nb list` index) off for this process, over `git config nb.enabled`; see [per-repository on/off](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#per-repository-onoff) |
 
 The session-start and retrospective hooks first run `nb enabled` (from
 `CLAUDE_PROJECT_DIR`, else the working directory); the subagent hook inherits the
@@ -74,7 +77,7 @@ and `nb list` still shows everything.
 This is a **naming convention**, not an `nb` feature: `nb` treats `@` as part of
 an opaque shelf name, and nothing about a layer is stored in a shelf file. The
 convention, its placement rule and its limits are in
-[docs/memory-layers.md](../../../docs/memory-layers.md). The variant is a block
+[docs/memory-layers.md](https://github.com/jeanibarz/agent-notebook/blob/main/docs/memory-layers.md). The variant is a block
 in the script that does nothing unless the variable is set, falls back to the
 flat index (with a warning) if `nb list --json` fails, and needs only `bash` and
 `node`, so it also runs under macOS's bash 3.2.
@@ -146,7 +149,7 @@ through without writing the sentinel, so they never use up that nudge:
   back shortened or replaced. `SubagentStop` also fires for Claude Code's
   internal agents, where nobody would read a nudge. A subagent gets the
   retrospective from its brief instead (see
-  [subagents](../../../docs/harness-setup.md#subagents)).
+  [subagents](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#subagents)).
 
 The reason text still asks a subagent to repeat its full final report after the
 retrospective, in case another harness passes it a subagent's stop.
@@ -161,7 +164,7 @@ Two limits remain:
 - **A subagent that never returns keeps the nudge back.** While a subagent is
   listed as `running`, every stop of the lead is let through.
 
-[What the hooks do not cover](../../../docs/harness-setup.md#what-the-hooks-do-not-cover)
+[What the hooks do not cover](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#what-the-hooks-do-not-cover)
 lists the gaps and what to do about each.
 
 Nothing used to remove those `.retro-<session>` files, so on a busy machine they

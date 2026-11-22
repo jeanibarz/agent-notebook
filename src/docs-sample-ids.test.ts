@@ -49,7 +49,7 @@ export function checkBlock(block: string): { bad: string[]; checked: number } {
 }
 
 describe('doc sample ids match entryId (issue #400)', () => {
-  for (const file of ['README.md', 'docs/getting-started.md']) {
+  for (const file of ['README.md', 'docs/getting-started.md', 'docs/cli-reference.md']) {
     test(`${file}: ids paired with an nb add in the same code block are real`, () => {
       const results = fencedBlocks(readFileSync(join(root, file), 'utf-8')).map(checkBlock);
       expect(results.flatMap((r) => r.bad)).toEqual([]);

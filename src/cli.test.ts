@@ -1339,7 +1339,8 @@ describe('runNbCli', () => {
   // is a silent broken promise — #132 added `generatedAt`/`windowStart` but the
   // documented shape string omitted them. Guard the shape against the REAL emitted
   // report (not a hand-copied key list) so any future added/renamed top-level field
-  // must be reflected in the README or this fails.
+  // must be reflected in the README or this fails. The per-field walk-through
+  // lives in docs/operating.md ("Machine-readable `nb stats`"); keep it in step.
   test('README documents every StatsReport top-level key, field-for-field (issue #204)', async () => {
     await run(['add', 'patcher', 'x']); // one row so a real report is emitted
     const s = await run(['stats', 'patcher', '--json']);

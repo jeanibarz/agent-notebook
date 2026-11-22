@@ -1,37 +1,52 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 240" width="760" height="240" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" role="img" aria-label="git diff on a notebook file: an added lesson shows as a green plus line and a recorded vote as a minus/plus score change — memory you can code-review.">
-  <rect x="0.5" y="0.5" width="759" height="239" rx="12" fill="#0b0f15" stroke="#2a3340"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 368" width="760" height="368" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" role="img" aria-label="git diff on a notebook file after one vote and one add: the voted lesson leaves its old place as a red minus line and comes back at the end with its new score as a green plus line, and the new lesson is a green plus line below it.">
+  <rect x="0.5" y="0.5" width="759" height="367" rx="12" fill="#0b0f15" stroke="#2a3340"/>
   <path d="M0 34 H760" stroke="#2a3340"/>
   <rect x="0.5" y="0.5" width="759" height="33.5" rx="12" fill="#1d2531"/>
   <rect x="0.5" y="16" width="759" height="18" fill="#1d2531"/>
   <circle cx="22" cy="17" r="5" fill="#e0708a"/>
   <circle cx="42" cy="17" r="5" fill="#e8b05a"/>
   <circle cx="62" cy="17" r="5" fill="#46bfa6"/>
-  <text x="84" y="21" font-size="12" fill="#5a6675">reviewer.md — two runs apart</text>
+  <text x="84" y="21" font-size="12" fill="#5a6675">reviewer.md — after one vote and one add</text>
 
   <!-- prompt -->
   <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.03;0.06;0.94;1" dur="7s" repeatCount="indefinite"/>
     <text x="20" y="70" font-size="14.5"><tspan fill="#46bfa6">$ </tspan><tspan fill="#e7ebf2">git diff reviewer.md</tspan></text></g>
 
-  <!-- context -->
+  <!-- header -->
   <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.1;0.13;0.94;1" dur="7s" repeatCount="indefinite"/>
-    <text x="20" y="100" font-size="14.5" fill="#5a6675" xml:space="preserve">  +6  reproduce the bug before fixing</text></g>
+    <text x="20" y="100" font-size="14.5" fill="#e7ebf2" font-weight="bold" xml:space="preserve">diff --git a/reviewer.md b/reviewer.md</text>
+    <text x="20" y="124" font-size="14.5" fill="#e7ebf2" font-weight="bold" xml:space="preserve">index 71a353f..f8f1dd5 100644</text>
+    <text x="20" y="148" font-size="14.5" fill="#e7ebf2" font-weight="bold" xml:space="preserve">--- a/reviewer.md</text>
+    <text x="20" y="172" font-size="14.5" fill="#e7ebf2" font-weight="bold" xml:space="preserve">+++ b/reviewer.md</text>
+    <text x="20" y="196" font-size="14.5" fill="#46bfa6" xml:space="preserve">@@ -1,4 +1,5 @@</text>
+  </g>
 
-  <!-- removed (old vote value) -->
+  <!-- unchanged lines -->
   <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.16;0.19;0.94;1" dur="7s" repeatCount="indefinite"/>
-    <rect x="12" y="110" width="736" height="22" rx="3" fill="#e0708a" fill-opacity="0.10"/>
-    <text x="20" y="126" font-size="14.5" fill="#e0708a" xml:space="preserve">- +1  prefer execFileSync over execSync</text></g>
+    <text font-size="14.5" y="220" fill="#8a96a6" xml:space="preserve"><tspan x="20"> </tspan><tspan x="28.7">+1</tspan><tspan x="89.6">prefer execFileSync over execSync</tspan></text>
+    <text font-size="14.5" y="244" fill="#8a96a6" xml:space="preserve"><tspan x="20"> </tspan><tspan x="28.7">+6</tspan><tspan x="89.6">reproduce the bug before fixing it</tspan></text>
+  </g>
 
-  <!-- added (new vote value) -->
+  <!-- the voted line leaves its old place -->
   <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.22;0.25;0.94;1" dur="7s" repeatCount="indefinite"/>
-    <rect x="12" y="136" width="736" height="22" rx="3" fill="#5fbf7e" fill-opacity="0.10"/>
-    <text x="20" y="152" font-size="14.5" fill="#5fbf7e" xml:space="preserve">+ +2  prefer execFileSync over execSync</text></g>
+    <rect x="12" y="252" width="736" height="22" rx="3" fill="#e0708a" fill-opacity="0.10"/>
+    <text font-size="14.5" y="268" fill="#e0708a" xml:space="preserve"><tspan x="20">-</tspan><tspan x="28.7">+2</tspan><tspan x="89.6">read the error message to the end</tspan></text>
+  </g>
 
-  <!-- added (brand-new lesson) -->
+  <!-- unchanged line -->
+  <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.22;0.25;0.94;1" dur="7s" repeatCount="indefinite"/>
+    <text font-size="14.5" y="292" fill="#8a96a6" xml:space="preserve"><tspan x="20"> </tspan><tspan x="28.7">+4</tspan><tspan x="89.6">run the full suite, not just the new test</tspan></text>
+  </g>
+
+  <!-- the voted line comes back at the end with its new score -->
   <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.28;0.31;0.94;1" dur="7s" repeatCount="indefinite"/>
-    <rect x="12" y="162" width="736" height="22" rx="3" fill="#5fbf7e" fill-opacity="0.10"/>
-    <text x="20" y="178" font-size="14.5" fill="#5fbf7e" xml:space="preserve">+ +1  read the error message to the end</text></g>
+    <rect x="12" y="300" width="736" height="22" rx="3" fill="#5fbf7e" fill-opacity="0.10"/>
+    <text font-size="14.5" y="316" fill="#5fbf7e" xml:space="preserve"><tspan x="20">+</tspan><tspan x="28.7">+3</tspan><tspan x="89.6">read the error message to the end</tspan></text>
+  </g>
 
-  <!-- caption -->
-  <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.4;0.44;0.94;1" dur="7s" repeatCount="indefinite"/>
-    <text x="20" y="212" font-size="13" font-style="italic" fill="#5a6675">— every add and every vote is a line in git history</text></g>
+  <!-- the new lesson -->
+  <g opacity="1"><animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.34;0.37;0.94;1" dur="7s" repeatCount="indefinite"/>
+    <rect x="12" y="324" width="736" height="22" rx="3" fill="#5fbf7e" fill-opacity="0.10"/>
+    <text font-size="14.5" y="340" fill="#5fbf7e" xml:space="preserve"><tspan x="20">+</tspan><tspan x="28.7">+1</tspan><tspan x="89.6">check the lockfile before upgrading</tspan></text>
+  </g>
 </svg>
