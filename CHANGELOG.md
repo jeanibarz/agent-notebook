@@ -9,6 +9,10 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The film plays inside the README on GitHub again.** 0.11.0 wrapped it in a `<video>` tag with a poster for npm. GitHub then kept the raw attachment address as the video source instead of the signed one it uses for a bare link, and Chrome refused to load it for signed-in readers ("Media load rejected by URL safety check"). The README is back to the bare link GitHub turns into its player. The poster for npm now sits in a `<video>` tag with no source: GitHub drops that tag and everything in it, and npmjs.com, which strips the tag but keeps what is inside, shows the poster linking to the film.
+
 ## [0.11.0] - 2026-11-22
 
 ### Added
