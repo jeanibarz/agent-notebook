@@ -47,8 +47,7 @@ Need search over a large corpus, or long-form notes? [Pick something else](#when
 
 ## How it works
 
-<a id="why"></a>
-If what you want is for an agent to keep a handful of short lessons across runs, you do not need a database. A notebook is enough: a capped text file that grows by adds, re-ranks by votes, and that you can `cat`, `grep` and diff.
+<a id="why"></a>If what you want is for an agent to keep a handful of short lessons across runs, you do not need a database. A notebook is enough: a capped text file that grows by adds, re-ranks by votes, and that you can `cat`, `grep` and diff.
 
 - **One entry = one line.** `<score>\t<lesson>`, at most 200 characters. No multi-paragraph notes.
 - **Bounded.** At most 50 lines per shelf by default (raise it with `NB_MAX_LINES`). A full shelf never refuses a lesson for lack of room: the lowest-scored line is evicted instead. Only bad input is refused: an exact duplicate ([what counts](#what-it-deliberately-does-not-do)) or a blank lesson is skipped, and a lesson over 200 characters is rejected, never cut.

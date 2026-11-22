@@ -468,7 +468,8 @@ function formatLine(e: Entry): string {
   return `${s}\t${e.text}`;
 }
 
-/** Dedup key: case/punctuation-insensitive, whitespace-collapsed. Conservative — equality only. */
+/** Dedup key: lower-cased, every character other than a–z, 0–9 and whitespace turned into a space
+ * (so accented and non-Latin letters are word breaks), whitespace collapsed. Conservative — equality only. */
 export function dedupKey(text: string): string {
   return text
     .toLowerCase()

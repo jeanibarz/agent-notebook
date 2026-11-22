@@ -458,7 +458,8 @@ first. Under `--json` it SHALL emit the structured form via `showJson` /
 A named shelf with no file SHALL report `exists: false` with `entries: []`, never
 a silent empty ([DP-5](#dp-5), [issue #166](#fr-show-001)). Each `--json` entry
 SHALL carry a `key`: the `dedupKey` normal form of its `text` (the same
-case/punctuation-folded, whitespace-collapsed form that derives its `id`), so two
+form that derives its `id`: lower-cased, every character other than a–z, 0–9 and whitespace
+turned into a space, runs of whitespace collapsed), so two
 entries with an equal `key` are exact duplicates a caller can drop — including
 across shelves. This path SHALL do NO cross-shelf dedup, reordering, scope
 precedence, or similarity ranking: those stay caller policy, and `key` is an
