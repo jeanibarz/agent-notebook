@@ -641,7 +641,7 @@ const undescribed = { computed: undescribedComputed, shelves: undescribedShelves
 
 // 8) exact duplicate lessons across shelves that share a base name: the `@` shelves of
 //    that base and the bare `<base>` shelf itself. "Exact" is nb's own rule (equal
-//    `dedupKey`: case, punctuation and spacing ignored), so there is no similarity
+//    `dedupKey`: case ignored, every character other than a–z and 0–9 a word break), so there is no similarity
 //    guess and a lesson is never matched with its negation (fuzzy matching cannot
 //    promise that; see #286). A bare shelf alone never forms a group: at least one
 //    `@` shelf of the base must hold the lesson too.
@@ -912,7 +912,7 @@ else {
     out.push(
       d.sharedHolds
         ? `      → "${d.sharedShelf}" already holds it, so keep that copy and drop the others:`
-        : `      → an exact match under nb's own duplicate rule (case, punctuation and spacing ignored). To keep one copy in the shared "${d.sharedShelf}" shelf (the highest-scored copy keeps its score), then drop the rest:`,
+        : `      → an exact match under nb's own duplicate rule (case ignored; every character other than a–z and 0–9 counts as a word break). To keep one copy in the shared "${d.sharedShelf}" shelf (the highest-scored copy keeps its score), then drop the rest:`,
     );
     for (const c of d.commands) out.push(`        ${c}`);
   }

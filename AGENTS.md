@@ -148,7 +148,8 @@ Rules the tool enforces, so you don't have to guess:
   You can't count characters reliably, so aim for ~150 (one clause, no preamble) to stay
   safely under the cap.
 - **Only identical lessons are skipped.** An `add` whose text matches an existing
-  lesson up to case, punctuation and spacing is a no-op; that's a signal the notebook
+  lesson once case is ignored and every character other than a–z and 0–9 is read as
+  a word break is a no-op; that's a signal the notebook
   already covered you (good), not a failure. A merely *reworded* lesson is stored,
   with a `note: resembles …` on stderr — if you see it, consolidate with `nb merge`
   instead of keeping both variants, since each paraphrase uses up a line.

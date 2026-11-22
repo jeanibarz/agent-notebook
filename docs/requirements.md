@@ -43,7 +43,7 @@ One definition per term, used identically in requirements, code, and tests.
 | **Touch** | An engagement with a specific entry that refreshes its recency: a `vote` (±1), an `add`, or the new lesson(s) a `merge`/`split` creates. A read (`show`/`search`) is not a touch. |
 | **Display order** | The order `nb show` / `render` presents entries: score descending, ties broken by ascending file order (stalest first: least recently touched or docked). |
 | **Stable id** | A 6-hex-character identifier derived from an entry's deduped text (`entryId`), not its position. |
-| **Dedup key** | The case-, punctuation-, and whitespace-insensitive normal form of a text (`dedupKey`), used for duplicate detection and the stable id. |
+| **Dedup key** | The normal form of a text (`dedupKey`), used for duplicate detection and the stable id: lower-cased, every character other than a–z, 0–9 and whitespace turned into a space, and runs of whitespace collapsed. Accented and non-Latin letters are word breaks, not letters. |
 | **Selector** | The argument to `vote`/`rm`/`merge`/`split` that identifies an entry: a stable id (exact or unique prefix) or a unique case-insensitive text substring. |
 | **Operation reason** | An optional, per-operation enum code (seed-and-grow, plus an `other` escape hatch and optional free-text note) recorded for a mutating op in the usage log — never in the notebook (see [FR-REASON-001](#fr-reason-001)). |
 | **Metadata** | Optional leading `# key: value` comment lines at the top of a notebook file, carrying notebook-level context (not lessons). Skipped by `readEntries`, round-tripped through every mutation (see [FR-DESC-001](#fr-desc-001)). |
@@ -416,7 +416,7 @@ relocate it losslessly under its own lock and eviction rules.
 **FR-MOVE-002 (Must).** `move` SHALL refuse, writing NOTHING to either shelf, when: the
 source and target are the same shelf (throw); the source is empty (throw); the selector
 is absent or ambiguous (throw, per [FR-SEL-002](#fr-sel-002)); or the target already
-holds an entry with the moved lesson's dedup key (identical text up to case, punctuation and spacing), in which case it
+holds an entry with the moved lesson's dedup key (identical once case is ignored and every character other than a–z and 0–9 is read as a word break), in which case it
 SHALL return `reason: 'duplicate'` with the colliding entry's `collidedId` and leave
 both shelves untouched (same dedup rule as `add`/`merge`, so a move never creates a
 duplicate). On success it SHALL persist the target before removing from the source, so

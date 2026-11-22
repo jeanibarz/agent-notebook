@@ -37,7 +37,9 @@ That is the loop by hand: show at the start, vote at the end. Once you [wire it 
 
 **See it in 49 seconds** (with sound): one notebook being added to, voted on and capped.
 
-https://github.com/user-attachments/assets/cee86591-2c29-429f-b36d-e98c07d31cc4
+<video src="https://github.com/user-attachments/assets/cee86591-2c29-429f-b36d-e98c07d31cc4" controls><a href="https://github.com/user-attachments/assets/cee86591-2c29-429f-b36d-e98c07d31cc4"><img src="https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/assets/film-poster.png" alt="Play the 49-second agent-notebook film: same trap every session? Give your AI agent a notebook." width="760"></a></video>
+
+No player? [Open the film](https://github.com/user-attachments/assets/cee86591-2c29-429f-b36d-e98c07d31cc4).
 
 <sub>The `nb` commands and output in the film come from a real run of nb 0.10.0, abridged and laid out for the screen; the failing and passing test at its start and end are an illustration, not a measurement. Synthetic narration and music. [Film source](https://github.com/jeanibarz/agent-notebook/tree/main/media/launch-video).</sub>
 
@@ -45,6 +47,7 @@ Need search over a large corpus, or long-form notes? [Pick something else](#when
 
 ## How it works
 
+<a id="why"></a>
 If what you want is for an agent to keep a handful of short lessons across runs, you do not need a database. A notebook is enough: a capped text file that grows by adds, re-ranks by votes, and that you can `cat`, `grep` and diff.
 
 - **One entry = one line.** `<score>\t<lesson>`, at most 200 characters. No multi-paragraph notes.
@@ -101,7 +104,7 @@ agent-notebook notebooks — 1 in /home/you/.agent-notebook/notebooks
 
 One line per shelf: name, lesson count, description (here none is set, so the top lesson stands in, marked `(auto)`). The optional session-start hook injects the same lines under a short instruction.
 
-Omit retrieve and the agent never sees its own past lessons; omit reflect and the store never grows.
+<a id="the-loop-end-to-end"></a>Omit retrieve and the agent never sees its own past lessons; omit reflect and the store never grows.
 
 | When | What runs | What drives it |
 |---|---|---|
@@ -133,7 +136,7 @@ The commands are for macOS, Linux, WSL or Git Bash (on Windows, see [Windows](ht
 
 **Check it worked:** start a fresh session and give it a task. The agent should run `nb list` and open a notebook that fits. After the task, `nb show <shelf>` should show its votes and any lesson it added. For the hooks, see [Verify it's working](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#verify-its-working) and `nb stats`.
 
-**Optional hooks for Claude Code** inject the index at session start and nudge the retrospective at the stop. They ship in the package. Copy them somewhere stable, then print a hooks block with your paths filled in:
+**Optional hooks for Claude Code** inject the index at session start, hand the same index to each subagent, and nudge the retrospective at the stop. They ship in the package. Copy them somewhere stable, then print a hooks block with your paths filled in:
 
 ```sh
 mkdir -p ~/.agent-notebook/hooks
@@ -154,7 +157,7 @@ npm install -g agent-notebook
 
 Requires Node.js 18+. That installs the `nb` command and nothing else: no agent reads or writes a notebook until you [wire it up](#wire-it-up). The first `nb` command creates `~/.agent-notebook/notebooks` (with a small usage log); nothing else needs setting up to use `nb` by hand.
 
-To work on `nb` itself, see [CONTRIBUTING.md](https://github.com/jeanibarz/agent-notebook/blob/main/CONTRIBUTING.md).
+<a id="for-contributors"></a>To work on `nb` itself, see [CONTRIBUTING.md](https://github.com/jeanibarz/agent-notebook/blob/main/CONTRIBUTING.md).
 
 ## Your first lesson
 
@@ -167,16 +170,16 @@ Next: [wire it up](#wire-it-up), so your agent does this on its own.
 ## Guides
 
 - **Evaluating it?** [How it works](#how-it-works), [what it does not do](#what-it-deliberately-does-not-do), and [when to pick something else](#when-to-pick-something-else).
-- **Wiring it into an agent?** [Harness setup](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md) — the instruction, optional hooks, git history, backup and a janitor, for Claude Code and Codex CLI on Linux, macOS and Windows. Agents not biting? [Diagnosing low engagement](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#diagnosing-low-engagement).
-- **Every command in detail?** [CLI reference](https://github.com/jeanibarz/agent-notebook/blob/main/docs/cli-reference.md) — selectors, merge and split, descriptions, `nb list`, namespaces, search, completion.
-- **Looking after a store?** [Operating `nb`](https://github.com/jeanibarz/agent-notebook/blob/main/docs/operating.md) — `nb stats`, the usage log, error classes, every knob, `nb config`.
+- <a id="turn-it-on-or-off-per-repository"></a>**Wiring it into an agent?** [Harness setup](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md) — the instruction, optional hooks, git history, backup and a janitor, for Claude Code and Codex CLI on Linux, macOS and Windows. Agents not biting? [Diagnosing low engagement](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#diagnosing-low-engagement).
+- <a id="selecting-an-entry--id-vs-query"></a><a id="discovering-notebooks--nb-list"></a><a id="grouping-notebooks--the--namespace-convention"></a><a id="searching--the-demoted-fallback"></a>**Every command in detail?** [CLI reference](https://github.com/jeanibarz/agent-notebook/blob/main/docs/cli-reference.md) — selectors, merge and split, descriptions, `nb list`, namespaces, search, completion.
+- <a id="activity-sparkline"></a><a id="free-diagnostic-signals"></a><a id="surfacing-metrics"></a><a id="what-the-usage-log-records"></a><a id="diagnosing-errors-by-class"></a><a id="tuning-nb-stats"></a><a id="other-environment-variables"></a><a id="inspecting-the-effective-configuration--nb-config"></a>**Looking after a store?** [Operating `nb`](https://github.com/jeanibarz/agent-notebook/blob/main/docs/operating.md) — `nb stats`, the usage log, error classes, every knob, `nb config`.
 - **Using it as a library?** [Programmatic use](https://github.com/jeanibarz/agent-notebook/blob/main/docs/programmatic-use.md).
 - **Contributing?** [CONTRIBUTING.md](https://github.com/jeanibarz/agent-notebook/blob/main/CONTRIBUTING.md).
 
 More background:
 
 - [Getting started](https://github.com/jeanibarz/agent-notebook/blob/main/docs/getting-started.md) — the plain-language intro, no AI or DevOps background needed. There is also a one-page [visual explainer](https://github.com/jeanibarz/agent-notebook/blob/main/docs/visual-explainer.html).
-- [Eviction & aging](https://github.com/jeanibarz/agent-notebook/blob/main/docs/eviction-and-aging.md) — how a full notebook decides what to keep, and why a full shelf is the normal state.
+- <a id="a-full-shelf-is-the-normal-state"></a>[Eviction & aging](https://github.com/jeanibarz/agent-notebook/blob/main/docs/eviction-and-aging.md) — how a full notebook decides what to keep, and why a full shelf is the normal state.
 - [Memory layers](https://github.com/jeanibarz/agent-notebook/blob/main/docs/memory-layers.md) — a naming convention for agents that work across several repos: project, domain and global shelves. Documentation only; `nb` itself does not know about layers.
 - [Enterprise integration](https://github.com/jeanibarz/agent-notebook/blob/main/docs/enterprise.md) — rolling it out under data-sovereignty, security and compliance constraints.
 - [AGENTS.md](https://github.com/jeanibarz/agent-notebook/blob/main/AGENTS.md) — the full operating contract an agent follows. Copy-paste integration pieces live in [`examples/`](examples/).
