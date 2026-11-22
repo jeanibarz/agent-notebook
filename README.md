@@ -37,9 +37,9 @@ That is the loop by hand: show at the start, vote at the end. Once you [wire it 
 
 **See it in 49 seconds** (with sound): one notebook being added to, voted on and capped.
 
-<video src="https://github.com/user-attachments/assets/cee86591-2c29-429f-b36d-e98c07d31cc4" controls><a href="https://github.com/user-attachments/assets/cee86591-2c29-429f-b36d-e98c07d31cc4"><img src="https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/assets/film-poster.png" alt="Play the 49-second agent-notebook film: same trap every session? Give your AI agent a notebook." width="760"></a></video>
+<video><a href="https://github.com/user-attachments/assets/cee86591-2c29-429f-b36d-e98c07d31cc4"><img src="https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/assets/film-poster.png" alt="Play the 49-second agent-notebook film: same trap every session? Give your AI agent a notebook." width="760"></a></video>
 
-No player? [Open the film](https://github.com/user-attachments/assets/cee86591-2c29-429f-b36d-e98c07d31cc4).
+https://github.com/user-attachments/assets/cee86591-2c29-429f-b36d-e98c07d31cc4
 
 <sub>The `nb` commands and output in the film come from a real run of nb 0.10.0, abridged and laid out for the screen; the failing and passing test at its start and end are an illustration, not a measurement. Synthetic narration and music. [Film source](https://github.com/jeanibarz/agent-notebook/tree/main/media/launch-video).</sub>
 
