@@ -240,7 +240,7 @@ describe('nb-janitor section 8 — exact duplicate lessons across shelves sharin
     expect(d.commands.filter((c) => c.startsWith('nb rm ')).length).toBe(2);
   });
 
-  test('"exact" is nb\'s own rule: case, punctuation and spacing are ignored', () => {
+  test('"exact" is nb\'s own rule: case is ignored and non-a–z/0–9 characters are word breaks', () => {
     shelf('a@one', [[1, "Don't   use `rm -rf` here!"]]);
     shelf('a@two', [[1, 'dont use rm rf here']]);
     // `Don't` normalises to `don t`, not `dont`: these two are NOT equal under nb's rule…

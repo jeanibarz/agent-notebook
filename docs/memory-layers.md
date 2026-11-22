@@ -102,7 +102,7 @@ node examples/nb-janitor.mjs | grep -A5 "Exact duplicate lessons"
 ```text
 ── 8. Exact duplicate lessons across shelves that share a base name
   ⚠️  "Give each OR'd guard condition its own test that flips only that condition" appears in 2 shelves: code-review@acme-app (+1), code-review@acme-web (+1).
-      → an exact match under nb's own duplicate rule (case, punctuation and spacing ignored). To keep one copy in the shared "code-review" shelf (the highest-scored copy keeps its score), then drop the rest:
+      → an exact match under nb's own duplicate rule (case ignored; every character other than a–z and 0–9 counts as a word break). To keep one copy in the shared "code-review" shelf (the highest-scored copy keeps its score), then drop the rest:
         nb move code-review@acme-app code-review eb4b61
         nb rm code-review@acme-web eb4b61 --reason obsolete --note duplicate
 ```
