@@ -50,6 +50,7 @@ thing well.
 - **Engineer / evaluator:** go to the model and guarantees — content-derived
   stable ids, insertion-order storage vs score-ordered display, the usage log and
   `nb stats` surfacing metrics, zero runtime deps. Source: `README.md`,
+  `docs/operating.md` (stats and surfacing), `docs/cli-reference.md`,
   `docs/requirements.md`, `docs/self-observing-notebook.md`.
 - **Security / platform:** lead with the architecture (no server, no network, no
   deps; data is text files you govern) — `docs/enterprise.md`.

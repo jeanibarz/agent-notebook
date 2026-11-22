@@ -51,8 +51,9 @@ by piece, or not at all.
 | **git** (optional) | Only for versioning + backup ([Git-versioning](#git-versioning)). |
 | **bash** (optional) | For the example shell scripts. Built-in on Linux/macOS; on Windows use WSL or Git Bash ([Windows](#windows)). |
 
-The example scripts referenced below live in [`examples/`](../examples/). Clone
-the repo or copy the files you want.
+The example scripts referenced below live in [`examples/`](../examples/), and
+they ship in the npm package: after `npm install -g agent-notebook` they are in
+`"$(npm root -g)/agent-notebook/examples/"`. No clone is needed.
 
 ---
 
@@ -66,17 +67,20 @@ Put that instruction wherever your harness reads standing instructions.
 ### Claude Code
 
 Claude Code auto-loads a `CLAUDE.md` from the project (and `~/.claude/CLAUDE.md`
-for every project), so the instruction just needs to live there. The simplest
-way is to reuse this repo's [AGENTS.md](../AGENTS.md) as the contract:
+for every project), so the instruction just needs to live there. The snippet
+ships with the package; this appends it to your project's `CLAUDE.md` (the `sed`
+drops the file's opening comment, a note for Codex users, and the `grep` skips a file
+that already has the block):
 
 ```sh
-# In your project (or your home dir for a global default):
-cp /path/to/agent-notebook/AGENTS.md ./AGENTS.md
-ln -s AGENTS.md CLAUDE.md          # one file, loaded by Claude Code and read by Codex
+# In your project (or ~/.claude/ for a global default):
+grep -qs '^## Memory: agent-notebook' CLAUDE.md || sed '/^<!--/,/^-->/d' "$(npm root -g)/agent-notebook/examples/hooks/codex-cli/AGENTS.snippet.md" >> CLAUDE.md
 ```
 
-Or paste the shorter [Codex snippet](../examples/hooks/codex-cli/AGENTS.snippet.md)
-into an existing `CLAUDE.md`. That is enough: the agent will run `nb list` itself
+For the full contract instead, use this repo's [AGENTS.md](https://github.com/jeanibarz/agent-notebook/blob/main/AGENTS.md)
+(it is not in the npm package: download it from GitHub or copy it from a clone),
+and `ln -s AGENTS.md CLAUDE.md` so one file is loaded by Claude Code and read by
+Codex. That is enough: the agent will run `nb list` itself
 at the start of a task and open what fits.
 
 **Optional convenience hooks** (Claude Code has real lifecycle hooks; see
@@ -100,7 +104,7 @@ Codex already auto-loads `AGENTS.md` (the global `~/.codex/AGENTS.md`, the repo
 root, and the working dir, merged). Append the snippet once:
 
 ```sh
-cat examples/hooks/codex-cli/AGENTS.snippet.md >> ~/.codex/AGENTS.md
+grep -qs '^## Memory: agent-notebook' ~/.codex/AGENTS.md || sed '/^<!--/,/^-->/d' "$(npm root -g)/agent-notebook/examples/hooks/codex-cli/AGENTS.snippet.md" >> ~/.codex/AGENTS.md
 ```
 
 Now every Codex session starts with the list-and-open contract in context. Add
@@ -190,26 +194,83 @@ Where you install decides where the loop runs. The simplest way to try agent-not
 one repository is to install the hooks and the contract in that repository only
 (`.claude/settings.json` and its `CLAUDE.md`), not in `~/.claude/`; no setting is needed.
 
-Once the hooks are installed machine-wide, switch the loop per repository with git
-config, which both example hooks read through `nb enabled`:
+Once the hooks are installed machine-wide (in `~/.claude/settings.json`), the notebook loop
+runs in **every** repository by default. You can switch it off where you don't want it, or
+keep it off everywhere and switch it on only where you do. The setting lives in **git config**
+under the key `nb.enabled`, so git's own scopes do the work: `--global` for every repository,
+a plain `git config` for one repository (stored in its `.git/config`: never committed, and
+shared by all its worktrees), `includeIf` for a folder.
+
+`nb enabled` prints `on` or `off` for the current directory, and the two example hooks ask it
+before doing anything. It decides in this order:
+
+1. `NB_ENABLED` in the environment, if set and not blank: `0`, `false`, `no` or `off` mean off; any other value means on.
+2. Otherwise `git config nb.enabled` (`true`/`false`, also `yes`/`no`, `on`/`off`, `1`/`0`), the most specific git scope winning: the repository over `--global`.
+3. Otherwise **on**.
+
+**Example: off everywhere except one repository.** You want to try agent-notebook in
+`~/git/my-pilot` only:
 
 ```sh
-git config --global nb.enabled false           # off in every repository...
-git -C ~/git/my-pilot config nb.enabled true   # ...except this one
-git -C ~/git/some-repo config nb.enabled false # or: on everywhere, off in this one
-nb enabled --why                               # on or off here, and which setting decided
+git config --global nb.enabled false           # off by default, in every repository
+git -C ~/git/my-pilot config nb.enabled true   # on in this one (and in all its worktrees)
 ```
 
-`NB_ENABLED=0` (or `1`) in the environment overrides git config for one process; committed
-as `"env": { "NB_ENABLED": "0" }` in a repository's `.claude/settings.json`, it switches the
-hooks off for everyone working there. The README section
-[Turn it on or off per repository](../README.md#turn-it-on-or-off-per-repository) has the
-full precedence, the folder (`includeIf`) recipe and what "off" covers. Hook scripts copied
-before this switch existed do not check it: copy them again.
+Check it:
 
-On Codex CLI, which has no hooks, the switch works through `nb list`: in an off repository it
-prints one line telling the agent to skip the notebook steps in place of the index, so the snippet
-can go in `~/.codex/AGENTS.md`.
+```sh
+$ cd ~/git/my-pilot && nb enabled
+on
+$ cd ~/git/another-repo && nb enabled --why
+off (git config nb.enabled=false, file:/home/you/.gitconfig)
+```
+
+Use git config for this, not `export NB_ENABLED=0` in your shell profile: the environment
+variable wins over git config, so it would also switch off `my-pilot`. Once you want it
+everywhere, remove the global setting with `git config --global --unset nb.enabled` (and the
+pilot's own `true` becomes harmless).
+
+**Other cases:**
+
+```sh
+# On everywhere (the default), off in one repository:
+git -C ~/git/some-repo config nb.enabled false
+
+# Off for every repository under a folder:
+mkdir -p ~/.config/git
+printf '[nb]\n\tenabled = false\n' > ~/.config/git/nb-off.inc
+git config --global 'includeIf.gitdir:~/clients/.path' ~/.config/git/nb-off.inc
+
+# Off for one session only:
+NB_ENABLED=0 claude
+
+# Why is it off here? (also shown on the `enabled=` line of `nb config`)
+nb enabled --why
+git config --show-origin --get nb.enabled
+```
+
+To switch it off for **everyone** working in a repository, a git config setting won't do,
+since it is never committed. Commit `"env": { "NB_ENABLED": "0" }` in that repository's
+`.claude/settings.json` instead: Claude Code passes it to the `SessionStart` and `Stop` hooks
+(last checked by the maintainer with Claude Code 2.1.327).
+
+**What "off" covers.** In an off repository the session-start hook prints one line telling
+the agent to skip the notebook steps, instead of the index, and the retrospective hook lets
+the agent stop without the nudge. The one line matters: a contract in `~/.claude/CLAUDE.md`
+would otherwise still tell the agent to run `nb list` and the retrospective. Hook scripts
+copied before 0.10.0 do not check the switch: copy them again.
+
+**An instruction with no hooks (Codex CLI).** The contract tells the agent to start with
+`nb list`, so `nb list` asks `nb enabled` too. In an off repository it prints the same kind of
+line in place of the index (`agent-notebook is switched off for this repository: skip the
+notebook steps …`) and exits 0. That makes the switch work on Codex CLI, and with a contract
+in a global `CLAUDE.md` but no hooks, so the Codex snippet can go in `~/.codex/AGENTS.md`.
+`NB_ENABLED=1 nb list` shows the index anyway, and `nb list --json` is never affected: it is
+the scripts' format.
+
+**What "off" does not cover.** `nb` itself is not locked: `nb show`, `nb add`, `nb search`,
+the git wrapper and the backup keep working from any directory, and shell completion still
+completes shelf names.
 
 ---
 
@@ -233,7 +294,7 @@ To get **one commit per change** automatically, install the
 
 ```sh
 mkdir -p ~/.local/bin
-cp examples/nb-git-wrapper.mjs ~/.local/bin/nb-git-wrapper.mjs
+cp "$(npm root -g)/agent-notebook/examples/nb-git-wrapper.mjs" ~/.local/bin/nb-git-wrapper.mjs
 NB_GLOBAL_ROOT="$(npm root -g)"; [ -d "$NB_GLOBAL_ROOT" ] || NB_GLOBAL_ROOT=   # bake the root only if it exists
 printf '#!/bin/sh\nNODE_PATH="%s" exec node "$(dirname "$0")/nb-git-wrapper.mjs" "$@"\n' "$NB_GLOBAL_ROOT" > ~/.local/bin/nb
 chmod +x ~/.local/bin/nb   # keep the .mjs name: an extensionless copy fails on older Node (e.g. 18, 22.5)
@@ -273,7 +334,9 @@ git remote add origin git@github.com:you/agent-notebooks.git   # a PRIVATE repo
 git push -u origin main
 ```
 
-Then schedule the daily push:
+Then schedule the daily push. cron runs with a minimal `PATH`, so replace
+`/path/to/examples` below with the full path that
+`echo "$(npm root -g)/agent-notebook/examples"` prints:
 
 **Linux / WSL / macOS (cron):**
 ```cron
@@ -306,16 +369,16 @@ job), read the sections, and apply the `nb` commands it proposes.
 > behind `nb stats`; set `NB_SESSION` so calls group by session.
 
 ```sh
-node examples/nb-janitor.mjs            # human report over $NB_DIR
-node examples/nb-janitor.mjs --json     # machine-readable, for a supervising agent
-node examples/nb-janitor.mjs --days 60 --sim 0.55
+node "$(npm root -g)/agent-notebook/examples/nb-janitor.mjs"            # human report over $NB_DIR
+node "$(npm root -g)/agent-notebook/examples/nb-janitor.mjs" --json     # machine-readable, for a supervising agent
+node "$(npm root -g)/agent-notebook/examples/nb-janitor.mjs" --days 60 --sim 0.55
 ```
 
 What each section diagnoses, and why it matters:
 
 | Section | Signal | What you do about it |
 |---|---|---|
-| **1. Lessons lost to eviction** | a shelf whose evictions repeatedly remove lessons still scored above the starting +1, or whose evicted lessons get added again. It also counts full shelves, for information only: [a full shelf is the normal state](../README.md#a-full-shelf-is-the-normal-state) | open the shelf: if its lessons serve two different situations, divide it by situation into [namespaced shelves](../README.md#grouping-notebooks--the--namespace-convention); otherwise merge near-duplicates or raise `NB_MAX_LINES` |
+| **1. Lessons lost to eviction** | a shelf whose evictions repeatedly remove lessons still scored above the starting +1, or whose evicted lessons get added again. It also counts full shelves, for information only: [a full shelf is the normal state](eviction-and-aging.md#a-full-shelf-is-the-normal-state) | open the shelf: if its lessons serve two different situations, divide it by situation into [namespaced shelves](cli-reference.md#grouping-notebooks--the--namespace-convention); otherwise merge near-duplicates or raise `NB_MAX_LINES` |
 | **2. Near-duplicate shelves** | `build-and-test` vs `build-and-tests` — the same memory fragmented by a typo; and *possible slug drift*: `code-review@app` next to `code-review@acme-app`, the same base name under two `@project` slugs where one slug is the other with its leading part dropped | fold one shelf into the other a lesson at a time with `nb move <from> <to> <id>` (keeps each score; never re-add), then retire the emptied shelf (`nb describe <shelf> ""` if it has a description); same remedy for slug drift when both slugs name one project |
 | **3. Duplicate lessons** | paraphrase pairs the exact-match dedup let through (a *recall* problem — the agent re-derived something it already knew) | `nb merge` the real duplicates into one tighter line |
 | **4. Volume & silence** | how the store grew over time (from git), and shelves that went quiet | spot a shelf that broke/was abandoned, or a healthy "notebook is sufficient" plateau |
@@ -362,7 +425,7 @@ nb --version                         # the CLI resolves
 nb add smoke "setup check" && nb show smoke   # a notebook round-trips
 nb list                              # the index renders
 nb stats                             # each shelf shows its adds and, when full, its retention window
-node examples/nb-janitor.mjs         # diagnostics run
+node "$(npm root -g)/agent-notebook/examples/nb-janitor.mjs"   # diagnostics run
 git -C "$(nb path)" log --oneline    # (if versioning) a commit appeared
 nb rm smoke "setup check"            # clean up the smoke lesson
 ```
@@ -428,7 +491,7 @@ activity, which is the deployment-wide picture these symptoms live in.)
 
 | Symptom — the `nb stats` `surfacing:` line reads… | Cause | Remedy |
 |---|---|---|
-| `…notebooks hold N lessons but had 0 reads…; the SessionStart injection hook is probably not wired` | the index never reaches the agent — the hook isn't firing, or `nb` isn't resolvable from it (fail-open ⇒ silent). Also what you see when every repository using this store is [switched off](../README.md#turn-it-on-or-off-per-repository) (an `nb list` that printed the off line is not a read): then nothing is broken | run the **hook self-check** below; put `nb` on PATH or point the hook at your wrapper with `NB_BIN` |
+| `…notebooks hold N lessons but had 0 reads…; the SessionStart injection hook is probably not wired` | the index never reaches the agent — the hook isn't firing, or `nb` isn't resolvable from it (fail-open ⇒ silent). Also what you see when every repository using this store is [switched off](#per-repository-onoff) (an `nb list` that printed the off line is not a read): then nothing is broken | run the **hook self-check** below; put `nb` on PATH or point the hook at your wrapper with `NB_BIN` |
 | `…N session opened a notebook but cast no vote; the end-of-task retrospective nudge isn't landing` | agents read the notebooks but skip the retrospective (moment ④), so nothing is voted, pruned, or added | wire the [`Stop` retrospective hook](#claude-code) (`nb-retrospective.sh`), or reinforce moment ④ in the contract |
 | `…NB_SESSION was unset on N calls, so none could group into a session; export NB_SESSION…` | calls happen but aren't attributed to a session, so engagement can't be measured | export `NB_SESSION` (a per-task id) in the harness environment — see [the janitor note](#the-janitor) |
 | `surfacing: N engaged session(s)` (with `recall-miss` / `precision-miss` readouts) | **not a bug** — the plumbing works and this is real usage; low volume may just be a healthy [sufficient-notebook plateau](#the-janitor) | nothing to fix; read the readout for memory *quality*, not wiring |
@@ -447,7 +510,7 @@ and run the [subagent audit](#check-that-subagents-take-part) on one such sessio
 **Hook self-check** — does the SessionStart hook actually inject anything?
 
 ```sh
-bash examples/hooks/claude-code/nb-session-start.sh | head
+bash ~/.agent-notebook/hooks/nb-session-start.sh | head   # or wherever you copied the hooks
 ```
 
 Non-empty output (the `## Your agent-notebook index` block) ⇒ the hook works and

@@ -1,7 +1,7 @@
 {
   "name": "agent-notebook",
   "version": "0.10.0",
-  "description": "A bounded, voted, plain-text memory for AI agents. Zero dependencies, one small file (a shelf) per group of related lessons, no embeddings, no vector DB.",
+  "description": "Plain-text memory for AI agents: one capped file of voted one-line lessons your harness shows at task start. No vector DB, no embeddings, no network.",
   "license": "MIT",
   "author": "Jean Ibarz",
   "homepage": "https://github.com/jeanibarz/agent-notebook",
@@ -12,9 +12,16 @@
   "bugs": "https://github.com/jeanibarz/agent-notebook/issues",
   "keywords": [
     "ai-agents",
-    "llm",
     "agent-memory",
-    "cli"
+    "llm",
+    "llm-memory",
+    "claude-code",
+    "codex-cli",
+    "lessons-learned",
+    "plain-text",
+    "markdown",
+    "cli",
+    "nb"
   ],
   "type": "module",
   "engines": {

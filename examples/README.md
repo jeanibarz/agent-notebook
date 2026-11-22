@@ -2,7 +2,7 @@
 
 The `agent-notebook` package is deliberately a dumb, offline file editor: it
 never touches git, never phones home, never runs anything clever inside an `nb`
-call ([DP-6](../docs/requirements.md#dp-6)). Everything that makes it feel like a
+call ([DP-6](https://github.com/jeanibarz/agent-notebook/blob/main/docs/requirements.md#dp-6)). Everything that makes it feel like a
 *system* — a one-line instruction, optional convenience hooks, per-change history, off-machine backup, trend
 diagnostics — lives *around* the package, as the optional, copy-pasteable pieces
 in this directory. Use the ones you want; skip the rest.
@@ -17,9 +17,9 @@ in this directory. Use the ones you want; skip the rest.
 | [`completion/`](completion/) | tab-completion scripts for bash & zsh, as emitted by `nb completion <bash\|zsh>` (source them, or install into your completion dir) | bash or zsh |
 
 Full, OS-by-OS wiring instructions are in the
-**[harness setup guide](../docs/harness-setup.md)**. For a company rollout with
+**[harness setup guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md)**. For a company rollout with
 security or data-sovereignty constraints, see the
-**[enterprise guide](../docs/enterprise.md)**.
+**[enterprise guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/enterprise.md)**.
 
 These scripts are examples to adapt, not a published API — they are intentionally
 short and commented so you can read and modify them. Each is standalone.
@@ -39,8 +39,8 @@ undocumented (issue #207, extending the `src/*.ts` guard of #164).
 | `NB_BACKUP_GIT_LOCK_WAIT` | `12` (seconds) | [`nb-backup.sh`](nb-backup.sh) | how long the straggler commit waits for the git-wrapper's `.nb-git.lock` before skipping the commit this run (a lock older than 30 s is treated as a crashed holder's and reclaimed) |
 | `NB_GIT_AUTOCOMMIT` | `1` (on) | [`nb-git-wrapper.mjs`](nb-git-wrapper.mjs) | set to `0` to skip the auto-commit for a single `nb` call (e.g. a scripted bulk edit you'll commit yourself) |
 | `NB_GIT_SESSION_TRAILER` | — (off) | [`nb-git-wrapper.mjs`](nb-git-wrapper.mjs) | set to `1` to add a `Nb-Session: <NB_SESSION>` line to each auto-commit body (cleaned and capped like the usage log's session column; skipped when `NB_SESSION` is blank). Off by default because session ids then enter history the backup job may push |
-| `NB_MAX_LINES` | `50` | [`nb-janitor.mjs`](nb-janitor.mjs) | the per-shelf line cap the diagnostics report against, read exactly as the package reads its own [`NB_MAX_LINES`](../README.md#other-environment-variables): a whole integer clamped to 1–5000, anything else (`1e3`, `abc`) ignored in favour of the default |
-| `NB_SESSION` | — | [`nb-janitor.mjs`](nb-janitor.mjs) | the session id that unlocks per-session [surfacing metrics](../README.md#surfacing-metrics) |
+| `NB_MAX_LINES` | `50` | [`nb-janitor.mjs`](nb-janitor.mjs) | the per-shelf line cap the diagnostics report against, read exactly as the package reads its own [`NB_MAX_LINES`](https://github.com/jeanibarz/agent-notebook/blob/main/README.md#nb-max-lines): a whole integer clamped to 1–5000, anything else (`1e3`, `abc`) ignored in favour of the default |
+| `NB_SESSION` | — | [`nb-janitor.mjs`](nb-janitor.mjs) | the session id that unlocks per-session [surfacing metrics](https://github.com/jeanibarz/agent-notebook/blob/main/docs/operating.md#surfacing-metrics) |
 | `NB_USAGE_RING` | `5000` | [`nb-janitor.mjs`](nb-janitor.mjs) | the usage-log row cap, read like the package's own (a whole integer clamped to 100–100000); the report warns when a `--days` window reaches past the rows the ring still holds |
 
 The `hooks/claude-code/` scripts (`NB_BIN`, `NB_RETRO_TTL_DAYS`, `NB_SESSION`)
@@ -54,5 +54,5 @@ are documented in their own [README](hooks/claude-code/README.md#configuration-e
   own setup** before relying on them. They are reference integrations, not a
   certified, supported matrix.
 - **There is no MCP server.** `nb` is a plain, offline CLI; integrate it through
-  the hooks or the [AGENTS.md / CLAUDE.md contract](../AGENTS.md) above, not an
+  the hooks or the [AGENTS.md / CLAUDE.md contract](https://github.com/jeanibarz/agent-notebook/blob/main/AGENTS.md) above, not an
   MCP endpoint.

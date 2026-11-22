@@ -27,7 +27,7 @@ template. Keep the markers verbatim.
       of those, tick this box to confirm no requirements update is needed.
 - [ ] <!-- kookr:check:changelog --> `CHANGELOG.md` has an entry under `## [Unreleased]` (if the change is
       user-visible).
-- [ ] <!-- kookr:check:readme --> `README.md` updated if the usage, commands, or configuration changed.
+- [ ] <!-- kookr:check:readme --> `README.md` (or `docs/cli-reference.md` / `docs/operating.md`) updated if the usage, commands, or configuration changed.
 - [ ] <!-- kookr:check:no-new-deps --> No new runtime dependencies (the package ships zero — see requirements DP-7),
       or the PR explains why one is unavoidable.
 - [ ] <!-- kookr:check:feature-justified --> A new feature is justified against the bounded / voted / one-line model

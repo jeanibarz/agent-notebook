@@ -47,7 +47,7 @@ export function scrubInheritedEnv(env = process.env) {
 
 // Issue #514: `nb enabled` and `nb config` read `git config nb.enabled`, and the
 // example hooks call `nb enabled`, so a developer's own `git config --global
-// nb.enabled false` (the README's opt-in recipe) would flip what those suites
+// nb.enabled false` (the per-repository recipe in docs/harness-setup.md) would flip what those suites
 // see. Point git at an empty global config and skip the system one, after the
 // scrub above removed any inherited GIT_*. Tests that need a git setting set it
 // in their own fixture repository, which still applies.
