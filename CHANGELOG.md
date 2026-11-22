@@ -9,6 +9,8 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-22
+
 ### Added
 
 - **A 49-second film at the top of the README, with its source in `media/launch-video/`.** It shows one notebook being added to, voted on and capped. Where the page cannot play it (npmjs.com is expected to strip the player), a poster image linking to the film shows instead, and a plain link follows. The commands and output it shows come from a real run of `nb`, abridged and laid out for the screen; the failing and passing test at its start and end are an illustration. The folder is not part of the npm package.
@@ -21,7 +23,13 @@ versions are listed plainly.
 
 - **Links to the old README sections keep working, and the duplicate rule is described the same way everywhere.** The sections that moved to `docs/` keep their old anchors in the README, next to the pointer to their new home. `AGENTS.md`, `docs/requirements.md`, `docs/harness-setup.md`, `docs/memory-layers.md` and `examples/nb-janitor.mjs` said a duplicate was the same text with "case, punctuation and spacing ignored"; they now say what `nb` does: case is ignored and every character other than a–z and 0–9 is read as a word break, so accented and non-Latin letters do not count as letters.
 
-- **The harness docs now say what the example hooks do not cover in long sessions and with subagents.** `docs/harness-setup.md` and `examples/hooks/claude-code/README.md` stated that Claude Code has no `SubagentStart` hook; it has one. They also described the retrospective nudge as arriving "when the task ends". It arrives at the session's first stop: for a lead agent that delegates to background subagents, that is when it starts waiting for them. The docs now list four silent gaps (the early nudge, one nudge per session, a nudged subagent's report displaced by its answer to the nudge, and agents that opened no notebook adding nothing), what to do about each, and a transcript audit that shows whether subagents take part. `nb stats` cannot show these: it reports a session as engaged from its first vote. `AGENTS.md` §③ now tells the lead to put the contract in each subagent's brief.
+- **The harness docs now say what the example hooks do not cover in long sessions and with subagents.** `docs/harness-setup.md` and `examples/hooks/claude-code/README.md` stated that Claude Code has no `SubagentStart` hook; it has one. They also described the retrospective nudge as arriving "when the task ends". It arrives at one stop per session, which in an interactive session can be the end of the first reply. The docs now list what the example hooks leave uncovered (one nudge per session, no nudge for subagents, agents that opened no notebook adding nothing), what to do about each, and a transcript audit that shows whether subagents take part. `nb stats` cannot show these: it reports a session as engaged from its first vote. `AGENTS.md` §③ now tells the lead to put the contract in each subagent's brief.
+
+### Fixed
+
+- **The example retrospective hook keeps its nudge for the lead's real stop, and never nudges a subagent (#520).** It nudged once per session at the first stop of any agent. A lead that delegated to background agents spent the nudge the moment it began waiting, and a subagent that stopped first took it, its answer to the nudge then replacing the report its caller receives. A `Stop` whose payload lists background work still pending or running (a subagent, workflow, teammate or cloud session) is now let through without using up the nudge, and a `SubagentStop` is never nudged: `examples/hooks/claude-code/settings.json` registers the hook under `Stop` only. **If you copied the hooks, copy `nb-retrospective.sh` again and drop it from `SubagentStop` in your settings.**
+- **The retrospective hook honours `off` in the directory the agent is working in (#517).** It asked `nb enabled` only from `CLAUDE_PROJECT_DIR`, so an agent working in a switched-off repository inside an on project was still nudged, although its own `nb list` had told it to skip the notebook steps. It now asks from the hook payload's `cwd` too, and an `off` from either wins. An `off` from the payload `cwd` alone does not use up the session's one nudge.
+- **`nb stats` no longer counts an `nb list` that answered "off here" as a read (#517).** That row shows no index, so counting it hid the "SessionStart injection hook is probably not wired" cause in a store used from switched-off repositories.
 
 ## [0.10.0] - 2026-11-18
 
@@ -862,7 +870,8 @@ versions are listed plainly.
 ### Added
 - Initial release: a bounded, voted, plain-text memory for AI agents. Commands: `nb add`, `show`, `vote`, `merge`, `rm`, `stats`. Each role's notebook holds at most 200 lines, each at most 200 characters, and the lowest-scored line is evicted first when full. The library has zero runtime dependencies.
 
-[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.7.0...v0.8.0

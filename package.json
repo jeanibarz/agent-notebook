@@ -1,6 +1,6 @@
 {
   "name": "agent-notebook",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Plain-text memory for AI agents: one capped file of voted one-line lessons your harness shows at task start. No vector DB, no embeddings, no network.",
   "license": "MIT",
   "author": "Jean Ibarz",
