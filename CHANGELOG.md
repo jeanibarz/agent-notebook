@@ -9,6 +9,8 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-22
+
 ### Added
 
 - **A 49-second film at the top of the README, with its source in `media/launch-video/`.** It shows one notebook being added to, voted on and capped. Where the page cannot play it (npmjs.com is expected to strip the player), a poster image linking to the film shows instead, and a plain link follows. The commands and output it shows come from a real run of `nb`, abridged and laid out for the screen; the failing and passing test at its start and end are an illustration. The folder is not part of the npm package.
@@ -862,7 +864,8 @@ versions are listed plainly.
 ### Added
 - Initial release: a bounded, voted, plain-text memory for AI agents. Commands: `nb add`, `show`, `vote`, `merge`, `rm`, `stats`. Each role's notebook holds at most 200 lines, each at most 200 characters, and the lowest-scored line is evicted first when full. The library has zero runtime dependencies.
 
-[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.7.0...v0.8.0
