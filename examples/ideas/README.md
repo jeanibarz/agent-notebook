@@ -3,8 +3,8 @@
 `nb-ideas` records **improvement ideas**: things a task showed should be deleted,
 merged, shortened, split, corrected or made to fail loudly. It wraps the real `nb`
 CLI and keeps the ideas in a notebooks folder of their own, so your lessons
-notebooks are never touched. Agents record at most one idea per task, in one fixed
-line format; a periodic curator (a person or an agent) reads which ideas several
+notebooks are never touched. Agents record at most one new idea per task (checked when `NB_SESSION`
+gives the task an id), in one fixed line format; a periodic curator (a person or an agent) reads which ideas several
 different tasks hit and promotes only those. Nothing is shown to agents at session
 start. The concept and the reasons for each rule are in
 [the ideas-store guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/ideas-store.md).
@@ -212,8 +212,8 @@ change any code; your output is work items and a cleaned-up store.
 | Var | Default | Meaning |
 |---|---|---|
 | `NB_IDEAS_DIR` | `~/.agent-notebook/ideas` | the ideas folder, a notebooks folder of its own (a leading `~` is expanded). Read by `nb-ideas.mjs` and `nb-ideas-stop.sh` |
-| `NB_IDEAS_MAX_CHARS` | `400` | line cap, passed to `nb` as `NB_MAX_CHARS` |
-| `NB_IDEAS_MAX_LINES` | `50` | per-shelf cap, passed to `nb` as `NB_MAX_LINES` |
+| `NB_IDEAS_MAX_CHARS` | `400` | line cap, passed to `nb` as `NB_MAX_CHARS`; clamped to 20–2000, the range `nb` accepts |
+| `NB_IDEAS_MAX_LINES` | `50` | per-shelf cap, passed to `nb` as `NB_MAX_LINES`; clamped to 1–5000 |
 | `NB_IDEAS_PROJECT` | basename of the git root of the working directory | project slug (lower-cased); the `--project` flag wins |
 | `NB_IDEAS_SIMILARITY` | `0.4` | `add` refuses (exit 3) an idea at least this similar to an existing one |
 | `NB_IDEAS_PROMOTE_SCORE` | `3` | `support`: minimum score to be promotable |

@@ -223,5 +223,6 @@ the reason, and nothing on a second run for the same session:
 echo '{"session_id":"t1","hook_event_name":"Stop"}' | ~/.agent-notebook/hooks/nb-ideas-stop.sh
 ```
 
-With both this hook and `nb-retrospective.sh` registered under `Stop`, Claude Code
-(2.1.330) delivers both reasons to the agent at the same stop.
+With both this hook and `nb-retrospective.sh` registered under `Stop`, both block
+the same first stop. In a manual check on Claude Code 2.1.330 the agent received
+both reasons together at that stop; nothing in this repository tests it.

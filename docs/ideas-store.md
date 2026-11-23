@@ -5,7 +5,7 @@ jobs. This page says what the two jobs are, why they live in separate folders,
 and why the ideas store has the rules it has.*
 
 The numbers below come from a design review and from measurements on about 400
-agent sessions that used agent-notebook lessons. They are the reason for each
+agent sessions that used agent-notebook lessons; that data set is not published. They are the reason for each
 rule, not a promise about your own sessions.
 
 ## 1. The two use cases side by side
@@ -131,7 +131,8 @@ it away.
 ### One new idea per task, and a +1 needs a reason
 
 - A task may add at most one new idea. A second add is refused with a pointer to
-  vote instead. Converted votes do not count as adds.
+  vote instead. Converted votes do not count as adds. Like the vote rules below,
+  this is checked only when the task has an id in `NB_SESSION`.
 - A +1 needs `--because "<what in this task hit it>"`. A task cannot vote twice
   on one idea, and cannot +1 an idea it added itself.
 - Every add and vote is appended to a side log, `.ideas-support.log`, in the

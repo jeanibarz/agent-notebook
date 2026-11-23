@@ -255,7 +255,7 @@ Ideas live in a separate folder, `~/.agent-notebook/ideas`. Set `NB_IDEAS_DIR` t
 
 Do section 2, then section 3. Then note these points.
 
-- Both Stop hooks block the same first stop. Claude Code gives the agent both reasons together at that stop (verified on Claude Code 2.1.330). The agent handles the lessons retrospective and the ideas question in one pass, then stops.
+- Both Stop hooks block the same first stop. Claude Code gives the agent both reasons together at that stop (checked by hand on Claude Code 2.1.330). The agent handles the lessons retrospective and the ideas question in one pass, then stops.
 - Each hook has its own sentinel in its own folder (`.retro-<session>` in the lessons folder, `.ideas-prompt-<session>` in the ideas folder), so neither can loop or use up the other's ask.
 - The two folders must differ. Never set `NB_IDEAS_DIR` to the same folder as `NB_DIR`. Check: `nb path` and `nb-ideas path` print two different folders.
 - Register both hooks under `Stop`. Either shape works: two entries in the `Stop` array, or one entry whose `hooks` list holds both commands. For path C with the hooks in `~/.agent-notebook/hooks`, the whole `.claude/settings.json` is (replace `<home>` with the home folder):
