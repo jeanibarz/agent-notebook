@@ -466,3 +466,65 @@ describe('nb-ideas categories, prompt, help, passthrough', () => {
     expect(r.stdout.trim()).toBe(`dir=${ideasDir} chars=400 lines=7 args=whatever x`);
   });
 });
+
+describe('nb-ideas: review fixes', () => {
+  test('a target may contain ":" (file:line, Windows paths); the target is matched in full', () => {
+    const r = add('fragile', 'src/a.ts:12: the catch swallows the error -> rethrow it (keeps: the retry)', 'task-1');
+    expect(r.status).toBe(0);
+    const same = add('fragile', 'src/a.ts:12: errors vanish in this catch -> log and rethrow (keeps: retry count)', 'task-2');
+    expect(same.status).toBe(3);
+    expect(same.stdout).toContain('same target');
+  });
+
+  test('parallel adds by one task record at most one idea', async () => {
+    const { spawn } = await import('node:child_process');
+    const lines = [LINE_A, LINE_B, LINE_C];
+    const codes = await Promise.all(
+      lines.map(
+        (l) =>
+          new Promise<number>((resolve) => {
+            const p = spawn('node', [wrapper, 'add', 'guidance', l, '--project', 'my-app'], {
+              cwd: tmp,
+              env: { ...cleanEnv(), NB_IDEAS_DIR: ideasDir, NB_SESSION: 'same' },
+              stdio: 'ignore',
+            });
+            p.on('close', (c) => resolve(c ?? 1));
+          }),
+      ),
+    );
+    expect(codes.filter((c) => c === 0)).toHaveLength(1);
+    expect(logRows().filter((c) => c[2] === 'add')).toHaveLength(1);
+    expect(existsSync(join(ideasDir, '.ideas-adding-same@my-app'))).toBe(false); // marker released
+  });
+
+  test('support counts only events since the latest add: a removed line added again starts from zero', () => {
+    expect(add('dead', LINE_A, 's1').status).toBe(0);
+    const id = idOf('dead@my-app');
+    expect(vote('dead', id, '+1', 's2', ['--because', 'hit it']).status).toBe(0);
+    expect(run(['rm', 'dead@my-app', id, '--reason', 'wrong'], {}, null).status).toBe(0);
+    expect(add('dead', LINE_A, 's3').status).toBe(0);
+    const row = JSON.parse(run(['support', '--json']).stdout)[0];
+    expect(row.tasks).toBe(1);
+  });
+
+  test('a +1 whose reason is only spaces is refused', () => {
+    expect(add('dead', LINE_A, 's1').status).toBe(0);
+    const r = vote('dead', idOf('dead@my-app'), '+1', 's2', ['--because', '   ']);
+    expect(r.status).toBe(2);
+  });
+
+  test('a task may vote on two ideas of the same shelf', () => {
+    expect(add('dead', LINE_A, 's1').status).toBe(0);
+    expect(add('dead', LINE_C, 's2').status).toBe(0);
+    const [a, c] = ideas().map((i) => i.id);
+    expect(vote('dead', a, '+1', 's3', ['--because', 'x']).status).toBe(0);
+    expect(vote('dead', c, '+1', 's3', ['--because', 'y']).status).toBe(0);
+  });
+
+  test('caps are clamped to the range nb accepts, and the message quotes the real cap', () => {
+    const long = `src/x.ts: ${'p'.repeat(2100)} -> cut (keeps: y)`;
+    const r = add('dead', long, 's1', [], { NB_IDEAS_MAX_CHARS: '3000' });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('over the cap of 2000');
+  });
+});

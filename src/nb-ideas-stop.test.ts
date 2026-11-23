@@ -159,3 +159,19 @@ describe('nb-ideas-stop.sh', () => {
     expect(existsSync(mid)).toBe(false);
   });
 });
+
+describe('nb-ideas-stop.sh: review fixes', () => {
+  test('an unwritable sentinel folder lets every stop through, so the hook can never loop', () => {
+    const file = join(tmp, 'a-file');
+    writeFileSync(file, 'x');
+    const env = { NB_IDEAS_DIR: join(file, 'sub') };
+    for (let i = 0; i < 3; i++) {
+      expect(runHook({ session_id: 's', hook_event_name: 'Stop', stop_hook_active: true }, env)).toBe('');
+    }
+  });
+
+  test('a payload without a session id is let through without asking', () => {
+    expect(runHook({ hook_event_name: 'Stop' })).toBe('');
+    expect(existsSync(sentinel('nosession'))).toBe(false);
+  });
+});

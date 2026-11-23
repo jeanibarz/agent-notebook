@@ -45,12 +45,12 @@
 //   reason). `nb-ideas support` counts distinct supporting tasks from it.
 //
 // Environment: see the table in examples/ideas/README.md. Pure Node >= 18, no
-// dependencies, no shell.
+// dependencies.
 
 import { createRequire } from 'node:module';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join, basename } from 'node:path';
-import { existsSync, readFileSync, readdirSync, appendFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, appendFileSync, mkdirSync, writeFileSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 
@@ -69,7 +69,7 @@ const DEFAULT_CATEGORIES = [
 ];
 
 const FORMAT = '<target>: <problem> -> <change> (keeps: <behaviour that must keep working>)';
-const LINE_RE = /^(\S[^:]*?): (.+) -> (.+) \(keeps: (.+)\)$/;
+const LINE_RE = /^(\S.*?): (.+) -> (.+) \(keeps: (.+)\)$/;
 const NAME_RE = /^[a-z0-9-]+$/;
 const LOG_NAME = '.ideas-support.log';
 const REASON_CAP = 300;
@@ -119,6 +119,7 @@ function intEnv(name, fallback) {
   const n = Number.parseInt(process.env[name] ?? '', 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
+const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 function floatEnv(name, fallback) {
   const raw = process.env[name];
   const n = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
@@ -127,8 +128,10 @@ function floatEnv(name, fallback) {
 
 const config = () => ({
   dir: expandHome(process.env.NB_IDEAS_DIR || join(homedir(), '.agent-notebook', 'ideas')),
-  maxChars: intEnv('NB_IDEAS_MAX_CHARS', 400),
-  maxLines: intEnv('NB_IDEAS_MAX_LINES', 50),
+  // Clamped to the ranges nb itself accepts for NB_MAX_CHARS and NB_MAX_LINES,
+  // so messages quote the cap nb really applies.
+  maxChars: clamp(intEnv('NB_IDEAS_MAX_CHARS', 400), 20, 2000),
+  maxLines: clamp(intEnv('NB_IDEAS_MAX_LINES', 50), 1, 5000),
   threshold: floatEnv('NB_IDEAS_SIMILARITY', 0.4),
   promoteScore: floatEnv('NB_IDEAS_PROMOTE_SCORE', 3),
   promoteTasks: intEnv('NB_IDEAS_PROMOTE_TASKS', 2),
@@ -357,7 +360,42 @@ async function cmdAdd(argv) {
   const session = currentSession();
   noteSessionUnset(session);
 
-  // One idea per task.
+  // One idea per task. A marker claimed with O_EXCL makes "check the log, add,
+  // log it" one step per task, so two parallel adds by the same task cannot both
+  // pass the check. A marker older than a minute is a crashed add's and reclaimed.
+  if (session) claimAddMarker(cfg, session, project);
+  try {
+    return await addChecked(cfg, { category, cat, line, flags, project, session });
+  } finally {
+    if (session) releaseAddMarker(cfg, session, project);
+  }
+}
+
+const addMarker = (cfg, session, project) => join(cfg.dir, `.ideas-adding-${session}@${project}`);
+
+function claimAddMarker(cfg, session, project) {
+  mkdirSync(cfg.dir, { recursive: true });
+  const p = addMarker(cfg, session, project);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(p, String(process.pid), { flag: 'wx' });
+      return;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      try {
+        if (Date.now() - statSync(p).mtimeMs > 60_000) { unlinkSync(p); continue; }
+      } catch { continue; }
+      throw refuse('another add by this task is in progress: one new idea per task');
+    }
+  }
+  throw refuse('another add by this task is in progress: one new idea per task');
+}
+
+function releaseAddMarker(cfg, session, project) {
+  try { unlinkSync(addMarker(cfg, session, project)); } catch {}
+}
+
+async function addChecked(cfg, { category, cat, line, flags, project, session }) {
   if (session) {
     const prior = readLog(cfg).find((e) => e.event === 'add' && e.session === session && e.shelf.endsWith(`@${project}`));
     if (prior) {
@@ -495,8 +533,13 @@ function cmdSupport(argv) {
   const log = readLog(cfg);
   const rows = allIdeas(loadProjectShelves(cfg, project)).map((i) => {
     // A task supports an idea by adding it, or by voting +1 with a reason.
-    const events = log.filter(
-      (e) => e.shelf === i.shelf && e.id === i.id && (e.event === 'add' || (e.event === 'vote' && e.delta === '+1' && e.reason !== '')),
+    // Only events since the idea's latest `add` count: an id comes from the
+    // line's text, so a line removed and later added again starts from zero.
+    const mine = log.filter((e) => e.shelf === i.shelf && e.id === i.id);
+    let start = 0;
+    mine.forEach((e, n) => { if (e.event === 'add') start = n; });
+    const events = mine.slice(start).filter(
+      (e) => e.event === 'add' || (e.event === 'vote' && e.delta === '+1' && e.reason.trim() !== ''),
     );
     const named = new Set(events.filter((e) => e.session !== '').map((e) => e.session));
     const unattributed = events.filter((e) => e.session === '').length;

@@ -64,7 +64,10 @@ if (
 
 // session_id becomes part of a file name: keep [A-Za-z0-9._-], cap the length.
 // (nb-ideas cleans NB_SESSION the same way, so ids match across both.)
-const session = String(data.session_id || 'nosession').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128);
+// Without a session id there is no per-session sentinel and no task id to hand
+// to nb-ideas, so do not ask at all.
+if (typeof data.session_id !== 'string' || data.session_id === '') process.exit(0);
+const session = data.session_id.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128);
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -72,11 +75,14 @@ const sentinel = path.join(sentinelDir, `.ideas-prompt-${session}`);
 const release = () => { try { fs.unlinkSync(sentinel); } catch {} };
 
 // Claim the sentinel atomically (`wx`): the first stop wins, later ones are let
-// through. Any other write error fails open: fall through and ask anyway.
+// through. This hook does not exit on `stop_hook_active` (the lessons
+// retrospective may have blocked the previous stop), so the sentinel is its only
+// loop guard: if it cannot be written for any reason, let the stop through
+// rather than risk asking on every stop.
 try {
   fs.writeFileSync(sentinel, new Date().toISOString(), { flag: 'wx' });
-} catch (err) {
-  if (err && err.code === 'EEXIST') process.exit(0);
+} catch {
+  process.exit(0);
 }
 
 // Best-effort prune of sentinels older than the TTL.
