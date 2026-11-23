@@ -15,7 +15,7 @@ versions are listed plainly.
 
 ### Fixed
 
-- **`.nb.json` review follow-ups.** A `.nb.json` that starts with a UTF-8 byte-order mark, as Windows PowerShell 5 writes it, is now read instead of rejected as invalid JSON. With `NB_GIT_SESSION_TRAILER=1`, the git wrapper's `Nb-Session:` trailer is now capped at the folder's `maxChars`, so it matches the usage log's session column again. The invalid-JSON warning keeps accented and other printable characters; only control, line-break and bidi characters become `?`. An integer too large to be exact, such as `1e30`, is reported as out of range instead of "not an integer".
+- **`.nb.json` review follow-ups.** A `.nb.json` that starts with a UTF-8 byte-order mark, as Windows PowerShell 5 writes it, is now read instead of rejected as invalid JSON. With `NB_GIT_SESSION_TRAILER=1`, the git wrapper's `Nb-Session:` trailer is now capped at the folder's `maxChars`, so it matches the usage log's session column again. The invalid-JSON warning keeps accented and other printable characters; only control, line-break, bidi-override and invisible characters become `?`. An integer too large to be exact, such as `1e30`, now clamps to 2000 like any other out-of-range value instead of being ignored as "not an integer".
 
 ### Documentation
 

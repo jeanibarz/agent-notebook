@@ -120,15 +120,17 @@ describe('.nb.json maxChars (RFC 0530)', () => {
     expect(nb(['add', 's', 'short three'], {}, d2).err).toBe('');
   });
 
-  test('nb.json with a UTF-8 byte-order mark applies; an integer too large to be exact is out of range', () => {
+  test('nb.json with a UTF-8 byte-order mark applies; an integer too large to be exact clamps to 2000', () => {
     settings('\uFEFF{ "maxChars": 400 }'); // as Windows PowerShell 5 writes it
     const r = nb(['add', 's', LONG]);
     expect(r.status).toBe(0);
     expect(r.err).toBe('');
     settings('{ "maxChars": 1e30 }');
-    const big = nb(['add', 's', 'short five']);
-    expect(big.status).toBe(0);
-    expect(big.err).toBe(`warning: ${join(dir, '.nb.json')}: maxChars is out of range; ignored\n`);
+    const big = nb(['config']);
+    expect(big.err).toBe('');
+    expect(big.out).toMatch(/^maxChars=2000 +\(\.nb\.json: clamped to 2000 from \d+\)$/m);
+    settings('{ "maxChars": -1e30 }');
+    expect(nb(['config']).out).toMatch(/^maxChars=20 +\(\.nb\.json: clamped to 20 from -\d+\)$/m);
   });
 
   test('nb.json invalid-JSON warning keeps printable non-ASCII text and replaces CR, C1 and bidi controls', () => {
@@ -148,6 +150,8 @@ describe('.nb.json maxChars (RFC 0530)', () => {
     const file = join(tmp(), 'not-a-folder');
     writeFileSync(file, 'x');
     const r = nb(['add', 's', 'short eight'], {}, file);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/^nb add: /);
     expect(r.err).not.toContain('.nb.json');
   });
 

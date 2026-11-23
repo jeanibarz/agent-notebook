@@ -391,8 +391,9 @@ export function readNbJson(dir: string): { maxChars?: number; warning?: string }
   let maxChars: number | undefined;
   if (Object.hasOwn(obj, 'maxChars')) {
     const v = obj.maxChars;
-    if (typeof v === 'number' && Number.isSafeInteger(v)) maxChars = v;
-    else if (typeof v === 'number' && Number.isInteger(v)) problems.push('maxChars is out of range');
+    // An integer too large to be exact (`1e30`) still means "as large as allowed": hold the
+    // largest exact one, which the resolver clamps to the 20-2000 range like any other.
+    if (typeof v === 'number' && Number.isInteger(v)) maxChars = Math.max(-Number.MAX_SAFE_INTEGER, Math.min(Number.MAX_SAFE_INTEGER, v));
     else problems.push('maxChars is not an integer');
   }
   return problems.length > 0 ? { maxChars, ...warn(problems.join(', ')) } : { maxChars };

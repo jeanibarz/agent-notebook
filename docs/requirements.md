@@ -866,8 +866,9 @@ SHALL leave behaviour unchanged and print nothing. A file that is unreadable, no
 JSON object, has an unknown key or a non-integer `maxChars` SHALL never block the command: `nb`
 SHALL print one stderr line `warning: <path>: <problem>; ignored`, drop the bad part (naming
 unknown keys, keeping a valid `maxChars`) and continue. One leading UTF-8 byte-order mark SHALL be
-skipped. An invalid-JSON warning SHALL replace control, line-break and bidi characters with `?` and
-keep printable text. When `NB_DIR` is a file, there is no folder to read, so no warning is printed.
+skipped, and an integer too large to be exact SHALL clamp like any other. An invalid-JSON warning
+SHALL replace control, line-break, bidi-override and invisible characters with `?` and keep printable
+text. When `NB_DIR` is a file, there is no folder to read, so no warning is printed.
 The git wrapper's opt-in `Nb-Session:` trailer SHALL be capped with the same `.nb.json` value as the
 usage log's session column. `nb config` SHALL report the source of
 `maxChars` as `(.nb.json)` in the text form and `"source": ".nb.json"` in `--json` when the file
@@ -882,7 +883,7 @@ refuses, and process.env is untouched", "nb.json override is cleared when a comm
 "nb.json maxChars applies through the git wrapper, which calls runNbCli in-process", "nb.json
 source shows in nb config, text and --json; no file leaves the render unchanged", "nb.json
 folder: nb doctor reports no lesson-too-long for a 300-char line", "nb.json with a UTF-8 byte-order
-mark applies; an integer too large to be exact is out of range", "nb.json invalid-JSON warning keeps
+mark applies; an integer too large to be exact clamps to 2000", "nb.json invalid-JSON warning keeps
 printable non-ASCII text and replaces CR, C1 and bidi controls", "nb.json is not looked for when
 NB_DIR is a file: no settings warning, only the command's own error" and "nb.json maxChars also caps
 the git wrapper's Nb-Session trailer, equal to the usage log's session column".

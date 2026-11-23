@@ -305,8 +305,8 @@ notes:
     getter the hot path uses, so you never re-derive it by hand from the env var, its default and its
     clamp. Each line is tagged with its source: \`(default)\` (the var is unset), \`(env NB_*)\` (the var is
     set), \`(.nb.json)\` (the notebooks folder's settings file sets maxChars), or \`(derived …)\`.
-    A set value that was rewritten or thrown away is annotated: it is still the
-    post-clamp effective value, but the tag names \`clamped\`/\`ignored\` (with the raw value) so it never reads
+    A set value that was rewritten or thrown away is annotated: it is still the post-clamp effective value,
+    but the tag names \`clamped\`/\`ignored\` (with the raw value) so it never reads
     as if honored. A trailing section then prints the three behavior-critical STRING env vars — \`NB_DIR\`
     (storage), \`NB_SESSION\` (the id the usage/engagement diagnostics group by), and \`NB_ASCII\` (rendering
     mode) — each tagged \`(env)\`/\`(default)\`. Any \`NB_*\` var nb does not read is listed as \`unrecognized\`
