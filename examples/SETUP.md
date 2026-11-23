@@ -99,7 +99,7 @@ Lessons use the default folder, `~/.agent-notebook/notebooks`. Set `NB_DIR` to u
 
    Check: it prints JSON that starts `{` / `"hooks": {` and has `SessionStart`, `SubagentStart` and `Stop`, each with a `command` that ends in one of the copied scripts and starts with the user's home folder.
 
-   Merge the `hooks` block into `.claude/settings.json` (this project) or `~/.claude/settings.json` (every project). If the file already has a `hooks` key, add these entries to its arrays instead of replacing them. Then restart Claude Code: hooks load at startup. Do not edit the user's settings file without telling them.
+   Merge the `hooks` block into `.claude/settings.json` (this project) or `~/.claude/settings.json` (every project). If the file already has a `hooks` key, add these entries to its arrays instead of replacing them. If the file does not exist, create `.claude/` and save the printed block as the whole file. Then restart Claude Code: hooks load at startup. In the new session, the `/hooks` command lists the registered hooks. Do not edit the user's settings file without telling them.
 
 5. Verify. Run the session-start hook by hand.
 
@@ -165,7 +165,7 @@ Ideas live in a separate folder, `~/.agent-notebook/ideas`. Set `NB_IDEAS_DIR` t
 
    Check, in a git repository: `nb-ideas prompt | head -1` starts `Before you finish: did this task show that something in my-app should be deleted`, with your project name where `my-app` is. After the smoke test in step 5, `nb-ideas list` shows one line per shelf, for example `  dead@my-app  1  code, flag, file, script or config that nothing uses: delete it`.
 
-5. Smoke test, in a throwaway folder. Run it inside a git repository. It uses a temporary `NB_IDEAS_DIR`, so the real ideas folder stays empty.
+5. Smoke test, in a throwaway folder. Run it inside a git repository. It uses a temporary `NB_IDEAS_DIR`, so no idea is recorded in the real ideas folder.
 
    ```sh
    export NB_IDEAS_DIR=$(mktemp -d)
@@ -240,12 +240,12 @@ Ideas live in a separate folder, `~/.agent-notebook/ideas`. Set `NB_IDEAS_DIR` t
 
 7. (Optional) Set `NB_SESSION`. `nb-ideas` enforces three per-task rules when it knows the task id: one `add` per task, one vote per idea per task, and no `+1` on an idea the same task added. It also counts support per distinct task. The Claude Code hook gives it the id for free: it prints the commands in its prompt with `NB_SESSION=<session id> ` in front, so the agent runs them with the id set. A harness that has its own per-task id can export `NB_SESSION` before the agent runs. Without an id the rules are not checked: every event counts as its own task, and `nb-ideas` prints a `note:` line on stderr saying so.
 
-   Check: `NB_SESSION=task-42 nb-ideas prompt --session task-42 | grep -c 'NB_SESSION=task-42 nb-ideas'` prints `2`. A second `add` by the same session in the same project is refused with exit 2 and `this task already recorded idea <id> (<shelf>); vote instead:`.
+   Check: `NB_SESSION=task-42 nb-ideas prompt --session task-42 | grep -c 'NB_SESSION=task-42 nb-ideas'` prints `2`. A second `add` by the same session in the same project is refused with exit 2 and `this task already recorded idea <id> (<shelf>): one new idea per task.`.
 
 8. Hand the curator recipe to the user. Once a week, a person or an agent does this for each project:
 
    1. `nb-ideas support --project <slug>` lists the ideas. Look at the rows that start with `PROMOTABLE` (score at least 3, from at least 2 distinct tasks).
-   2. Check each one against the code, by category. `dead`: search finds no use outside its own tests. `duplicate`: both copies exist. `fragile`: reproduce it. `guidance`: the quoted text is still there. `unused`: a human decides. Before a deletion, check that a test covers the `keeps:` behaviour.
+   2. Check each one against the code, by category. `dead`: search finds no use outside its own tests. `duplicate`: both copies exist. `fragile`: reproduce it. `guidance`: the quoted text is still there. `unused`: find usage evidence, then a human decides. `overbuilt` and `tangled`: these usually need a design first. `tests`: run the test, or check what a mutation does. Before a deletion, check that a test covers the `keeps:` behaviour.
    3. File a work item for each idea that passes.
    4. `nb-ideas rm <shelf> <id> --reason other --note "promoted: <link>"` removes the idea. For one that fails the check, use `--reason wrong` or `--reason obsolete`.
 
@@ -258,7 +258,20 @@ Do section 2, then section 3. Then note these points.
 - Both Stop hooks block the same first stop. Claude Code gives the agent both reasons together at that stop (verified on Claude Code 2.1.330). The agent handles the lessons retrospective and the ideas question in one pass, then stops.
 - Each hook has its own sentinel in its own folder (`.retro-<session>` in the lessons folder, `.ideas-prompt-<session>` in the ideas folder), so neither can loop or use up the other's ask.
 - The two folders must differ. Never set `NB_IDEAS_DIR` to the same folder as `NB_DIR`. Check: `nb path` and `nb-ideas path` print two different folders.
-- Register both hooks under one `Stop` array: `nb-retrospective.sh` and `nb-ideas-stop.sh`.
+- Register both hooks under `Stop`. Either shape works: two entries in the `Stop` array, or one entry whose `hooks` list holds both commands. For path C with the hooks in `~/.agent-notebook/hooks`, the whole `.claude/settings.json` is (replace `<home>` with the home folder):
+
+  ```json
+  {
+    "hooks": {
+      "SessionStart": [{ "hooks": [{ "type": "command", "command": "<home>/.agent-notebook/hooks/nb-session-start.sh" }] }],
+      "SubagentStart": [{ "hooks": [{ "type": "command", "command": "<home>/.agent-notebook/hooks/nb-subagent-start.sh" }] }],
+      "Stop": [{ "hooks": [
+        { "type": "command", "command": "<home>/.agent-notebook/hooks/nb-retrospective.sh" },
+        { "type": "command", "command": "<home>/.agent-notebook/hooks/nb-ideas-stop.sh" }
+      ] }]
+    }
+  }
+  ```
 
 ## 5. Troubleshooting
 
