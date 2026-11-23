@@ -75,7 +75,7 @@ function importGraph(): Map<string, string[]> {
 }
 
 /** Internals exported by a module for the other src modules, deliberately NOT on the package root. */
-const INTERNAL = ['preserveMode', 'skipUnreadable'];
+const INTERNAL = ['preserveMode', 'skipUnreadable', 'readNbJson', 'setCallMaxChars', 'resolveIntTunableStatus']; // the last three: RFC 0530's call-scoped .nb.json override
 
 describe('module boundaries (issue #478)', () => {
   test('src/*.ts has no import cycle', () => {

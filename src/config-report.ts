@@ -25,7 +25,7 @@ import {
   NEAR_DUP,
   notebooksDir,
   RECALL_MISS_HI,
-  resolveIntEnv,
+  resolveIntTunableStatus,
   resolveRateEnv,
   SILENT_H,
   STALE_LOCK_MS,
@@ -39,7 +39,7 @@ import { closestMatch } from './suggest.js';
 import { describeSource, stateWord, type EnabledState } from './enabled.js';
 
 /** Where a tunable's effective value came from: a set env var, the built-in default, or a derived value with no own env var. */
-export type ConfigSource = 'env' | 'default' | 'derived';
+export type ConfigSource = 'env' | 'default' | 'derived' | '.nb.json';
 
 /**
  * How a set numeric env var was resolved (issue #336): used as given, silently
@@ -57,6 +57,8 @@ interface ConfigRow {
   env: string | null;
   /** How the env value was resolved; `null` for the derived row or when the var is unset. */
   status: ConfigStatus | null;
+  /** Set only when the folder's `.nb.json` decided the value (RFC 0530); otherwise the source is derived from the env var. */
+  source?: '.nb.json';
   /** The raw env string when the var is set (so the human line can quote it), else `null`. */
   rawValue: string | null;
   /** The parse family, for the `ignored` wording ("not an integer" vs "not a number"). */
@@ -80,16 +82,16 @@ interface TunableSpec {
   name: string;
   env: string;
   kind: 'int' | 'rate';
-  resolve: () => { value: number; status: 'default' | ConfigStatus };
+  resolve: () => { value: number; status: 'default' | ConfigStatus; fromFile?: boolean; fileRaw?: string };
 }
 
 /**
  * Resolve an int tunable from `NB_<env>` read live. A thin wrapper over
- * `resolveIntEnv` so the registry stays declarative while still reading
+ * `resolveIntTunableStatus` so the registry stays declarative while still reading
  * `process.env` at call time, exactly like the hot-path getters.
  */
 function intTunable(name: string, t: IntTunable): TunableSpec {
-  return { name, env: t.env, kind: 'int', resolve: () => resolveIntEnv(process.env[t.env], t.dflt, t.lo, t.hi) };
+  return { name, env: t.env, kind: 'int', resolve: () => resolveIntTunableStatus(t) };
 }
 
 /** Resolve a rate tunable (bounds [0, 1]) from its `NB_*` var read live. */
@@ -133,14 +135,16 @@ const TUNABLE_REGISTRY: readonly TunableSpec[] = [
  */
 export function effectiveConfig(): ConfigRow[] {
   const rows: ConfigRow[] = TUNABLE_REGISTRY.map((t) => {
-    const { value, status } = t.resolve();
+    const { value, status, fromFile, fileRaw } = t.resolve();
     const raw = process.env[t.env];
     return {
       name: t.name,
       value,
       env: t.env,
       status: status === 'default' ? null : status,
-      rawValue: raw ?? null,
+      ...(fromFile ? { source: '.nb.json' as const } : {}),
+      // For a `.nb.json` value the raw text is the number the file held, which the clamp note quotes.
+      rawValue: fromFile ? (fileRaw ?? null) : (raw ?? null),
       kind: t.kind,
     };
   });
@@ -318,6 +322,11 @@ export function renderConfig(
 ): { out: string } {
   const pairW = rows.reduce((w, r) => Math.max(w, `${r.name}=${r.value}`.length), 0);
   const lines = rows.map((r) => {
+    if (r.source === '.nb.json') {
+      // The folder's `.nb.json` set this value (RFC 0530); a clamp is noted like an env clamp.
+      const note = r.status === 'clamped' ? `: clamped to ${r.value} from ${r.rawValue}` : '';
+      return `${`${r.name}=${r.value}`.padEnd(pairW)}  (.nb.json${note})`;
+    }
     const src = configSource(r.env);
     const base = src === 'env' ? `(env ${r.env})` : src === 'derived' ? '(derived from usageRing)' : '(default)';
     if (src !== 'env' || r.status === null) {

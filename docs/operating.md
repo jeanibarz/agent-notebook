@@ -135,6 +135,8 @@ A few more env vars tune rendering and concurrency rather than `nb stats`. Like 
 
 `NB_DIR`, `NB_MAX_LINES` and `NB_MAX_CHARS` are covered in [Where the files live](cli-reference.md#where-the-files-live--nb-path), and the README has a [table of every variable](https://github.com/jeanibarz/agent-notebook/blob/main/README.md#configuration).
 
+A notebooks folder can also fix its own line length. Put `{ "maxChars": 400 }` in `<notebooks folder>/.nb.json` and every `nb` command run on that folder, however it is reached, uses 400 (clamped to 20–2000) instead of `NB_MAX_CHARS`; `nb config` then shows `(.nb.json)` as the source. It is the only key. A missing file changes nothing; an unreadable or invalid file, a non-object, or an unknown key prints one `warning:` line on stderr and is ignored. Only the `nb` CLI and the git wrapper read it; a program that imports the library keeps using `NB_MAX_CHARS`. An `nb` older than this feature ignores the file.
+
 ## Inspecting the effective configuration — `nb config`
 
 Every knob above is read at call time and *clamped* to its range, so the value `nb` actually runs under is not always the one you exported — an out-of-range or non-numeric value is silently corrected to a bound or the default. Rather than re-derive that by hand from the env var, its default, and its clamp, ask `nb` for the effective (post-clamp) values. With no `NB_*` tunable set, the numeric part reads:

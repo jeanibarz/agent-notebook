@@ -240,7 +240,7 @@ Every `show` line starts with a short stable id — pass that id (or a unique pr
 |---|---|---|
 | `NB_DIR` | `~/.agent-notebook/notebooks` | where the notebooks and the usage log live |
 | <a id="nb-max-lines"></a>`NB_MAX_LINES` | `50` | lines per shelf, the cap (1–5000) |
-| `NB_MAX_CHARS` | `200` | characters per lesson (20–2000) |
+| `NB_MAX_CHARS` | `200` | characters per lesson (20–2000); a `maxChars` in `<notebooks folder>/.nb.json` wins over it |
 | `NB_NEAR_DUP` | `0.5` | how similar an add must be to an existing lesson to print a merge note; `0` turns it off |
 | `NB_SESSION` | unset | a session id logged with each call; four of the five `nb stats` signals and the surfacing metrics need it |
 | `NB_ENABLED` | unset | `0`/`false`/`no`/`off` switches the agent loop off for one process, over `git config nb.enabled` |

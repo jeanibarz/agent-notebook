@@ -65,7 +65,27 @@ export const RECALL_MISS_HI: RateTunable = { env: 'NB_RECALL_MISS_HI', dflt: DEF
 
 /** Resolve an int tunable from env live — the SAME three numbers the getter uses, so the getter and `nb config` cannot drift. */
 export function resolveIntTunable(t: IntTunable): number {
-  return resolveIntEnv(process.env[t.env], t.dflt, t.lo, t.hi).value;
+  return resolveIntTunableStatus(t).value;
+}
+
+/**
+ * The folder-level `maxChars` for the `runNbCli` call in progress (RFC 0530):
+ * set from `<notebooks folder>/.nb.json` at the start of a command and cleared in
+ * its `finally`. It is module state, never `process.env`, so it cannot leak into
+ * child processes or into a later in-process call. Internal: not exported from
+ * `index.ts`; library callers keep using `NB_MAX_CHARS`.
+ */
+let callMaxChars: number | undefined;
+export function setCallMaxChars(n: number | undefined): void {
+  callMaxChars = n;
+}
+
+/** `resolveIntTunable` plus how the value was resolved; `fromFile` marks the `.nb.json` override (which wins over the environment). */
+export function resolveIntTunableStatus(t: IntTunable): ResolvedInt & { fromFile: boolean; fileRaw?: string } {
+  if (t === MAX_CHARS && callMaxChars !== undefined) {
+    return { ...resolveIntEnv(String(callMaxChars), t.dflt, t.lo, t.hi), fromFile: true, fileRaw: String(callMaxChars) };
+  }
+  return { ...resolveIntEnv(process.env[t.env], t.dflt, t.lo, t.hi), fromFile: false };
 }
 export function resolveRateTunable(t: RateTunable): number {
   return resolveRateEnv(process.env[t.env], t.dflt).value;
@@ -329,6 +349,48 @@ export function notebooksDir(): string {
   return process.env.NB_DIR && process.env.NB_DIR.trim() !== ''
     ? expandHomeDir(process.env.NB_DIR)
     : join(homedir(), '.agent-notebook', 'notebooks');
+}
+
+/** The one key `.nb.json` recognises. */
+const recognisedNbJsonKeys: readonly string[] = ['maxChars'];
+
+/**
+ * Read `<dir>/.nb.json` (RFC 0530). A missing file is silent. Any other problem
+ * (unreadable, invalid JSON, not an object, unknown keys, a non-integer
+ * `maxChars`) never blocks: the bad part is dropped and ONE warning line is
+ * returned for the caller to print. A valid `maxChars` is kept even when other
+ * keys are unknown. Range clamping happens at resolve time, like `NB_MAX_CHARS`.
+ */
+export function readNbJson(dir: string): { maxChars?: number; warning?: string } {
+  const path = join(dir, '.nb.json');
+  const warn = (problem: string) => ({ warning: `warning: ${path}: ${problem}; ignored` });
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    // ENOTDIR: the notebooks path is a file, so there is no folder to hold a settings file; the command's own error says so.
+    if (code === 'ENOENT' || code === 'ENOTDIR') return {};
+    return warn(`unreadable (${code ?? 'error'})`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (e) {
+    return warn(`invalid JSON (${(e as Error).message.split('\n')[0]})`);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return warn('not a JSON object');
+  const obj = parsed as Record<string, unknown>;
+  const problems: string[] = [];
+  const unknown = Object.keys(obj).filter((k) => !recognisedNbJsonKeys.includes(k));
+  if (unknown.length > 0) problems.push(`unknown key${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => JSON.stringify(k)).join(', ')}`);
+  let maxChars: number | undefined;
+  if (Object.hasOwn(obj, 'maxChars')) {
+    const v = obj.maxChars;
+    if (typeof v === 'number' && Number.isSafeInteger(v)) maxChars = v;
+    else problems.push('maxChars is not an integer');
+  }
+  return problems.length > 0 ? { maxChars, ...warn(problems.join(', ')) } : { maxChars };
 }
 
 /**
