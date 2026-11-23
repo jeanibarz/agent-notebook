@@ -99,7 +99,7 @@ Lessons use the default folder, `~/.agent-notebook/notebooks`. Set `NB_DIR` to u
 
    Check: it prints JSON that starts `{` / `"hooks": {` and has `SessionStart`, `SubagentStart` and `Stop`, each with a `command` that ends in one of the copied scripts and starts with the user's home folder.
 
-   Merge the `hooks` block into `.claude/settings.json` (this project) or `~/.claude/settings.json` (every project). If the file already has a `hooks` key, add these entries to its arrays instead of replacing them. If the file does not exist, create `.claude/` and save the printed block as the whole file. Then restart Claude Code: hooks load at startup. In the new session, the `/hooks` command lists the registered hooks. Do not edit the user's settings file without telling them.
+   Merge the `hooks` block into `.claude/settings.json` (this project) or `~/.claude/settings.json` (every project). If the file already has a `hooks` key, add these entries to its arrays instead of replacing them. If the file does not exist, create `.claude/` and save the printed block as the whole file. Then restart Claude Code: hooks load at startup. In the new session, the `/hooks` command lists the registered hooks. For path C, section 4 shows the whole `settings.json` with every hook. The hooks run `nb` (and the ideas hook runs `nb-ideas`), so both must be on the `PATH` Claude Code starts with; `NB_BIN` and `NB_IDEAS_BIN` take full paths instead. Do not edit the user's settings file without telling them.
 
 5. Verify. Run the session-start hook by hand.
 
@@ -247,7 +247,7 @@ Ideas live in a separate folder, `~/.agent-notebook/ideas`. Set `NB_IDEAS_DIR` t
    1. `nb-ideas support --project <slug>` lists the ideas. Look at the rows that start with `PROMOTABLE` (score at least 3, from at least 2 distinct tasks).
    2. Check each one against the code, by category. `dead`: search finds no use outside its own tests. `duplicate`: both copies exist. `fragile`: reproduce it. `guidance`: the quoted text is still there. `unused`: find usage evidence, then a human decides. `overbuilt` and `tangled`: these usually need a design first. `tests`: run the test, or check what a mutation does. Before a deletion, check that a test covers the `keeps:` behaviour.
    3. File a work item for each idea that passes.
-   4. `nb-ideas rm <shelf> <id> --reason other --note "promoted: <link>"` removes the idea. For one that fails the check, use `--reason wrong` or `--reason obsolete`.
+   4. `nb-ideas rm <shelf> <id> --reason other --note "promoted: <link>"` removes the idea. For one that fails the check, use `--reason wrong` or `--reason obsolete`. Leave the rows that are not promotable alone: they wait for more support, and a full shelf evicts its lowest-scored idea on its own.
 
    The full recipe is in `$(npm root -g)/agent-notebook/examples/ideas/README.md`.
 
