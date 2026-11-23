@@ -46,6 +46,7 @@ per-project `.claude/settings.json`.
 | `NB_PROJECT_SLUG` | unset | opt in to the [layered index](#optional-layered-index-project--domain--global): the repo's slug, e.g. `acme-app`. Unset keeps the flat index. Read by `nb-session-start.sh` only; `nb` itself never reads it |
 | `NB_GLOBAL_SHELF` | `global` | with `NB_PROJECT_SLUG`: the one bare shelf shown as the global layer |
 | `NB_ENABLED` | unset | `0`/`false`/`no`/`off` switches the hooks (and the text `nb list` index) off for this process, over `git config nb.enabled`; see [per-repository on/off](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#per-repository-onoff) |
+| `NB_RETRO_EXTRA_PROMPT` | unset | absolute path (a leading `~/` is expanded) of a text file that `nb-retrospective.sh` appends to its nudge, with `{project}` and `{session}` filled in; see [below](#optional-extra-prompt-for-the-retrospective-nudge) |
 
 The session-start and retrospective hooks first run `nb enabled` (from
 `CLAUDE_PROJECT_DIR`, else the working directory); the subagent hook inherits the
@@ -119,6 +120,30 @@ done            # 1 = the index was injected; 0 = the hook ran without effect, o
 
 The index gives a subagent the notebooks to read. It does not make the
 retrospective happen at the subagent's end: see the next section.
+
+## Optional: extra prompt for the retrospective nudge
+
+Set `NB_RETRO_EXTRA_PROMPT` to the absolute path of a text file and
+`nb-retrospective.sh` appends its contents to the block reason, after the lessons
+retrospective and a blank line. Same single nudge, same sentinel: no second hook.
+`examples/hooks/ideas-end-prompt.txt` is one such file (an end-of-task check that
+records at most one improvement idea with `nb-ideas add`). Put the variable in the
+`env` block of your `settings.json`, never in a notebooks folder.
+
+The file may use two placeholders:
+
+- `{session}`: the payload `session_id`, cleaned like the sentinel name.
+- `{project}`: `NB_PROJECT_SLUG` when set; otherwise the name of the folder that holds
+  the repository's `.git` (from `git rev-parse --git-common-dir`, run in the payload
+  `cwd`), so a main checkout and its worktrees give the same name. It is lower-cased,
+  characters outside `a-z0-9._-` become `-`, and the ends are trimmed to a letter or
+  digit. Two repositories with the same folder name share a name: set
+  `NB_PROJECT_SLUG` per project (not in user-level settings) to tell them apart.
+
+The file is read before the sentinel is claimed. A missing, unreadable or relative
+path prints one warning on stderr and the lessons retrospective is sent alone. When
+there is no `session_id`, or no usable project name (not a git directory, git
+missing), the extra text is left out and the lessons nudge is sent alone.
 
 ## How the retrospective nudge avoids looping
 

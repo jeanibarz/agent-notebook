@@ -23,6 +23,9 @@ the interactive path through it.
 Determine, by asking or inspecting:
 - **Harness:** Claude Code, Codex CLI, or both?
 - **OS:** Linux, macOS, or Windows (WSL / Git Bash / native)?
+- **Which use case:** lessons (agents read notebooks at the start of a task and vote
+  at the end), ideas (an end-of-task note of at most one simplification idea, read
+  later by a curator; a trial), or both. If they did not say, use lessons.
 - **How far they want to go.** Offer the ladder and let them pick a stopping point:
   1. install `nb`, 2. + the "list & open" instruction so the agent uses it (the
   core), 3. + optional convenience hooks, 4. + git-versioning, 5. + daily backup
@@ -31,7 +34,14 @@ Determine, by asking or inspecting:
 Don't over-ask. If they're on the machine you can see, check `node --version`,
 `command -v nb`, and `nb path` yourself first.
 
-## 2. Install the base
+## 2. Follow the setup guide
+
+`examples/SETUP.md` in the package (`$(npm root -g)/agent-notebook/examples/SETUP.md`) is
+the checked, step-by-step guide for lessons, ideas or both. Open it and follow the path
+they chose: each step has a "Check:" command and its expected output. The sections below
+add detail for lessons, hooks, git-versioning, backup and the janitor.
+
+## 3. Install the base
 
 ```sh
 node --version                 # need ≥ 18
@@ -41,7 +51,7 @@ nb --help
 
 Confirm `nb add smoke "test" && nb show smoke && nb rm smoke "test"` round-trips.
 
-## 3. Give the agent the instruction (the core — this is what makes it get used)
+## 4. Give the agent the instruction (the core — this is what makes it get used)
 
 The required step is just putting the "list the notebooks, open what fits,
 retrospect at the end" contract where the harness reads standing instructions.
@@ -66,25 +76,25 @@ There is no per-project notebook name to configure.
   `docs/harness-setup.md#subagents` and `#what-the-hooks-do-not-cover`, then have them run the
   audit in `#check-that-subagents-take-part` on one real session.
 
-## 4. git-versioning (optional)
+## 5. git-versioning (optional)
 
 Walk them through `docs/harness-setup.md#git-versioning`: `git init` in
 `$(nb path)`, the `.gitignore`, and installing `examples/nb-git-wrapper.mjs` as
 `nb` on PATH so each change commits. Verify with `git -C "$(nb path)" log --oneline`.
 
-## 5. Backup (optional)
+## 6. Backup (optional)
 
 Only if they want memory off the machine or shared. Set a **private** remote,
 then schedule `examples/nb-backup.sh` (cron on Linux/macOS/WSL; Task Scheduler on
 native Windows — `docs/harness-setup.md#windows`). For an org, route them to
 `docs/enterprise.md#where-the-remote-lives` to choose the remote deliberately.
 
-## 6. Janitor (optional)
+## 7. Janitor (optional)
 
 Show `node examples/nb-janitor.mjs`, explain the four sections, and suggest a
 weekly cadence. It is read-only and safe.
 
-## 7. Verify and hand off
+## 8. Verify and hand off
 
 Run the checklist in `docs/harness-setup.md#verify-its-working`. Then tell them to
 start a fresh harness session and confirm the agent runs `nb list` and opens a

@@ -6,6 +6,7 @@
   "//4": "These hooks are optional; the required integration is the AGENTS.md/CLAUDE.md contract.",
   "//5": "Optionally set env (NB_DIR, NB_SESSION, NB_BIN) in your shell or here.",
   "//6": "nb-retrospective.sh is registered under Stop only: it never nudges a subagent (SubagentStop), so it is not registered there.",
+  "//7": "Optional env for nb-retrospective.sh: NB_RETRO_EXTRA_PROMPT=/absolute/path/to/prompt.txt appends that file to the nudge (see README.md).",
   "hooks": {
     "SessionStart": [
       {
