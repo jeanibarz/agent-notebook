@@ -13,6 +13,10 @@ versions are listed plainly.
 
 - **A notebooks folder can set its own line length with `.nb.json`.** A file named `.nb.json` in the notebooks folder with `{ "maxChars": 400 }` sets the characters per lesson for every `nb` command run on that folder, over `NB_MAX_CHARS`; out-of-range values clamp to 20-2000 as the variable does, and a folder without the file behaves as before. A file that is unreadable, invalid or not an object prints one `warning:` line on stderr and is ignored, and the command runs; unknown keys are named in the warning and skipped, while a valid `maxChars` beside them still applies. `nb config` shows `(.nb.json)` as the source. Library callers keep using `NB_MAX_CHARS`.
 
+### Fixed
+
+- **`.nb.json` review follow-ups.** A `.nb.json` that starts with a UTF-8 byte-order mark, as Windows PowerShell 5 writes it, is now read instead of rejected as invalid JSON. With `NB_GIT_SESSION_TRAILER=1`, the git wrapper's `Nb-Session:` trailer is now capped at the folder's `maxChars`, so it matches the usage log's session column again. The invalid-JSON warning keeps accented and other printable characters; only control, line-break, bidi-override and invisible characters become `?`. An integer too large to be exact, such as `1e30`, now clamps to 2000 like any other out-of-range value instead of being ignored as "not an integer".
+
 ### Documentation
 
 - **A step-by-step setup guide, `examples/SETUP.md`, and docs for the ideas use case.** The guide is for an AI agent. It has a path for lessons, one for ideas and one for both, and each step ends with a command to run and the output to expect. It ships in the npm package. A new page, `docs/ideas-store.md` (*Two use cases: lessons and ideas*), sets the two use cases side by side, explains why ideas live in their own folder, and gives the curator recipe and how the trial will be judged. The design is the accepted RFC 0530. The README has a short section on the two use cases, and the setup skill now asks which use case the user wants.

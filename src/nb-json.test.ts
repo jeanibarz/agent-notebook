@@ -120,6 +120,41 @@ describe('.nb.json maxChars (RFC 0530)', () => {
     expect(nb(['add', 's', 'short three'], {}, d2).err).toBe('');
   });
 
+  test('nb.json with a UTF-8 byte-order mark applies; an integer too large to be exact clamps to 2000', () => {
+    settings('\uFEFF{ "maxChars": 400 }'); // as Windows PowerShell 5 writes it
+    const r = nb(['add', 's', LONG]);
+    expect(r.status).toBe(0);
+    expect(r.err).toBe('');
+    settings('{ "maxChars": 1e30 }');
+    const big = nb(['config']);
+    expect(big.err).toBe('');
+    expect(big.out).toMatch(/^maxChars=2000 +\(\.nb\.json: clamped to 2000 from \d+\)$/m);
+    settings('{ "maxChars": -1e30 }');
+    expect(nb(['config']).out).toMatch(/^maxChars=20 +\(\.nb\.json: clamped to 20 from -\d+\)$/m);
+  });
+
+  test('nb.json invalid-JSON warning keeps printable non-ASCII text and replaces CR, C1 and bidi controls', () => {
+    settings('é');
+    let r = nb(['add', 's', 'short six']);
+    expect(r.status).toBe(0);
+    expect(r.err).toContain('invalid JSON');
+    expect(r.err).toContain('é');
+    settings('x\r\u009b2J\u202e');
+    r = nb(['add', 's', 'short seven']);
+    expect(r.status).toBe(0);
+    expect(r.err).toContain('invalid JSON');
+    expect(r.err.trimEnd()).not.toMatch(/[\r\u009b\u202e]/);
+  });
+
+  test('nb.json is not looked for when NB_DIR is a file: no settings warning, only the command\'s own error', () => {
+    const file = join(tmp(), 'not-a-folder');
+    writeFileSync(file, 'x');
+    const r = nb(['add', 's', 'short eight'], {}, file);
+    expect(r.status).toBe(1);
+    expect(r.err).toMatch(/^nb add: /);
+    expect(r.err).not.toContain('.nb.json');
+  });
+
   test('nb.json override does not leak: a later in-process call on a folder without it refuses, and process.env is untouched', async () => {
     const a = dir;
     const b = tmp();
@@ -178,6 +213,29 @@ describe('.nb.json maxChars (RFC 0530)', () => {
     });
     expect(r.status).toBe(0);
     expect(readFileSync(join(dir, 's.md'), 'utf-8')).toContain(LONG);
+  });
+
+  test('nb.json maxChars also caps the git wrapper\'s Nb-Session trailer, equal to the usage log\'s session column', () => {
+    const git = (...a: string[]) => spawnSync('git', a, { cwd: dir, env: gitEnv, encoding: 'utf-8' });
+    const gitEnv: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+    for (const k of Object.keys(gitEnv)) if (k.startsWith('GIT_') && !k.startsWith('GIT_CONFIG')) delete gitEnv[k];
+    if (git('--version').status !== 0) return;
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'test');
+    settings('{ "maxChars": 20 }');
+    const session = 's'.repeat(30); // over the file's 20, under the default 200
+    const r = spawnSync('node', [WRAPPER, 'add', 'demo', 'short nine'], {
+      env: { ...gitEnv, NB_DIR: dir, NB_GIT_AUTOCOMMIT: '1', NB_GIT_SESSION_TRAILER: '1', NB_SESSION: session },
+      encoding: 'utf-8',
+      timeout: 20000,
+    });
+    expect(r.status).toBe(0);
+    const capped = 's'.repeat(19) + '…';
+    expect(git('log', '-1', '--format=%B').stdout.trim().split('\n')).toEqual(['nb add demo', '', `Nb-Session: ${capped}`]);
+    const log = readFileSync(join(dir, '.nb-usage.log'), 'utf-8');
+    expect(log).toContain(capped);
+    expect(log).not.toContain(session);
   });
 
   test('nb.json source shows in nb config, text and --json; no file leaves the render unchanged', () => {

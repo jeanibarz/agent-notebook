@@ -366,7 +366,8 @@ export function readNbJson(dir: string): { maxChars?: number; warning?: string }
   const warn = (problem: string) => ({ warning: `warning: ${path}: ${problem}; ignored` });
   let text: string;
   try {
-    text = readFileSync(path, 'utf8');
+    // Drop one leading UTF-8 byte-order mark: Windows PowerShell 5 writes one, and JSON.parse rejects it.
+    text = readFileSync(path, 'utf8').replace(/^\uFEFF/, '');
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     // ENOTDIR: the notebooks path is a file, so there is no folder to hold a settings file; the command's own error says so.
@@ -377,9 +378,10 @@ export function readNbJson(dir: string): { maxChars?: number; warning?: string }
   try {
     parsed = JSON.parse(text);
   } catch (e) {
-    // JSON.parse quotes the start of the file; replace anything outside printable ASCII so a
-    // file from a shared folder cannot send terminal escape codes through this warning.
-    return warn(`invalid JSON (${(e as Error).message.split('\n')[0].replace(/[^\x20-\x7e]/g, '?')})`);
+    // JSON.parse quotes the start of the file; replace control, line-break and bidi characters
+    // with `?` so a file from a shared folder cannot send terminal escape codes through this
+    // warning. Printable non-ASCII text (`é`, `ü`) is kept as written.
+    return warn(`invalid JSON (${(e as Error).message.split('\n')[0].replace(NAME_ESCAPE_RE, '?')})`);
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return warn('not a JSON object');
   const obj = parsed as Record<string, unknown>;
@@ -389,7 +391,9 @@ export function readNbJson(dir: string): { maxChars?: number; warning?: string }
   let maxChars: number | undefined;
   if (Object.hasOwn(obj, 'maxChars')) {
     const v = obj.maxChars;
-    if (typeof v === 'number' && Number.isSafeInteger(v)) maxChars = v;
+    // An integer too large to be exact (`1e30`) still means "as large as allowed": hold the
+    // largest exact one, which the resolver clamps to the 20-2000 range like any other.
+    if (typeof v === 'number' && Number.isInteger(v)) maxChars = Math.max(-Number.MAX_SAFE_INTEGER, Math.min(Number.MAX_SAFE_INTEGER, v));
     else problems.push('maxChars is not an integer');
   }
   return problems.length > 0 ? { maxChars, ...warn(problems.join(', ')) } : { maxChars };
