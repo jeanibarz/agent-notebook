@@ -819,7 +819,8 @@ partially-numeric value `parseInt` would have truncated, such as `1e3` or `12.9`
 never honored as a rewritten `1`/`12`). The human path appends this to the source tag —
 e.g. `(env NB_NEAR_DUP: clamped to 1 from 2)` or `(env NB_MAX_LINES: ignored "abc", not an integer;
 using default)` — and `--json` gains the additive `status` (`"honored"`/`"clamped"`/`"ignored"`,
-`null` when unset or derived) and `rawValue` (the raw env string, `null` when unset) fields, leaving
+`null` when unset or derived) and `rawValue` (the raw env string, `null` when unset; for a `maxChars` row whose source is `.nb.json`
+([FR-CONFIG-003](#fr-config-003)), both describe the number in that file) fields, leaving
 `source` and every existing key unchanged. Output for a config with no problems SHALL be
 byte-identical to the pre-#336 form, apart from the `enabled=` line that
 [FR-ENABLED-002](#fr-enabled-002) appends. `nb config` SHALL further list every `NB_*` environment
@@ -852,6 +853,31 @@ each value `{ value, source }`, leaving the numeric rows' keys and `{ value, sou
 unchanged so the `--json` contract stays backward-compatible (a new section, not a changed row
 type).
 *Proven by:* `cli.test.ts` → `describe('string env section — NB_DIR / NB_SESSION / NB_ASCII (issue #312)')`.
+
+<a id="fr-config-003"></a>
+**FR-CONFIG-003 (Should).** A notebooks folder MAY hold an optional `.nb.json` whose one
+recognised key, `maxChars` (an integer), sets the line length for every `nb` command run on that
+folder. `nb` SHALL read it once per CLI call from the notebooks directory, after the help and
+version early returns, and hold it as a call-scoped override that `maxChars()` consults before the
+environment; the override SHALL be cleared when the call ends, including when it throws, and
+`process.env` SHALL NOT be written. Precedence is `.nb.json`, then `NB_MAX_CHARS`, then the default
+`200`; an out-of-range value SHALL clamp to 20–2000 exactly as `NB_MAX_CHARS` does. A missing file
+SHALL leave behaviour unchanged and print nothing. A file that is unreadable, not valid JSON, not a
+JSON object, has an unknown key or a non-integer `maxChars` SHALL never block the command: `nb`
+SHALL print one stderr line `warning: <path>: <problem>; ignored`, drop the bad part (naming
+unknown keys, keeping a valid `maxChars`) and continue. `nb config` SHALL report the source of
+`maxChars` as `(.nb.json)` in the text form and `"source": ".nb.json"` in `--json` when the file
+set it; with no file the output is byte-identical to before. The getters' signatures and the
+library API are unchanged: a library caller keeps setting `NB_MAX_CHARS`.
+*Proven by:* `nb-json.test.ts` → "nb.json maxChars 400 accepts a 300-char add; the folder wins over
+NB_MAX_CHARS=200; no file refuses as today", "nb.json out-of-range maxChars clamps to 20-2000 like
+the env value", "nb.json invalid JSON, a non-object and an unknown key warn once on stderr and the
+command continues", "nb.json that is unreadable (a directory) warns and continues; a missing file
+is silent", "nb.json override does not leak: a later in-process call on a folder without it
+refuses, and process.env is untouched", "nb.json override is cleared when a command throws",
+"nb.json maxChars applies through the git wrapper, which calls runNbCli in-process", "nb.json
+source shows in nb config, text and --json; no file leaves the render unchanged" and "nb.json
+folder: nb doctor reports no lesson-too-long for a 300-char line".
 
 ### 4.11 Durability & concurrency
 
@@ -1622,7 +1648,8 @@ SHALL remain conservative exact-normal-form equality only. A deterministic, offl
 dependency-free *lexical* overlap (e.g. trigram Jaccard) MAY additionally raise a
 **non-blocking** near-duplicate advisory ([FR-ADD-008](#fr-add-008)); it SHALL NOT
 block, reject, reorder, or rank an add, so it can never cause a silent loss
-([DP-5](#dp-5)) and never becomes a retrieval path ([NG-007](#ng-007)).
+([DP-5](#dp-5)) and never becomes a retrieval path ([NG-007](#ng-007)). A fuzzy write gate that refuses or rewrites an
+add on similarity is out of scope here and in any later design ([#287](https://github.com/jeanibarz/agent-notebook/issues/287)).
 
 <a id="ng-002"></a>
 **NG-002.** The tool SHALL NOT store long-form notes, summaries, or documents — one
@@ -1663,7 +1690,7 @@ to the default (integer vars also fall back on a non-numeric string).
 | `NB_DIR` | `~/.agent-notebook/notebooks` | — | Notebooks directory. |
 | `NB_SESSION` | _(unset → blank)_ | — | Session id a caller/hook sets; recorded per usage row ([FR-USAGE-002](#fr-usage-002)) to group a session's calls. |
 | `NB_MAX_LINES` | 50 | 1–5000 | `maxLines` — entries per notebook (a deliberately tight default so eviction pressure stays meaningful and a notebook keeps only what earns its place; raise it for a shelf that genuinely needs more). |
-| `NB_MAX_CHARS` | 200 | 20–2000 | `maxChars` — characters per lesson. |
+| `NB_MAX_CHARS` | 200 | 20–2000 | `maxChars` — characters per lesson. A `maxChars` in the folder's `.nb.json` wins over it ([FR-CONFIG-003](#fr-config-003)). |
 | `NB_NEAR_DUP` | 0.5 | 0–1 | `nearThreshold` — trigram-Jaccard similarity at/above which an accepted `add` prints a non-blocking merge advisory ([FR-ADD-008](#fr-add-008)); `0` disables it. |
 | `NB_USAGE_RING` | 5000 | 100–100000 | `usageRing` — rows in the usage log. |
 | `NB_LOOP_N` | 10 | 2–1000 | Loop anomaly: call count threshold. |

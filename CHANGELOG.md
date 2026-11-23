@@ -9,6 +9,10 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Added
+
+- **A notebooks folder can set its own line length with `.nb.json`.** A file named `.nb.json` in the notebooks folder with `{ "maxChars": 400 }` sets the characters per lesson for every `nb` command run on that folder, over `NB_MAX_CHARS`; out-of-range values clamp to 20-2000 as the variable does, and a folder without the file behaves as before. A file that is unreadable, invalid or not an object prints one `warning:` line on stderr and is ignored, and the command runs; unknown keys are named in the warning and skipped, while a valid `maxChars` beside them still applies. `nb config` shows `(.nb.json)` as the source. Library callers keep using `NB_MAX_CHARS`.
+
 ## [0.11.1] - 2026-11-22
 
 ### Fixed

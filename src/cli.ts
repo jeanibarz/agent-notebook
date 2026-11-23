@@ -51,6 +51,8 @@ import {
   NbError,
   notebookExists,
   notebooksDir,
+  readNbJson,
+  setCallMaxChars,
   readShelf,
   releaseHeldLock,
   remove,
@@ -302,7 +304,7 @@ notes:
   - \`nb config\` prints every effective (post-clamp) tunable as \`name=value\`, each read from the live
     getter the hot path uses, so you never re-derive it by hand from the env var, its default and its
     clamp. Each line is tagged with its source: \`(default)\` (the var is unset), \`(env NB_*)\` (the var is
-    set), or \`(derived …)\`. A set value that was rewritten or thrown away is annotated: it is still the
+    set), \`(.nb.json)\` (the notebooks folder's settings file sets maxChars), or \`(derived …)\`. A set value that was rewritten or thrown away is annotated: it is still the
     post-clamp effective value, but the tag names \`clamped\`/\`ignored\` (with the raw value) so it never reads
     as if honored. A trailing section then prints the three behavior-critical STRING env vars — \`NB_DIR\`
     (storage), \`NB_SESSION\` (the id the usage/engagement diagnostics group by), and \`NB_ASCII\` (rendering
@@ -808,6 +810,11 @@ export async function runNbCli(
   // `normalizeReason` validates the code against the op's seed-and-grow enum.
   let reasonArg: string | undefined;
   let noteArg: string | undefined;
+  // The folder's `.nb.json` `maxChars` (RFC 0530): read once per call, held as a
+  // call-scoped override (never `process.env`) and cleared in the `finally` below.
+  const nbJson = readNbJson(dir);
+  if (nbJson.warning !== undefined) process.stderr.write(nbJson.warning + '\n');
+  setCallMaxChars(nbJson.maxChars);
   try {
     // Refuse a typo'd/misplaced flag (e.g. `nb stats --exitcode`) before any
     // parsing consumes it, so it can never degrade silently (issue #267). Scans
@@ -1519,7 +1526,7 @@ export async function runNbCli(
           // can tell an in-force override from one that was rewritten or dropped.
           const obj: Record<string, { value: number; source: ConfigSource; env: string | null; status: ConfigStatus | null; rawValue: string | null }> = {};
           for (const r of rows) {
-            obj[r.name] = { value: r.value, source: configSource(r.env), env: r.env, status: r.status, rawValue: r.rawValue };
+            obj[r.name] = { value: r.value, source: r.source ?? configSource(r.env), env: r.env, status: r.status, rawValue: r.rawValue };
           }
           // The string env vars live under a dedicated `environment` key, keyed by
           // the var name, so the 14 numeric rows keep their exact shape and keys —
@@ -1695,7 +1702,11 @@ export async function runNbCli(
     return 1;
   } finally {
     // The `stats` read of the usage log happens above; logging it afterwards is fine.
-    logUsage(dir, shelf, cmd, ok, Date.now() - started, meta);
+    try {
+      logUsage(dir, shelf, cmd, ok, Date.now() - started, meta);
+    } finally {
+      setCallMaxChars(undefined);
+    }
   }
 }
 
