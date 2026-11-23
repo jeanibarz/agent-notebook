@@ -494,8 +494,10 @@ describe('nb-retrospective.sh NB_RETRO_EXTRA_PROMPT', () => {
   function makeRepo(name: string): string {
     const repo = join(dir, 'repos', name);
     mkdirSync(repo, { recursive: true });
-    const git = (...args: string[]) =>
-      execFileSync('git', args, { cwd: repo, stdio: 'ignore', env: { ...process.env, GIT_DIR: undefined } as Record<string, string> });
+    // Drop an inherited GIT_DIR so `git init` here cannot write into another repository.
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env.GIT_DIR;
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore', env });
     git('init', '-q');
     git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
     return repo;
