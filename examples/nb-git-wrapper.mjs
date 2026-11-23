@@ -335,12 +335,22 @@ async function autoCommit(dir, argv, sessionTrailer = '') {
 // The `Nb-Session:` trailer (opt-in via NB_GIT_SESSION_TRAILER=1), or '' when off, the
 // session is blank, or the package's helpers cannot be loaded (fail-open). The value is
 // cleaned and capped with the package's own helpers, matching the usage log's session column.
-async function sessionTrailerFor(entry) {
+// That column is capped while `runNbCli` holds the folder's `.nb.json` `maxChars`, and
+// `runNbCli` has cleared it by now, so the cap here applies the same file value again
+// (its warning was already printed by the CLI). An older package without these helpers
+// falls back to `NB_MAX_CHARS`.
+async function sessionTrailerFor(entry, dir) {
   if (process.env.NB_GIT_SESSION_TRAILER !== '1') return '';
   try {
     const nbm = await import(pathToFileURL(join(dirname(entry), 'notebook.js')).href);
     let session = nbm.stripControlChars(String(process.env.NB_SESSION ?? '').replace(/[\t\r\n]+/g, ' '));
-    const cap = nbm.maxChars();
+    let cap;
+    nbm.setCallMaxChars?.(nbm.readNbJson?.(dir)?.maxChars);
+    try {
+      cap = nbm.maxChars();
+    } finally {
+      nbm.setCallMaxChars?.(undefined);
+    }
     if (session.length > cap) session = session.slice(0, cap - 1) + '…';
     return session.trim() ? `Nb-Session: ${session}` : '';
   } catch {
@@ -376,7 +386,7 @@ async function main() {
   const code = await mod.runNbCli(argv);
   process.exitCode = code;
   if (code === 0 && MUTATING.has((argv[0] ?? '').trim())) {
-    await autoCommit(dir, argv, await sessionTrailerFor(entry));
+    await autoCommit(dir, argv, await sessionTrailerFor(entry, dir));
   }
 }
 
