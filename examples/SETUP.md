@@ -32,7 +32,7 @@ Everyone does section 1. Then do section 2 (A), section 3 (B), or both (C).
    npm install -g agent-notebook
    ```
 
-   Check: `nb --version` prints `nb (agent-notebook) ` followed by a version number, for example `nb (agent-notebook) 0.11.1`.
+   Check: `nb --version` prints `nb (agent-notebook) ` followed by a version number, for example `nb (agent-notebook) 0.12.0`.
 
 3. Check that the shipped files are where this guide says.
 
