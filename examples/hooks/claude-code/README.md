@@ -46,6 +46,7 @@ per-project `.claude/settings.json`.
 | `NB_PROJECT_SLUG` | unset | opt in to the [layered index](#optional-layered-index-project--domain--global): the repo's slug, e.g. `acme-app`. Unset keeps the flat index. Read by `nb-session-start.sh` only; `nb` itself never reads it |
 | `NB_GLOBAL_SHELF` | `global` | with `NB_PROJECT_SLUG`: the one bare shelf shown as the global layer |
 | `NB_ENABLED` | unset | `0`/`false`/`no`/`off` switches the hooks (and the text `nb list` index) off for this process, over `git config nb.enabled`; see [per-repository on/off](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#per-repository-onoff) |
+| `NB_IDEAS_BIN` | `nb-ideas` | the command `nb-ideas-stop.sh` runs to get the end-of-task ideas prompt (see [`../../ideas/`](../../ideas/)); it also reads `NB_IDEAS_DIR` for its sentinels |
 
 The session-start and retrospective hooks first run `nb enabled` (from
 `CLAUDE_PROJECT_DIR`, else the working directory); the subagent hook inherits the

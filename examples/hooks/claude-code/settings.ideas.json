@@ -1,0 +1,21 @@
+{
+  "//": "Example Claude Code hooks for the agent-notebook ideas store (examples/ideas/). Merge the",
+  "//1": "`hooks` block into ~/.claude/settings.json (global) or .claude/settings.json (per project).",
+  "//2": "Replace /ABSOLUTE/PATH with where you copied the example scripts, and make it executable:",
+  "//3": "chmod +x nb-ideas-stop.sh. It needs the `nb-ideas` command on PATH (see examples/ideas/nb-ideas.mjs),",
+  "//4": "or set NB_IDEAS_BIN to its path. It can sit beside nb-retrospective.sh under Stop: when both",
+  "//5": "block the same stop, the agent receives both reasons. Registered under Stop only: a subagent",
+  "//6": "stop (SubagentStop) is never asked, so it is not registered there.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/ABSOLUTE/PATH/examples/hooks/claude-code/nb-ideas-stop.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
