@@ -9,6 +9,8 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-23
+
 ### Added
 
 - **A notebooks folder can set its own line length with `.nb.json`.** A file named `.nb.json` in the notebooks folder with `{ "maxChars": 400 }` sets the characters per lesson for every `nb` command run on that folder, over `NB_MAX_CHARS`; out-of-range values clamp to 20-2000 as the variable does, and a folder without the file behaves as before. A file that is unreadable, invalid or not an object prints one `warning:` line on stderr and is ignored, and the command runs; unknown keys are named in the warning and skipped, while a valid `maxChars` beside them still applies. `nb config` shows `(.nb.json)` as the source. Library callers keep using `NB_MAX_CHARS`.
@@ -889,7 +891,8 @@ versions are listed plainly.
 ### Added
 - Initial release: a bounded, voted, plain-text memory for AI agents. Commands: `nb add`, `show`, `vote`, `merge`, `rm`, `stats`. Each role's notebook holds at most 200 lines, each at most 200 characters, and the lowest-scored line is evicted first when full. The library has zero runtime dependencies.
 
-[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/jeanibarz/agent-notebook/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.9.0...v0.10.0
