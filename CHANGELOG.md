@@ -9,6 +9,15 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Documentation
+
+- **A second documented use case: an "ideas" store next to the lessons notebook.** Ideas record what a task showed should be deleted, merged, shortened, split, corrected or made to fail loudly. They live in a separate folder with a 400-character line cap and are read by a periodic curator, never shown at task start. The README gains a "Two use cases" section, and `docs/ideas-store.md` explains the design. `docs/harness-setup.md` points to it.
+- **`examples/ideas/nb-ideas.mjs`, an example `nb-ideas` wrapper.** It runs the same `nb` against the ideas folder and enforces one idea per task, a fixed line format, and a vote instead of a near-copy. `examples/ideas/README.md` is its reference.
+- **`examples/hooks/claude-code/nb-ideas-stop.sh`, an example Claude Code Stop hook** that asks for at most one idea at the end of a task, with `settings.ideas.json` to register it.
+- **`examples/SETUP.md`, a step-by-step setup guide** for lessons, ideas or both, written so an agent can follow it. The setup skill points to it.
+
+`nb` itself is unchanged.
+
 ## [0.11.1] - 2026-11-22
 
 ### Fixed

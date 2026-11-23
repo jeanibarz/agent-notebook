@@ -188,6 +188,10 @@ What to do about it, with the example scripts as they are:
 - **Audit real sessions** with the [subagent audit](#check-that-subagents-take-part)
   after you change anything. These gaps do not show up in `nb stats`.
 
+### Ideas as well as lessons
+
+Everything above is the lessons use case. A second, optional one records ideas: what a task showed should be deleted, merged, shortened, split, corrected or made to fail loudly. It uses a separate folder, the `nb-ideas` wrapper and its own Stop hook. See [the concept](ideas-store.md), the [setup guide](../examples/SETUP.md) and the [hooks README](../examples/hooks/claude-code/README.md). `nb` itself is unchanged.
+
 ### Per-repository on/off
 
 Where you install decides where the loop runs. The simplest way to try agent-notebook in

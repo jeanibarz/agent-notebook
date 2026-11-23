@@ -361,7 +361,10 @@ async function cmdAdd(argv) {
   if (session) {
     const prior = readLog(cfg).find((e) => e.event === 'add' && e.session === session && e.shelf.endsWith(`@${project}`));
     if (prior) {
-      throw refuse(`this task already recorded idea ${prior.id} (${prior.shelf}); vote instead:\n  nb-ideas vote ${prior.shelf} <id> +1 --because "<what in this task hit it>"`);
+      throw refuse(
+        `this task already recorded idea ${prior.id} (${prior.shelf}): one new idea per task. ` +
+          `To support an idea that is already recorded, vote for it:\n  nb-ideas vote <shelf> <id> +1 --because "<what in this task hit it>"`,
+      );
     }
   }
 

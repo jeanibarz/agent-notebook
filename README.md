@@ -117,6 +117,8 @@ The instruction is the one required piece: *"list the notebooks, open the ones t
 
 ### Wire it up
 
+The [setup guide](examples/SETUP.md) covers these steps, and the ideas folder, in order; the commands below are the lessons part.
+
 Give your agent the standing instruction. The block ships with the package, in a file under `codex-cli/`, but it works in either harness's instruction file. Each command below appends it once (the `grep` skips a file that already has it), and its `sed` drops the file's opening comment, a note for Codex users. Run the one for your harness, in your project; if your `CLAUDE.md` is a link to `AGENTS.md`, run only one.
 
 **Claude Code** reads `CLAUDE.md`:
@@ -148,6 +150,22 @@ Merge the printed `hooks` block into `.claude/settings.json` (or `~/.claude/sett
 
 These are **reference integrations to adapt and test in your own setup**, not a certified, supported matrix. **Claude Code is the primary target**: the hooks are written against it. The Codex CLI pieces and any other harness are a lighter-touch starting point to verify in place. There is **no MCP server** and no network call — `nb` is a plain offline CLI.
 
+## Two use cases: lessons and ideas
+
+The same storage serves two jobs. Each has its own folder, so one never crowds the other.
+
+| | Lessons | Ideas |
+|---|---|---|
+| Records | what a later agent should remember | what in the project should be deleted, merged, shortened, split, corrected or made to fail loudly |
+| Read | at task start, from `nb list` | never at task start; a periodic curator reads it |
+| Written | `nb vote` and `nb add` at task end | `nb-ideas add` at task end, at most one per task |
+| Folder | `~/.agent-notebook/notebooks` | a separate folder, default `~/.agent-notebook/ideas`, 400-character cap |
+| Ends as | the line stays or ages out | a work item, after a curator checks it against the code |
+
+Lessons are the default described on this page. Ideas are an example you opt into: the `nb-ideas` wrapper in `examples/ideas/` runs the same `nb` against the ideas folder and adds three rules. It accepts one idea per task, in a fixed line format (`<target>: <problem> -> <change> (keeps: <behaviour that must keep working>)`), and it turns a similar idea into a vote instead of a near-copy. `nb` itself is unchanged. The concept and the reasons for the rules are in [Two use cases: lessons and ideas](https://github.com/jeanibarz/agent-notebook/blob/main/docs/ideas-store.md).
+
+To set up lessons, ideas or both, follow the [setup guide](examples/SETUP.md). An agent can follow it step by step.
+
 ## Install
 
 ```
@@ -172,6 +190,8 @@ Next: [wire it up](#wire-it-up), so your agent does this on its own.
 - <a id="turn-it-on-or-off-per-repository"></a>**Wiring it into an agent?** [Harness setup](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md) — the instruction, optional hooks, git history, backup and a janitor, for Claude Code and Codex CLI on Linux, macOS and Windows. Agents not biting? [Diagnosing low engagement](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#diagnosing-low-engagement).
 - <a id="selecting-an-entry--id-vs-query"></a><a id="discovering-notebooks--nb-list"></a><a id="grouping-notebooks--the--namespace-convention"></a><a id="searching--the-demoted-fallback"></a>**Every command in detail?** [CLI reference](https://github.com/jeanibarz/agent-notebook/blob/main/docs/cli-reference.md) — selectors, merge and split, descriptions, `nb list`, namespaces, search, completion.
 - <a id="activity-sparkline"></a><a id="free-diagnostic-signals"></a><a id="surfacing-metrics"></a><a id="what-the-usage-log-records"></a><a id="diagnosing-errors-by-class"></a><a id="tuning-nb-stats"></a><a id="other-environment-variables"></a><a id="inspecting-the-effective-configuration--nb-config"></a>**Looking after a store?** [Operating `nb`](https://github.com/jeanibarz/agent-notebook/blob/main/docs/operating.md) — `nb stats`, the usage log, error classes, every knob, `nb config`.
+- **Setting it up step by step?** The [setup guide](examples/SETUP.md) covers lessons, ideas or both.
+- **Keeping ideas as well as lessons?** [Two use cases: lessons and ideas](https://github.com/jeanibarz/agent-notebook/blob/main/docs/ideas-store.md) — why the ideas store is a separate folder with its own rules.
 - **Using it as a library?** [Programmatic use](https://github.com/jeanibarz/agent-notebook/blob/main/docs/programmatic-use.md).
 - **Contributing?** [CONTRIBUTING.md](https://github.com/jeanibarz/agent-notebook/blob/main/CONTRIBUTING.md).
 

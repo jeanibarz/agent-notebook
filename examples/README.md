@@ -7,12 +7,17 @@ call ([DP-6](https://github.com/jeanibarz/agent-notebook/blob/main/docs/requirem
 diagnostics — lives *around* the package, as the optional, copy-pasteable pieces
 in this directory. Use the ones you want; skip the rest.
 
+For a step-by-step setup of lessons, ideas or both, follow
+[`SETUP.md`](SETUP.md).
+
 | File | What it adds | Depends on |
 |---|---|---|
 | [`nb-git-wrapper.mjs`](nb-git-wrapper.mjs) | a git commit per notebook change (reviewable, revertible memory) | Node, git |
 | [`nb-backup.sh`](nb-backup.sh) | daily push of that history to a remote | bash, git |
 | [`nb-janitor.mjs`](nb-janitor.mjs) | read-only diagnostics: near-duplicate lessons and near-duplicate shelf names (including the same base under two `@project` slugs), the same lesson held by several project shelves, lessons lost to eviction, growth trends, shelf co-access (which shelves are shown together) | Node (git optional) |
 | [`hooks/claude-code/`](hooks/claude-code/) | optional hooks: inject the `nb list` index at session start and into each subagent + nudge the retrospective once per session | Claude Code |
+| [`ideas/`](ideas/) | `nb-ideas`: a wrapper that keeps a second, separate notebooks folder of improvement ideas (delete, merge, shorten, split, fix), one idea per task, with similar ideas turned into votes and a curator report | Node |
+| [`hooks/claude-code/nb-ideas-stop.sh`](hooks/claude-code/nb-ideas-stop.sh) | the Stop hook for that ideas store: asks the lead agent once per session for the end-of-task idea (see the [hooks README](hooks/claude-code/README.md#ideas-prompt-nb-ideas-stopsh)) | Claude Code, `nb-ideas` |
 | [`hooks/codex-cli/`](hooks/codex-cli/) | the AGENTS.md contract + PATH wrapper for Codex CLI | Codex CLI |
 | [`completion/`](completion/) | tab-completion scripts for bash & zsh, as emitted by `nb completion <bash\|zsh>` (source them, or install into your completion dir) | bash or zsh |
 

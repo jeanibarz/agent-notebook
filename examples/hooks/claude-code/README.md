@@ -14,6 +14,8 @@ before relying on them in long sessions or with subagents.
 | `nb-subagent-start.sh` | `SubagentStart` | hands the same index to each **subagent**, which never sees the `SessionStart` one. See [below](#give-subagents-the-index-subagentstart) for when to prefer a line in the brief. |
 | `nb-retrospective.sh` | `Stop` | once per session, at the lead agent's first stop with no subagent still running, nudges it to vote / prune / add on the notebooks it used. It never nudges a subagent. |
 | `settings.json` | — | the config that registers the three scripts. |
+| `nb-ideas-stop.sh` | `Stop` | once per session, at the lead agent's first stop with no delegated work running, asks for the end-of-task improvement idea, using the text from `nb-ideas prompt`. Optional; needs the [`nb-ideas`](../../ideas/) wrapper. See [Ideas prompt](#ideas-prompt-nb-ideas-stopsh). |
+| `settings.ideas.json` | — | the config that registers `nb-ideas-stop.sh` on its own (or beside the retrospective). |
 
 ## Install (per project, recommended first)
 
@@ -40,13 +42,14 @@ per-project `.claude/settings.json`.
 | Var | Default | Purpose |
 |---|---|---|
 | `NB_DIR` | `~/.agent-notebook/notebooks` | where notebooks (and retro sentinels) live |
+| `NB_IDEAS_DIR` | `~/.agent-notebook/ideas` | the separate ideas folder; `nb-ideas-stop.sh` keeps its `.ideas-prompt-<session>` sentinels there |
 | `NB_RETRO_TTL_DAYS` | `7` | how many days a `.retro-<session>` sentinel survives before `nb-retrospective.sh` prunes it (see [below](#how-the-retrospective-nudge-avoids-looping)) |
 | `NB_SESSION` | — | set it (e.g. to Claude Code's session id) to unlock the per-session [surfacing metrics](https://github.com/jeanibarz/agent-notebook/blob/main/docs/operating.md#surfacing-metrics) in `nb stats` |
 | `NB_BIN` | `nb` | point at the [git-versioning wrapper](../../nb-git-wrapper.mjs) to commit each change |
 | `NB_PROJECT_SLUG` | unset | opt in to the [layered index](#optional-layered-index-project--domain--global): the repo's slug, e.g. `acme-app`. Unset keeps the flat index. Read by `nb-session-start.sh` only; `nb` itself never reads it |
 | `NB_GLOBAL_SHELF` | `global` | with `NB_PROJECT_SLUG`: the one bare shelf shown as the global layer |
 | `NB_ENABLED` | unset | `0`/`false`/`no`/`off` switches the hooks (and the text `nb list` index) off for this process, over `git config nb.enabled`; see [per-repository on/off](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#per-repository-onoff) |
-| `NB_IDEAS_BIN` | `nb-ideas` | the command `nb-ideas-stop.sh` runs to get the end-of-task ideas prompt (see [`../../ideas/`](../../ideas/)); it also reads `NB_IDEAS_DIR` for its sentinels |
+| `NB_IDEAS_BIN` | `nb-ideas` | the command `nb-ideas-stop.sh` runs to get the end-of-task ideas prompt (see [`../../ideas/`](../../ideas/)); it also reads `NB_IDEAS_DIR` (above) for its sentinels |
 
 The session-start and retrospective hooks first run `nb enabled` (from
 `CLAUDE_PROJECT_DIR`, else the working directory); the subagent hook inherits the
@@ -177,3 +180,48 @@ and unlinks every `.retro-*` entry whose mtime is older than `NB_RETRO_TTL_DAYS`
 failed `readdir`/`stat`/`unlink` never blocks the stop. Keep the TTL comfortably
 above your longest plausible session so an in-flight sentinel is never reaped
 early; the session's own sentinel is just-written and so never a prune candidate.
+
+## Ideas prompt (`nb-ideas-stop.sh`)
+
+Optional companion for the [ideas store](../../ideas/README.md). At the lead
+agent's first stop with no delegated work in flight, it blocks the stop once and
+shows the agent a short end-of-task prompt: did this task show that something
+should be deleted, merged, shortened, split, corrected or made to fail loudly?
+Most tasks have nothing to record, and then the agent just stops.
+
+- **Who is asked, and when.** Once per session, at the lead's first stop while no
+  subagent, workflow, teammate or cloud session is `running` or `pending` in
+  `background_tasks`. Never for `SubagentStop` or a payload with an `agent_id`.
+- **Its own sentinel.** `.ideas-prompt-<session>` in `NB_IDEAS_DIR` (not `NB_DIR`),
+  claimed atomically and pruned after `NB_RETRO_TTL_DAYS`. Unlike the retrospective
+  it does not look at `stop_hook_active`, so it still asks when the lessons
+  retrospective blocked an earlier stop; its sentinel is what prevents a loop.
+- **The text** comes from `nb-ideas prompt --session <session_id>`, so the commands
+  it shows already carry the session id and the per-task rules work without the
+  harness exporting `NB_SESSION`. `NB_IDEAS_BIN` names the command.
+- **Fails open.** If `nb-ideas` is missing, fails or prints nothing, the stop goes
+  through and the sentinel is released. It honours `nb enabled` like the
+  retrospective: an `off` lets the stop through.
+
+Install it next to the others, then merge the `hooks` block of
+`settings.ideas.json` into your settings (or add its `Stop` entry beside the
+retrospective's):
+
+```sh
+cp "$(npm root -g)/agent-notebook/examples/hooks/claude-code/nb-ideas-stop.sh" ~/.agent-notebook/hooks/
+chmod +x ~/.agent-notebook/hooks/nb-ideas-stop.sh
+sed -e '/^  "\/\//d' -e "s|/ABSOLUTE/PATH/examples/hooks/claude-code|$HOME/.agent-notebook/hooks|" "$(npm root -g)/agent-notebook/examples/hooks/claude-code/settings.ideas.json"
+```
+
+Install `nb-ideas` itself first, as in the [ideas README](../../ideas/README.md#install).
+
+To verify, pipe a Stop payload into it from inside a git repository (the project
+name is taken from there). It prints a `decision: block` JSON with the prompt as
+the reason, and nothing on a second run for the same session:
+
+```sh
+echo '{"session_id":"t1","hook_event_name":"Stop"}' | ~/.agent-notebook/hooks/nb-ideas-stop.sh
+```
+
+With both this hook and `nb-retrospective.sh` registered under `Stop`, Claude Code
+(2.1.330) delivers both reasons to the agent at the same stop.

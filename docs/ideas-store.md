@@ -52,7 +52,7 @@ folder. Three reasons:
 - **`nb doctor` checks against the cap it runs with.** It flags any line longer
   than that cap. The wrapper passes the ideas cap to every `nb` it starts, so
   `nb-ideas doctor` is correct. Plain `nb doctor` with `NB_DIR` pointed at the
-  ideas folder runs with the default cap and reports the long lines as errors.
+  ideas folder runs with the default cap (200 characters) and reports the long lines as errors.
 
 ## 3. Design, and the reason for each rule
 
@@ -113,7 +113,7 @@ whether or not its own task hit it. In the measured sessions, lesson votes ran
 about 1,075 up to 7 down. That ratio is agreement, not evidence.
 
 So the agent writes its idea blind, and then `nb-ideas add` compares it with
-every idea of the project, across all shelves. A match is the same target, or a
+every idea of the project, across all shelves. A match is the same target (compared ignoring case), or a
 character-trigram similarity of at least 0.4 (the package's exported
 `similarity`). On a match the wrapper records nothing, lists the matching ideas,
 and exits with code 3. The agent then either votes for the one it really hit, or
@@ -160,14 +160,12 @@ The main agent is the one that has seen the whole task.
 
 The prompt comes before the final step, and it is short. It says most tasks have
 nothing to record, and that stopping is then the right answer. Ideas are not
-shown at session start, for the same reason as the write-first rule: a visible
-list invites agreement.
+shown at session start.
 
 The rules live in the wrapper, not only in prose, because prose was not obeyed.
 On lessons, "at most one" written in the instructions was broken in about 98 of
-541 task-shelf pairs. And 0 of 718 adds were exact duplicates, so exact-match
-checking alone catches nothing; a similarity check on the target and wording
-is what finds repeats.
+541 task-shelf pairs. And 0 of 718 adds were exact duplicates, so the wrapper
+also checks the target and a text similarity to find repeats.
 
 ## 4. The curator recipe
 

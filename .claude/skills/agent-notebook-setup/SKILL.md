@@ -4,11 +4,12 @@ description: >-
   Guide a user through installing and configuring agent-notebook in their AI
   harness (Claude Code or Codex CLI, on Linux/macOS/Windows) — the "list & open"
   instruction that makes the agent use it, optional session-start/retrospective
-  hooks, per-change git-versioning, daily backup, and the diagnostics janitor.
+  hooks, per-change git-versioning, daily backup, the diagnostics janitor, and the
+  optional ideas store (`nb-ideas`).
   Use when the user says things like "set up / install
   / configure agent-notebook", "wire the notebook into my harness", "add the nb
-  hooks", "how do I get my agent to use the notebook automatically", or asks about
-  git-versioning, backup, or the janitor for agent-notebook.
+  hooks", "how do I get my agent to use the notebook automatically", "set up the ideas
+  store", or asks about git-versioning, backup, or the janitor for agent-notebook.
 ---
 
 # Guide the user through setting up their agent-notebook harness
@@ -22,6 +23,9 @@ the interactive path through it.
 
 Determine, by asking or inspecting:
 - **Harness:** Claude Code, Codex CLI, or both?
+- **Use case:** lessons (what a later agent should remember), ideas (what in
+  the project should be deleted, merged, shortened, split, corrected or made to
+  fail loudly), or both? Lessons is the default; the rest of this skill covers it.
 - **OS:** Linux, macOS, or Windows (WSL / Git Bash / native)?
 - **How far they want to go.** Offer the ladder and let them pick a stopping point:
   1. install `nb`, 2. + the "list & open" instruction so the agent uses it (the
@@ -65,6 +69,13 @@ There is no per-project notebook name to configure.
   or they register `nb-subagent-start.sh` under `SubagentStart`. Walk them through
   `docs/harness-setup.md#subagents` and `#what-the-hooks-do-not-cover`, then have them run the
   audit in `#check-that-subagents-take-part` on one real session.
+
+### Ideas path (only if they chose ideas or both)
+
+Do the lessons steps above only if they chose lessons or both. For ideas, follow
+`examples/SETUP.md` step by step: the `nb-ideas` wrapper, the optional
+`nb-ideas-stop.sh` Stop hook, and the curator routine. The concept is in
+`docs/ideas-store.md`. Verify with one `nb-ideas add` and `nb-ideas show`.
 
 ## 4. git-versioning (optional)
 
