@@ -210,12 +210,18 @@ const lessons = [
 // CLAUDE_PROJECT_DIR, then this process's directory. Cleaned to [a-z0-9._-] with
 // letter/digit ends. Returns '' when there is no usable name (not a git directory,
 // nothing left after cleaning, git missing or slow).
+// The name becomes part of a shelf name (`<category>@<project>`, at most 128
+// characters), so it is cut to 100 characters, then trimmed again.
 function cleanProject(raw) {
-  return String(raw)
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]/g, '-')
-    .replace(/\.{2,}/g, '.')
-    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');
+  const trimEnds = (s) => s.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');
+  return trimEnds(
+    trimEnds(
+      String(raw)
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]/g, '-')
+        .replace(/\.{2,}/g, '.'),
+    ).slice(0, 100),
+  );
 }
 function projectName() {
   if (process.env.NB_PROJECT_SLUG) return cleanProject(process.env.NB_PROJECT_SLUG);

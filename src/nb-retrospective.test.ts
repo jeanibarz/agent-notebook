@@ -8,6 +8,7 @@ import {
   readFileSync,
   utimesSync,
   readdirSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -600,6 +601,32 @@ describe('nb-retrospective.sh NB_RETRO_EXTRA_PROMPT', () => {
       { NB_RETRO_EXTRA_PROMPT: extraFile('{project}') },
     );
     expect(reason.endsWith('\n\nmy_repo--copy')).toBe(true);
+  });
+
+  test('a ".." in a folder name collapses to one ".", so the shelf name stays valid', () => {
+    const repo = makeRepo('my..app');
+    const { reason } = runFull({ session_id: 's', cwd: repo }, { NB_RETRO_EXTRA_PROMPT: extraFile('{project}') });
+    expect(reason.endsWith('\n\nmy.app')).toBe(true);
+  });
+
+  test('a very long folder name is cut to 100 characters', () => {
+    const repo = makeRepo('a'.repeat(150));
+    const { reason } = runFull({ session_id: 's', cwd: repo }, { NB_RETRO_EXTRA_PROMPT: extraFile('{project}') });
+    expect(reason.endsWith('\n\n' + 'a'.repeat(100))).toBe(true);
+  });
+
+  test('a main checkout opened through a symlink gives the same {project} as its worktree', () => {
+    const repo = makeRepo('real-name');
+    const link = join(dir, 'link-name');
+    symlinkSync(repo, link);
+    const wt = join(dir, 'elsewhere', 'wt-link');
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'feat-link', wt], { cwd: repo, stdio: 'ignore' });
+    const env = { NB_RETRO_EXTRA_PROMPT: extraFile('{project}') };
+    const viaLink = runFull({ session_id: 'b', cwd: link }, env).reason;
+    rmSync(join(dir, '.retro-b'));
+    const tree = runFull({ session_id: 'b', cwd: wt }, env).reason;
+    expect(viaLink.endsWith('\n\nreal-name')).toBe(true);
+    expect(tree.endsWith('\n\nreal-name')).toBe(true);
   });
 
   test('the session is cleaned like the sentinel name', () => {
