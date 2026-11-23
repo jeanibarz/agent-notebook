@@ -129,6 +129,16 @@ describe('nb-ideas-stop.sh', () => {
     expect(existsSync(sentinel('sess-1'))).toBe(true);
   });
 
+  test('`off` only in the payload cwd lets that stop through and releases the sentinel for a later stop', () => {
+    const offDir = join(tmp, 'off-repo');
+    mkdirSync(offDir);
+    const nb = join(tmp, 'nb-off-in-one-dir');
+    writeFileSync(nb, `#!/bin/sh\ncase "$(pwd)" in */off-repo) echo off ;; *) echo on ;; esac\n`, { mode: 0o755 });
+    expect(runHook({ session_id: 'sess-2', hook_event_name: 'Stop', cwd: offDir }, { NB_BIN: nb })).toBe('');
+    expect(existsSync(sentinel('sess-2'))).toBe(false);
+    expect(JSON.parse(runHook({ session_id: 'sess-2', hook_event_name: 'Stop' }, { NB_BIN: nb })).decision).toBe('block');
+  });
+
   test('a session id cannot escape the sentinel directory', () => {
     expect(JSON.parse(stop('../../evil')).decision).toBe('block');
     expect(existsSync(join(ideasDir, '.ideas-prompt-.._.._evil'))).toBe(true);

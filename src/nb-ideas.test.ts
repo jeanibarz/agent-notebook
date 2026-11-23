@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -526,5 +526,21 @@ describe('nb-ideas: review fixes', () => {
     const r = add('dead', long, 's1', [], { NB_IDEAS_MAX_CHARS: '3000' });
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('over the cap of 2000');
+  });
+
+  test('a stale add marker (a crashed add) is taken over; a fresh one refuses the add', () => {
+    mkdirSync(ideasDir, { recursive: true });
+    const marker = join(ideasDir, '.ideas-adding-s1@my-app');
+    writeFileSync(marker, '1');
+    expect(add('dead', LINE_A, 's1').status).toBe(2); // fresh: an add by this task is in progress
+    const old = (Date.now() - 120_000) / 1000;
+    utimesSync(marker, old, old);
+    expect(add('dead', LINE_A, 's1').status).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test('a project slug is trimmed to start and end with a letter or digit, with no ".."', () => {
+    expect(run(['add', 'dead', LINE_A, '--project', '_My..Repo (copy)_'], {}, null).status).toBe(0);
+    expect(existsSync(join(ideasDir, 'dead@my.repo--copy.md'))).toBe(true);
   });
 });

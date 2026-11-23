@@ -259,8 +259,13 @@ function resolveProject(flag) {
       /* not a git repo */
     }
   }
-  const slug = raw.toLowerCase().replace(/[^a-z0-9._-]/g, '-');
-  if (slug === '' || /^-+$/.test(slug)) {
+  // Shelf names must start and end with a letter or digit and hold no `..`.
+  const slug = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '-')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');
+  if (slug === '') {
     throw refuse('cannot tell which project this is: run inside a git repository, or pass --project <slug> (or set NB_IDEAS_PROJECT)');
   }
   return slug;
