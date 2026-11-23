@@ -99,7 +99,7 @@ Lessons use the default folder, `~/.agent-notebook/notebooks`. Set `NB_DIR` to u
 
    Check: it prints JSON that starts `{` / `"hooks": {` and has `SessionStart`, `SubagentStart` and `Stop`, each with a `command` that starts with the user's home folder and ends in one of the copied scripts.
 
-   Merge the `hooks` block into `.claude/settings.json` (this project) or `~/.claude/settings.json` (every project). If the file already has a `hooks` key, add these entries to its arrays instead of replacing them. If the file does not exist, create `.claude/` and save the printed block as the whole file. Then restart Claude Code: hooks load at startup. In the new session, the `/hooks` command lists the registered hooks. The hooks run `nb`, so it must be on the `PATH` Claude Code starts with; `NB_BIN` takes a full path instead. Tell the user before you edit their settings file.
+   Merge the `hooks` block into `.claude/settings.json` (this project) or `~/.claude/settings.json` (every project). If the file already has a `hooks` key, add these entries to its arrays instead of replacing them. If the file does not exist, create `.claude/` and save the printed block as the whole file. For path C (both), skip this merge and write the complete file shown in section 4 once, after section 3. Then restart Claude Code: hooks load at startup. In the new session, the `/hooks` command lists the registered hooks. The hooks run `nb`, so it must be on the `PATH` Claude Code starts with; `NB_BIN` takes a full path instead. Tell the user before you edit their settings file.
 
 5. Verify. Run the session-start hook by hand.
 
@@ -218,7 +218,7 @@ The design is the accepted [RFC 0530](https://github.com/jeanibarz/agent-noteboo
    echo '{"session_id":"test-1","hook_event_name":"Stop","cwd":"'"$PWD"'"}' | NB_RETRO_EXTRA_PROMPT="$HOME/.agent-notebook/hooks/ideas-end-prompt.txt" NB_DIR=$T bash ~/.agent-notebook/hooks/nb-retrospective.sh | node -pe 'JSON.parse(require("fs").readFileSync(0)).reason.split("\n").slice(-9).join("\n")'
    ```
 
-   Check: it prints the end of the nudge, starting with an empty line, then `One more check before you stop, on the project my-app (not the notebooks):`. One line names the add command, with the project and the session filled in: `NB_SESSION=test-1 nb-ideas add <category>@my-app "<file or command>: <problem> -> <change> (keeps: <behaviour that must keep working>)"`. The last line is `Do not read the ideas shelves first.` Run the same command again with the same `T`: it prints nothing, because the sentinel `.retro-test-1` now exists in `T`.
+   Check: it prints the end of the nudge, starting with an empty line, then `One more check before you stop, on the project my-app (not the notebooks):`. One line names the add command, with the project and the session filled in: `NB_SESSION=test-1 nb-ideas add <category>@my-app "<file or command>: <problem> -> <change> (keeps: <behaviour that must keep working>)"`. The last line is `Do not read the ideas shelves first.` Run the same command again with the same `T`: the hook prints nothing, because the sentinel `.retro-test-1` now exists in `T` (if you kept a `| node …` filter on the end, it then fails on the empty input; that is expected).
 
    How the hook fills the placeholders:
 
@@ -240,14 +240,16 @@ The design is the accepted [RFC 0530](https://github.com/jeanibarz/agent-noteboo
 
    **The curator is the voter.** Agents only add, and they never vote on ideas. Without votes every line has score 1, and a full shelf (50 lines) drops its oldest line first. The curator's votes are what keep an idea on the shelf. Once a week, or sooner when any shelf reaches 40 lines (`nb-ideas list` shows the counts), a person or an agent does this for each project:
 
-   1. Read the project's shelves: `nb-ideas show dead@my-app`, then each of the other `<category>@my-app` shelves.
+   1. Read the project's shelves: `nb-ideas list` shows them with their line counts; `nb-ideas show <shelf>` each one that has lines. An empty shelf needs nothing.
    2. Handle each line:
       - **A later report of an idea you already keep:** merge it into the kept line, then vote `+1`. `nb-ideas merge dead@my-app <kept-id> <new-id> "<kept text>"`, then `nb-ideas vote dead@my-app <id> +1`. The merged line keeps the higher score, so the score counts independent reports. Run `nb-ideas show dead@my-app` to read the id of the merged line.
-      - **A plausible idea with little support:** `nb-ideas vote <shelf> <id> +1`. It then outlives the fresh, unread lines.
+      - **A plausible idea with one report** (it passes a quick check, but only one task raised it): `nb-ideas vote <shelf> <id> +1` to keep it, and do not promote it yet. It then outlives the fresh, unread lines.
       - **An idea that fails a quick check against the code:** `nb-ideas rm <shelf> <id> --reason wrong` (or `--reason obsolete` if the code has changed since).
    3. Promote any idea that two or more tasks reported. Check it against the code by its category. `dead`: a search finds no use outside its own tests. `duplicate`: both copies exist. `fragile`: reproduce it. `guidance`: the quoted text is still there. `unused`: find usage evidence, then a human decides. `overbuilt` and `tangled`: these usually need a design first. `tests`: run the test, or check what a mutation does to it. Before a deletion, check that a test covers the `keeps:` behaviour.
    4. File a work item for each idea that passes. Then remove the line, keeping the link: `nb-ideas rm <shelf> <id> --reason other --note "promoted: <link>"`.
    5. Write four counts in each work item or run note: lines read, reports merged, ideas kept, ideas promoted.
+
+   The curator does not need `NB_SESSION`; it is the add, not the vote, that carries the task.
 
    Lines that nobody repeats and nobody votes for age out. That is the cap doing its normal job. A repeat that arrives after its first report has aged out is lost: the weekly run, or the 40-line rule, keeps that rare.
 
@@ -285,6 +287,7 @@ Do section 2, then section 3. Then note these points.
 | `nb doctor` reports `lesson-too-long ... lesson is 374 chars; cap is 200` on the ideas folder | This `nb` ignores `.nb.json` (step 3 showed `(default)`), so plain `nb` uses 200 there | Run `nb-ideas doctor` instead; once `nb` reads `.nb.json`, plain `nb` gets it right too. |
 | `nb` prints a warning that names `.nb.json` | The file is not valid JSON, is unreadable, or has an unknown key | Fix the file. `nb` ignores the bad part and goes on. A value outside 20–2000 is clamped. |
 | An idea shows up in a lessons shelf | An agent ran `nb add` because `nb-ideas` was not found | Fix the shim and `PATH`. Move the line with `nb rm` on the lessons shelf and `nb-ideas add`. |
+| `$(npm root -g)/agent-notebook/...: No such file or directory` | `npm root -g` prints a different folder from where the package is (a custom prefix, or npm masking part of the path) | Print the right folder with `dirname "$(dirname "$(dirname "$(readlink -f "$(command -v nb)")")")"` (it holds `agent-notebook/`) and use it wherever `$(npm root -g)` appears. |
 | The Stop hook prints nothing, so the agent is never asked | The sentinel `.retro-<session id>` already exists in the lessons folder (the hook asks once per session), or `nb enabled` prints `off` | Run `ls -A "$(nb path)"` and delete that file to test again. Run `nb enabled`: if it prints `off`, run `git config nb.enabled true` in the repository. |
 | The nudge has the lessons text but no ideas text | The prompt file is missing or relative (the hook prints `nb-retrospective: ignoring NB_RETRO_EXTRA_PROMPT (...)` on stderr), or `cwd` is not a git directory, or the payload has no `session_id` | Fix the path (absolute), or run the hook from a git `cwd`, or set `NB_PROJECT_SLUG` for the project. |
 | Two repositories write to the same shelves | Their folders have the same name | Set `NB_PROJECT_SLUG` in each project's `.claude/settings.json`, not at user level. |
