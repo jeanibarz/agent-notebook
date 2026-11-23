@@ -1,0 +1,8 @@
+One more check before you stop, on the project {project} (not the notebooks):
+did this task show that something in {project} should be deleted, merged, shortened, split, corrected or made to fail loudly?
+Most tasks have nothing to record. That is the expected answer: then just stop.
+If one did, record at most one idea (no new features):
+  NB_SESSION={session} nb-ideas add <category>@{project} "<file or command>: <problem> -> <change> (keeps: <behaviour that must keep working>)"
+Category, the first that fits:
+  guidance, dead, duplicate, overbuilt, tangled, unused, fragile, tests
+Do not read the ideas shelves first.

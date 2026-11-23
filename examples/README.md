@@ -5,7 +5,7 @@ never touches git, never phones home, never runs anything clever inside an `nb`
 call ([DP-6](https://github.com/jeanibarz/agent-notebook/blob/main/docs/requirements.md#dp-6)). Everything that makes it feel like a
 *system* — a one-line instruction, optional convenience hooks, per-change history, off-machine backup, trend
 diagnostics — lives *around* the package, as the optional, copy-pasteable pieces
-in this directory. Use the ones you want; skip the rest.
+in this directory. Use the ones you want; skip the rest. To have an agent set them up for you, for lessons, ideas or both, point it at [`SETUP.md`](SETUP.md).
 
 | File | What it adds | Depends on |
 |---|---|---|
@@ -13,6 +13,7 @@ in this directory. Use the ones you want; skip the rest.
 | [`nb-backup.sh`](nb-backup.sh) | daily push of that history to a remote | bash, git |
 | [`nb-janitor.mjs`](nb-janitor.mjs) | read-only diagnostics: near-duplicate lessons and near-duplicate shelf names (including the same base under two `@project` slugs), the same lesson held by several project shelves, lessons lost to eviction, growth trends, shelf co-access (which shelves are shown together) | Node (git optional) |
 | [`hooks/claude-code/`](hooks/claude-code/) | optional hooks: inject the `nb list` index at session start and into each subagent + nudge the retrospective once per session | Claude Code |
+| [`hooks/ideas-end-prompt.txt`](hooks/ideas-end-prompt.txt) | the end-of-task question for the ideas use case: the text `nb-retrospective.sh` appends to its nudge when `NB_RETRO_EXTRA_PROMPT` points at a copy of it (with `{project}` and `{session}` filled in), or that you append to `AGENTS.md` | Claude Code, or any harness that reads `AGENTS.md` |
 | [`hooks/codex-cli/`](hooks/codex-cli/) | the AGENTS.md contract + PATH wrapper for Codex CLI | Codex CLI |
 | [`completion/`](completion/) | tab-completion scripts for bash & zsh, as emitted by `nb completion <bash\|zsh>` (source them, or install into your completion dir) | bash or zsh |
 
@@ -43,7 +44,7 @@ undocumented (issue #207, extending the `src/*.ts` guard of #164).
 | `NB_SESSION` | — | [`nb-janitor.mjs`](nb-janitor.mjs) | the session id that unlocks per-session [surfacing metrics](https://github.com/jeanibarz/agent-notebook/blob/main/docs/operating.md#surfacing-metrics) |
 | `NB_USAGE_RING` | `5000` | [`nb-janitor.mjs`](nb-janitor.mjs) | the usage-log row cap, read like the package's own (a whole integer clamped to 100–100000); the report warns when a `--days` window reaches past the rows the ring still holds |
 
-The `hooks/claude-code/` scripts (`NB_BIN`, `NB_RETRO_TTL_DAYS`, `NB_SESSION`)
+The `hooks/claude-code/` scripts (`NB_BIN`, `NB_RETRO_TTL_DAYS`, `NB_RETRO_EXTRA_PROMPT`, `NB_SESSION`)
 are documented in their own [README](hooks/claude-code/README.md#configuration-environment).
 
 ## Status of these examples

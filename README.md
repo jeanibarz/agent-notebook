@@ -133,6 +133,8 @@ grep -qs '^## Memory: agent-notebook' AGENTS.md || sed '/^<!--/,/^-->/d' "$(npm 
 
 The commands are for macOS, Linux, WSL or Git Bash (on Windows, see [Windows](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#windows)); if `npm root -g` does not point at your install, copy the block from [`examples/hooks/codex-cli/AGENTS.snippet.md`](examples/hooks/codex-cli/AGENTS.snippet.md) by hand.
 
+For a guided, checked setup of lessons, ideas or both, an agent can follow [`examples/SETUP.md`](examples/SETUP.md).
+
 **Check it worked:** start a fresh session and give it a task. The agent should run `nb list` and open a notebook that fits. After the task, `nb show <shelf>` should show its votes and any lesson it added. For the hooks, see [Verify it's working](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#verify-its-working) and `nb stats`.
 
 **Optional hooks for Claude Code** inject the index at session start, hand the same index to each subagent, and nudge the retrospective at the stop. They ship in the package. Copy them somewhere stable, then print a hooks block with your paths filled in:
@@ -147,6 +149,22 @@ sed -e '/^  "\/\//d' -e "s|/ABSOLUTE/PATH/examples/hooks/claude-code|$HOME/.agen
 Merge the printed `hooks` block into `.claude/settings.json` (or `~/.claude/settings.json` for every project) and restart Claude Code. To check the session-start hook, run `bash ~/.agent-notebook/hooks/nb-session-start.sh | head`: it should print a `## Your agent-notebook index` block that lists your shelves (or says there are none yet). The [hooks README](examples/hooks/claude-code/README.md) explains each script, and the [harness setup guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md) walks through them OS by OS, with git history, backup and a diagnostics janitor. To run the loop in some repositories and not others, see [per-repository on/off](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#per-repository-onoff).
 
 These are **reference integrations to adapt and test in your own setup**, not a certified, supported matrix. **Claude Code is the primary target**: the hooks are written against it. The Codex CLI pieces and any other harness are a lighter-touch starting point to verify in place. There is **no MCP server** and no network call — `nb` is a plain offline CLI.
+
+## Two use cases: lessons and ideas
+
+The same storage serves two jobs. Each has its own folder, so one never crowds the other.
+
+| | Lessons | Ideas |
+|---|---|---|
+| Records | what a later agent should remember | what in the project should be deleted, merged, shortened, split, corrected or made to fail loudly |
+| Read | at task start, from `nb list` | never at task start; a periodic curator reads it |
+| Written | at task end, by the agent; voted by the agents that use it | at task end, at most one per task, only when the task showed something; voted by the curator |
+| Folder | `~/.agent-notebook/notebooks` | `~/.agent-notebook/ideas`, with its own line length (400 characters) |
+| Ends as | the line stays or ages out | a work item, after a curator checks it against the code |
+
+Lessons are what this page describes; nothing about them changes. Ideas are an opt-in **trial**: a folder, a one-line `.nb.json` for its line length, a prompt the Stop hook appends to its nudge, and a two-line `nb-ideas` shim that runs plain `nb` on that folder. `nb` has no notion of a kind of notebook.
+
+To set up lessons, ideas or both, follow the [setup guide](examples/SETUP.md). The design, the curator recipe and how the trial is judged are in [Two use cases: lessons and ideas](https://github.com/jeanibarz/agent-notebook/blob/main/docs/ideas-store.md).
 
 ## Install
 
@@ -172,6 +190,8 @@ Next: [wire it up](#wire-it-up), so your agent does this on its own.
 - <a id="turn-it-on-or-off-per-repository"></a>**Wiring it into an agent?** [Harness setup](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md) — the instruction, optional hooks, git history, backup and a janitor, for Claude Code and Codex CLI on Linux, macOS and Windows. Agents not biting? [Diagnosing low engagement](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#diagnosing-low-engagement).
 - <a id="selecting-an-entry--id-vs-query"></a><a id="discovering-notebooks--nb-list"></a><a id="grouping-notebooks--the--namespace-convention"></a><a id="searching--the-demoted-fallback"></a>**Every command in detail?** [CLI reference](https://github.com/jeanibarz/agent-notebook/blob/main/docs/cli-reference.md) — selectors, merge and split, descriptions, `nb list`, namespaces, search, completion.
 - <a id="activity-sparkline"></a><a id="free-diagnostic-signals"></a><a id="surfacing-metrics"></a><a id="what-the-usage-log-records"></a><a id="diagnosing-errors-by-class"></a><a id="tuning-nb-stats"></a><a id="other-environment-variables"></a><a id="inspecting-the-effective-configuration--nb-config"></a>**Looking after a store?** [Operating `nb`](https://github.com/jeanibarz/agent-notebook/blob/main/docs/operating.md) — `nb stats`, the usage log, error classes, every knob, `nb config`.
+- **Setting it up step by step?** The [setup guide](examples/SETUP.md): lessons, ideas or both.
+- **Keeping ideas as well as lessons?** [Two use cases: lessons and ideas](https://github.com/jeanibarz/agent-notebook/blob/main/docs/ideas-store.md) — why a separate folder, and the curator recipe.
 - **Using it as a library?** [Programmatic use](https://github.com/jeanibarz/agent-notebook/blob/main/docs/programmatic-use.md).
 - **Contributing?** [CONTRIBUTING.md](https://github.com/jeanibarz/agent-notebook/blob/main/CONTRIBUTING.md).
 

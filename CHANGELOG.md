@@ -13,6 +13,11 @@ versions are listed plainly.
 
 - **A notebooks folder can set its own line length with `.nb.json`.** A file named `.nb.json` in the notebooks folder with `{ "maxChars": 400 }` sets the characters per lesson for every `nb` command run on that folder, over `NB_MAX_CHARS`; out-of-range values clamp to 20-2000 as the variable does, and a folder without the file behaves as before. A file that is unreadable, invalid or not an object prints one `warning:` line on stderr and is ignored, and the command runs; unknown keys are named in the warning and skipped, while a valid `maxChars` beside them still applies. `nb config` shows `(.nb.json)` as the source. Library callers keep using `NB_MAX_CHARS`.
 
+### Documentation
+
+- **A step-by-step setup guide, `examples/SETUP.md`, and docs for the ideas use case.** The guide is for an AI agent. It has a path for lessons, one for ideas and one for both, and each step ends with a command to run and the output to expect. It ships in the npm package. A new page, `docs/ideas-store.md` (*Two use cases: lessons and ideas*), sets the two use cases side by side, explains why ideas live in their own folder, and gives the curator recipe and how the trial will be judged. The design is the accepted RFC 0530. The README has a short section on the two use cases, and the setup skill now asks which use case the user wants.
+- **`NB_RETRO_EXTRA_PROMPT` in the example Stop hook.** `examples/hooks/claude-code/nb-retrospective.sh` can append the text of a file to its nudge, with `{project}` and `{session}` filled in. `examples/hooks/ideas-end-prompt.txt` is the end-of-task ideas question that goes with it. The hooks README documents both.
+
 ## [0.11.1] - 2026-11-22
 
 ### Fixed

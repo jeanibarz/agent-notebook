@@ -36,6 +36,12 @@ case "${NB_DIR:-}" in
   "~") NB_DIR="$HOME" ;;
   "~/"*) NB_DIR="$HOME/${NB_DIR#\~/}" ;;
 esac
+# NB_RETRO_EXTRA_PROMPT (optional) is expanded the same way; the node block below
+# checks that it is absolute.
+case "${NB_RETRO_EXTRA_PROMPT:-}" in
+  "~") NB_RETRO_EXTRA_PROMPT="$HOME" ;;
+  "~/"*) NB_RETRO_EXTRA_PROMPT="$HOME/${NB_RETRO_EXTRA_PROMPT#\~/}" ;;
+esac
 NB_DIR_DEFAULT="${HOME}/.agent-notebook/notebooks"
 SENTINEL_DIR="${NB_DIR:-$NB_DIR_DEFAULT}"
 mkdir -p "$SENTINEL_DIR" 2>/dev/null || true
@@ -88,6 +94,24 @@ const session = String(data.session_id || 'nosession').replace(/[^A-Za-z0-9._-]/
 const fs = require('node:fs');
 const path = require('node:path');
 const sentinel = path.join(sentinelDir, `.retro-${session}`);
+
+// Optional extra prompt (NB_RETRO_EXTRA_PROMPT): the text of an absolute-path file,
+// appended to the block reason after the lessons retrospective. It is read HERE,
+// before the sentinel is claimed, and a missing, unreadable or relative path only
+// warns on stderr: the lessons nudge is sent alone, never lost to a broken extra
+// file. `{project}` and `{session}` are filled in when the reason is built below.
+let extraText = '';
+const extraPath = process.env.NB_RETRO_EXTRA_PROMPT || '';
+if (extraPath !== '') {
+  try {
+    if (!path.isAbsolute(extraPath)) throw new Error('path must be absolute');
+    extraText = fs.readFileSync(extraPath, 'utf-8').trim();
+  } catch (err) {
+    process.stderr.write(
+      `nb-retrospective: ignoring NB_RETRO_EXTRA_PROMPT (${(err && err.message) || err}); sending the lessons retrospective alone\n`,
+    );
+  }
+}
 
 // Claim this session's sentinel atomically: the first stop that gets here claims
 // it and later stops are let through, one nudge per session. The `wx` flag
@@ -167,7 +191,7 @@ try {
   }
 }
 
-const reason = [
+const lessons = [
   `Before finishing, run the agent-notebook retrospective on the notebooks you opened this task (one pass, then stop):`,
   `  1. nb vote <shelf> <id> +1     — each lesson that actually helped`,
   `  2. nb vote <shelf> <id> -1     — each lesson shown to you that misled (vote takes no --reason)`,
@@ -178,6 +202,54 @@ const reason = [
   `Do not pad to hit a quota — "nothing new worth storing" is a valid outcome.`,
   `If you are a subagent, end by repeating your full final report after the retrospective: your last message is all your caller receives. Then stop.`,
 ].join('\n');
+
+// The project name for `{project}`: NB_PROJECT_SLUG when set, else the folder that
+// holds the repository's `.git`, taken from `git rev-parse --git-common-dir` (which
+// can be relative, so it is resolved against the directory asked) so a main checkout
+// and all its worktrees give one name. Asked in the payload `cwd`, then
+// CLAUDE_PROJECT_DIR, then this process's directory. Cleaned to [a-z0-9._-] with
+// letter/digit ends. Returns '' when there is no usable name (not a git directory,
+// nothing left after cleaning, git missing or slow).
+function cleanProject(raw) {
+  return String(raw)
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, '-')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');
+}
+function projectName() {
+  if (process.env.NB_PROJECT_SLUG) return cleanProject(process.env.NB_PROJECT_SLUG);
+  try {
+    const cwd =
+      typeof data.cwd === 'string' && data.cwd !== ''
+        ? data.cwd
+        : process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    const r = require('node:child_process').spawnSync('git', ['rev-parse', '--git-common-dir'], {
+      cwd,
+      encoding: 'utf-8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const out = r.error || r.status !== 0 ? '' : (r.stdout || '').trim();
+    if (out === '') return '';
+    const common = fs.realpathSync(path.resolve(cwd, out));
+    return cleanProject(path.basename(path.dirname(common)));
+  } catch {
+    return '';
+  }
+}
+
+// Append the extra text only when both placeholders can be filled: no session_id or
+// no usable project name leaves it out and the lessons nudge goes alone.
+let reason = lessons;
+if (extraText !== '' && typeof data.session_id === 'string' && data.session_id !== '') {
+  const project = projectName();
+  if (project !== '') {
+    const values = { project, session };
+    const filled = extraText.replace(/\{(project|session)\}/g, (_, k) => values[k]);
+    reason = `${lessons}\n\n${filled}`;
+  }
+}
 
 process.stdout.write(JSON.stringify({ decision: 'block', reason }));
 NODE

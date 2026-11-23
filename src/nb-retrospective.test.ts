@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 
 // Regression test for issue #165: `nb-retrospective.sh` writes a
 // `.retro-<session_id>` sentinel into NB_DIR once per session and nothing ever
@@ -459,5 +459,159 @@ describe('nb-retrospective.sh nudge timing (issue #520)', () => {
     const commands = (event: string) => (settings.hooks[event] ?? []).flatMap((g) => g.hooks.map((h) => h.command));
     expect(commands('Stop').some((c) => c.endsWith('/nb-retrospective.sh'))).toBe(true);
     expect(settings.hooks.SubagentStop).toBeUndefined();
+  });
+});
+
+// NB_RETRO_EXTRA_PROMPT: an optional text file appended to the block reason, with
+// `{project}` (the repository folder shared by a checkout and its worktrees, or
+// NB_PROJECT_SLUG) and `{session}` filled in. The file is read before the sentinel
+// is claimed and a broken one only costs the extra text, never the lessons nudge.
+describe('nb-retrospective.sh NB_RETRO_EXTRA_PROMPT', () => {
+  const LESSONS = 'run the agent-notebook retrospective';
+  const EXTRA = 'IDEAS for {project}: NB_SESSION={session} nb-ideas add dead@{project} "x"';
+
+  // Like runHook, but returns stderr too (execFileSync only hands back stdout).
+  function runFull(input: Record<string, unknown>, env: Record<string, string> = {}) {
+    const base = { ...process.env, NB_DIR: dir, NB_BIN: join(dir, 'no-nb') } as Record<string, string>;
+    for (const k of ['NB_RETRO_TTL_DAYS', 'NB_PROJECT_SLUG', 'NB_RETRO_EXTRA_PROMPT', 'CLAUDE_PROJECT_DIR']) delete base[k];
+    const r = spawnSync('bash', [hook], {
+      input: JSON.stringify(input),
+      env: { ...base, ...env },
+      encoding: 'utf-8',
+      cwd: dir,
+    });
+    const reason = r.stdout ? (JSON.parse(r.stdout) as { reason: string }).reason : '';
+    return { reason, stderr: r.stderr, code: r.status };
+  }
+
+  function extraFile(text = EXTRA): string {
+    const p = join(dir, 'extra.txt');
+    writeFileSync(p, text);
+    return p;
+  }
+
+  // A git repository named `name` under dir/repos with one commit.
+  function makeRepo(name: string): string {
+    const repo = join(dir, 'repos', name);
+    mkdirSync(repo, { recursive: true });
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: repo, stdio: 'ignore', env: { ...process.env, GIT_DIR: undefined } as Record<string, string> });
+    git('init', '-q');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+    return repo;
+  }
+
+  test('appends the file after the lessons text with {project} and {session} filled in', () => {
+    const repo = makeRepo('my-app');
+    const { reason } = runFull(
+      { session_id: 'sess-x1', cwd: repo },
+      { NB_RETRO_EXTRA_PROMPT: extraFile() },
+    );
+    const [head, tail] = reason.split('\n\n');
+    expect(head).toContain(LESSONS);
+    expect(tail).toBe('IDEAS for my-app: NB_SESSION=sess-x1 nb-ideas add dead@my-app "x"');
+    expect(reason).not.toContain('{');
+  });
+
+  test('a leading ~/ in the path is expanded like NB_DIR', () => {
+    const repo = makeRepo('tilde-app');
+    writeFileSync(join(dir, 'extra.txt'), EXTRA);
+    const { reason } = runFull(
+      { session_id: 's', cwd: repo },
+      { NB_RETRO_EXTRA_PROMPT: '~/extra.txt', HOME: dir },
+    );
+    expect(reason).toContain('IDEAS for tilde-app');
+  });
+
+  test('a main checkout and its git worktree give the same {project}', () => {
+    const repo = makeRepo('shared-name');
+    const wt = join(dir, 'elsewhere', 'wt-branch');
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'feat', wt], { cwd: repo, stdio: 'ignore' });
+    const env = { NB_RETRO_EXTRA_PROMPT: extraFile('{project}') };
+    const main = runFull({ session_id: 'a', cwd: repo }, env).reason;
+    rmSync(join(dir, '.retro-a'));
+    const tree = runFull({ session_id: 'a', cwd: wt }, env).reason;
+    expect(main.endsWith('\n\nshared-name')).toBe(true);
+    expect(tree.endsWith('\n\nshared-name')).toBe(true);
+  });
+
+  test('NB_PROJECT_SLUG wins over the git folder name', () => {
+    const repo = makeRepo('folder-name');
+    const { reason } = runFull(
+      { session_id: 's', cwd: repo },
+      { NB_RETRO_EXTRA_PROMPT: extraFile('{project}'), NB_PROJECT_SLUG: 'acme-app' },
+    );
+    expect(reason.endsWith('\n\nacme-app')).toBe(true);
+  });
+
+  test('a cwd that is not a git directory leaves the extra text out but still nudges', () => {
+    const plain = join(dir, 'plain');
+    mkdirSync(plain);
+    const { reason, code } = runFull(
+      { session_id: 'sess-ng', cwd: plain },
+      // GIT_CEILING_DIRECTORIES stops git walking up into an enclosing repository.
+      { NB_RETRO_EXTRA_PROMPT: extraFile(), GIT_CEILING_DIRECTORIES: dir },
+    );
+    expect(code).toBe(0);
+    expect(reason).toContain(LESSONS);
+    expect(reason).not.toContain('IDEAS');
+    expect(existsSync(join(dir, '.retro-sess-ng'))).toBe(true);
+  });
+
+  test('a missing file warns on stderr, sends the lessons alone and claims the sentinel', () => {
+    const repo = makeRepo('my-app');
+    const { reason, stderr } = runFull(
+      { session_id: 'sess-miss', cwd: repo },
+      { NB_RETRO_EXTRA_PROMPT: join(dir, 'does-not-exist.txt') },
+    );
+    expect(stderr).toMatch(/NB_RETRO_EXTRA_PROMPT/);
+    expect(reason).toContain(LESSONS);
+    expect(reason).not.toContain('IDEAS');
+    expect(reason.trimEnd().endsWith('Then stop.')).toBe(true);
+    expect(existsSync(join(dir, '.retro-sess-miss'))).toBe(true);
+  });
+
+  test('a relative path is treated like a missing file, even when it exists from the cwd', () => {
+    const repo = makeRepo('my-app');
+    extraFile(); // dir/extra.txt, and the hook runs with cwd = dir
+    const { reason, stderr } = runFull(
+      { session_id: 'sess-rel', cwd: repo },
+      { NB_RETRO_EXTRA_PROMPT: 'extra.txt' },
+    );
+    expect(stderr).toMatch(/NB_RETRO_EXTRA_PROMPT/);
+    expect(reason).toContain(LESSONS);
+    expect(reason).not.toContain('IDEAS');
+    expect(existsSync(join(dir, '.retro-sess-rel'))).toBe(true);
+  });
+
+  test('no session_id leaves the extra text out', () => {
+    const repo = makeRepo('my-app');
+    const { reason } = runFull({ cwd: repo }, { NB_RETRO_EXTRA_PROMPT: extraFile() });
+    expect(reason).toContain(LESSONS);
+    expect(reason).not.toContain('IDEAS');
+  });
+
+  test('a folder name that needs cleaning gives a valid {project}', () => {
+    const repo = makeRepo('My_Repo (copy)');
+    const { reason } = runFull(
+      { session_id: 's', cwd: repo },
+      { NB_RETRO_EXTRA_PROMPT: extraFile('{project}') },
+    );
+    expect(reason.endsWith('\n\nmy_repo--copy')).toBe(true);
+  });
+
+  test('the session is cleaned like the sentinel name', () => {
+    const repo = makeRepo('my-app');
+    const { reason } = runFull(
+      { session_id: 'a/b c', cwd: repo },
+      { NB_RETRO_EXTRA_PROMPT: extraFile('{session}') },
+    );
+    expect(reason.endsWith('\n\na_b_c')).toBe(true);
+  });
+
+  test('the shipped ideas prompt is short and uses both placeholders', () => {
+    const text = readFileSync(join(dirname(hook), '..', 'ideas-end-prompt.txt'), 'utf-8');
+    expect(text.trimEnd().split('\n').length).toBeLessThanOrEqual(12);
+    expect(text).toContain('NB_SESSION={session} nb-ideas add <category>@{project}');
   });
 });
