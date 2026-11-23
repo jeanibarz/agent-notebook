@@ -32,7 +32,7 @@ Everyone does section 1. Then do section 2 (A), section 3 (B), or both (C).
    npm install -g agent-notebook
    ```
 
-   Check: `nb --version` prints `nb (agent-notebook) ` followed by a version number, for example `nb (agent-notebook) 0.11.1`. Note the number. Path B needs it.
+   Check: `nb --version` prints `nb (agent-notebook) ` followed by a version number, for example `nb (agent-notebook) 0.11.1`.
 
 3. Check that the shipped files are where this guide says.
 
@@ -128,45 +128,42 @@ Ideas live in a separate folder, `~/.agent-notebook/ideas`, and are read through
 
 The design is the accepted [RFC 0530](https://github.com/jeanibarz/agent-notebook/blob/main/docs/rfcs/0530-notebook-kinds.md).
 
-1. Create the folder and set its line length. The version you noted in section 1 decides how.
+1. Create the folder and set its line length.
 
    ```sh
    mkdir -p ~/.agent-notebook/ideas
    printf '{ "maxChars": 400 }\n' > ~/.agent-notebook/ideas/.nb.json
    ```
 
-   With `nb` newer than 0.11.1, that file is all there is: every `nb` command on the folder reads it. With `nb` 0.11.1 or older, `nb` ignores the file, so the shim in step 2 also sets `NB_MAX_CHARS=400`. Write the file in both cases: an upgrade then needs no change.
-
    Check: `cat ~/.agent-notebook/ideas/.nb.json` prints `{ "maxChars": 400 }`.
 
 2. Install the `nb-ideas` command. It is a two-line shim on `PATH`, not a shell alias, because agents and hooks run non-interactive shells that do not load aliases.
-
-   `nb` newer than 0.11.1:
 
    ```sh
    mkdir -p ~/.local/bin
    printf '#!/bin/sh\nNB_DIR="$HOME/.agent-notebook/ideas" exec nb "$@"\n' > ~/.local/bin/nb-ideas && chmod +x ~/.local/bin/nb-ideas
    ```
 
-   `nb` 0.11.1 or older:
-
-   ```sh
-   mkdir -p ~/.local/bin
-   printf '#!/bin/sh\nNB_MAX_CHARS=400 NB_DIR="$HOME/.agent-notebook/ideas" exec nb "$@"\n' > ~/.local/bin/nb-ideas && chmod +x ~/.local/bin/nb-ideas
-   ```
-
    `~/.local/bin` must be on `PATH`. If it is not, add `export PATH="$HOME/.local/bin:$PATH"` to the shell profile.
 
    Check, from a non-interactive shell, which is what an agent has: `sh -c 'command -v nb-ideas'` prints `<home>/.local/bin/nb-ideas`. Also run `sh -c 'command -v nb'`: it must print a path too, because the shim calls `nb`. If either prints nothing, fix `PATH` before you go on.
 
-3. Check the folder and the line length.
+3. Check that `nb` reads the folder's line length.
 
    ```sh
    nb-ideas path
-   nb-ideas config | grep maxChars
+   nb-ideas config | grep '^maxChars'
    ```
 
-   Check: `nb-ideas path` prints `<home>/.agent-notebook/ideas`. The `config` line starts `maxChars=400`. It ends with `(.nb.json)` on `nb` newer than 0.11.1, and with `(env NB_MAX_CHARS)` on 0.11.1 or older. If it prints `maxChars=200 (default)`, the version rule above was applied the wrong way round: redo step 2 with the other shim.
+   Check: `nb-ideas path` prints `<home>/.agent-notebook/ideas`, and the `config` line is `maxChars=400` tagged `(.nb.json)`. That tag means this `nb` reads `.nb.json`, and you are done with this step.
+
+   If the line is `maxChars=200 (default)` instead, this `nb` is older than `.nb.json` support (0.11.1 and earlier) and ignores the file. Rewrite the shim so it also sets the length, and keep the file for when you upgrade:
+
+   ```sh
+   printf '#!/bin/sh\nNB_MAX_CHARS=400 NB_DIR="$HOME/.agent-notebook/ideas" exec nb "$@"\n' > ~/.local/bin/nb-ideas && chmod +x ~/.local/bin/nb-ideas
+   ```
+
+   Check again: the line is now `maxChars=400` tagged `(env NB_MAX_CHARS)`. With this fallback, only calls made through the shim get 400; plain `nb` with `NB_DIR` set to the ideas folder still uses 200.
 
 4. Smoke test. A shelf is a notebook, named `<category>@<project>`, for example `dead@my-app`. It is created by the first add: there is nothing to create by hand. This test adds a line of 246 characters, which a 200-character folder would refuse, then removes it.
 
@@ -284,8 +281,8 @@ Do section 2, then section 3. Then note these points.
 |---|---|---|
 | `nb-ideas: command not found` (or `not found` from `sh -c`) | `~/.local/bin` is not on the `PATH` of that shell, or the shim was not written | Run `ls ~/.local/bin/nb-ideas`. Add `export PATH="$HOME/.local/bin:$PATH"` where the agent's shell reads it, and re-run `sh -c 'command -v nb-ideas'`. Re-run step 2 of section 3. |
 | The shim runs but prints `nb: not found` | `nb` is not on the `PATH` the shim sees | Run `sh -c 'command -v nb'`. Fix `PATH`, or use the full path to `nb` in the shim. |
-| `nb add: lesson too long: 246 chars, 46 over the 200 limit` on an ideas add | `nb` is 0.11.1 or older and the shim lacks `NB_MAX_CHARS=400`, or `.nb.json` is missing | Run `nb --version`. For 0.11.1 or older, use the second shim in step 2. Otherwise run step 1 again. Nothing was stored, and nothing was lost. |
-| `nb doctor` reports `lesson-too-long ... lesson is 374 chars; cap is 200` on the ideas folder | Plain `nb` with `NB_DIR` set to the ideas folder uses 200 on 0.11.1 or older | Run `nb-ideas doctor`. With `nb` newer than 0.11.1 plain `nb` reads `.nb.json` too. |
+| `nb add: lesson too long: 246 chars, 46 over the 200 limit` on an ideas add | `.nb.json` is missing, or this `nb` ignores it and the shim lacks `NB_MAX_CHARS=400` | Redo steps 1 and 3 (step 3 shows which case you are in). Nothing was stored, and nothing was lost. |
+| `nb doctor` reports `lesson-too-long ... lesson is 374 chars; cap is 200` on the ideas folder | This `nb` ignores `.nb.json` (step 3 showed `(default)`), so plain `nb` uses 200 there | Run `nb-ideas doctor` instead; once `nb` reads `.nb.json`, plain `nb` gets it right too. |
 | `nb` prints a warning that names `.nb.json` | The file is not valid JSON, is unreadable, or has an unknown key | Fix the file. `nb` ignores the bad part and goes on. A value outside 20–2000 is clamped. |
 | An idea shows up in a lessons shelf | An agent ran `nb add` because `nb-ideas` was not found | Fix the shim and `PATH`. Move the line with `nb rm` on the lessons shelf and `nb-ideas add`. |
 | The Stop hook prints nothing, so the agent is never asked | The sentinel `.retro-<session id>` already exists in the lessons folder (the hook asks once per session), or `nb enabled` prints `off` | Run `ls -A "$(nb path)"` and delete that file to test again. Run `nb enabled`: if it prints `off`, run `git config nb.enabled true` in the repository. |
