@@ -97,6 +97,18 @@ describe('.nb.json maxChars (RFC 0530)', () => {
     r = nb(['add', 's', LONG]);
     expect(r.status).toBe(1); // a non-integer is dropped: default in force
     expect(r.err).toContain('maxChars is not an integer; ignored');
+
+    settings('{ "maxChars": 400.5 }');
+    r = nb(['add', 's', LONG]);
+    expect(r.status).toBe(1); // a fractional number is not an integer either
+    expect(r.err).toContain('maxChars is not an integer; ignored');
+    expect(nb(['config']).out).toMatch(/^maxChars=200 +\(default\)$/m);
+
+    settings('x\x1b]0;title\x07\x1b[2J');
+    r = nb(['add', 's', 'short four']);
+    expect(r.status).toBe(0);
+    expect(r.err).toContain('invalid JSON');
+    expect(r.err).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f]/); // no escape codes reach the terminal
   });
 
   test('nb.json that is unreadable (a directory) warns and continues; a missing file is silent', () => {

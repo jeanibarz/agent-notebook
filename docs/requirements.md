@@ -819,7 +819,8 @@ partially-numeric value `parseInt` would have truncated, such as `1e3` or `12.9`
 never honored as a rewritten `1`/`12`). The human path appends this to the source tag —
 e.g. `(env NB_NEAR_DUP: clamped to 1 from 2)` or `(env NB_MAX_LINES: ignored "abc", not an integer;
 using default)` — and `--json` gains the additive `status` (`"honored"`/`"clamped"`/`"ignored"`,
-`null` when unset or derived) and `rawValue` (the raw env string, `null` when unset) fields, leaving
+`null` when unset or derived) and `rawValue` (the raw env string, `null` when unset; for a `maxChars` row whose source is `.nb.json`
+([FR-CONFIG-003](#fr-config-003)), both describe the number in that file) fields, leaving
 `source` and every existing key unchanged. Output for a config with no problems SHALL be
 byte-identical to the pre-#336 form, apart from the `enabled=` line that
 [FR-ENABLED-002](#fr-enabled-002) appends. `nb config` SHALL further list every `NB_*` environment

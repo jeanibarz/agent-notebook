@@ -377,7 +377,9 @@ export function readNbJson(dir: string): { maxChars?: number; warning?: string }
   try {
     parsed = JSON.parse(text);
   } catch (e) {
-    return warn(`invalid JSON (${(e as Error).message.split('\n')[0]})`);
+    // JSON.parse quotes the start of the file; replace anything outside printable ASCII so a
+    // file from a shared folder cannot send terminal escape codes through this warning.
+    return warn(`invalid JSON (${(e as Error).message.split('\n')[0].replace(/[^\x20-\x7e]/g, '?')})`);
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return warn('not a JSON object');
   const obj = parsed as Record<string, unknown>;
