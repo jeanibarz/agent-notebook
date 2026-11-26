@@ -41,6 +41,11 @@ jobs:
       # the result does not depend on the OS, and TypeScript runs on Node 18 too.
       - run: npm run typecheck
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22
+      # Issue #559: the version in package.json, package-lock.json and the hook entry's
+      # MIN_NODE must agree on every pull request, so a drift is caught when it is merged
+      # and not when a tag is pushed. One leg: the files do not depend on the OS.
+      - run: node scripts/check-release.mjs --pr
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22
       # vitest 5 imports `styleText` from node:util, which only exists on
       # Node 20.12+, so the suite cannot run on Node 18. The build step above
       # still verifies the package compiles on its minimum engine (>=18).
