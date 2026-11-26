@@ -116,9 +116,15 @@ jobs:
       # default, so it gets no version argument.
       - name: Install Claude Code
         if: runner.os != 'Windows'
+        shell: bash
         run: |
+          set -euo pipefail
           v=""; [ "$CLAUDE_VERSION" = latest ] || v="$CLAUDE_VERSION"
-          curl -fsSL https://claude.ai/install.sh | bash -s -- $v || { echo "install failed, trying once more"; sleep 15; curl -fsSL https://claude.ai/install.sh | bash -s -- $v; }
+          # Download to a file first, so a failed download is a failure (not an empty
+          # script piped to bash), then run it; try the whole install twice.
+          install() { curl -fsSL --retry 2 --retry-delay 5 -o "$RUNNER_TEMP/claude-install.sh" https://claude.ai/install.sh && bash "$RUNNER_TEMP/claude-install.sh" $v; }
+          install || { echo "install failed, trying once more"; sleep 15; install; }
+          test -x "$HOME/.local/bin/claude"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install Claude Code
         if: runner.os == 'Windows'
