@@ -62,9 +62,12 @@ on Linux, are in the
 [harness guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#optional-codex-hooks).
 In short:
 
-- Each hook's `command` is one string (`node "/path/to/nb-claude-hook.mjs" session-start`):
+- Each hook's `command` is one string (`node "/path/to/nb-claude-hook.mjs" session-start --harness codex`, and `stop` likewise):
   Codex ignores the `args` field, so the adapter's `print-settings` block, which
   is written for Claude Code, does not work here.
+- `--harness codex` labels the runs `codex.session-start` and `codex.stop` in the usage
+  log. Hooks pasted before this change are recorded as `hook.*`, or as `claude-code.*`
+  by an older adapter.
 - Codex runs a hook only after you trust it, in an interactive `codex` session
   (the "Hooks need review" screen, or `/hooks` then `t`). `codex exec` skips an
   untrusted hook without a message, so check for the `hook: SessionStart` line

@@ -6,6 +6,12 @@
 //   node nb-claude-hook.mjs stop                            Stop: block once with `nb retro`
 //   node nb-claude-hook.mjs print-settings                  print the `hooks` block for settings.json
 //
+// Any start or stop event also takes `--harness <name>` (a-z, 0-9 and -, at most 24
+// characters), which names the tool running the hook: the usage log then records
+// `<name>.<event>`, e.g. `codex.session-start`. Without it the label is `claude-code`
+// when Claude Code's own session id (CLAUDE_CODE_SESSION_ID) equals the payload's,
+// and `hook` otherwise.
+//
 // It holds what knows Claude Code and nothing else: the payload on stdin, which
 // stops must not nudge, and the reply format. The words the model reads, and the
 // once-per-session rule, belong to `nb brief` and `nb retro`. It never exits 2:
@@ -99,17 +105,32 @@ function main() {
   // The session id becomes one argument: clean it as `nb` does, and never let it
   // start with `-`, so it cannot be read as a flag (`--json`, `--`).
   const session = (typeof data.session_id === 'string' ? data.session_id : '').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128).replace(/^-/, '_');
-  const projectDir = dirOrNull(process.env.CLAUDE_PROJECT_DIR) ?? process.cwd();
   const env = { ...process.env };
   // A relative NB_DIR names a folder under this hook's working directory, as it did
   // for the 0.12 scripts; `nb` runs in the project directory, so make it absolute.
   if (env.NB_DIR && env.NB_DIR.trim() !== '' && !env.NB_DIR.startsWith('~') && !isAbsolute(env.NB_DIR)) env.NB_DIR = resolve(env.NB_DIR);
 
-  const label = `claude-code.${event}`;
+  // The tool's name for the label. An explicit valid `--harness` wins. Without one,
+  // Claude Code is recognised by its own session id in the environment equalling the
+  // payload's (the raw values, before the cleaning above); any other tool gets `hook`.
+  const flag = (name) => (extra.includes(name) ? extra[extra.indexOf(name) + 1] : undefined);
+  const named = flag('--harness');
+  const harness = typeof named === 'string' && /^[a-z0-9][a-z0-9-]{0,23}$/.test(named) ? named : null;
+  const sid = process.env.CLAUDE_CODE_SESSION_ID;
+  const inferred = typeof sid === 'string' && sid !== '' && typeof data.session_id === 'string' && sid === data.session_id ? 'claude-code' : 'hook';
+  const label = `${harness ?? inferred}.${event}`;
+  // The project folder. CLAUDE_PROJECT_DIR is Claude Code's, and a Codex session started
+  // from a Claude Code shell inherits it, so only an explicit other `--harness` looks at
+  // the payload's `cwd` instead. The inferred label never moves the folder.
+  const projectDir =
+    harness !== null && harness !== 'claude-code'
+      ? (dirOrNull(data.cwd) ?? process.cwd())
+      : (dirOrNull(process.env.CLAUDE_PROJECT_DIR) ?? process.cwd());
+  const maxChars = flag('--max-chars');
   const args =
     event === 'stop'
       ? ['retro', '--session', session, '--hook', label, ...(dirOrNull(data.cwd) ? ['--work-dir', data.cwd] : [])]
-      : ['brief', '--session', session, '--hook', label, ...(extra[0] === '--max-chars' && extra[1] ? ['--max-chars', extra[1]] : [])];
+      : ['brief', '--session', session, '--hook', label, ...(maxChars ? ['--max-chars', maxChars] : [])];
 
   const nb = findNb();
   const r = nb ? spawnSync(nb[0], [...nb.slice(1), ...args], { cwd: projectDir, env, encoding: 'utf-8', timeout: 15000, input: '' }) : null;
