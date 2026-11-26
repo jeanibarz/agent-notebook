@@ -29,4 +29,31 @@ foreach ($sc in @(@('none'), @('node.exe'), @('node.cmd'))) {
   $o = & cmd.exe /c "`"$Root\bin\nb.cmd`" --version" 2>&1
   "planted=[$($sc -join ',')] nb.cmd -> $(($o | Out-String).Trim() -replace '\r?\n', ' / ')"
 }
+
+"################ X14: argument fidelity through nb.cmd, Windows PowerShell $($PSVersionTable.PSVersion)"
+$Nb = "$Root\bin\nb.cmd"
+$Sq = [string][char]39; $U = [string][char]0x00E9
+$text = '100% %APPDATA% & a | b ^ c ' + $U + ' ' + $Sq + 'x' + $Sq + ' $y `z'
+function Show($label, $nbdir) {
+  $f = Get-ChildItem $nbdir -Filter 't.md' -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $f) { "$label -> NO FILE STORED"; return }
+  $bytes = [IO.File]::ReadAllBytes($f.FullName); $str = [Text.Encoding]::UTF8.GetString($bytes)
+  $line = ($str -split "`n" | Where-Object { $_ -match 'a \|' } | Select-Object -First 1)
+  $ok = $str.Contains($text)
+  "$label -> byte-equal to the original text: $ok"
+  "   stored line: $line"
+  if (-not $ok) { "   hex of stored line: " + (([Text.Encoding]::UTF8.GetBytes([string]$line) | ForEach-Object { $_.ToString('x2') }) -join '') }
+}
+function Fresh($n) { $d = Join-Path $H "nbd-$n"; Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force $d | Out-Null; $env:NB_DIR = $d; $d }
+"text = [$text]"
+$d = Fresh 1; & $Nb add t "100% %APPDATA% & a | b ^ c $U 'x' `$y ``z" 2>&1 | Out-String | ForEach-Object { "out: $($_.Trim())" }; Show 'argv, double-quoted' $d
+$d = Fresh 2; & $Nb add t ('100% %APPDATA% & a | b ^ c ' + $U + ' ''x'' $y `z') 2>&1 | Out-String | ForEach-Object { "out: $($_.Trim())" }; Show 'argv, single-quoted' $d
+$d = Fresh 3; $text | & $Nb add t - 2>&1 | Out-String | ForEach-Object { "out: $($_.Trim())" }; Show 'stdin, default encoding' $d
+$d = Fresh 4; $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new(); $text | & $Nb add t - 2>&1 | Out-String | ForEach-Object { "out: $($_.Trim())" }; Show 'stdin, UTF-8 OutputEncoding' $d
+$d = Fresh 5; & $Nb add t "plain ascii lesson" | Out-Null; & $Nb show t 2>&1 | Out-String | ForEach-Object { "show: $($_.Trim())" }
+"--- bare nb from PowerShell with both bin\nb and bin\nb.cmd on PATH"
+$env:PATH = "$Root\bin;$Real"; $env:NB_DIR = (Fresh 6)
+"Get-Command nb -All:"; Get-Command nb -All | ForEach-Object { "  $($_.CommandType) $($_.Source)" }
+"nb --version -> $((& nb --version 2>&1 | Out-String).Trim())"
+$env:PATH = $Real
 exit 0
