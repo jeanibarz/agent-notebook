@@ -101,8 +101,10 @@ jobs:
             *-*) pre="${version#*-}"; dist_tag="${pre%%.*}" ;;
             *) dist_tag=latest ;;
           esac
+          # Letters spelled out: a range such as a-z follows the locale in
+          # macOS bash 3.2, where it also matches B.
           case "$version:$dist_tag" in
-            *-*:latest | *:*[!a-z]* | *:)
+            *-*:latest | *:*[!abcdefghijklmnopqrstuvwxyz]* | *:)
               echo "::error::Prerelease '${version}' needs a lowercase identifier such as -beta.1, not '${dist_tag}'." >&2
               exit 1
               ;;

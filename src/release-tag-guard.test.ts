@@ -244,9 +244,9 @@ describe('release.yml publish step — npm dist-tag', () => {
       const out = execFileSync('bash', ['-c', guardRunScript('Publish to npm')], { cwd, env, stdio: 'pipe' });
       return { code: 0, out: String(out) };
     } catch (err) {
-      const e = err as { status?: number; stderr?: Buffer | string };
+      const e = err as { status?: number; stdout?: Buffer | string; stderr?: Buffer | string };
       expect(typeof e.status).toBe('number');
-      return { code: e.status as number, out: String(e.stderr ?? '') };
+      return { code: e.status as number, out: String(e.stdout ?? '') + String(e.stderr ?? '') };
     }
   }
 
