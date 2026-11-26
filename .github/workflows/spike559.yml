@@ -208,6 +208,41 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: .\spike559\x16-windows.ps1
+  x16b:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Install Claude Code (native installer, pinned)
+        if: runner.os != 'Windows'
+        run: curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE_VERSION"
+      - name: Install Claude Code (native installer, pinned)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          & ([scriptblock]::Create((irm https://claude.ai/install.ps1))) $env:CLAUDE_VERSION
+      - name: X16b POSIX
+        if: runner.os != 'Windows'
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          bash spike559/x16b.sh
+      - name: X16b Windows
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\spike559\x16b.ps1
   managed:
     needs: build
     runs-on: ubuntu-latest
