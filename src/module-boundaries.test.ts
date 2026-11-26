@@ -115,7 +115,7 @@ describe('module boundaries (issue #478)', () => {
     const graph = importGraph();
     expect(graph.get('cli')).toEqual(expect.arrayContaining(['suggest', 'config-report', 'render', 'enabled']));
     expect(graph.get('suggest')).toEqual([]);
-    expect(graph.get('enabled')).toEqual([]);
+    expect(graph.get('enabled')).toEqual(['git']);
     expect(graph.get('config-report')?.slice().sort()).toEqual(['enabled', 'notebook', 'stats', 'suggest']);
     expect(graph.get('render')?.slice().sort()).toEqual(['notebook', 'stats']);
     for (const [mod, deps] of graph) {
@@ -128,12 +128,24 @@ describe('module boundaries (issue #478)', () => {
   test('the agent-facing loop modules sit below cli.ts and the mechanism never imports them (issue #538)', () => {
     const graph = importGraph();
     expect(graph.get('agent-text')).toEqual([]);
-    expect(graph.get('loop')?.slice().sort()).toEqual(['agent-text', 'enabled', 'notebook', 'render']);
+    expect(graph.get('loop')?.slice().sort()).toEqual(['agent-text', 'enabled', 'git', 'notebook', 'project', 'render']);
     expect(graph.get('cli')).toEqual(expect.arrayContaining(['loop']));
     expect(graph.get('notebook')).toEqual([]);
     for (const [mod, deps] of graph) {
       if (mod !== 'cli') expect(deps, `${mod}.ts imports loop`).not.toContain('loop');
       if (mod !== 'loop') expect(deps, `${mod}.ts imports agent-text`).not.toContain('agent-text');
+    }
+  });
+
+  // Issue #540: one module starts processes, and the project name sits below it.
+  test('only git.ts starts a process, and the project name depends on nothing but it (issue #540)', () => {
+    const graph = importGraph();
+    expect(graph.get('git')).toEqual([]);
+    expect(graph.get('project')).toEqual(['git']);
+    for (const f of readdirSync(srcDir)) {
+      if (!f.endsWith('.ts') || f.endsWith('.test.ts') || f === 'git.ts') continue;
+      const text = readFileSync(join(srcDir, f), 'utf-8');
+      expect(/from 'node:child_process'/.test(text), `${f} imports node:child_process`).toBe(false);
     }
   });
 

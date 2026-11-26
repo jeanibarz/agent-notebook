@@ -19,13 +19,16 @@
  * boolean (exit 128 on `nb.enabled = maybe`) all resolve to on, with the problem
  * kept in `warning` so `nb enabled --why` and `nb config` can show it.
  *
- * Read-only. It spawns `git config` (in `readGitKey`); the only other module
- * that spawns a process is `loop.ts` (`git rev-parse`, issue #538). Three commands call it: `nb enabled`, `nb config`, and
+ * Read-only. It runs `git config` (in `readGitKey`) through `git.ts`, the one
+ * module that starts a process; `project.ts` (the project name, issue #540) is
+ * the other module that asks git. Three commands call it: `nb enabled`, `nb config`, and
  * the text form of `nb list`, which prints a "switched off" line in place of the
  * index (slice 2, for setups whose only surface is the instruction). `nb list
  * --json` and every other notebook command never call it.
  */
-import { spawnSync } from 'node:child_process';
+import { runGit, type GitRun } from './git.js';
+
+export type { GitRun } from './git.js';
 
 /** Which input decided the state: the env var, git config, or the built-in default (on). */
 export type EnabledSource = 'env' | 'git' | 'default';
@@ -56,14 +59,6 @@ export function parseEnabledEnv(raw: string | undefined): boolean | undefined {
   return !OFF_WORDS.has(v);
 }
 
-/** What one `git config` run returned; `error` is set when git could not be started. */
-export interface GitRun {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-  error?: string;
-}
-
 /**
  * Run `git config --type=bool --show-origin --get nb.enabled` in `cwd`.
  * `--type=bool` needs git 2.18 and `--show-origin` 2.8; `--show-scope` is
@@ -71,18 +66,7 @@ export interface GitRun {
  * switch would then be silently ignored.
  */
 export function readGitKey(cwd: string): GitRun {
-  const r = spawnSync('git', ['config', '--type=bool', '--show-origin', '--get', 'nb.enabled'], {
-    cwd,
-    encoding: 'utf-8',
-    timeout: 5000,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  return {
-    status: r.status,
-    stdout: r.stdout ?? '',
-    stderr: r.stderr ?? '',
-    error: r.error ? ((r.error as NodeJS.ErrnoException).code ?? r.error.message) : undefined,
-  };
+  return runGit(['config', '--type=bool', '--show-origin', '--get', 'nb.enabled'], cwd, 5000);
 }
 
 /**

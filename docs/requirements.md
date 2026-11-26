@@ -10,7 +10,7 @@ and carry a MoSCoW priority (**Must**, **Should**, **Could**, **Won't**). Each
 load-bearing behavior links to the test that proves it; if you change a behavior,
 change the requirement and its test together (see [Keeping this document honest](#keeping-this-document-honest)).
 
-- **Source of truth for behavior:** `src/notebook.ts` (library: storage, cap-and-vote, search), `src/usage.ts` (the usage log), `src/stats.ts` (`nb stats`) and `src/cli.ts` (CLI: argument parsing, dispatch, help, shell completion, stdin reading and process guards), with the CLI's helpers in `src/render.ts` (the read-side report text), `src/config-report.ts` (`nb config`), `src/suggest.ts` (did-you-mean), `src/doctor.ts` (`nb doctor`) and `src/enabled.ts` (`nb enabled`). `src/index.ts` is the package root that re-exports the three library modules.
+- **Source of truth for behavior:** `src/notebook.ts` (library: storage, cap-and-vote, search), `src/usage.ts` (the usage log), `src/stats.ts` (`nb stats`) and `src/cli.ts` (CLI: argument parsing, dispatch, help, shell completion, stdin reading and process guards), with the CLI's helpers in `src/render.ts` (the read-side report text), `src/config-report.ts` (`nb config`), `src/suggest.ts` (did-you-mean), `src/doctor.ts` (`nb doctor`) and `src/enabled.ts` (`nb enabled`), `src/project.ts` (`nb project`, the project name), `src/git.ts` (the one place a process, `git`, is started). `src/index.ts` is the package root that re-exports the three library modules.
 - **Tests:** `src/notebook.test.ts`, `src/cli.test.ts`, `src/enabled.test.ts`; the module layout and the published export list are pinned by `src/module-boundaries.test.ts` and `src/package-exports.test.ts`.
 - **Design rationale (signals & self-observation):** [`self-observing-notebook.md`](./self-observing-notebook.md) — why the tool instruments itself and how engagement / coverage / recall / precision / serendipity are told apart.
 
@@ -134,8 +134,9 @@ recover from; a silent corruption is not.
 Every operation SHALL complete locally with no network call and SHALL be
 deterministic given the same inputs and files. The inputs of a call are its arguments,
 the documented `NB_*` variables, the working directory and the git configuration read
-there (by the commands that read it: `enabled`, `config`, the text form of `list`, and,
-once implemented, `brief` and `retro` of [§4.17](#fr-brief-001)),
+there (by the commands that read it: `enabled`, `config`, the text form of `list`, `brief` and
+`retro` of [§4.17](#fr-brief-001), and `project` of [§4.18](#fr-project-001)), the `GIT_*` variables git
+itself reads,
 `PATH` (to find `git`), the home folder (the default `NB_DIR`), the locale, the files
 under `NB_DIR`, and the clock: `stats` and `doctor` report against the current time
 (their `--since` window, a lock's age). For `brief` and `retro` the clock SHALL decide
@@ -666,6 +667,7 @@ shelves; `--json` emits a lone object for one shelf, an array for several),
 `search <query> [prefix] [--any] [--limit <N>]`,
 `stats [<shelf>] [--since <N{d,h,m}>] [--json] [--exit-code]`, `doctor [--json] [--exit-code]`, `path [<shelf>] [--usage] [--json]`, `config [--json]`,
 `enabled [--why] [--json]` ([FR-ENABLED-001](#fr-enabled-001)),
+`project [--why] [--json]` ([FR-PROJECT-001](#fr-project-001)),
 `brief [--max-chars N] [--session <id>] [--hook <label>] [--json]` ([FR-BRIEF-001](#fr-brief-001)),
 `retro --session <id> [--work-dir <dir>] [--hook <label>] [--json]` ([FR-RETRO-001](#fr-retro-001)),
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`),
@@ -1580,7 +1582,8 @@ file:.git/config)`); `--json` SHALL emit `{ enabled, state, source, value, origi
 with `source` one of `env`/`git`/`default`. It is read-only and writes no notebook. Only
 `nb enabled`, `nb config`, the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)), `nb brief` and
 `nb retro` ([FR-RETRO-001](#fr-retro-001), which also runs `git rev-parse` for the project name of
-[FR-RETRO-002](#fr-retro-002)) read the switch or spawn `git`; `nb list --json` and every other command do not; reading a local git config is offline
+[FR-RETRO-002](#fr-retro-002)) read the switch, and only they and `nb project`
+([FR-PROJECT-001](#fr-project-001)) spawn `git`; `nb list --json` and every other command do not; reading a local git config is offline
 and deterministic for the same files, so [DP-6](#dp-6) holds.
 **Rationale:** git config already gives the three scopes a user asks for (one repository, every
 repository, a folder) without a new file format, and its per-repository value is never committed,
@@ -1766,6 +1769,49 @@ state folder outside every notebook folder (`NB_STATE_DIR`, else
 code. The file SHALL NOT be written inside `NB_DIR`, where a git-versioned notebook would
 commit it.
 
+### 4.18 The project name: `nb project` (issue #540)
+
+> **Status: FR-PROJECT-001 is implemented
+> ([issue #540](https://github.com/jeanibarz/agent-notebook/issues/540)); `nb brief` and
+> `nb retro` do not use it yet: they still follow [FR-BRIEF-001](#fr-brief-001) and
+> [FR-RETRO-002](#fr-retro-002) as written.** The converged design, with what was measured and the
+> alternatives rejected, is [the design comment on #540](https://github.com/jeanibarz/agent-notebook/issues/540#issuecomment-7181443083).
+
+Grouping shelves by project (`<situation>@<project>`, see
+[memory layers](memory-layers.md)) needs every agent in a repository to use one project
+name. This section gives that name one owner: one read-only rule in the core, and one
+command that shows it and where it came from.
+
+<a id="fr-project-001"></a>
+**FR-PROJECT-001 (Should).** `nb project [--why] [--json]` SHALL print the project name of
+the working directory, found by the first of these rules that applies:
+(1) `NB_PROJECT_SLUG`, when non-empty, and then `nb` SHALL run no `git`;
+(2) otherwise `git rev-parse --git-common-dir` runs in the working directory, and any failure
+(git missing, a run over 2 seconds, any non-zero exit, which covers "not a git repository" and
+git's "dubious ownership" refusal) gives no name;
+(3) otherwise `git config --get remote.origin.url`: a URL of the form
+`scheme://[userinfo@]host[:port]/path` or `[user@]host:path` gives its path, without one
+trailing `/` and one `.git`, its segments joined by `-` and the host left out
+(`git@github.com:acme/app.git` gives `acme-app`); exit 1 (no `origin`), a local path, `file:`,
+or a path holding anything but `[A-Za-z0-9._~/-]` or a `.`/`..` segment falls to rule 4; any other
+exit or a timeout gives no name;
+(4) otherwise the folder of the repository: the parent of the git common dir when that is named
+`.git` or `.bare`, else the common dir's own name minus one `.git` suffix.
+Outside a git repository there is no name. Every name SHALL be cleaned as the 0.12 Stop hook
+cleaned `{project}` (lower case, `[a-z0-9._-]`, no `..`, a letter or digit at both ends, at most 100
+characters), so it is one path segment. The plain form SHALL print the name alone (an empty line
+when there is none); `--why` SHALL add the rule that decided, in `nb`'s own words; `--json` SHALL
+print `{ name, source, reason }` with `source` one of `env`/`remote`/`folder`/`none`. No form SHALL
+print a remote URL or a message from git, so a token in a remote cannot reach any output
+([DP-5](#dp-5)). It SHALL exit `0` in every runtime state, and it is read-only.
+**Rationale:** the remote tells two unrelated repositories that share a folder name apart and
+is the same from every clone and worktree; it is the convention the owner's fleet already uses
+(decision D2 of [epic #537](https://github.com/jeanibarz/agent-notebook/issues/537)). A failure gives
+no name, never a different one, so a loaded machine cannot split a project's lessons.
+*Proven by:* `project.test.ts` → `describe('the origin remote gives owner-repo (FR-PROJECT-001)')`,
+`describe('resolveProject: the order of the rules and every git failure (FR-PROJECT-001)')` and
+`describe('nb project on real repositories (FR-PROJECT-001)')`.
+
 ## 5. Non-functional requirements
 
 <a id="nfr-perf-001"></a>
@@ -1786,7 +1832,8 @@ the Node-18 leg runs a dependency-free runtime smoke of the built CLI
 ([`scripts/smoke-node18.mjs`](../scripts/smoke-node18.mjs)) instead of the suite, so the
 minimum engine is actually executed and not merely compiled. A Windows leg (Node 22)
 runs the tests of the agent-facing loop added by issue #538 (`src/brief.test.ts`, `src/retro.test.ts`,
-`src/loop-stats.test.ts`, `src/module-boundaries.test.ts`); the rest of the suite is not
+`src/loop-stats.test.ts`, `src/module-boundaries.test.ts`) and of the project name added by issue #540
+(`src/project.test.ts`); the rest of the suite is not
 yet run on Windows. *(Proven by
 `src/smoke-node18.test.ts`.)*
 
@@ -1794,7 +1841,8 @@ yet run on Windows. *(Proven by
 **NFR-SAFE-001 (Must).** No operation SHALL write, read, or delete outside `NB_DIR`;
 shelf validation ([FR-SAFE-001](#fr-safe-001)) is the sole guard and SHALL be applied
 on every shelf-to-path conversion. Named read-only exceptions: the commands that read the
-per-repository switch read git configuration ([FR-ENABLED-001](#fr-enabled-001)), and
+per-repository switch read git configuration ([FR-ENABLED-001](#fr-enabled-001)), `nb project`
+reads it for the project name ([FR-PROJECT-001](#fr-project-001)), and
 `nb retro` reads the one file `NB_RETRO_EXTRA_PROMPT` names, after checking it is a regular
 file of at most 64 KiB ([FR-RETRO-002](#fr-retro-002)).
 
@@ -1804,11 +1852,13 @@ library), with the self-monitoring layer (`src/usage.ts`, `src/stats.ts`) beside
 never imported by it, and `src/cli.ts` a thin wrapper (argument parsing, dispatch, help,
 shell completion, stdin reading and process guards). The read-side report renderers (`src/render.ts`), the
 `nb config` report (`src/config-report.ts`), the did-you-mean helpers (`src/suggest.ts`),
-`nb doctor` (`src/doctor.ts`), the `nb enabled` resolver (`src/enabled.ts`) and the agent-facing loop
-(`src/loop.ts`, with its text in `src/agent-text.ts`, issue #538) SHALL live in modules that `src/cli.ts`
-imports and that never import it; `src/notebook.ts` SHALL NOT import the loop modules. Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
+`nb doctor` (`src/doctor.ts`), the `nb enabled` resolver (`src/enabled.ts`), the agent-facing loop
+(`src/loop.ts`, with its text in `src/agent-text.ts`, issue #538) and the project name (`src/project.ts`,
+issue #540) SHALL live in modules that `src/cli.ts`
+imports and that never import it; `src/notebook.ts` SHALL NOT import the loop modules. Only
+`src/git.ts` SHALL start a process (`git`, read-only, a fixed argument list, no shell). Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
 
-*Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)".
+*Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)" and "only git.ts starts a process, and the project name depends on nothing but it (issue #540)".
 
 <a id="nfr-obs-001"></a>
 **NFR-OBS-001 (Could).** Operational state SHALL be observable without extra tooling
