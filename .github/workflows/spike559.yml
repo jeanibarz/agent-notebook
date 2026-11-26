@@ -40,6 +40,10 @@ jobs:
         with:
           name: zips
           path: zips
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist
   loop:
     needs: build
     runs-on: ${{ matrix.os }}
@@ -166,6 +170,44 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: .\spike559\x13.ps1
+  x16:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dist
+          path: distart
+      - name: Install Claude Code (native installer, pinned)
+        if: runner.os != 'Windows'
+        run: curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE_VERSION"
+      - name: Install Claude Code (native installer, pinned)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          & ([scriptblock]::Create((irm https://claude.ai/install.ps1))) $env:CLAUDE_VERSION
+      - name: X16 build zip, install into a spaced non-ASCII home, POSIX sessions
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          bash spike559/x16.sh "$GITHUB_WORKSPACE/distart"
+      - name: X16 Windows sessions
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\spike559\x16-windows.ps1
   managed:
     needs: build
     runs-on: ubuntu-latest
