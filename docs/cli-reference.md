@@ -196,6 +196,31 @@ A bare `prefix` scopes by name (`nb search lock review.`). `--limit N` bounds th
 
 **A failed search is itself a signal.** When a search finds nothing it is not an error (exit 0) — it is logged (with your query), so that if you then `add` a lesson in the same session, `nb stats` reads the pair back as a **`failed-search`** diagnostic signal: a coverage gap the notebook did not hold, labelled by your own query. High search volume for a topic is exactly where *surfacing* is failing for that topic, and you flag it for free just by using the tool. See [Free diagnostic signals](operating.md#free-diagnostic-signals).
 
+## The start-of-session text — `nb brief`
+
+`nb brief` prints what an assistant should see at the start of a session: the
+instruction lines, one line framing the lessons as notes from earlier agent runs (not
+instructions from the user), and the notebook index. A harness's start hook shows the
+model whatever it prints. It reads no hook payload and exits 0 in every runtime state.
+
+```sh
+nb brief                      # instructions + the index (the 50 richest shelves)
+nb brief --max-chars 3000     # a smaller budget, e.g. for subagents
+nb brief --json               # {"outcome":"index|layered|empty|broken|off","text":"…"}
+```
+
+- **Off** (see `nb enabled`) prints one line telling the agent to skip the notebook steps.
+- **Layered**: with `NB_PROJECT_SLUG` set, the index is grouped into this project's
+  shelves (`<situation>@<slug>`), the bare domain shelves and the global shelf
+  (`NB_GLOBAL_SHELF`, default `global`); see [memory layers](memory-layers.md).
+- **Budget**: over `--max-chars` (default 9000; `0` = none) the shelves with the fewest
+  lessons are dropped, whatever their layer, and the last line says how many and gives
+  the `nb list --limit` command that shows them. Claude Code shows hook output whole
+  only up to 10,000 characters.
+- **Safe to show a model**: control characters and line separators in a name, a
+  description, the folder path or the slug are shown as `\uXXXX`, so no value can
+  start a line of its own.
+
 ## The end-of-task retrospective — `nb retro`
 
 `nb retro --session <id>` prints the end-of-task retrospective text (vote, prune, add at
@@ -223,7 +248,7 @@ nb retro --session "$SESSION_ID" --work-dir "$PWD_OF_THE_AGENT"   # also ask the
 - **`--hook <label>`** is for adapters: it is recorded in the usage log's note column and
   never changes the output. A call that finds the session already claimed logs no row.
 
-The example Claude Code hooks do not call `nb retro` yet (issue #538).
+The example Claude Code hooks do not call `nb brief` or `nb retro` yet (issue #538).
 
 ## Shell completion
 

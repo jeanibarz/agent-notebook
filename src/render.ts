@@ -18,6 +18,7 @@ import {
   escapeDiskName,
   stripControlChars,
   type ConflictShelf,
+  type NotebookSummary,
   type SearchResult,
   type SkippedShelf,
 } from './notebook.js';
@@ -131,30 +132,61 @@ export function renderList(
         : 'no notebooks yet — add one with `nb add <shelf> "<lesson>"`\n';
     return { out: '', err: skipErr + err };
   }
-  const shown = listing.rows.length;
-  const countClause = shown < listing.total ? `${shown} of ${listing.total}` : `${listing.total}`;
+  return { out: formatListing(listing.rows, listing.total, { dir, prefix, explicitLimit }).join('\n') + '\n', err: skipErr };
+}
+
+/**
+ * The lines of a non-empty `nb list` text index: the header, one row per
+ * notebook, and the #407 footer when a default cap left shelves out. Shared by
+ * `renderList` and `nb brief` (issue #538), which passes `clean` to make every
+ * value it places in the text safe for a model (a control character or line
+ * separator can then never start a line of its own) and `footer` to replace the
+ * footer with its own cut line. `clean` runs before padding and truncation, so
+ * the columns still line up.
+ */
+export function formatListing(
+  rows: readonly NotebookSummary[],
+  total: number,
+  opts: {
+    dir: string;
+    prefix?: string;
+    explicitLimit?: boolean;
+    clean?: (s: string) => string;
+    /** A footer line to print instead of the #407 one; `null` prints none. */
+    footer?: string | null;
+  },
+): string[] {
+  const clean = opts.clean ?? ((s: string) => s);
+  const { prefix } = opts;
+  const shown = rows.length;
+  const countClause = shown < total ? `${shown} of ${total}` : `${total}`;
   const match = prefix ? ` matching "${prefix}"` : '';
-  const lines = [`agent-notebook notebooks — ${countClause}${match} in ${dir}`];
-  const nameWidth = listing.rows.reduce((w, r) => Math.max(w, r.shelf.length), 0);
-  const countWidth = listing.rows.reduce((w, r) => Math.max(w, String(r.lessons).length), 0);
-  for (const r of listing.rows) {
+  const lines = [`agent-notebook notebooks — ${countClause}${match} in ${clean(opts.dir)}`];
+  const names = rows.map((r) => clean(r.shelf));
+  const nameWidth = names.reduce((w, n) => Math.max(w, n.length), 0);
+  const countWidth = rows.reduce((w, r) => Math.max(w, String(r.lessons).length), 0);
+  rows.forEach((r, i) => {
     const trigger = r.desc ?? r.auto; // explicit description, else the (auto) top lesson
-    const descPart = trigger ? `  ${truncateCol(trigger)}${r.desc === null ? '  (auto)' : ''}` : '';
-    lines.push(`  ${r.shelf.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`);
+    const descPart = trigger ? `  ${truncateCol(clean(trigger))}${r.desc === null ? '  (auto)' : ''}` : '';
+    lines.push(`  ${names[i]!.padEnd(nameWidth)}  ${String(r.lessons).padStart(countWidth)}${descPart}`);
+  });
+  if (opts.footer !== undefined) {
+    if (opts.footer !== null) lines.push(opts.footer);
+    return lines;
   }
   // A default-capped list drops the shelves with the FEWEST lessons — which are
   // the newest ones — so say so (issue #407). Flush-left and `#`-led, like
   // `nb show`'s footer, so consumers that read the indented rows are unaffected;
   // an explicit `--limit` is the caller's own choice and prints no footer.
-  if (!explicitLimit && shown < listing.total) {
-    const left = listing.total - shown;
+  if (!opts.explicitLimit && shown < total) {
+    const left = total - shown;
     const scope = prefix ? ` ${prefix}` : '';
     lines.push(
       `# ${left} more notebook${left === 1 ? '' : 's'} not shown (the fewest lessons, usually the newest) — ` +
-        `nb list${scope} --limit ${listing.total}`,
+        `nb list${scope} --limit ${total}`,
     );
   }
-  return { out: lines.join('\n') + '\n', err: skipErr };
+  return lines;
 }
 
 /**
