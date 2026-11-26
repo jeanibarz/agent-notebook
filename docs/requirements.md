@@ -1701,7 +1701,7 @@ repository receives that same one line and not the index.
 with or without a prefix operand or `--limit`) SHALL, when `nb enabled` would print `off` for the
 working directory, print on stdout one flush-left line telling the agent to skip the notebook steps,
 naming `nb enabled --why` and `NB_ENABLED=1 nb list`, in place of the index, and exit `0`. This
-reaches an instruction-only setup (Codex CLI, or a contract without hooks), where no hook asks
+reaches an instruction-only setup (Codex CLI without its hooks, or a contract without hooks), where no hook asks
 `nb enabled`. It SHALL log its usage row with outcome `off`. When the state is on, including a
 failed check that fails open, the output SHALL be byte-identical to the index, with no added
 warning. `nb list --json` SHALL NOT consult the switch, so scripts that parse it see the same object

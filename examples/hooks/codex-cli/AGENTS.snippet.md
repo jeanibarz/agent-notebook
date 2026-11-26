@@ -1,9 +1,9 @@
 <!--
   Paste this block into the AGENTS.md that Codex CLI already reads — either your
   repo-root AGENTS.md or the global ~/.codex/AGENTS.md. Codex loads these files
-  automatically at the start of every session, which IS the integration: unlike
-  Claude Code, Codex has no lifecycle hooks, so the contract lives in the
-  instructions, and the per-change git history comes from the PATH wrapper. No
+  automatically at the start of every session, which IS the integration: the
+  contract lives in the instructions, and the per-change git history comes from
+  the PATH wrapper. Codex's own lifecycle hooks are optional (see README.md). No
   per-project notebook name to configure — the agent lists the notebooks and opens what
   fits.
 -->
