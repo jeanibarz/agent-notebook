@@ -32,9 +32,11 @@ The requirement is [NFR-REL-001](requirements.md#nfr-rel-001).
    version against `main`'s), rebuilds the tag and compares the sha256, and installs the real zip on
    Linux, macOS and Windows. A version lower than `main`'s needs the `Rollback:` line (below). Editing
    the pull request's description runs the check again.
-   The check runs the pull request's own copy of its scripts. So it refuses a pull request that also
-   changes `scripts/check-marketplace.mjs`, `scripts/build-plugin.mjs`, `scripts/plugin-e2e/` or the
-   workflow itself: change those in a pull request of their own.
+   The check runs the pull request's own copy of its scripts and of the workflow. So a pull request that
+   also changes `scripts/check-marketplace.mjs`, `scripts/build-plugin.mjs`, `scripts/plugin-e2e/` or the
+   workflow is out of process and must be split. The workflow fails such a pull request, but only an
+   honest one: the pull request could delete that step. The real control is the person who merges,
+   reading the file list, plus a ruleset or CODEOWNERS on those paths.
 
 ## What each job holds
 

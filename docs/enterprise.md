@@ -261,7 +261,7 @@ That setting turns the plugin's hooks off, silently: the plugin's skill still lo
 - **`NODE_OPTIONS`** can make your `node` load a file of the project's before the entry runs.
 - **`PATH`** decides which `git` the notebook starts, to read `nb.enabled` and the project name.
 
-If projects you do not trust can be opened on these machines, set those variables in the managed settings' own `env`: `NODE_OPTIONS` to an empty string, and `PATH` to the system folders. Otherwise, opening a project means trusting its settings, as it does for any hook.
+Setting those two in the managed settings' own `env` (`NODE_OPTIONS` to an empty string, `PATH` to the system folders) narrows what a project can do, but does not close it. Loader variables such as `LD_PRELOAD` (Linux) and `DYLD_INSERT_LIBRARIES` (macOS) pass too, and no list of pinned variables covers them all. On machines that open projects you do not trust, a managed hook still trusts each project's settings, as any hook does.
 
 The block has no node-check twin: you chose the `node` and checked it.
 
