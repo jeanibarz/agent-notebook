@@ -23,6 +23,7 @@
  *
  * Read-only, never throws. It starts processes only through `git.ts`.
  */
+import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { runGit, type GitRun } from './git.js';
@@ -58,6 +59,13 @@ export interface ProjectState {
    * a name from `NB_PROJECT_SLUG`, for "git not found" and for "not a repository".
    */
   undetermined: boolean;
+  /**
+   * The repository folder (issue #558): the folder holding the git common dir
+   * (the parent of `.git` or `.bare`; the common dir itself for a bare clone or a
+   * submodule), as a real path. Set whenever git answered with a folder; absent
+   * otherwise. Read only by `projectRecordKey`.
+   */
+  repoFolder?: string;
 }
 
 /** How long each of the (at most two) git runs may take. */
@@ -178,27 +186,80 @@ export function resolveProject(env: NodeJS.ProcessEnv, cwd: string, git: Project
   if (out === '') return none('git gave no repository folder', true);
   let folder: string;
   let old: string;
+  let repoFolder: string;
   try {
     const common = realpathSync(resolve(cwd, out));
+    repoFolder = repoFolderOf(common);
     folder = folderOf(common);
     old = cleanProjectName(basename(dirname(common)));
   } catch {
     return none('the repository folder could not be read', true);
   }
   const oldName = (name: string): string => (old !== name ? old : '');
+  // Every answer from here on is inside a repository: carry its folder, additively.
+  const inRepo = (st: ProjectState): ProjectState => ({ ...st, repoFolder });
 
   const remote = git(['config', '--get', 'remote.origin.url'], cwd);
   if (remote.error !== undefined) return none(failure(remote), true);
   const fromFolder = (reason: string): ProjectState =>
-    folder === ''
-      ? none(`${reason}, and the folder name has no usable character`)
-      : { name: folder, source: 'folder', reason, oldName: oldName(folder), bare, undetermined: false };
+    inRepo(
+      folder === ''
+        ? none(`${reason}, and the folder name has no usable character`)
+        : { name: folder, source: 'folder', reason, oldName: oldName(folder), bare, undetermined: false },
+    );
   if (remote.status === 1) return fromFolder('folder of the git repository (no origin remote)');
   if (remote.status !== 0) return none(failure(remote), true);
   // The whole value, never its first line: a URL holding a newline fails the safety check.
   const name = ownerRepo(remote.stdout.replace(/\r?\n$/, ''));
   if (name === '') return fromFolder('folder of the git repository (the origin remote is a local path or not usable as a name)');
-  return { name, source: 'remote', reason: 'git remote origin', oldName: oldName(name), bare, undetermined: false };
+  return inRepo({ name, source: 'remote', reason: 'git remote origin', oldName: oldName(name), bare, undetermined: false });
+}
+
+/** The folder holding the common dir: its parent for `.git` / `.bare`, the common dir itself otherwise. */
+function repoFolderOf(commonDir: string): string {
+  const b = basename(commonDir);
+  return b === '.git' || b === '.bare' ? dirname(commonDir) : commonDir;
+}
+
+const sha12 = (s: string): string => createHash('sha256').update(s).digest('hex').slice(0, 12);
+
+/** A real path as it is hashed: on Windows the drive letter is lower-cased, so `C:\x` and `c:\x` agree. */
+function hashedPath(p: string): string {
+  return process.platform === 'win32' ? p.replace(/^[A-Za-z]:/, (d) => d.toLowerCase()) : p;
+}
+
+/** The realpath of a folder, or its resolved path when it cannot be read (a folder that is gone). */
+function realOrResolved(p: string): string {
+  try {
+    return realpathSync(resolve(p));
+  } catch {
+    return resolve(p);
+  }
+}
+
+/**
+ * The project key written to the usage log on a hook row, and compared by
+ * `nb status` (issue #558, FR-HEARTBEAT-001): one function for the writer and
+ * the reader. `st` is `resolveProject`'s answer for `cwd`.
+ *   - `?` when git could not answer (`undetermined`);
+ *   - the cleaned name for `NB_PROJECT_SLUG` or the remote, or `h:` + 12 hex of
+ *     its sha256 when the name is over 64 characters;
+ *   - else `h:` + 12 hex of a sha256 of the repository folder (a subfolder gives
+ *     the same key, two clones named alike give two), or, outside git, of the
+ *     working folder. A folder name never reaches the log.
+ * Never throws.
+ */
+export function projectRecordKey(cwd: string, st: ProjectState): string {
+  try {
+    if (st.undetermined) return '?';
+    if ((st.source === 'env' || st.source === 'remote') && st.name !== '') {
+      return st.name.length > 64 ? `h:${sha12(st.name)}` : st.name;
+    }
+    const folder = st.repoFolder !== undefined && st.repoFolder !== '' ? st.repoFolder : realOrResolved(cwd);
+    return `h:${sha12(hashedPath(folder))}`;
+  } catch {
+    return '?';
+  }
 }
 
 /** The one-line explanation `nb project --why` prints after the name. */

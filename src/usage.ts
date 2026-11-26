@@ -10,7 +10,21 @@
  * Crash-recovery counts reach it through `drainPendingRecovery`, the tally that
  * core's lock and temp-file recovery paths fill.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import {
   assertSafeShelf,
@@ -54,6 +68,10 @@ export interface UsageRow {
   recovered: string;
   /** Batch-vote partial selector misses (issue #310): the count of ids that did NOT resolve in a ≥1-landed batch `vote`. That call exits 0 (`ok=true`) so its misses never reach the err-rate table; recording the count here lets `nb stats` fold them into the vote error-cause readout instead of laundering "voting on ids that no longer exist" out of it. `0` when none (the common case) and on pre-#310 rows. Trailing column. */
   misses: number;
+  /** The `nb` version that wrote the row (issue #558); `''` on a row written before it, and on every row but `brief` and `retro`. Trailing column 17. */
+  version: string;
+  /** The project key of a `brief`/`retro` row given `--hook` (issue #558, `projectRecordKey`); `''` otherwise and on old rows. Trailing column 18. */
+  project: string;
 }
 
 /**
@@ -94,6 +112,15 @@ export interface UsageMeta {
    * signal, not an error class.
    */
   misses?: number;
+  /**
+   * The `nb` version to record (issue #558). Set only by `brief` and `retro`: when
+   * it is present the row gains two trailing columns, `version` and `project`;
+   * when absent the row is byte-identical to before. Cleaned to `[0-9A-Za-z.+-]`
+   * and capped at 32 characters, never cut with `…`.
+   */
+  version?: string;
+  /** The project key (`projectRecordKey`), recorded with `version`, only when `--hook` was given. Cleaned to `[0-9A-Za-z.:?_-]`, capped at 80, never cut with `…`. */
+  project?: string;
 }
 
 /**
@@ -403,9 +430,17 @@ export function appendUsage(
     // caller text, so no sanitize), blank in the common no-miss case so an old
     // reader and old rows are unchanged.
     const misses = meta.misses && meta.misses > 0 ? String(Math.round(meta.misses)) : '';
+    // Trailing columns 17 and 18 (issue #558): only a row whose caller passed a
+    // `version` (`brief`, `retro`) carries them; every other row stays byte-identical.
+    // Neither is cut with `…` nor subject to `NB_MAX_CHARS`: a cleaned value is
+    // short by construction, and a cap here is a hard cut of a token.
+    const record =
+      meta.version === undefined
+        ? ''
+        : `\t${meta.version.replace(/[^0-9A-Za-z.+-]/g, '').slice(0, 32)}\t${(meta.project ?? '').replace(/[^0-9A-Za-z.:?_-]/g, '').slice(0, 80)}`;
     const line =
       `${new Date().toISOString()}\t${usageShelfField(shelf)}\t${capNote(sanitizeUsageField(command))}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
-      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}\t${decayed}\t${recovered}\t${misses}`;
+      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}\t${decayed}\t${recovered}\t${misses}${record}`;
     const ring = usageRing();
     const compactAt = ring + usageRingSlack();
 
@@ -479,11 +514,68 @@ export function appendUsage(
   }
 }
 
-export function parseUsage(dir: string): UsageRow[] {
+/** Options of `parseUsage`. */
+export interface ParseUsageOptions {
+  /**
+   * Read at most the last `maxBytes` of the log (issue #558), for a reader that must
+   * stay bounded (`nb status`). With it, the log is `lstat`ed and anything that is not
+   * a regular file (a FIFO, a device, a symlink) gives no rows; it is opened with
+   * `O_NONBLOCK`; and the first, possibly partial, line of a cut read is dropped.
+   * Never throws. Without it, the whole file is read, as before.
+   */
+  maxBytes?: number;
+}
+
+/** The text of the last `maxBytes` of the log, or `null` when it is not a plain readable file. */
+function readTail(file: string, maxBytes: number): string | null {
+  let fd: number | undefined;
+  try {
+    if (!lstatSync(file).isFile()) return null;
+    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
+    const st = fstatSync(fd);
+    if (!st.isFile()) return null;
+    const want = Math.max(0, Math.floor(maxBytes));
+    const len = Math.min(st.size, want);
+    if (len === 0) return '';
+    const start = st.size - len;
+    const buf = Buffer.alloc(len);
+    let got = 0;
+    while (got < len) {
+      const n = readSync(fd, buf, got, len - got, start + got);
+      if (n <= 0) break;
+      got += n;
+    }
+    const text = buf.subarray(0, got).toString('utf-8');
+    if (start === 0) return text;
+    // Cut mid-file: the first line may be partial; drop it (all of it, when it has no newline).
+    const nl = text.indexOf('\n');
+    return nl === -1 ? '' : text.slice(nl + 1);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // nothing to release
+      }
+    }
+  }
+}
+
+export function parseUsage(dir: string, opts: ParseUsageOptions = {}): UsageRow[] {
   const file = usageFile(dir);
-  if (!existsSync(file)) return [];
+  let text: string;
+  if (opts.maxBytes !== undefined) {
+    const tail = readTail(file, opts.maxBytes);
+    if (tail === null) return [];
+    text = tail;
+  } else {
+    if (!existsSync(file)) return [];
+    text = readFileSync(file, 'utf-8');
+  }
   const rows: UsageRow[] = [];
-  for (const line of readFileSync(file, 'utf-8').split('\n')) {
+  for (const line of text.split('\n')) {
     if (line.trim() === '') continue;
     // Positional parse, tolerant of old five-column rows: the richer columns
     // (session…recovered) are undefined on a pre-upgrade row and default to
@@ -492,7 +584,7 @@ export function parseUsage(dir: string): UsageRow[] {
     // `recovered` (#309), itself after `decayed` (#293); a row from before any of
     // them ends earlier, so the missing trailing columns are undefined here and
     // default to `''`/`0`.
-    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note, errorClass, decayed, recovered, misses] =
+    const [ts, shelf, command, status, msRaw, session, entriesRaw, outcome, collided, evicted, reason, note, errorClass, decayed, recovered, misses, version, project] =
       line.split('\t');
     if (!ts || !command) continue;
     rows.push({
@@ -516,6 +608,8 @@ export function parseUsage(dir: string): UsageRow[] {
       // vote miss-count aggregation (it is only ever written as a non-negative
       // count).
       misses: Math.max(0, Number.parseInt(misses ?? '', 10) || 0),
+      version: version ?? '',
+      project: project ?? '',
     });
   }
   return rows;

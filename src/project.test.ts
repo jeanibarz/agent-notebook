@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cleanProjectName, describeProject, groupsIndex, ownerRepo, resolveProject, type ProjectGit } from './project.js';
+import { cleanProjectName, describeProject, groupsIndex, ownerRepo, projectRecordKey, resolveProject, type ProjectGit, type ProjectState } from './project.js';
+import { createHash } from 'node:crypto';
 import type { GitRun } from './git.js';
 
 // Issue #540: the project name, derived once in the core. These tests pin the
@@ -176,7 +177,7 @@ describe('resolveProject: the order of the rules and every git failure (FR-PROJE
 
   test('the origin remote, with exactly two git runs, in order', () => {
     const g = fakeGit({ remote: { stdout: 'git@github.com:Acme/App.git\n' } });
-    expect(resolveProject({}, work, g)).toEqual({ name: 'acme-app', source: 'remote', reason: 'git remote origin', oldName: 'my-app', bare: false, undetermined: false });
+    expect(resolveProject({}, work, g)).toEqual({ name: 'acme-app', source: 'remote', reason: 'git remote origin', oldName: 'my-app', bare: false, undetermined: false, repoFolder: work });
     expect(g.calls).toEqual([
       ['rev-parse', '--git-common-dir', '--is-bare-repository'],
       ['config', '--get', 'remote.origin.url'],
@@ -440,5 +441,131 @@ describe('nb project on real repositories (FR-PROJECT-001)', { timeout: 60_000 }
     const o = nb(['project', '--bogus'], r);
     expect(o.code).not.toBe(0);
     expect(o.err).toContain('--bogus');
+  });
+});
+
+describe('projectRecordKey: the key a hook row records for the project (FR-HEARTBEAT-001, issue #558)', { timeout: 60_000 }, () => {
+  let tmp: string;
+  let globalCfg: string;
+  beforeEach(() => {
+    tmp = realpathSync(mkdtempSync(join(tmpdir(), 'nb key ')));
+    globalCfg = join(tmp, 'global.gitconfig');
+    writeFileSync(globalCfg, '');
+  });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const sha12 = (s: string): string => createHash('sha256').update(s).digest('hex').slice(0, 12);
+  const KEY = /^(\?|h:[0-9a-f]{12}|[a-z0-9][a-z0-9._-]{0,63})$/;
+  function env(): NodeJS.ProcessEnv {
+    const e: NodeJS.ProcessEnv = { ...process.env };
+    for (const k of Object.keys(e)) if (k.startsWith('NB_') || k.startsWith('GIT_')) delete e[k];
+    return { ...e, GIT_CONFIG_GLOBAL: globalCfg, GIT_CONFIG_NOSYSTEM: '1', GIT_CEILING_DIRECTORIES: tmp };
+  }
+  function repo(dir: string, origin?: string): string {
+    mkdirSync(dir, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: dir, env: env(), stdio: 'ignore' });
+    if (origin !== undefined) execFileSync('git', ['remote', 'add', 'origin', origin], { cwd: dir, env: env(), stdio: 'ignore' });
+    return dir;
+  }
+  const keyIn = (cwd: string): string => {
+    const old = { ...process.env };
+    // resolveProject runs the real git with the process environment: point it at the test's own.
+    Object.assign(process.env, env());
+    try {
+      return projectRecordKey(cwd, resolveProject(process.env, cwd));
+    } finally {
+      process.env = old;
+    }
+  };
+  const state = (over: Partial<ProjectState>): ProjectState => ({ name: '', source: 'none', reason: '', oldName: '', bare: false, undetermined: false, ...over });
+
+  test('the same key from the repository root and from a subfolder, in a repository with no remote', () => {
+    const r = repo(join(tmp, 'app'));
+    const sub = join(r, 'a', 'b');
+    mkdirSync(sub, { recursive: true });
+    const k = keyIn(r);
+    expect(k).toBe(`h:${sha12(r)}`);
+    expect(keyIn(sub)).toBe(k);
+  });
+
+  test('two clones with the same folder name and no remote get different keys', () => {
+    const a = repo(join(tmp, 'one', 'app'));
+    const b = repo(join(tmp, 'two', 'app'));
+    expect(keyIn(a)).not.toBe(keyIn(b));
+    expect(keyIn(a)).toMatch(KEY);
+  });
+
+  test('a linked worktree shares the key of its repository', () => {
+    const r = repo(join(tmp, 'main'));
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@e.invalid', 'commit', '-q', '--allow-empty', '-m', 'i'], { cwd: r, env: env(), stdio: 'ignore' });
+    const wt = join(tmp, 'linked');
+    execFileSync('git', ['worktree', 'add', '-q', wt], { cwd: r, env: env(), stdio: 'ignore' });
+    expect(keyIn(wt)).toBe(keyIn(r));
+  });
+
+  test('a name from NB_PROJECT_SLUG is the key, and no git runs', () => {
+    const never: ProjectGit = () => {
+      throw new Error('git must not run');
+    };
+    expect(projectRecordKey(tmp, resolveProject({ NB_PROJECT_SLUG: ' My/App ' }, tmp, never))).toBe('my-app');
+  });
+
+  test('the remote gives its owner-repo name', () => {
+    const r = repo(join(tmp, 'app'), 'git@github.com:Acme/App.git');
+    expect(keyIn(r)).toBe('acme-app');
+  });
+
+  test('a name over 64 characters becomes h: and 12 hex of its sha256', () => {
+    const long = 'a'.repeat(65);
+    expect(projectRecordKey(tmp, state({ name: long, source: 'env' }))).toBe(`h:${sha12(long)}`);
+    expect(projectRecordKey(tmp, state({ name: 'a'.repeat(64), source: 'remote' }))).toBe('a'.repeat(64));
+  });
+
+  test('outside a repository the key hashes the working folder; a subfolder gives another key', () => {
+    const d = join(tmp, 'plain dir');
+    const sub = join(d, 'sub');
+    mkdirSync(sub, { recursive: true });
+    expect(keyIn(d)).toBe(`h:${sha12(d)}`);
+    expect(keyIn(sub)).not.toBe(keyIn(d));
+  });
+
+  test('git not found: the working folder is hashed', () => {
+    const d = join(tmp, 'nogit');
+    mkdirSync(d);
+    const missing: ProjectGit = () => ({ status: null, stdout: '', stderr: '', error: 'ENOENT' }) as GitRun;
+    expect(projectRecordKey(d, resolveProject({}, d, missing))).toBe(`h:${sha12(d)}`);
+  });
+
+  test('git that could not answer gives ?', () => {
+    const timeout: ProjectGit = () => ({ status: null, stdout: '', stderr: '', error: 'ETIMEDOUT' }) as GitRun;
+    expect(projectRecordKey(tmp, resolveProject({}, tmp, timeout))).toBe('?');
+    expect(projectRecordKey(tmp, state({ undetermined: true }))).toBe('?');
+  });
+
+  test('a folder that is gone does not throw', () => {
+    const gone = join(tmp, 'gone', 'x');
+    expect(projectRecordKey(gone, state({}))).toMatch(/^h:[0-9a-f]{12}$/);
+  });
+
+  test('hostile project names and folder names give a key of the safe alphabet only', () => {
+    const hostile = ['a b', "a'b", 'a$b', 'a`b', 'a\nb', '..', 'é', 'CON', 'x'.repeat(10_000), '../../etc', 'a b'];
+    for (const h of hostile) {
+      for (const source of ['env', 'remote', 'folder'] as const) {
+        const k = projectRecordKey(tmp, state({ name: cleanProjectName(h), source }));
+        expect(k, `${source}:${JSON.stringify(h).slice(0, 20)}`).toMatch(KEY);
+      }
+      // the folder of a repository whose name is hostile is hashed, never shown
+      const d = join(tmp, 'f' + hostile.indexOf(h));
+      const hostileDir = h.length > 100 || h.includes('/') || h.includes('\n') || h.includes(' ') ? 'plain' : h;
+      const sub = join(d, hostileDir === '..' ? 'dots' : hostileDir);
+      try {
+        mkdirSync(sub, { recursive: true });
+      } catch {
+        continue; // a name the file system refuses
+      }
+      const k = keyIn(sub);
+      expect(k).toMatch(KEY);
+      expect(k.startsWith('h:')).toBe(true);
+    }
   });
 });
