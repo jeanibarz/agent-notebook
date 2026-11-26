@@ -236,8 +236,10 @@ describe('the adapter (FR-HOOKS-001)', () => {
 
   test('--max-chars after the event reaches nb brief', () => {
     for (let i = 0; i < 40; i++) shelf(`s${i}-${'x'.repeat(100)}`, 50 - i, 'd'.repeat(150));
-    expect(JSON.parse(adapter('subagent-start').out).hookSpecificOutput.additionalContext.length).toBeGreaterThan(3000);
+    const big = adapter('subagent-start');
     const small = done(spawnSync(process.execPath, [ADAPTER, 'subagent-start', '--max-chars', '3000'], { cwd: tmp, env: childEnv(), input: '{}', encoding: 'utf-8' }));
+    console.log('DEBUG545', JSON.stringify({ big: [big.code, big.out.length, big.out.slice(0, 300), big.err], small: [small.code, small.out.length, small.out.slice(-400), small.err] }));
+    expect(JSON.parse(big.out).hookSpecificOutput.additionalContext.length).toBeGreaterThan(3000);
     expect(JSON.parse(small.out).hookSpecificOutput.additionalContext.length).toBeLessThanOrEqual(3000);
   });
 
