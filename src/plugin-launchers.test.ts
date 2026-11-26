@@ -35,7 +35,7 @@ function plant(dir: string, name: string): void {
   chmodSync(f, 0o755);
 }
 
-describe('bin/nb never runs a program from the working directory (FR-PLUGIN-004, issue #559)', { skip: process.platform === 'win32' }, () => {
+describe('bin/nb never runs a program from the working directory (FR-PLUGIN-004, issue #559)', { skip: process.platform === 'win32', timeout: 30_000 }, () => {
   const nb = (path: string, args = ['--version'], dir = cwd) =>
     spawnSync(join(stage, 'bin', 'nb'), args, { cwd: dir, env: { PATH: path, NB_DIR: join(tmp, 'nbdir') }, encoding: 'utf-8' });
   const GOOD = `${NODE_DIR}:/usr/bin:/bin`;
@@ -102,7 +102,7 @@ describe('bin/nb never runs a program from the working directory (FR-PLUGIN-004,
   });
 });
 
-describe('bin/nb.cmd never runs a program from the working directory (FR-PLUGIN-004, issue #559)', { skip: process.platform !== 'win32' }, () => {
+describe('bin/nb.cmd never runs a program from the working directory (FR-PLUGIN-004, issue #559)', { skip: process.platform !== 'win32', timeout: 30_000 }, () => {
   test('a node.cmd planted in the current folder is not run', () => {
     writeFileSync(join(cwd, 'node.cmd'), '@echo PLANTED\r\n');
     const r = spawnSync('cmd', ['/d', '/c', join(stage, 'bin', 'nb.cmd'), '--version'], { cwd, encoding: 'utf-8' });

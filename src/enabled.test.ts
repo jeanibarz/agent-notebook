@@ -317,7 +317,7 @@ describe('the README recipe: off everywhere except one repository (issue #514)',
     // Only the retro sentinels landed in the store; the switch wrote no notebook.
     expect(readdirSync(join(tmp, 'store')).filter((f) => !f.startsWith('.'))).toEqual([]);
     // About ten real processes (git, the hooks, nb): give it room on a loaded runner, as
-    // CONTRIBUTING asks for a spawn-heavy test. It took 5.3 s on macOS CI after #573.
+    // CONTRIBUTING asks for a spawn-heavy test. It took 5.3 to 7 s on busy macOS runners.
   }, 30_000);
 });
 
