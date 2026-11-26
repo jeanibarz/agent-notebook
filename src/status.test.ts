@@ -700,7 +700,7 @@ describe('the facts are read from two logs, merged by timestamp, and never throw
     const deps = okDeps({});
     const f = gatherFacts(input(), {
       ...deps,
-      listMessages: () => ({ ...deps.listMessages!('', ''), state: 'present' }),
+      listMessages: () => ({ ...deps!.listMessages!('', ''), state: 'present' }),
       readMessages: (_l, kind) => ({
         global: { file: `${kind}.txt`, status: 'refused', reason: 'unreadable (EACCES: /secret/path)' },
         project: { file: `${KEY}.${kind}.txt`, status: 'refused', reason: 'larger than 1000 characters' },

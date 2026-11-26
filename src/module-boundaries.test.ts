@@ -193,7 +193,10 @@ describe('module boundaries (issue #478)', () => {
     const external = [...facts.matchAll(/^import\b[^;]*?\bfrom '([^']+)'/gm)].map((m) => m[1]).filter((m) => !m!.startsWith('./'));
     expect(new Set(external)).toEqual(new Set(['node:fs', 'node:os', 'node:url']));
     expect(/from 'node:child_process'|\bimport\(/.test(facts)).toBe(false);
-    expect(/\b(writeFileSync|appendFileSync|mkdirSync|renameSync|unlinkSync|rmSync|copyFileSync|openSync)\b/.test(facts)).toBe(false);
+    expect(/\b(writeFileSync|appendFileSync|mkdirSync|renameSync|unlinkSync|rmSync|copyFileSync|writeSync)\b/.test(facts)).toBe(false);
+    // An open is allowed only read-only and non-blocking (the bounded release-date read).
+    const opens = [...facts.matchAll(/\bopenSync\(([^;]*)\);/g)].map((m) => m[1]!);
+    for (const o of opens) expect(o, 'openSync in status-facts.ts').toMatch(/O_RDONLY \| \(fsConstants\.O_NONBLOCK \?\? 0\)\)?$/);
     expect(graph.get('cli')).toEqual(expect.arrayContaining(['status', 'status-facts']));
     for (const [mod, deps] of graph) {
       if (mod !== 'cli' && mod !== 'status-facts') expect(deps, `${mod}.ts imports status`).not.toContain('status');
