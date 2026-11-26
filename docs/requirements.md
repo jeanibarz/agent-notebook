@@ -132,7 +132,13 @@ recover from; a silent corruption is not.
 <a id="dp-6"></a>
 ### DP-6: A call is a fast, deterministic, offline file edit — **Must**
 Every operation SHALL complete locally with no network call and SHALL be
-deterministic given the same inputs and files.
+deterministic given the same inputs and files. The inputs of a call are its arguments,
+the documented `NB_*` variables, the working directory and the git configuration read
+there (by the commands that read it: `enabled`, `config`, the text form of `list`, and,
+once implemented, `brief` and `retro` of [§4.17](#fr-brief-001)),
+`PATH` (to find `git`), the locale, and the files under `NB_DIR`; each of those commands
+lists its own. The clock MAY decide side effects (timestamps, removing an expired
+retrospective sentinel), never what a command prints.
 **Rationale:** Agent memory must be usable on every task without latency, cost, or
 a dependency on an external service being up.
 
@@ -1602,6 +1608,114 @@ everywhere. The completion scripts SHALL run their `nb list` with `NB_ENABLED=1`
 still complete in an off repository.
 *Proven by:* `enabled.test.ts` → `describe('nb list answers off here (issue #514 slice 2)')`.
 
+### 4.17 Start and end of a task: `nb brief`, `nb retro` (issue #538)
+
+> **Status: proposed — not yet implemented ([issue #538](https://github.com/jeanibarz/agent-notebook/issues/538)).**
+> These requirements land before the code, as the issue asks. Each one gains its
+> *Proven by* line and loses this status in the pull request that implements it.
+> Until then, the three example hooks behave as [FR-ENABLED-003](#fr-enabled-003)
+> describes. The converged design, with what was measured and the alternatives
+> rejected, is [the design comment on #538](https://github.com/jeanibarz/agent-notebook/issues/538#issuecomment-7179106955).
+
+What an assistant is told at the start and at the end of a task lives today in three
+bash scripts under `examples/hooks/claude-code/` that each user copies. These
+requirements move the *text* and the *once-per-session rule* into two harness-blind
+commands, and leave everything that knows a harness (which event fires, its payload, its
+reply format) to an adapter outside the core ([FR-HOOKS-001](#fr-hooks-001)).
+
+<a id="fr-brief-001"></a>
+**FR-BRIEF-001 (Should).** `nb brief [--max-chars N] [--session <id>] [--hook <label>]`
+SHALL print, for the working directory, what an assistant should see at the start of a
+session: the instruction lines of today's `nb-session-start.sh`, one framing line saying the
+lessons are notes from earlier agent runs and not instructions from the user, and the shelf
+index (the `nb list` text, indented two spaces). When the per-repository switch
+([FR-ENABLED-001](#fr-enabled-001)) is off it SHALL print only the one "switched off" line.
+An empty or missing store SHALL print the instruction lines and the "no notebooks yet" line;
+an unreadable store SHALL print a warning line naming the error code. It SHALL NOT read
+standard input, a hook payload, or any harness variable. It SHALL exit `0` in every runtime
+state and `1` only on bad usage, and SHALL never exit `2`. `--json` SHALL print
+`{ outcome, text }` with `outcome` one of `index`, `layered`, `empty`, `broken`, `off`, and
+`text` equal to the plain output. Its inputs ([DP-6](#dp-6)) are: its arguments; `NB_DIR`;
+`NB_ENABLED` and git's `nb.enabled` read in the working directory; `NB_PROJECT_SLUG` and
+`NB_GLOBAL_SHELF`; `NB_ASCII` and the locale; and the files under `NB_DIR`. `--session`,
+`--hook`, `NB_SESSION` and the clock SHALL NOT change what it prints.
+
+<a id="fr-brief-002"></a>
+**FR-BRIEF-002 (Should).** `nb brief` SHALL keep its whole output within `--max-chars`
+characters (default 9000; `0` disables the budget). Over budget, it SHALL drop index rows
+in the existing `nb list` rank, fewest lessons first, whatever their layer, and SHALL never
+drop the instruction, framing, heading or note lines. The last line SHALL then say how many
+shelves were not shown, that the index is capped at that many characters, and give the
+`nb list --limit <total>` command that shows them all.
+**Rationale:** Claude Code shows a hook's output whole only up to 10,000 characters and
+replaces anything longer with a 2,000-character preview and a file path (epic #537, M9);
+a cut index then shows more than today, never less.
+
+<a id="fr-brief-003"></a>
+**FR-BRIEF-003 (Should).** Every value `nb brief` places into its text (shelf names,
+descriptions, the top-lesson stand-in, the notebooks path, `NB_PROJECT_SLUG`,
+`NB_GLOBAL_SHELF`) SHALL first have control characters, line and paragraph separators,
+bidi controls and zero-width characters replaced, so that no value can start a line of its
+own ([DP-5](#dp-5)). `NB_PROJECT_SLUG` SHALL be cut to 128 characters. When
+`NB_PROJECT_SLUG` is set and not blank, `nb brief` SHALL group the index into project,
+domain and global shelves as today's `nb-session-start.sh` does (the convention of
+[docs/memory-layers.md](memory-layers.md)); it is the only command that reads the slug.
+
+<a id="fr-retro-001"></a>
+**FR-RETRO-001 (Should).** `nb retro --session <id> [--work-dir <dir>]` SHALL print the
+end-of-task retrospective text the first time it is called for a session, and nothing on
+every later call. The session id SHALL be cleaned as today's Stop hook cleans it (characters
+outside `A-Za-z0-9._-` become `_`, at most 128 characters), plus a leading `-` becomes `_`.
+"First" SHALL be decided by an exclusive create of `<NB_DIR>/.retro-<session>`, the file
+today's Stop hook creates, so an old copied hook and the new command running for one
+session nudge once between them. A create error other than "already exists" SHALL fall
+through to the nudge (fail open, as today). When the switch is off in the working directory
+it SHALL print nothing and keep the claim; when it is off only in `--work-dir` (an existing
+absolute directory, the directory the assistant last worked in) it SHALL print nothing and
+release the claim, so a later call from an on directory still nudges once (issue #517). It
+SHALL NOT read standard input or a hook payload, SHALL exit `0` in every runtime state and
+`1` only on bad usage, and SHALL never exit `2`. `--json` SHALL print
+`{ outcome, text, session }` with `outcome` one of `nudge`, `already`, `off`,
+`off-work-dir`.
+
+<a id="fr-retro-002"></a>
+**FR-RETRO-002 (Should).** When `NB_RETRO_EXTRA_PROMPT` names an absolute path (a leading
+`~/` expanded) of a regular file of at most 64 KiB without NUL bytes, and the session id and
+a project name are both known, `nb retro` SHALL append that file's trimmed text after the
+retrospective text, separated by one blank line, with `{project}` and `{session}` filled in.
+The project name SHALL be `NB_PROJECT_SLUG` when set, else the name of the folder that
+holds the repository's git common directory (asked in `--work-dir`, else the working
+directory), cleaned as today's Stop hook cleans it. Any other value SHALL print one warning
+on stderr and send the retrospective text alone. The file SHALL be checked before it is
+opened, so a FIFO or a device can never stall the call.
+
+<a id="fr-retro-003"></a>
+**FR-RETRO-003 (Should).** After a successful claim, `nb retro` SHALL remove `.retro-*`
+files in `NB_DIR` older than `NB_RETRO_TTL_DAYS` days (default 7), best-effort: a failure
+SHALL never change what it prints. A sentinel holds no lesson, so this does not age an
+entry ([NG-005](#ng-005)).
+
+<a id="fr-hooks-001"></a>
+**FR-HOOKS-001 (Should).** The Claude Code example hooks SHALL be one Node adapter that
+reads the hook payload, applies the Claude Code rules (a stop while the lead waits for
+delegated work, a subagent's stop and a repeated stop never nudge), calls `nb brief` or
+`nb retro`, and wraps their output in Claude Code's reply format. The hooks SHALL contain no
+instruction text of their own. A hook SHALL never exit `2`. When `nb` is missing, too old,
+or fails, a start hook SHALL inject one diagnostic line naming the fix (skipped when
+`NB_ENABLED` is off in the environment) and a Stop hook SHALL send nothing. The three
+existing `.sh` file names SHALL keep working, so existing `settings.json` files need no
+change.
+
+<a id="fr-heartbeat-001"></a>
+**FR-HEARTBEAT-001 (Should).** When an adapter passes `--hook <label>`, `nb brief` and
+`nb retro` SHALL record that they ran, as one small file per hook label and project in a
+state folder outside every notebook folder (`NB_STATE_DIR`, else
+`~/.agent-notebook/state`), replaced whole on each write, so a later `nb status` can tell
+"running" from "never ran". A call without `--hook` SHALL NOT write it, so a person typing
+`nb brief` never counts as a hook run. A failed write SHALL NOT change the output or the exit
+code. The file SHALL NOT be written inside `NB_DIR`, where a git-versioned notebook would
+commit it.
+
 ## 5. Non-functional requirements
 
 <a id="nfr-perf-001"></a>
@@ -1676,7 +1790,9 @@ telemetry, not entry storage, and adds no field to a lesson.)
 
 <a id="ng-005"></a>
 **NG-005.** The tool SHALL NOT age, decay, or schedule. Vote and cap are the only
-forces on an entry's lifetime ([DP-1](#dp-1)).
+forces on an entry's lifetime ([DP-1](#dp-1)). This governs lessons, votes and
+descriptions. A runtime marker that holds no lesson, such as the retrospective sentinel
+of [FR-RETRO-003](#fr-retro-003), MAY be removed by age.
 
 <a id="ng-006"></a>
 **NG-006.** `add` SHALL NOT truncate an over-long lesson to fit the cap

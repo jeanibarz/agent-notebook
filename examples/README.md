@@ -5,7 +5,7 @@ never touches git, never phones home, never runs anything clever inside an `nb`
 call ([DP-6](https://github.com/jeanibarz/agent-notebook/blob/main/docs/requirements.md#dp-6)). Everything that makes it feel like a
 *system* — a one-line instruction, optional convenience hooks, per-change history, off-machine backup, trend
 diagnostics — lives *around* the package, as the optional, copy-pasteable pieces
-in this directory. Use the ones you want; skip the rest. To have an agent set them up for you, for lessons, ideas or both, point it at [`SETUP.md`](SETUP.md).
+in this directory. (Planned in [issue #538](https://github.com/jeanibarz/agent-notebook/issues/538): the package will also hold the text an agent is told at the start and end of a task, through `nb brief` and `nb retro`; the hooks here keep only what knows Claude Code.) Use the ones you want; skip the rest. To have an agent set them up for you, for lessons, ideas or both, point it at [`SETUP.md`](SETUP.md).
 
 | File | What it adds | Depends on |
 |---|---|---|

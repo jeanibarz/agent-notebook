@@ -9,6 +9,10 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Documentation
+
+- **Requirements for `nb brief` and `nb retro` (issue #538), before the code.** `docs/requirements.md` gains section 4.17, marked "proposed — not yet implemented": the two harness-blind commands that will print the start-of-session text and the once-per-session retrospective, a Node adapter for the Claude Code hooks, and a record that the hooks ran. DP-6 now lists the inputs a call may depend on, and NG-005 says it governs lessons, not runtime markers such as the retrospective sentinel. `docs/harness-setup.md`, `examples/README.md`, `docs/memory-layers.md` and RFC 0530 note the planned change. No behaviour changes yet.
+
 ## [0.12.0] - 2026-11-23
 
 ### Added
