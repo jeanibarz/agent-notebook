@@ -96,10 +96,10 @@ import {
   type ConfigStatus,
 } from './config-report.js';
 import { describeSource, resolveEnabled, stateWord } from './enabled.js';
-import { describeProject, resolveProject, type ProjectState } from './project.js';
+import { describeProject, projectRecordKey, resolveProject, type ProjectState } from './project.js';
 import { isWindowsDeviceName, placeRefusal, resolvePlace, scanProjects, sharedWriteRefusal, type Place } from './place.js';
 import { allShelves, isGitRepo, placeOwn, placeShared, sharedName, unfinishedMoves, type PlaceMove } from './place-ops.js';
-import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, extraPromptStatus, messageProjectName, placeLine, projectOfCall, retro } from './loop.js';
+import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, existingAbsoluteDir, extraPromptStatus, messageProjectName, placeLine, projectOfCall, retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import {
   fmt,
@@ -1797,6 +1797,7 @@ export async function runNbCli(
       case 'brief': {
         // What an assistant sees at the start of a session (issue #538,
         // FR-BRIEF-001..003). Harness-blind; exit 0 in every runtime state.
+        meta.version = pkgVersion(); // the record that a hook ran (issue #558, FR-HEARTBEAT-001)
         let rest = flagArgs;
         let maxRaw: string | undefined;
         let sessionRaw: string | undefined;
@@ -1823,7 +1824,10 @@ export async function runNbCli(
         if (r.err) process.stderr.write(r.err);
         meta.outcome = r.outcome;
         if (sessionRaw !== undefined) meta.session = cleanSessionId(sessionRaw);
-        if (hook !== undefined) meta.note = cleanHookLabel(hook);
+        if (hook !== undefined) {
+          meta.note = cleanHookLabel(hook);
+          meta.project = hookProjectKey(currentDir(), place?.project ?? null);
+        }
         process.stdout.write(json ? JSON.stringify({ outcome: r.outcome, text: r.text }) + '\n' : r.text);
         break;
       }
@@ -1832,6 +1836,7 @@ export async function runNbCli(
         // FR-RETRO-001). Harness-blind: the adapter passes the session id, the
         // directory the assistant last worked in, and its hook label. Exit 0 in
         // every runtime state; only bad usage (a missing --session) exits 1.
+        meta.version = pkgVersion(); // the record that a hook ran (issue #558, FR-HEARTBEAT-001)
         let rest = flagArgs;
         let sessionRaw: string | undefined;
         let workDir: string | undefined;
@@ -1854,7 +1859,12 @@ export async function runNbCli(
         if (r.err) process.stderr.write(r.err);
         meta.outcome = r.outcome;
         meta.session = r.session;
-        if (hook !== undefined) meta.note = cleanHookLabel(hook);
+        if (hook !== undefined) {
+          meta.note = cleanHookLabel(hook);
+          // In `--work-dir` when it is a valid absolute folder, else in the working folder.
+          const work = existingAbsoluteDir(workDir);
+          meta.project = work !== null ? hookProjectKey(work, null) : hookProjectKey(currentDir(), place?.project ?? null);
+        }
         // A repeated stop logs no row (FR-USAGE-001's named exception): every
         // later stop of a session would otherwise add one and shorten the
         // history `nb stats` reads.
@@ -2177,6 +2187,21 @@ function currentDir(): string | null {
     return process.cwd();
   } catch {
     return null;
+  }
+}
+
+/**
+ * The project key a `--hook` row records (issue #558): `projectRecordKey` of the
+ * folder asked, from the state the call already resolved when there is one, else
+ * from one fresh `resolveProject`. A removed working directory has no git to ask:
+ * the `NB_PROJECT_SLUG` name when set, else `?`. Never throws.
+ */
+function hookProjectKey(cwd: string | null, known: ProjectState | null): string {
+  try {
+    if (cwd === null) return process.env.NB_PROJECT_SLUG ? projectRecordKey('.', resolveProject(process.env, '.')) : '?';
+    return projectRecordKey(cwd, known ?? resolveProject(process.env, cwd));
+  } catch {
+    return '?';
   }
 }
 

@@ -145,7 +145,7 @@ export function readExtraPrompt(env: NodeJS.ProcessEnv): { text: string; warning
 }
 
 /** An existing absolute directory, resolved; else `null`. */
-function existingAbsoluteDir(p: string | undefined): string | null {
+export function existingAbsoluteDir(p: string | undefined): string | null {
   if (p === undefined || p === '' || !isAbsolute(p)) return null;
   try {
     return statSync(p).isDirectory() ? resolve(p) : null;
