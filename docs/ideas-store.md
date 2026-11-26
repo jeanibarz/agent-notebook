@@ -119,7 +119,7 @@ So the trial drops write-time matching. The curator reads every line anyway, so 
 
 You do not need to move this text. Since issue #539 the same text can instead live in `~/.agent-notebook/messages/retro.txt` (or `<project>.retro.txt`), where `nb config` shows it; see the [hooks README](../examples/hooks/claude-code/README.md#your-own-start-and-end-text). `{project}` is filled in the same way. A message file is framed as the user's own instructions and `NB_RETRO_EXTRA_PROMPT` is not, so the nudge reads differently after a move. If you move during the trial, do it between two curator runs, so one run does not mix the two wordings.
 
-Harnesses without a Stop hook, such as Codex CLI, get the same text appended to `AGENTS.md`, with the project name filled in by hand.
+Harnesses without a Stop hook, such as Codex CLI used without its hooks, get the same text appended to `AGENTS.md`, with the project name filled in by hand.
 
 ### What it costs `nb`
 

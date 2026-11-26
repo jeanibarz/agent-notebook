@@ -1,16 +1,17 @@
 # Codex CLI + agent-notebook
 
-Codex CLI does not expose per-event lifecycle hooks the way Claude Code does, so
-the integration leans on the two levers Codex *does* give you. Both are simple.
+The integration needs one thing, the `AGENTS.md` instruction (section 1). The
+git wrapper (section 2) and Codex's own lifecycle hooks (section 3) are optional.
 
-## 1. The contract → `AGENTS.md` (this is the whole integration)
+## 1. The contract → `AGENTS.md` (enough on its own)
 
 Codex automatically reads `AGENTS.md` files at the start of every session and
 merges them: the global `~/.codex/AGENTS.md`, your repository root, and the
 current working directory. Putting the notebook protocol there means every
 session starts with the "list the notebooks, open what fits, retrospect at the
 end" contract in context — which is all Codex needs; the agent runs `nb list`
-itself.
+itself. This is the route without hooks, and it works with any version of
+agent-notebook.
 
 ```sh
 # Global: applies to every project. The file ships in the npm package; the
@@ -21,8 +22,8 @@ sed '/^<!--/,/^-->/d' "$(npm root -g)/agent-notebook/examples/hooks/codex-cli/AG
 ```
 
 The per-repository switch (`git config nb.enabled false`, see the
-[harness guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#per-repository-onoff)) also reaches Codex,
-which has no hooks, through `nb list`: the snippet starts the task with `nb list`,
+[harness guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#per-repository-onoff)) also reaches Codex
+without hooks, through `nb list`: the snippet starts the task with `nb list`,
 and in an off repository that prints one line telling the agent to skip the
 notebook steps instead of the index. So a global snippet is fine; switch the
 repositories you don't want with git config.
@@ -50,18 +51,24 @@ other transient runtime files stay out of history.
 Then schedule [`nb-backup.sh`](../../nb-backup.sh) to publish daily (see the
 [harness guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#backup)).
 
-## 3. (Optional) end-of-turn reminder → `notify`
+## 3. (Optional) lifecycle hooks → `~/.codex/hooks.json`
 
-Codex's `notify` config runs a program when a turn finishes. It is meant for
-desktop notifications, not for feeding text back to the model, so it cannot
-*force* a retrospective the way a Claude Code `Stop` hook can — the reliable
-place for the retrospective instruction is the `AGENTS.md` snippet above. If you
-still want a visible nudge, point `notify` at a script that prints the checklist:
+Codex CLI has lifecycle hooks. Registered under `SessionStart` and `Stop`, the
+Claude Code adapter [`nb-claude-hook.mjs`](../claude-code/nb-claude-hook.mjs) runs
+unchanged under Codex: it injects `nb brief` (the notebook index) at the start
+and asks once per session for the `nb retro` retrospective. It needs
+agent-notebook 0.13.0-beta.1 or later. The steps, checked with Codex CLI 0.171.0
+on Linux, are in the
+[harness guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#optional-codex-hooks).
+In short:
 
-```toml
-# ~/.codex/config.toml
-notify = ["/ABSOLUTE/PATH/nb-notify.sh"]
-```
+- Each hook's `command` is one string (`node "/path/to/nb-claude-hook.mjs" session-start`):
+  Codex ignores the `args` field, so the adapter's `print-settings` block, which
+  is written for Claude Code, does not work here.
+- Codex runs a hook only after you trust it, in an interactive `codex` session
+  (the "Hooks need review" screen, or `/hooks` then `t`). `codex exec` skips an
+  untrusted hook without a message, so check for the `hook: SessionStart` line
+  in its output. Editing a hook withdraws its trust.
+- Keep the `AGENTS.md` snippet: it covers any session where the hooks do not run.
 
-Keep the retrospective itself in `AGENTS.md`; treat `notify` as a convenience,
-not the mechanism.
+Codex also has plugins (`codex plugin`), but agent-notebook ships none for Codex.

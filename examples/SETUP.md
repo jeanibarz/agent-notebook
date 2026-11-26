@@ -79,7 +79,7 @@ Lessons use the default folder, `~/.agent-notebook/notebooks`. Set `NB_DIR` to u
 
    Check (use the file you wrote to): `grep -n '^## Memory' CLAUDE.md` prints ``2:## Memory: agent-notebook (`nb`)``. The line number can differ. Running the command a second time must not add a second block: `grep -c '^## Memory' CLAUDE.md` prints `1`.
 
-4. (Optional, Claude Code only.) Add the hooks. They inject the notebook index at session start, hand it to each subagent, and ask for the retrospective at the first stop. Skip this step for Codex CLI.
+4. (Optional.) Add the hooks. They inject the notebook index at session start, hand it to each subagent, and ask for the retrospective at the first stop. The steps below are for Claude Code. For Codex CLI, follow [Codex hooks](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#optional-codex-hooks) instead, or skip this step.
 
    Copy the scripts somewhere stable. The three `.sh` scripts run `nb-claude-hook.mjs`, so copy the four files together.
 
@@ -232,7 +232,7 @@ The design is the accepted [RFC 0530](https://github.com/jeanibarz/agent-noteboo
 
    Two repositories without a remote whose folders have the same name would share shelves. To tell them apart, set `NB_PROJECT_SLUG` for each project, in that project's `.claude/settings.json` `env` block. Never set it at user level: every project would then get the same name. `NB_PROJECT_SLUG` also turns on the [layered index](https://github.com/jeanibarz/agent-notebook/blob/main/examples/hooks/claude-code/README.md#optional-layered-index-project--domain--global) of the session-start hook, so set it only when the user wants that too. Without it, `nb brief` also shows the layered index once a shelf name in the store contains `@` and the repository has an `origin` remote (the name from the remote); a folder name never turns it on.
 
-   **Codex CLI and other harnesses.** They have no Stop hook. Append the prompt text to `AGENTS.md` (or the harness's instruction file), with the project name filled in by hand. Replace `my-app` with what `nb project` prints in the repository. The `sed` drops the `NB_SESSION={session} ` prefix, because there is no session id to fill in. If the harness has one, keep the prefix and put the id in by hand. The `grep` skips a file that already has the section.
+   **Codex CLI without its hooks, and other harnesses.** They have no Stop hook to carry the text. Append the prompt text to `AGENTS.md` (or the harness's instruction file), with the project name filled in by hand. Replace `my-app` with what `nb project` prints in the repository. The `sed` drops the `NB_SESSION={session} ` prefix, because there is no session id to fill in. If the harness has one, keep the prefix and put the id in by hand. The `grep` skips a file that already has the section.
 
    ```sh
    grep -qs '^## Ideas: end of task' AGENTS.md || { printf '\n## Ideas: end of task\n\n'; sed -e 's/{project}/my-app/g' -e 's/NB_SESSION={session} //' "$(npm root -g)/agent-notebook/examples/hooks/ideas-end-prompt.txt"; } >> AGENTS.md

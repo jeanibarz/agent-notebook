@@ -61,9 +61,10 @@ There is no per-project notebook name to configure.
   `cp <repo>/AGENTS.md ./AGENTS.md && ln -s AGENTS.md CLAUDE.md` (project), or the
   same in `~/.claude/`. That alone works: the agent runs `nb list` itself.
 - **Codex CLI:** `cat examples/hooks/codex-cli/AGENTS.snippet.md >> ~/.codex/AGENTS.md`
-  (Codex auto-loads `AGENTS.md`). That is the whole integration for Codex.
+  (Codex auto-loads `AGENTS.md`). That is enough for Codex. Codex hooks are
+  optional: see `docs/harness-setup.md#optional-codex-hooks`.
 - **Both:** `ln -s AGENTS.md CLAUDE.md` lets one file serve both.
-- **Optional hooks (Claude Code only):** copy `examples/hooks/claude-code/` scripts,
+- **Optional hooks (Claude Code; Codex in the guide above):** copy `examples/hooks/claude-code/` scripts,
   `chmod +x`, and merge the `settings.json` `hooks` block into `.claude/settings.json`,
   replacing `/ABSOLUTE/PATH`. Explain they are *conveniences*: `SessionStart`
   injects the `nb list` index (it does not choose a notebook for the agent); `Stop` nudges the

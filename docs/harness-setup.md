@@ -109,17 +109,105 @@ open. Skip it and nothing breaks — the instruction already tells the agent to 
 
 ### Codex CLI
 
-Codex has no lifecycle hooks, so the instruction is the whole integration — and
-Codex already auto-loads `AGENTS.md` (the global `~/.codex/AGENTS.md`, the repo
-root, and the working dir, merged). Append the snippet once:
+Codex auto-loads `AGENTS.md` (the global `~/.codex/AGENTS.md`, the repo root, and the
+working dir, merged), so the instruction goes there. Append the snippet once:
 
 ```sh
 grep -qs '^## Memory: agent-notebook' ~/.codex/AGENTS.md || sed '/^<!--/,/^-->/d' "$(npm root -g)/agent-notebook/examples/hooks/codex-cli/AGENTS.snippet.md" >> ~/.codex/AGENTS.md
 ```
 
-Now every Codex session starts with the list-and-open contract in context. Add
-the [git wrapper](#git-versioning) if you want per-change history. Full notes in
-[`examples/hooks/codex-cli/`](../examples/hooks/codex-cli/).
+Now every Codex session starts with the list-and-open contract in context. That is
+enough on its own: it is the route that needs no hooks, and it works with any version
+of `agent-notebook`. Add the [git wrapper](#git-versioning) if you want per-change
+history. Full notes in [`examples/hooks/codex-cli/`](../examples/hooks/codex-cli/).
+
+#### Optional: Codex hooks
+
+Codex CLI has lifecycle hooks too, and a plugin system (`codex plugin`).
+agent-notebook ships no Codex plugin, and none is planned for the first release
+([epic #537](https://github.com/jeanibarz/agent-notebook/issues/537), decision D5). The
+hooks below are a hand-made setup, as for Claude Code: `SessionStart` injects `nb brief`
+(the notebook index), and `Stop` asks once per session for the `nb retro`
+retrospective. They run the Claude Code adapter
+[`nb-claude-hook.mjs`](../examples/hooks/claude-code/nb-claude-hook.mjs), which ships
+in `agent-notebook` 0.13.0-beta.1 and later (`npm install -g agent-notebook@beta`; 0.12.0
+has neither the adapter nor `nb brief`).
+
+Checked by the maintainer with Codex CLI 0.171.0 on Linux (WSL2), on 2026-11-26: the
+adapter runs unchanged under Codex, from a path with a space in it, the model receives
+the index and the retrospective text, and in a repository switched off with
+`git config nb.enabled false` it receives the one "switched off" line and no
+retrospective. Not checked: macOS, Windows, and Codex's `SubagentStart` event.
+
+**1. Write the hooks file.** Codex reads hooks from `~/.codex/hooks.json` (or
+`$CODEX_HOME/hooks.json` when `CODEX_HOME` is set). This writes the file with the
+adapter's real path filled in, and leaves an existing file alone:
+
+```sh
+CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
+HOOK="$(npm root -g)/agent-notebook/examples/hooks/claude-code/nb-claude-hook.mjs"
+if [ -e "$CODEX_DIR/hooks.json" ]; then
+  echo "$CODEX_DIR/hooks.json already exists: add the two entries by hand"
+else
+  mkdir -p "$CODEX_DIR" && cat > "$CODEX_DIR/hooks.json" <<EOF
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "node \"$HOOK\" session-start" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node \"$HOOK\" stop" }] }]
+  }
+}
+EOF
+fi
+```
+
+Each `command` is **one string**, the program and its arguments together. Codex
+ignores the `args` field that Claude Code accepts, so the `print-settings` block of
+the Claude Code adapter (`"command": "node"` plus `args`) does not work in Codex: the
+hook starts `node` with no script and fails. That is also why one hooks file cannot
+serve both tools.
+
+**2. Trust the hooks, in an interactive session.** Codex runs a hook only after you
+trust it. Start `codex` (not `codex exec`) in any folder. It opens with:
+
+```text
+Hooks need review
+2 hooks are new or changed.
+Hooks can run outside the sandbox after you trust them.
+› 1. Review hooks
+  2. Trust all and continue
+  3. Continue without trusting (hooks won't run)
+```
+
+Choose **2** (or **1** to read each hook first). If you skipped that screen, type
+`/hooks` in the session and press `t` to trust all. Codex keeps the trust in
+`config.toml` (`[hooks.state]`, one `trusted_hash` per hook).
+
+**3. Check that they run.** `codex exec` prints a line per hook it runs:
+
+```text
+hook: SessionStart
+hook: SessionStart Completed
+```
+
+and at the end, once per session, `hook: Stop` then `hook: Stop Blocked`: that is the
+retrospective request.
+
+**How to see that the hooks are off.** `codex exec` never asks for trust: **it skips
+a hook you have not trusted and says nothing**. So there are no `hook:` lines in its
+output, and the session runs on the `AGENTS.md` instruction alone. In an interactive
+session, `/hooks` shows the counts per event: a hook that is installed but not trusted
+shows under *Review*, not *Active*, with a line such as `⚠ 2 hooks need review before
+they can run`. Editing a hook's entry in `hooks.json` withdraws its trust in the same
+silent way, so trust it again after any edit. Codex also has a
+`--dangerously-bypass-hook-trust` flag for `codex exec`, which its own help reserves
+for automation that already vets hook sources.
+
+Two things to know:
+- The usage log records these runs under the Claude Code hook names
+  (`claude-code.session-start`, `claude-code.stop`), because the adapter was written
+  for Claude Code.
+- Keep the `AGENTS.md` snippet when you add the hooks: it carries the instruction
+  for a session where the hooks do not run.
 
 > **One file for both tools.** `CLAUDE.md` can be a symlink to `AGENTS.md` (as
 > this repo does: `ln -s AGENTS.md CLAUDE.md`). One contract, both harnesses.
@@ -270,11 +358,13 @@ the agent stop without the nudge. The one line matters: a contract in `~/.claude
 would otherwise still tell the agent to run `nb list` and the retrospective. Hook scripts
 copied before 0.10.0 do not check the switch: copy them again.
 
-**An instruction with no hooks (Codex CLI).** The contract tells the agent to start with
+**An instruction with no hooks (Codex CLI without its hooks).** The contract tells the agent to start with
 `nb list`, so `nb list` asks `nb enabled` too. In an off repository it prints the same kind of
 line in place of the index (`agent-notebook is switched off for this repository: skip the
 notebook steps …`) and exits 0. That makes the switch work on Codex CLI, and with a contract
 in a global `CLAUDE.md` but no hooks, so the Codex snippet can go in `~/.codex/AGENTS.md`.
+The [Codex hooks](#optional-codex-hooks) go through `nb brief` and `nb retro`, which check
+the switch themselves.
 `NB_ENABLED=1 nb list` shows the index anyway, and `nb list --json` is never affected: it is
 the scripts' format.
 
