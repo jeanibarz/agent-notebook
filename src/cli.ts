@@ -21,6 +21,7 @@
 //   nb path   [<shelf> | --usage] [--json]   print the notebooks dir, a shelf's file path, or the usage-log path (--json = {dir, shelf, path} object)
 //   nb config [--json]                      print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json = object keyed by name, string vars under `environment`)
 //   nb enabled [--why] [--json]             print `on` or `off`: whether the agent-facing loop (hooks, retrospective, text `nb list`) is on here (NB_ENABLED, then git config nb.enabled, default on)
+//   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  what an assistant sees at the start of a session (issue #538)
 //   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  the end-of-task retrospective text, once per session (issue #538)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
 //   nb ls / nb shelves / nb roles          aliases of `nb list` (`roles` is deprecated)
@@ -87,7 +88,7 @@ import {
   type ConfigStatus,
 } from './config-report.js';
 import { describeSource, resolveEnabled, stateWord } from './enabled.js';
-import { retro } from './loop.js';
+import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import {
   fmt,
@@ -169,6 +170,7 @@ usage:
   nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
   nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under \`environment\`)
   nb enabled [--why] [--json]              print \`on\` or \`off\`: whether the agent-facing loop (hooks, retrospective, text \`nb list\`) is on in this directory
+  nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  print what an assistant should see at the start of a session: instructions, the notebook index (default budget 9000 characters)
   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  print the end-of-task retrospective text the first time it is called for a session, nothing afterwards
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
@@ -323,6 +325,14 @@ notes:
     one repository, \`--global\` for all of them); otherwise on. A missing \`git\` or an invalid value resolves to
     on, with a warning on stderr. \`--why\` adds which input decided. Read-only; it switches off only the hooks
     that ask it and the text \`nb list\` index, never the other \`nb\` commands.
+  - \`nb brief\` prints what an assistant should see at the start of a session: the instruction lines,
+    one line framing the lessons as notes from earlier agent runs, and the index (\`nb list\`, indented;
+    grouped into project, domain and global shelves when \`NB_PROJECT_SLUG\` is set, the global one named
+    by \`NB_GLOBAL_SHELF\`, default \`global\`). Where \`nb enabled\` says off it prints one line saying so. Over
+    \`--max-chars\` (default 9000; 0 = no budget) the shelves with the fewest lessons are dropped and the
+    last line says how many. Every name and description is made safe to show a model (control characters
+    and line separators become \`\\uXXXX\`). It reads no hook payload and exits 0 in every runtime state;
+    \`--json\` prints \`{outcome, text}\`.
   - \`nb retro --session <id>\` prints the end-of-task retrospective text the first time it is called for that
     session and nothing afterwards, so a harness's stop hook can call it on every stop. "First" is decided by
     creating \`<NB_DIR>/.retro-<id>\` exclusively (the file the 0.12 example Stop hook creates, so an old copied
@@ -368,7 +378,7 @@ function parseDelta(arg: string): number {
  */
 export const KNOWN_COMMANDS = [
   'show', 'stale', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
-  'search', 'stats', 'doctor', 'path', 'config', 'enabled', 'retro', 'completion', 'list', 'ls', 'shelves', 'roles',
+  'search', 'stats', 'doctor', 'path', 'config', 'enabled', 'brief', 'retro', 'completion', 'list', 'ls', 'shelves', 'roles',
   'help', 'version',
 ] as const;
 
@@ -589,6 +599,7 @@ export const KNOWN_FLAGS: Record<string, readonly string[]> = {
   path: ['--usage'],
   config: [],
   enabled: ['--why'],
+  brief: ['--max-chars', '--session', '--hook'],
   retro: ['--session', '--work-dir', '--hook'],
   list: ['--limit'],
   ls: ['--limit'],
@@ -605,7 +616,7 @@ export const KNOWN_FLAGS: Record<string, readonly string[]> = {
  * literal `--json` value is the exception: the global `--json` strip runs first,
  * so passing it as a value needs the `--` terminator instead — issue #277.)
  */
-const VALUE_FLAGS = new Set(['--reason', '--note', '--limit', '--since', '--session', '--work-dir', '--hook']);
+const VALUE_FLAGS = new Set(['--reason', '--note', '--limit', '--since', '--session', '--work-dir', '--hook', '--max-chars']);
 
 /**
  * Refuse an unknown or misplaced long option rather than silently swallowing it
@@ -1584,6 +1595,39 @@ export async function runNbCli(
           process.stdout.write(why ? `${stateWord(st)} (${describeSource(st)})\n` : `${stateWord(st)}\n`);
           if (!why && st.warning !== null) process.stderr.write(`nb enabled: warning: ${st.warning}\n`);
         }
+        break;
+      }
+      case 'brief': {
+        // What an assistant sees at the start of a session (issue #538,
+        // FR-BRIEF-001..003). Harness-blind; exit 0 in every runtime state.
+        let rest = flagArgs;
+        let maxRaw: string | undefined;
+        let sessionRaw: string | undefined;
+        let hook: string | undefined;
+        ({ value: maxRaw, rest } = extractOption(rest, '--max-chars'));
+        ({ value: sessionRaw, rest } = extractOption(rest, '--session'));
+        ({ value: hook, rest } = extractOption(rest, '--hook'));
+        for (const flag of ['--max-chars', '--session', '--hook']) {
+          if (rest.includes(flag)) throw new NbError('bad_args', `${flag} given more than once for \`nb brief\` — pass it once`);
+        }
+        const extraOperand = rest.slice(1).concat(operands)[0];
+        if (extraOperand !== undefined) throw new NbError('bad_args', `unexpected extra argument "${extraOperand}" for \`nb brief\``);
+        let maxChars = BRIEF_MAX_CHARS_DEFAULT;
+        if (maxRaw !== undefined) {
+          if (/^\d+$/.test(maxRaw.trim())) maxChars = Number.parseInt(maxRaw, 10);
+          else
+            warnDefaultedFlag(
+              json,
+              `nb brief: unrecognized --max-chars '${maxRaw}' (use a non-negative integer); using ${BRIEF_MAX_CHARS_DEFAULT}\n`,
+              { command: cmd, flag: '--max-chars', value: maxRaw, usedDefault: BRIEF_MAX_CHARS_DEFAULT },
+            );
+        }
+        const r = brief({ dir, cwd: currentDir(), maxChars });
+        if (r.err) process.stderr.write(r.err);
+        meta.outcome = r.outcome;
+        if (sessionRaw !== undefined) meta.session = cleanSessionId(sessionRaw);
+        if (hook !== undefined) meta.note = cleanHookLabel(hook);
+        process.stdout.write(json ? JSON.stringify({ outcome: r.outcome, text: r.text }) + '\n' : r.text);
         break;
       }
       case 'retro': {

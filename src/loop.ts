@@ -1,6 +1,7 @@
 /**
- * The agent-facing loop (issue #538): `nb retro`, the end-of-task retrospective
- * said once per session.
+ * The agent-facing loop (issue #538): `nb brief`, what an assistant sees at the
+ * start of a session, and `nb retro`, the end-of-task retrospective said once
+ * per session.
  *
  * Harness-blind by rule: nothing here reads standard input, a hook payload, or a
  * harness variable such as `CLAUDE_PROJECT_DIR`. An adapter (the Claude Code one
@@ -34,9 +35,21 @@ import {
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { RETRO_LESSONS } from './agent-text.js';
+import {
+  BRIEF_EMPTY_LINE,
+  BRIEF_HEADER_LINES,
+  BRIEF_OFF_LINE,
+  FRAMING_LINE,
+  LAYERED_TEXT,
+  LAYERED_UNAVAILABLE_LINE,
+  RETRO_LESSONS,
+  briefBrokenLine,
+  briefCutLine,
+  layeredPreamble,
+} from './agent-text.js';
 import { resolveEnabled, type EnabledState } from './enabled.js';
-import { expandHomeDir } from './notebook.js';
+import { escapeDiskName, expandHomeDir, listNotebooks, type NotebookSummary } from './notebook.js';
+import { formatListing, renderConflicts, renderSkipped } from './render.js';
 
 /** What `nb retro` decided. `already` means a sentinel for this session existed. */
 export type RetroOutcome = 'nudge' | 'already' | 'off' | 'off-work-dir';
@@ -270,4 +283,169 @@ export function retro(opts: RetroOptions): RetroResult {
     }
   }
   return { outcome: 'nudge', text, session, err };
+}
+
+/** What `nb brief` printed in place of, or as, the index. */
+export type BriefOutcome = 'index' | 'layered' | 'empty' | 'broken' | 'off';
+
+export interface BriefResult {
+  outcome: BriefOutcome;
+  /** The text to print, ending in `\n`. */
+  text: string;
+  /** Notes for stderr (skipped or conflicted shelves), `''` when none. */
+  err: string;
+}
+
+export interface BriefOptions {
+  /** The notebooks directory. */
+  dir: string;
+  /** The project directory: the working directory the command runs in; `null` when it no longer exists. */
+  cwd: string | null;
+  /** Character budget for the whole text; `0` disables it. */
+  maxChars: number;
+  env?: NodeJS.ProcessEnv;
+  /** Injectable for tests; the CLI uses the real resolver. */
+  enabled?: (env: NodeJS.ProcessEnv, cwd: string) => EnabledState;
+}
+
+/** Default `--max-chars`: Claude Code shows hook output whole up to 10,000 characters (epic #537, M9). */
+export const BRIEF_MAX_CHARS_DEFAULT = 9000;
+/** Rows of the flat index, as the 0.12 hook's `nb list` showed. */
+const FLAT_LIMIT = 50;
+/** Rows read for the layered index, as the 0.12 hook's `nb list --json --limit 1000` read. */
+const LAYERED_LIMIT = 1000;
+
+/**
+ * Make a value safe to place in model-facing text (FR-BRIEF-003): control
+ * characters, line and paragraph separators and bidi or zero-width marks become
+ * visible `\uXXXX` escapes, so no value can start a line of its own.
+ */
+const clean = escapeDiskName;
+
+/** The errno-style code of a failed directory read, or `error`. */
+function errorCode(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code !== '' ? code : 'error';
+}
+
+/** Two-space indent, as the 0.12 hook's `sed 's/^/  /'` did. */
+const indent = (lines: string[]): string[] => lines.map((l) => `  ${l}`);
+
+/**
+ * The lines of the flat index body, or of the empty or broken line. Over budget
+ * (`room` characters for the body), rows are dropped from the end, fewest lessons
+ * first, and the last line says how many were left out.
+ */
+function flatBody(dir: string, room: number, maxChars: number): { lines: string[]; outcome: BriefOutcome; err: string } {
+  let listing;
+  try {
+    listing = listNotebooks(dir, { limit: FLAT_LIMIT });
+  } catch (err) {
+    return { lines: [briefBrokenLine(errorCode(err))], outcome: 'broken', err: '' };
+  }
+  const err = renderSkipped('brief', listing.skipped) + renderConflicts('brief', listing.conflicts);
+  if (listing.total === 0) return { lines: [BRIEF_EMPTY_LINE], outcome: 'empty', err };
+  const render = (k: number, cut: boolean): string[] =>
+    indent(
+      formatListing(listing.rows.slice(0, k), listing.total, {
+        dir,
+        clean,
+        ...(cut ? { footer: briefCutLine(listing.total - k, maxChars, listing.total) } : {}),
+      }),
+    );
+  let lines = render(listing.rows.length, false);
+  for (let k = listing.rows.length; room > 0 && size(lines) > room && k > 0; ) {
+    k--;
+    lines = render(k, true);
+  }
+  return { lines, outcome: 'index', err };
+}
+
+/** Characters the lines take once joined and newline-ended. */
+function size(lines: string[]): number {
+  return lines.reduce((n, l) => n + l.length + 1, 0);
+}
+
+/**
+ * The layered index (`NB_PROJECT_SLUG` set), a port of the 0.12 hook's node
+ * block: this project's shelves, the bare domain shelves, the one global shelf,
+ * and how many other projects' shelves were hidden. The notes are computed on
+ * the whole listing; over budget, rows are dropped fewest lessons first,
+ * whatever their layer (FR-BRIEF-002). Throws when the folder cannot be read.
+ */
+function layeredBody(dir: string, slug: string, globalName: string, room: number, maxChars: number): { lines: string[]; err: string } {
+  const listing = listNotebooks(dir, { limit: LAYERED_LIMIT });
+  const err = renderSkipped('brief', listing.skipped) + renderConflicts('brief', listing.conflicts);
+  const slugKey = slug.toLowerCase();
+  const layerOf = (r: NotebookSummary): 'project' | 'domain' | 'global' | 'hidden' => {
+    const at = r.shelf.lastIndexOf('@');
+    if (at >= 0) return r.shelf.slice(at + 1).toLowerCase() === slugKey ? 'project' : 'hidden';
+    return r.shelf === globalName ? 'global' : 'domain';
+  };
+  const classified = listing.rows.filter((r) => layerOf(r) !== 'hidden');
+  const hidden = listing.rows.length - classified.length;
+  const hadProject = classified.some((r) => layerOf(r) === 'project');
+  const unread = listing.total - listing.rows.length;
+  const cSlug = clean(slug);
+  const row = (r: NotebookSummary): string =>
+    '  ' + clean(r.shelf) + '  ' + r.lessons + '  ' + clean(String(r.desc || r.auto || '')).slice(0, 100) + (!r.desc && r.auto ? '  (auto)' : '');
+  const render = (kept: NotebookSummary[], cut: number): string[] => {
+    const out = [...layeredPreamble(cSlug), ''];
+    // A layer is shown when it has shelves before the cut, so a budget that cuts all
+    // of its rows still leaves its heading (FR-BRIEF-002); the cut line says why.
+    const section = (title: string, layer: 'project' | 'domain' | 'global', ifEmpty?: string): void => {
+      const had = classified.some((r) => layerOf(r) === layer);
+      if (!had && ifEmpty === undefined) return;
+      out.push('### ' + title);
+      const rows = kept.filter((r) => layerOf(r) === layer);
+      if (rows.length) out.push(...rows.map(row));
+      else if (!had) out.push('  ' + ifEmpty);
+    };
+    section(LAYERED_TEXT.projectTitle(cSlug), 'project', hadProject ? undefined : LAYERED_TEXT.projectEmpty(cSlug));
+    section(LAYERED_TEXT.domainTitle, 'domain');
+    section(LAYERED_TEXT.globalTitle, 'global');
+    out.push('');
+    if (unread > 0) out.push(LAYERED_TEXT.unclassified(unread));
+    out.push(hidden > 0 && !hadProject && unread === 0 ? LAYERED_TEXT.noneForSlug(hidden, cSlug) : LAYERED_TEXT.hidden(hidden, cSlug));
+    if (cut > 0) out.push(briefCutLine(cut, maxChars, listing.total));
+    return out;
+  };
+  let lines = render(classified, 0);
+  // `classified` is richest first, so dropping from its end drops the fewest lessons first.
+  for (let k = classified.length; room > 0 && size(lines) > room && k > 0; ) {
+    k--;
+    lines = render(classified.slice(0, k), classified.length - k);
+  }
+  return { lines, err };
+}
+
+/**
+ * `nb brief`: what an assistant should see at the start of a session
+ * (FR-BRIEF-001..003). The 0.12 `nb-session-start.sh` output, plus one framing
+ * line, a size budget, and cleaning of every value placed in the text.
+ */
+export function brief(opts: BriefOptions): BriefResult {
+  const env = opts.env ?? process.env;
+  const enabled = opts.enabled ?? resolveEnabled;
+  // A removed working directory cannot be asked: the switch fails open, as in retro().
+  if (opts.cwd !== null && !enabled(env, resolve(opts.cwd)).enabled) return { outcome: 'off', text: BRIEF_OFF_LINE + '\n', err: '' };
+  const head = [...BRIEF_HEADER_LINES, FRAMING_LINE, ''];
+  const room = opts.maxChars > 0 ? Math.max(1, opts.maxChars - size(head)) : 0;
+  const slug = (env.NB_PROJECT_SLUG ?? '').trim().slice(0, 128);
+  const out = (lines: string[], outcome: BriefOutcome, err: string): BriefResult => ({
+    outcome,
+    text: [...head, ...lines].join('\n') + '\n',
+    err,
+  });
+  if (slug !== '') {
+    try {
+      const layered = layeredBody(opts.dir, slug, env.NB_GLOBAL_SHELF || 'global', room, opts.maxChars);
+      return out(layered.lines, 'layered', layered.err);
+    } catch {
+      const flat = flatBody(opts.dir, room, opts.maxChars);
+      return out([LAYERED_UNAVAILABLE_LINE, ...flat.lines], flat.outcome, flat.err);
+    }
+  }
+  const flat = flatBody(opts.dir, room, opts.maxChars);
+  return out(flat.lines, flat.outcome, flat.err);
 }

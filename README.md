@@ -229,6 +229,7 @@ nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's r
 nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
 nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under `environment`)
 nb enabled [--why] [--json]              print `on` or `off`: whether the agent-facing loop (hooks, retrospective, text `nb list`) is on in this directory
+nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  print what an assistant should see at the start of a session: instructions, the notebook index (default budget 9000 characters)
 nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  print the end-of-task retrospective text the first time it is called for a session, nothing afterwards
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
 nb ls     [prefix] [--limit N]          alias of `nb list`
@@ -267,7 +268,8 @@ Every `show` line starts with a short stable id — pass that id (or a unique pr
 | `NB_ENABLED` | unset | `0`/`false`/`no`/`off` switches the agent loop off for one process, over `git config nb.enabled` |
 | `NB_RETRO_EXTRA_PROMPT` | unset | `nb retro`: absolute path of a text file (at most 64 KiB) appended to the retrospective, with `{project}` and `{session}` filled in |
 | `NB_RETRO_TTL_DAYS` | `7` | `nb retro`: days before an old `.retro-<session>` marker is removed |
-| `NB_PROJECT_SLUG` | unset | `nb retro`: the project name for `{project}` (else the repository's folder name) |
+| `NB_PROJECT_SLUG` | unset | `nb brief`: group the index into this project's, domain and global shelves; `nb retro`: the project name for `{project}` (else the repository's folder name) |
+| `NB_GLOBAL_SHELF` | `global` | `nb brief` with `NB_PROJECT_SLUG`: the bare shelf shown as the global layer |
 | `NB_ASCII` | unset (locale decides) | ASCII digits instead of Unicode blocks in the `nb stats` sparkline |
 | `NB_USAGE_RING` | `5000` | usage-log rows kept |
 | `NB_STALE_LOCK_MS` | `10000` | milliseconds before a crashed process's lock is taken over |

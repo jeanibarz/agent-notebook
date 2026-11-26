@@ -2459,9 +2459,9 @@ describe('runNbCli', () => {
         const names = new Set<string>(j0.unrecognized.map((u: { name: string }) => u.name));
         // Every documented tunable must be surfaced by `nb config` and must not
         // be reported unknown...
-        // The variables only `nb retro` reads (issue #538) are recognized but get no
+        // The variables only `nb brief` and `nb retro` read (issue #538) are recognized but get no
         // line of their own (FR-CONFIG-001): they must never be reported unknown.
-        const READ_BY_RETRO = ['NB_RETRO_EXTRA_PROMPT', 'NB_RETRO_TTL_DAYS', 'NB_PROJECT_SLUG'];
+        const READ_BY_RETRO = ['NB_RETRO_EXTRA_PROMPT', 'NB_RETRO_TTL_DAYS', 'NB_PROJECT_SLUG', 'NB_GLOBAL_SHELF'];
         for (const v of READ_BY_RETRO) expect(documented.has(v), `${v} missing from the README`).toBe(true);
         for (const v of READ_BY_RETRO) process.env[v] = v === 'NB_RETRO_TTL_DAYS' ? '3' : '/p';
         let jr: { unrecognized: Array<{ name: string }> };

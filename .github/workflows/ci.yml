@@ -72,7 +72,7 @@ jobs:
       - run: node scripts/smoke-node18.mjs
         if: matrix.node-version == 18
 
-  # Issue #538: the agent-facing loop (`nb retro`, later `nb brief` and the hook
+  # Issue #538: the agent-facing loop (`nb brief`, `nb retro`, later the hook
   # adapter) is meant to work on native Windows, so its tests run there too. The
   # rest of the suite has never run on Windows and is not run here yet. npm runs
   # package scripts with cmd.exe on Windows, where the build's `chmod` does not
@@ -94,4 +94,4 @@ jobs:
       - run: npm ci
       - run: npm config set script-shell "C:\\Program Files\\Git\\bin\\bash.exe"
       - run: npm run build
-      - run: npx vitest run src/retro.test.ts src/loop-stats.test.ts src/module-boundaries.test.ts
+      - run: npx vitest run src/brief.test.ts src/retro.test.ts src/loop-stats.test.ts src/module-boundaries.test.ts

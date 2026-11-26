@@ -666,6 +666,7 @@ shelves; `--json` emits a lone object for one shelf, an array for several),
 `search <query> [prefix] [--any] [--limit <N>]`,
 `stats [<shelf>] [--since <N{d,h,m}>] [--json] [--exit-code]`, `doctor [--json] [--exit-code]`, `path [<shelf>] [--usage] [--json]`, `config [--json]`,
 `enabled [--why] [--json]` ([FR-ENABLED-001](#fr-enabled-001)),
+`brief [--max-chars N] [--session <id>] [--hook <label>] [--json]` ([FR-BRIEF-001](#fr-brief-001)),
 `retro --session <id> [--work-dir <dir>] [--hook <label>] [--json]` ([FR-RETRO-001](#fr-retro-001)),
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`),
 `completion <bash|zsh>` ([FR-CLI-010](#fr-cli-010)), `--help`, `--version`. Every command
@@ -998,7 +999,7 @@ claimed (outcome `already`) SHALL append no row. A stop hook calls it on every s
 session, and those rows would carry no information while shortening the history the
 ring keeps. For a `retro` row the `session` column holds the cleaned `--session` value
 (not `NB_SESSION`), and the `note` column holds the adapter's `--hook` label, cleaned to
-`[a-z0-9._-]`, when one is given. *Proven by* (the exception): `retro.test.ts` →
+`[a-z0-9._-]`, when one is given; a `brief` row records them the same way. *Proven by* (the exception): `retro.test.ts` →
 "an already call adds no usage row" and "a nudge logs one retro row with outcome nudge, the cleaned session and the hook label".
 *Proven by:* `notebook.test.ts` → `describe('usage log + stats')`; the `--help`/`--version`
 rows by `cli.test.ts` → `describe('runNbCli')` → the two `issue #250` usage-row tests.
@@ -1016,7 +1017,8 @@ then not computed; a `retro` row holds its cleaned `--session` instead, see [FR-
 near-duplicate), `no-shelf` for a `show` of a shelf with no notebook file (issue #480;
 for `nb show a b` the row names the first shelf, so the outcome is about that one), `off` for a
 text `nb list` that printed the switched-off line ([FR-ENABLED-004](#fr-enabled-004)),
-`nudge`/`off`/`off-work-dir` for `retro` ([FR-RETRO-001](#fr-retro-001)), and blank for a
+`nudge`/`off`/`off-work-dir` for `retro` ([FR-RETRO-001](#fr-retro-001)), `index`/`layered`/`empty`/`broken`/`off`
+for `brief` ([FR-BRIEF-001](#fr-brief-001)), and blank for a
 read-only command otherwise, `collided-id` is the id of the existing entry that blocked a
 `dedup-blocked` add or a `move-blocked` move, and `evicted-id:score` records the
 entry/entries an `add`/`merge`/`split`/`move` evicted, each as `<id>:<finalScore>`.
@@ -1558,7 +1560,8 @@ A machine-wide install (hooks in `~/.claude/settings.json`, the contract in
 `~/.claude/CLAUDE.md`) turns the agent-facing loop on in every repository. These
 requirements let a user switch it off in some repositories, or keep it off everywhere and
 switch it on in one. The switch is read by the shipped hooks, by the text form of `nb list`
-([FR-ENABLED-004](#fr-enabled-004)) and by `nb retro` ([FR-RETRO-001](#fr-retro-001)); it is not an
+([FR-ENABLED-004](#fr-enabled-004)), by `nb brief` ([FR-BRIEF-001](#fr-brief-001)) and by `nb retro`
+([FR-RETRO-001](#fr-retro-001)); it is not an
 access lock on the store, and no other notebook command changes behavior with it.
 
 <a id="fr-enabled-001"></a>
@@ -1575,7 +1578,7 @@ the plain form; inside the line or object with `--why`/`--json`)
 append the deciding input on the same line (e.g. `off (git config nb.enabled=false,
 file:.git/config)`); `--json` SHALL emit `{ enabled, state, source, value, origin, warning }`
 with `source` one of `env`/`git`/`default`. It is read-only and writes no notebook. Only
-`nb enabled`, `nb config`, the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)) and
+`nb enabled`, `nb config`, the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)), `nb brief` and
 `nb retro` ([FR-RETRO-001](#fr-retro-001), which also runs `git rev-parse` for the project name of
 [FR-RETRO-002](#fr-retro-002)) read the switch or spawn `git`; `nb list --json` and every other command do not; reading a local git config is offline
 and deterministic for the same files, so [DP-6](#dp-6) holds.
@@ -1629,7 +1632,7 @@ still complete in an off repository.
 
 ### 4.17 Start and end of a task: `nb brief`, `nb retro` (issue #538)
 
-> **Status: FR-RETRO-001..003 are implemented; the others are proposed — not yet
+> **Status: FR-BRIEF-001..003 and FR-RETRO-001..003 are implemented; the others are proposed — not yet
 > implemented ([issue #538](https://github.com/jeanibarz/agent-notebook/issues/538)).**
 > These requirements landed before the code, as the issue asks. Each one gains its
 > *Proven by* line and loses this status in the pull request that implements it.
@@ -1668,6 +1671,10 @@ and the home folder; `NB_ENABLED`, and git's `nb.enabled` read in the working di
 `NB_GLOBAL_SHELF`; `NB_ASCII` and the locale; and the files under `NB_DIR`. `--session`,
 `--hook`, `NB_SESSION` and the clock SHALL NOT change what it prints.
 
+*Proven by:* `brief.test.ts` → `describe('nb brief prints what the 0.12 session-start hook printed, plus the framing line (FR-BRIEF-001)')`,
+`describe('nb brief respects the per-repository switch (FR-BRIEF-001)')` and
+`describe('nb brief exit codes and the usage log (FR-BRIEF-001)')`.
+
 <a id="fr-brief-002"></a>
 **FR-BRIEF-002 (Should).** `nb brief` SHALL keep its whole output within `--max-chars`
 characters (default 9000; `0` disables the budget). Over budget, it SHALL drop index rows
@@ -1679,6 +1686,8 @@ shelves were not shown, that the index is capped at that many characters, and gi
 replaces anything longer with a 2,000-character preview and a file path (epic #537, M9);
 a cut index then shows more than today, never less.
 
+*Proven by:* `brief.test.ts` → `describe('nb brief keeps its text within --max-chars (FR-BRIEF-002)')`.
+
 <a id="fr-brief-003"></a>
 **FR-BRIEF-003 (Should).** Every value `nb brief` places into its text (shelf names,
 descriptions, the top-lesson stand-in, the notebooks path, `NB_PROJECT_SLUG`,
@@ -1689,6 +1698,9 @@ own ([DP-5](#dp-5)). `NB_PROJECT_SLUG` SHALL be cut to 128 characters. When
 domain and global shelves as today's `nb-session-start.sh` does (the convention of
 [docs/memory-layers.md](memory-layers.md)); it is the only command that groups shelves
 by layer, and every other command still knows nothing of layers.
+
+*Proven by:* `brief.test.ts` → `describe('nb brief makes every value it shows safe for a model (FR-BRIEF-003)')`;
+the layered index by the parity tests of FR-BRIEF-001.
 
 <a id="fr-retro-001"></a>
 **FR-RETRO-001 (Should).** `nb retro --session <id> [--work-dir <dir>] [--hook <label>] [--json]` SHALL print the
@@ -1774,7 +1786,7 @@ runner (Vitest) itself needs Node 20.12+ ([the guard](../scripts/check-node-for-
 the Node-18 leg runs a dependency-free runtime smoke of the built CLI
 ([`scripts/smoke-node18.mjs`](../scripts/smoke-node18.mjs)) instead of the suite, so the
 minimum engine is actually executed and not merely compiled. A Windows leg (Node 22)
-runs the tests of the agent-facing loop added by issue #538 (`src/retro.test.ts`,
+runs the tests of the agent-facing loop added by issue #538 (`src/brief.test.ts`, `src/retro.test.ts`,
 `src/loop-stats.test.ts`, `src/module-boundaries.test.ts`); the rest of the suite is not
 yet run on Windows. *(Proven by
 `src/smoke-node18.test.ts`.)*
@@ -1873,7 +1885,8 @@ to the default (integer vars also fall back on a non-numeric string).
 | `NB_ENABLED` | _(unset → `git config nb.enabled`, else on)_ | — | Per-process override of the per-repository on/off state ([FR-ENABLED-001](#fr-enabled-001)): `0`, `false`, `no`, `off` = off; any other non-blank value = on; blank defers to git config. Read only by `nb enabled`, `nb config` and the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)). |
 | `NB_RETRO_EXTRA_PROMPT` | _(unset)_ | — | `nb retro`: absolute path (a leading `~/` expanded) of a regular file of at most 64 KiB appended to the retrospective text, with `{project}` and `{session}` filled in ([FR-RETRO-002](#fr-retro-002)). |
 | `NB_RETRO_TTL_DAYS` | 7 | > 0 | `nb retro`: age in days past which a `.retro-*` sentinel is removed ([FR-RETRO-003](#fr-retro-003)); a non-positive or non-numeric value means 7. |
-| `NB_PROJECT_SLUG` | _(unset)_ | — | `nb retro`: the project name for `{project}` (else the folder holding the git common directory) ([FR-RETRO-002](#fr-retro-002)). |
+| `NB_PROJECT_SLUG` | _(unset)_ | — | `nb brief`: groups the index into project, domain and global shelves ([FR-BRIEF-003](#fr-brief-003)); `nb retro`: the project name for `{project}` (else the folder holding the git common directory) ([FR-RETRO-002](#fr-retro-002)). |
+| `NB_GLOBAL_SHELF` | `global` | — | `nb brief`, with `NB_PROJECT_SLUG`: the one bare shelf shown as the global layer ([FR-BRIEF-003](#fr-brief-003)). |
 | `NB_ASCII` | _(unset → locale decides)_ | — | Force the activity sparkline's glyph ramp to ASCII (truthy) or Unicode (`''`, `0`, `false`, `no`, `off`); unset, the locale decides. |
 | `NB_STALE_LOCK_MS` | 10000 | 100–600000 | `.nb.lock` age (ms) past which a lock is treated as abandoned by a crashed `nb` and stolen. |
 | `NB_LOCK_GRACE_MS` | 2000 | 0–600000 | Extra wait past `NB_STALE_LOCK_MS` to notice and steal an abandoned lock before failing with `notebook is locked`. |

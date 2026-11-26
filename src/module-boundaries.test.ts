@@ -123,12 +123,12 @@ describe('module boundaries (issue #478)', () => {
     }
   });
 
-  // Issue #538: the agent-facing loop (`nb retro`) and its text sit below cli.ts.
+  // Issue #538: the agent-facing loop (`nb brief`, `nb retro`) and its text sit below cli.ts.
   // The mechanism never learns about them, and only the CLI reaches them.
   test('the agent-facing loop modules sit below cli.ts and the mechanism never imports them (issue #538)', () => {
     const graph = importGraph();
     expect(graph.get('agent-text')).toEqual([]);
-    expect(graph.get('loop')?.slice().sort()).toEqual(['agent-text', 'enabled', 'notebook']);
+    expect(graph.get('loop')?.slice().sort()).toEqual(['agent-text', 'enabled', 'notebook', 'render']);
     expect(graph.get('cli')).toEqual(expect.arrayContaining(['loop']));
     expect(graph.get('notebook')).toEqual([]);
     for (const [mod, deps] of graph) {

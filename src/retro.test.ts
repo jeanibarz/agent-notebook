@@ -478,6 +478,21 @@ describe('nb retro fails open (FR-RETRO-001)', () => {
     expect(r.stdout).toBe(RETRO_LESSONS + '\n');
     expect(sentinels()).toEqual(['.retro-gone']);
   });
+
+  test('from a removed working directory, NB_PROJECT_SLUG still fills {project}', () => {
+    if (isWin) return; // a process cannot sit in a removed directory there
+    const gone = join(tmp, 'gone-slug');
+    mkdirSync(gone);
+    const extra = join(tmp, 'extra.txt');
+    writeFileSync(extra, 'project={project}');
+    const r = spawnSync('sh', ['-c', 'cd "$1" && rmdir "$1" && exec "$2" "$3" retro --session gs', 'sh', gone, process.execPath, CLI], {
+      env: childEnv({ NB_PROJECT_SLUG: 'Acme.App', NB_RETRO_EXTRA_PROMPT: extra }),
+      encoding: 'utf-8',
+      timeout: 20_000,
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe(`${RETRO_LESSONS}\n\nproject=acme.app\n`);
+  });
 });
 
 describe('nb retro exit codes and the usage log (FR-RETRO-001, FR-USAGE-001)', () => {
