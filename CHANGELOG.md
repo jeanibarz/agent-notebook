@@ -20,6 +20,7 @@ versions are listed plainly.
 
 ### Documentation
 
+- **Setup guide and requirements catch up with the project name from the remote (issue #551).** `examples/SETUP.md`'s ideas-store check now shows the name `nb project` prints (`acme-my-app` for `git@github.com:acme/my-app.git`), not the folder name, and says the layered index also turns on with a name from the remote; FR-ENABLED-001 says `nb brief` and `nb retro` also run `git config --get remote.origin.url` for the name.
 - **Your own start and end text (issue #539, third part).** The hooks README has a section on `~/.agent-notebook/messages/` (file names, caps, previews, upgrading from 0.12 copies and the git wrapper); the ideas-store, setup, enterprise (backup and deny rules), getting-started, CLI and operating guides and RFC 0530 point to it.
 
 ## [0.13.0-beta.1] - 2026-11-26
