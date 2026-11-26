@@ -160,6 +160,137 @@ hooks leaves no row, so `nb status` reads "not seen" there, not "blocked"
 
 ---
 
+## Claude Code plugin
+
+*For the IT administrator who decides whether the plugin may be installed, and for the security reviewer who reads what it does.* The plugin is the same `nb` as the npm package, packed with Claude Code's hooks and a skill, so a person can install it with one command and no `npm`. Nothing here changes the answers in [Why this is easy to approve](#why-this-is-easy-to-approve): `nb` and the hooks make no network call and have no dependencies. This section is about what is new: the files Claude Code downloads, and the commands it runs for you at the start of a session.
+
+The plugin is a beta (`0.13.0-beta.x`) until a stable release is named in the marketplace file. It was tested with Claude Code 2.1.332.
+
+### What runs at session start
+
+Claude Code runs the plugin's `hooks/hooks.json`. `<root>` is the folder the plugin was unpacked into (inside Claude Code's plugin cache, in a folder named after the version).
+
+| When | Command | What it does |
+|---|---|---|
+| A session starts | `node <root>/examples/hooks/claude-code/nb-hook-entry.cjs session-start` | Checks that Node.js is 18 or later (an older one gets one notice and nothing else), then runs the hook adapter, which runs `nb brief` and prints the notebook index for the assistant. |
+| A session starts | `sh -c '...'` | A node-check twin for macOS and Linux. It keeps only absolute `PATH` entries, then tests whether `node` exists (`command -v node`); if not, it prints one notice telling the user to install Node.js. It never runs `node`. |
+| A session starts | `powershell.exe -NoProfile -NonInteractive -Command '...'` | The same node-check twin for Windows (`Get-Command node`). |
+| A subagent starts | `node <root>/examples/hooks/claude-code/nb-hook-entry.cjs subagent-start` | Gives the subagent the same index. |
+| The first stop with no subagent still running | `node <root>/examples/hooks/claude-code/nb-hook-entry.cjs stop` | Asks the assistant once per session to record what it learned (`nb retro`). |
+
+Each system can start only two of the three session-start commands: the twin of the other system cannot start (`powershell.exe` on macOS and Linux, `sh` on Windows without Git), and Claude Code records one "Executable not found" error event for it in every session. It does not block anything and is not shown on the first screen. A computer with no Node.js also gets that event from the `node` command.
+
+| | What |
+|---|---|
+| **Reads** | the environment variable `NB_DIR` (and `NB_*` settings); the git setting `nb.enabled` of the project (`git config`, which starts `git`); the notebooks under `~/.agent-notebook/` (`notebooks/`, and `projects/` for per-project notebooks); your message files in `~/.agent-notebook/messages/`; the hook's JSON on its standard input (the session id) |
+| **Writes** | in the notebook folder: the usage log `.nb-usage.log` (one row per `nb` call; a session start is a row with the `nb` version and a project key) and one empty `.retro-<session>` file, so that the end-of-task question is asked once. Nothing is written outside the notebook folder by the hooks; `nb` writes lessons only when the assistant calls it |
+| **Sends** | nothing. Neither `nb` nor the hooks make a network call. Claude Code itself downloads the marketplace file and the zip when someone installs or updates, see [Allowing the plugin](#allowing-the-plugin) |
+| **Reaches the model** | at most about 9,000 characters at each session start and for each subagent (the `nb brief` budget, `--max-chars`), plus the one-line notices above |
+| **Uninstall leaves** | Claude Code's own `extraKnownMarketplaces` entry in the user's `settings.json` and the old version folders in its plugin cache (marked as orphaned). The user's notes in `~/.agent-notebook` stay: they are not the plugin's files |
+
+### Allowing the plugin
+
+On a managed computer, restrict where plugins may come from with `strictKnownMarketplaces` in the managed settings. Allow exactly the marketplace file:
+
+```json
+{
+  "strictKnownMarketplaces": [
+    { "source": "url", "url": "https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/.claude-plugin/marketplace.json" }
+  ]
+}
+```
+
+Use this exact form. It was measured with Claude Code 2.1.332: it allows that URL and the archive download it names, and it blocks another path on the same host, the same URL with `?x=1` and the `http://` form. Do not use `hostPattern`: it allows every repository on the host. A user who runs `marketplace add jeanibarz/agent-notebook` (a git source) is blocked by this entry, so the URL form is the only way in, and the README's install command uses it.
+
+Hosts Claude Code contacts at install and at each update: `raw.githubusercontent.com` (the marketplace file), `github.com` (the release asset address), and the host GitHub redirects the asset download to: `<to be confirmed on the real release>`. Open them for the machines that install or update the plugin.
+
+The marketplace file names one zip and its sha256, and Claude Code refuses a zip with another sha256. A person merges every change to that file, after a check that downloads the zip, rebuilds the tag and installs it on three systems (FR-PLUGIN-006).
+
+### With `allowManagedHooksOnly: true`
+
+That setting turns the plugin's hooks off, silently: the plugin's skill still loads and tells the user that no notebook index reached the session. To have the hooks anyway, the administrator installs the same files outside Claude Code's plugin cache and registers them as managed hooks. Claude Code does not let a managed hook name `${CLAUDE_PLUGIN_ROOT}`, and the cache folder is writable by the user and named after the version, so the hooks must point at a copy the administrator controls.
+
+1. Download `agent-notebook-plugin-<v>.zip` from the GitHub release `v<v>`.
+2. Check its sha256 against **the one in `.claude-plugin/marketplace.json` on `main`**, which a person merged (not only against the release's own `.sha256` file, which comes from the same place as the zip), and against `SHA256SUMS`:
+
+   ```sh
+   sha256sum agent-notebook-plugin-<v>.zip     # macOS: shasum -a 256 ...
+   # Windows PowerShell: (Get-FileHash agent-notebook-plugin-<v>.zip -Algorithm SHA256).Hash.ToLower()
+   ```
+3. Unpack it into a folder only administrators can write: `/opt/agent-notebook`, `/Library/Application Support/agent-notebook` or `C:\Program Files\agent-notebook`.
+4. Choose an absolute `node` of version 18 or later, and check it: `<node> --version`. The hooks run exactly this program, so it must not be one a user can replace.
+5. Put this block in the managed settings. POSIX, with `/usr/local/bin/node` and `/opt/agent-notebook` as the examples:
+
+   ```json
+   {
+     "allowManagedHooksOnly": true,
+     "hooks": {
+       "SessionStart": [
+         { "hooks": [ { "type": "command", "command": "/usr/local/bin/node", "args": ["/opt/agent-notebook/examples/hooks/claude-code/nb-hook-entry.cjs", "session-start", "--managed"] } ] }
+       ],
+       "SubagentStart": [
+         { "hooks": [ { "type": "command", "command": "/usr/local/bin/node", "args": ["/opt/agent-notebook/examples/hooks/claude-code/nb-hook-entry.cjs", "subagent-start", "--managed"] } ] }
+       ],
+       "Stop": [
+         { "hooks": [ { "type": "command", "command": "/usr/local/bin/node", "args": ["/opt/agent-notebook/examples/hooks/claude-code/nb-hook-entry.cjs", "stop", "--managed"] } ] }
+       ]
+     }
+   }
+   ```
+
+   Windows, with forward slashes (they work in a JSON string and need no escaping):
+
+   ```json
+   {
+     "allowManagedHooksOnly": true,
+     "hooks": {
+       "SessionStart": [
+         { "hooks": [ { "type": "command", "command": "C:/Program Files/nodejs/node.exe", "args": ["C:/Program Files/agent-notebook/examples/hooks/claude-code/nb-hook-entry.cjs", "session-start", "--managed"] } ] }
+       ],
+       "SubagentStart": [
+         { "hooks": [ { "type": "command", "command": "C:/Program Files/nodejs/node.exe", "args": ["C:/Program Files/agent-notebook/examples/hooks/claude-code/nb-hook-entry.cjs", "subagent-start", "--managed"] } ] }
+       ],
+       "Stop": [
+         { "hooks": [ { "type": "command", "command": "C:/Program Files/nodejs/node.exe", "args": ["C:/Program Files/agent-notebook/examples/hooks/claude-code/nb-hook-entry.cjs", "stop", "--managed"] } ] }
+       ]
+     }
+   }
+   ```
+
+`--managed` makes the entry ignore one variable, `NB_BIN`, which otherwise chooses the `nb` program the adapter runs. It does not shut out a project's environment: Claude Code also passes the `env` of a project's settings to hooks, and other variables still reach the hook.
+- **`NODE_OPTIONS`** can make your `node` load a file of the project's before the entry runs.
+- **`PATH`** decides which `git` the notebook starts, to read `nb.enabled` and the project name.
+
+Setting those two in the managed settings' own `env` (`NODE_OPTIONS` to an empty string, `PATH` to the system folders) narrows what a project can do, but does not close it. Loader variables such as `LD_PRELOAD` (Linux) and `DYLD_INSERT_LIBRARIES` (macOS) pass too, and no list of pinned variables covers them all. On machines that open projects you do not trust, a managed hook still trusts each project's settings, as any hook does.
+
+The block has no node-check twin: you chose the `node` and checked it.
+
+- **An existing managed `hooks` block:** keep it, and append each of the three entries above to the list under the same event name (`SessionStart`, `SubagentStart`, `Stop`) instead of replacing the list.
+- **Only with `allowManagedHooksOnly: true`.** Without it the plugin's own hooks run too, and the notebook index would appear twice.
+- **The admin copy and a user's plugin copy at different versions.** The hooks use the admin copy. The user's shell may run the plugin's `nb` (the plugin's skill picks it when `nb --version` differs from the plugin's). Both read and write the same notebooks, so nothing is split, but keep them on the same version: update the admin copy when you allow an update.
+
+### Verifying a release from its tag
+
+You do not have to trust the zip: build it from the tag and compare.
+
+```sh
+git clone https://github.com/jeanibarz/agent-notebook.git && cd agent-notebook
+git checkout v<v>
+npm ci --ignore-scripts
+npm run build
+node scripts/build-plugin.mjs        # prints "<sha256>  agent-notebook-plugin-<v>.zip"
+```
+
+The sha256 must equal the one in `marketplace.json`. The build is reproducible: the same sha256 was measured on Linux and macOS. The build converts the line endings of its text inputs to LF, because a Windows checkout turns them into CRLF; that makes the bytes independent of the checkout, but the same sha256 has not yet been measured on Windows. The marketplace check performs this rebuild on every change to the file, and the release job compares the zip with the npm package of the same version.
+
+### Updates and pinning
+
+- **What changes on update:** the release notes start with a generated block, the sha256 of the files that run at session start (`hooks.json`, the entry, the adapter) and of the zip. When those hashes change, the session-start behaviour changed.
+- **To pin:** keep the administrator copy above and do not allow the plugin to update (the allowlist names one marketplace file, and whoever merges it decides which version users get). Or install through the allowlist and tell users not to run `plugin update`. Users get a new version only when a person merges a new `marketplace.json` and the user runs the update.
+- **Rolling back:** a pull request points the entry at an older zip, with a `Rollback:` line in its description; a lower version installs. See [releasing](releasing.md#rollback).
+
+---
+
 ## Multi-user / team topologies
 
 Pick the smallest topology that meets your need:

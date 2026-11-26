@@ -1,0 +1,182 @@
+name: marketplace-check
+
+# Issue #559: the check that runs on a pull request that changes .claude-plugin/marketplace.json, the file
+# that names the one release zip every plugin user downloads at their next update. A person merges that
+# file only when this is green. It never runs for any other change.
+#
+#   check  scripts/check-marketplace.mjs: the file's shape; the release exists, is published and has the
+#          right prerelease flag; the zip's sha256 and versions; the version against main's. Then the tag
+#          is rebuilt from source and the rebuilt zip must have the same sha256.
+#   e2e    on Linux, macOS and Windows, with the zip from the real release: install main's version, update
+#          to this pull request's, roll back, uninstall (scripts/plugin-e2e, in its real-asset mode).
+#
+# No secret and no login: every request is anonymous, a session never reaches a model, and the job holds
+# `contents: read` only.
+
+on:
+  pull_request:
+    # edited: a `Rollback:` line added to the description later is read again.
+    types: [opened, synchronize, reopened, edited]
+    paths:
+      - '.claude-plugin/marketplace.json'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DISABLE_AUTOUPDATER: '1'
+  CLAUDE_VERSION: '2.1.332'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # What main names today (nothing, on the first marketplace pull request).
+      - name: Read main's marketplace file
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth 1 origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+          if git cat-file -e "origin/$BASE_REF:.claude-plugin/marketplace.json" 2>/dev/null; then
+            git show "origin/$BASE_REF:.claude-plugin/marketplace.json" > "$RUNNER_TEMP/main-marketplace.json"
+          else
+            echo "main has no marketplace file yet"
+          fi
+
+      # The check runs this pull request's own copies of the checker. A pull request that also changes
+      # them could make itself pass, so it is refused: change the checker in a pull request of its own.
+      - name: The checker is the one on main
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only "origin/$BASE_REF" HEAD -- scripts/check-marketplace.mjs scripts/build-plugin.mjs scripts/plugin-e2e .github/workflows/marketplace-check.yml)"
+          if [ -n "$changed" ]; then
+            echo "::error::this pull request changes the marketplace file and the checker that judges it ($(echo $changed)). Change the checker in a pull request of its own." >&2
+            exit 1
+          fi
+
+      - name: Check the file, the release and the zip
+        id: check
+        run: |
+          set -euo pipefail
+          main=()
+          [ -f "$RUNNER_TEMP/main-marketplace.json" ] && main=(--main-file "$RUNNER_TEMP/main-marketplace.json")
+          node scripts/check-marketplace.mjs --work "$RUNNER_TEMP/zip" --stage "$RUNNER_TEMP/stage" "${main[@]}"
+
+      # The zip must be the one the tag builds, so a person reading the tag's source has read what runs.
+      - name: Rebuild the tag and compare
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+          WANT: ${{ steps.check.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$ ]] || { echo "::error::odd version"; exit 1; }
+          [[ "$WANT" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::odd sha256"; exit 1; }
+          git fetch --no-tags --depth 1 origin "refs/tags/v$VERSION:refs/tags/v$VERSION"
+          git worktree add --detach "$RUNNER_TEMP/tag" "v$VERSION"
+          cd "$RUNNER_TEMP/tag"
+          npm ci --ignore-scripts
+          npm run build
+          node scripts/build-plugin.mjs --out "$RUNNER_TEMP/rebuilt"
+          got=$(sha256sum "$RUNNER_TEMP/rebuilt/agent-notebook-plugin-$VERSION.zip" | cut -d' ' -f1)
+          if [ "$got" != "$WANT" ]; then
+            echo "::error::rebuilding tag v$VERSION gives sha256 $got, but the marketplace file says $WANT"
+            exit 1
+          fi
+          echo "the tag v$VERSION rebuilds to $got"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: marketplace-stage
+          path: ${{ runner.temp }}/stage
+          # the unpacked plugin folders hold .claude-plugin/, which an upload leaves out by default
+          include-hidden-files: true
+          retention-days: 3
+
+  e2e:
+    needs: check
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      E2E_REAL: '1'
+      E2E_MKT: agent-notebook
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Node.js 16 is only a folder to put on PATH for the "too old" session.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 16
+      - name: Remember the Node.js 16 folder
+        if: runner.os != 'Windows'
+        run: echo "NODE_OLD_DIR=$(dirname "$(command -v node)")" >> "$GITHUB_ENV"
+      - name: Remember the Node.js 16 folder
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Add-Content -Path $env:GITHUB_ENV -Value ("NODE_OLD_DIR=" + (Split-Path (Get-Command node -CommandType Application | Select-Object -First 1).Source))
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: marketplace-stage
+          path: stage
+
+      # The native installer; the download is tried twice. `latest` (the nightly run) is the installer's
+      # default, so it gets no version argument.
+      - name: Install Claude Code
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          v=""; [ "$CLAUDE_VERSION" = latest ] || v="$CLAUDE_VERSION"
+          # Download to a file first, so a failed download is a failure (not an empty
+          # script piped to bash), then run it; try the whole install twice.
+          install() { curl -fsSL --retry 2 --retry-delay 5 -o "$RUNNER_TEMP/claude-install.sh" https://claude.ai/install.sh && bash "$RUNNER_TEMP/claude-install.sh" $v; }
+          install || { echo "install failed, trying once more"; sleep 15; install; }
+          test -x "$HOME/.local/bin/claude"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install Claude Code
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $v = @(); if ($env:CLAUDE_VERSION -ne 'latest') { $v = @($env:CLAUDE_VERSION) }
+          try { & ([scriptblock]::Create((irm https://claude.ai/install.ps1))) @v }
+          catch { Write-Host "install failed, trying once more: $_"; Start-Sleep -Seconds 15; & ([scriptblock]::Create((irm https://claude.ai/install.ps1))) @v }
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.local\bin"
+
+      - name: Install, update, roll back and uninstall (Linux and macOS)
+        if: runner.os != 'Windows'
+        run: |
+          claude --version
+          bash scripts/plugin-e2e/run.sh stage
+      - name: Install, update, roll back and uninstall (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          claude --version
+          .\scripts\plugin-e2e\run.ps1 -BuildDir stage
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

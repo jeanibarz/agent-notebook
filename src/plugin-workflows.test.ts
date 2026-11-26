@@ -95,3 +95,72 @@ describe('the old-node-entry leg (FR-PLUGIN-002, issue #559)', () => {
     expect(leg).toMatch(/persist-credentials: false/);
   });
 });
+
+describe('the marketplace-check workflow (FR-PLUGIN-006, issue #559)', () => {
+  const mc = read('.github/workflows/marketplace-check.yml');
+  const jobs = block(mc, 'jobs', 0).join('\n');
+
+  test('it runs only for a pull request that changes the marketplace file', () => {
+    const on = block(mc, 'on', 0).join('\n');
+    expect(on).toMatch(/^ {2}pull_request:$/m);
+    expect(on).not.toMatch(/^ {2}(push|schedule|workflow_dispatch|pull_request_target):/m);
+    expect(listItems(block(block(on, 'pull_request', 2).join('\n'), 'paths', 4))).toEqual(['.claude-plugin/marketplace.json']);
+    // An edited description (a Rollback: line added later) runs the check again.
+    expect(on).toMatch(/^ {4}types: \[opened, synchronize, reopened, edited\]$/m);
+  });
+
+  test('a pull request that also changes the checker is refused, before the check runs', () => {
+    const check = block(jobs, 'check', 2).join('\n');
+    const guard = check.indexOf('- name: The checker is the one on main');
+    expect(guard).toBeGreaterThan(check.indexOf('- name: Read main\'s marketplace file'));
+    expect(guard).toBeLessThan(check.indexOf('node scripts/check-marketplace.mjs'));
+    for (const p of ['scripts/check-marketplace.mjs', 'scripts/build-plugin.mjs', 'scripts/plugin-e2e', '.github/workflows/marketplace-check.yml']) expect(check).toContain(p);
+  });
+
+  test('nothing is granted at the top, and each job reads the repository at most', () => {
+    expect(code(mc)).toMatch(/^permissions: \{\}$/m);
+    expect(block(jobs, 'check', 2).join('\n')).toMatch(/permissions:\n {6}contents: read\n/);
+    expect(block(jobs, 'e2e', 2).join('\n')).not.toMatch(/permissions:/);
+    expect(code(mc)).not.toMatch(/contents: write|id-token|secrets\.|pull_request_target|GITHUB_TOKEN|github\.token/);
+  });
+
+  test('every checkout drops the repository credentials', () => {
+    const lines = mc.split('\n');
+    const checkouts = lines.map((l, i) => (l.includes('actions/checkout@') ? i : -1)).filter((i) => i >= 0);
+    expect(checkouts).toHaveLength(2);
+    for (const i of checkouts) expect(lines.slice(i + 1, i + 4).join('\n')).toMatch(/persist-credentials: false/);
+  });
+
+  test('every action is pinned by a full commit SHA, and none is a third-party path filter', () => {
+    const uses = [...mc.matchAll(/^\s*- uses: (\S+)/gm)].map((m) => m[1]);
+    expect(uses.length).toBeGreaterThan(5);
+    for (const u of uses) expect(u).toMatch(/^actions\/[a-z-]+@[0-9a-f]{40}$/);
+  });
+
+  test('the check job runs the script, rebuilds the tag without scripts and compares the sha256', () => {
+    const check = block(jobs, 'check', 2).join('\n');
+    expect(check).toContain('node scripts/check-marketplace.mjs');
+    expect(check).toContain('npm ci --ignore-scripts');
+    expect(check).toContain('node scripts/build-plugin.mjs --out');
+    expect(check).toContain('sha256sum');
+    // values from outputs reach the shell through env, never inside the script text
+    expect(check).not.toMatch(/run: [^\n]*\$\{\{/);
+    expect(check.split('\n').filter((l) => /^\s{10,}[^#]*\$\{\{/.test(l) && !/^\s+\w+: \$\{\{/.test(l))).toEqual([]);
+  });
+
+  test('the end-to-end leg runs the real-asset mode on the three systems', () => {
+    const e2eJob = block(jobs, 'e2e', 2).join('\n');
+    expect(e2eJob).toMatch(/os: \[ubuntu-latest, macos-latest, windows-latest\]/);
+    expect(e2eJob).toMatch(/fail-fast: false/);
+    expect(e2eJob).toMatch(/E2E_REAL: '1'/);
+    expect(e2eJob).toContain('bash scripts/plugin-e2e/run.sh stage');
+    expect(e2eJob).toContain('run.ps1 -BuildDir stage');
+    expect(e2eJob).toMatch(/needs: check/);
+  });
+
+  test('Claude Code is pinned to the same version as the plugin-e2e workflow', () => {
+    const pin = (t: string): string | undefined => /CLAUDE_VERSION: .*?'(\d+\.\d+\.\d+)'/.exec(t)?.[1];
+    expect(pin(mc)).toBeDefined();
+    expect(pin(mc)).toBe(pin(e2e));
+  });
+});

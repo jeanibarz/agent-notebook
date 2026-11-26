@@ -4,6 +4,11 @@
 #
 #   powershell -File scripts\plugin-e2e\run.ps1 -BuildDir <build-dir>
 #
+# Real-asset mode (the marketplace-check workflow): with the environment variable E2E_REAL set, the
+# build folder is what `node scripts/check-marketplace.mjs --stage` left; see run.sh. E2E_MKT names the
+# marketplace (default agent-notebook); when the first and the second version are the same, the update and
+# rollback steps are skipped.
+#
 # Needs: claude on PATH, node (the new one) on PATH, and the environment variable NODE_OLD_DIR, the
 # folder of a Node.js 16. The home folder is named "Ana Maria" with an accent. Git for Windows, MSYS2 and
 # PowerShell 7 are renamed out of the way while it runs (and renamed back at the end), so that Claude Code
@@ -91,8 +96,19 @@ function List-Field([string]$field) {
 
 # ---- setup ----
 $Art = (Resolve-Path $BuildDir).Path
-foreach ($v in @($Ver1, $Ver2)) {
-  if (-not ((Test-Path "$Art\agent-notebook-plugin-$v.zip") -and (Test-Path "$Art\agent-notebook-plugin-$v"))) { Fail "$Art has no agent-notebook-plugin-$v.zip with its staged folder" }
+$Real = [bool]$env:E2E_REAL
+if ($Real) {
+  $Mkt = if ($env:E2E_MKT) { $env:E2E_MKT } else { 'agent-notebook' }
+  $Id = "agent-notebook@$Mkt"
+  $vs = @(Get-Content "$Art\versions.txt")
+  if ($vs.Count -lt 2) { Fail "$Art is not a check-marketplace --stage folder" }
+  $Ver1 = $vs[0].Trim(); $Ver2 = $vs[1].Trim()
+  foreach ($f in @('v1.json', 'v2.json', 'bad.json')) { if (-not (Test-Path "$Art\$f")) { Fail "$Art has no $f" } }
+  foreach ($v in @($Ver1, $Ver2)) { if (-not (Test-Path "$Art\agent-notebook-plugin-$v")) { Fail "$Art has no agent-notebook-plugin-$v folder" } }
+} else {
+  foreach ($v in @($Ver1, $Ver2)) {
+    if (-not ((Test-Path "$Art\agent-notebook-plugin-$v.zip") -and (Test-Path "$Art\agent-notebook-plugin-$v"))) { Fail "$Art has no agent-notebook-plugin-$v.zip with its staged folder" }
+  }
 }
 $NodeOldDir = $env:NODE_OLD_DIR
 if (-not $NodeOldDir -or -not (Test-Path "$NodeOldDir\node.exe")) { Fail 'NODE_OLD_DIR must name the folder of a Node.js 16' }
@@ -137,7 +153,7 @@ try {
   if (-not $Ip) { Fail 'no non-loopback IPv4 address on this computer' }
   $Srv = Join-Path $Work 'srv'
   New-Item -ItemType Directory -Force $Srv | Out-Null
-  Copy-Item "$Art\agent-notebook-plugin-$Ver1.zip", "$Art\agent-notebook-plugin-$Ver2.zip" $Srv
+  if (-not $Real) { Copy-Item "$Art\agent-notebook-plugin-$Ver1.zip", "$Art\agent-notebook-plugin-$Ver2.zip" $Srv }
   $fwd = $Work.Replace('\', '/')
   [IO.File]::WriteAllText("$Work\ssl.cnf", ("[req]", "distinguished_name=dn", "x509_extensions=v3", "prompt=no", "[dn]", "CN=nb-e2e", "[v3]", "subjectAltName=IP:$Ip", "") -join "`n", $Utf8)
   $o = Invoke-Native $Openssl @('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', "$fwd/key.pem", '-out', "$fwd/cert.pem", '-days', '2', '-config', "$fwd/ssl.cnf")
@@ -148,8 +164,11 @@ try {
   if (-not (Test-Path "$Work\ready")) { Fail "the server did not start: $(Get-Content "$Work\server.err" -Raw)" }
   $BaseUrl = 'https://' + (Get-Content "$Work\ready" -Raw).Trim()
   Write-Host "serving $BaseUrl (certificate for IP $Ip, 2 days)"
-  $m = Invoke-Native $NodeBin @("$Here\mkt.mjs", $Srv, $BaseUrl, $Mkt, "agent-notebook-plugin-$Ver1.zip", "agent-notebook-plugin-$Ver2.zip")
-  Say $m.Out
+  if ($Real) { Copy-Item "$Art\v1.json", "$Art\v2.json", "$Art\bad.json" $Srv }
+  else {
+    $m = Invoke-Native $NodeBin @("$Here\mkt.mjs", $Srv, $BaseUrl, $Mkt, "agent-notebook-plugin-$Ver1.zip", "agent-notebook-plugin-$Ver2.zip")
+    Say $m.Out
+  }
   Copy-Item "$Srv\v1.json" "$Srv\mkt.json"
   $env:NODE_EXTRA_CA_CERTS = "$Work\cert.pem"
 
@@ -243,6 +262,7 @@ try {
   [IO.File]::WriteAllText("$Work\show.json", $shown, $Utf8)
   Check @('lesson', $nbDir, 't', "$Work\lesson.txt", "$Work\show.json")
 
+  if ($Ver1 -ne $Ver2) {
   # ---- update ----
   Step "update: the marketplace now names $Ver2"
   Copy-Item "$Srv\v2.json" "$Srv\mkt.json" -Force
@@ -261,6 +281,7 @@ try {
   Expect-Out "updated from $Ver2 to $Ver1" 'rollback'
   if ((List-Field 'version') -ne $Ver1) { Fail "the installed version is not $Ver1 after the rollback" }
   Session 'after the rollback' $PNew $Proj 'newnode' $Ver1
+  }
 
   # ---- uninstall ----
   Step 'uninstall'

@@ -15,6 +15,13 @@
 # unzip nor tar on its PATH: the stub PATH is a folder of links to the system's programs without them.
 # The home folder has a space, quotes, a dollar sign and a non-ASCII letter in its name.
 #
+# Real-asset mode (the marketplace-check workflow): with E2E_REAL=1, <build-dir> is what
+# `node scripts/check-marketplace.mjs --stage <build-dir>` left: the unpacked folders
+# agent-notebook-plugin-<W> and -<V> and v1.json, v2.json, bad.json whose entries name the real release
+# zips on github.com (W: what main names, or V when main names none; V: the pull request's). The local
+# server then serves only the marketplace files, E2E_MKT is the marketplace's own name, and when W is V
+# the update and rollback steps are skipped.
+#
 # Needs in the environment: claude on PATH (installed by the workflow), node (the new one) on PATH, and
 # NODE_OLD_DIR, the folder of a Node.js 16. E2E_WORK may name the work folder (default: $RUNNER_TEMP/nb-e2e).
 # No secret and no login: a session never reaches a model, and the hooks run before that.
@@ -24,13 +31,22 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 VER1=0.0.1-e2e.1
 VER2=0.0.1-e2e.2
 MKT=nb-e2e
+REAL=${E2E_REAL:-}
 ID=agent-notebook@$MKT
 
 fail() { echo "::error::plugin-e2e: $*"; echo "FAIL: $*"; exit 1; }
 step() { echo; echo "################ $*"; }
 [ $# -eq 1 ] && [ -d "$1" ] || fail "usage: bash run.sh <build-dir>"
 ART=$(cd "$1" && pwd)
+if [ -n "$REAL" ]; then
+  MKT=${E2E_MKT:-agent-notebook}
+  VER1=$(sed -n 1p "$ART/versions.txt" | tr -d '\r'); VER2=$(sed -n 2p "$ART/versions.txt" | tr -d '\r')
+  [ -n "$VER1" ] && [ -n "$VER2" ] && [ -f "$ART/v1.json" ] && [ -f "$ART/v2.json" ] && [ -f "$ART/bad.json" ] || fail "$ART is not a check-marketplace --stage folder"
+  for v in $VER1 $VER2; do [ -d "$ART/agent-notebook-plugin-$v" ] || fail "$ART has no agent-notebook-plugin-$v folder"; done
+else
 for v in $VER1 $VER2; do [ -f "$ART/agent-notebook-plugin-$v.zip" ] && [ -d "$ART/agent-notebook-plugin-$v" ] || fail "$ART has no agent-notebook-plugin-$v.zip with its staged folder"; done
+fi
+ID=agent-notebook@$MKT
 [ -n "${NODE_OLD_DIR:-}" ] && [ -x "$NODE_OLD_DIR/node" ] || fail "NODE_OLD_DIR must name the folder of a Node.js 16"
 CLAUDE_BIN=$(command -v claude) || fail "claude is not on PATH"
 CLAUDE_DIR=$(dirname "$CLAUDE_BIN")
@@ -103,7 +119,7 @@ ENTRY=""  # the installed hook entry, set after the install
 step "serve the two builds over https on the runner's own address"
 IP=$(node "$HERE/serve.mjs" --print-ip) || fail "no non-loopback IPv4 address on this computer"
 SRV="$WORK/srv"; mkdir -p "$SRV"
-cp "$ART/agent-notebook-plugin-$VER1.zip" "$ART/agent-notebook-plugin-$VER2.zip" "$SRV/"
+[ -n "$REAL" ] || cp "$ART/agent-notebook-plugin-$VER1.zip" "$ART/agent-notebook-plugin-$VER2.zip" "$SRV/"
 cat > "$WORK/ssl.cnf" <<EOF
 [req]
 distinguished_name=dn
@@ -122,7 +138,8 @@ for _ in $(seq 1 50); do [ -s "$WORK/ready" ] && break; sleep 0.2; done
 [ -s "$WORK/ready" ] || fail "the server did not start: $(cat "$WORK/server.log")"
 BASE="https://$(cat "$WORK/ready")"
 echo "serving $BASE (certificate for IP $IP, 2 days)"
-node "$HERE/mkt.mjs" "$SRV" "$BASE" "$MKT" "agent-notebook-plugin-$VER1.zip" "agent-notebook-plugin-$VER2.zip"
+if [ -n "$REAL" ]; then cp "$ART/v1.json" "$ART/v2.json" "$ART/bad.json" "$SRV/"
+else node "$HERE/mkt.mjs" "$SRV" "$BASE" "$MKT" "agent-notebook-plugin-$VER1.zip" "agent-notebook-plugin-$VER2.zip"; fi
 cp "$SRV/v1.json" "$SRV/mkt.json"
 export NODE_EXTRA_CA_CERTS="$WORK/cert.pem"
 
@@ -189,6 +206,7 @@ for pp in ":$P_NEW" ".:$P_NEW" "::$P_NEW" "bin:$P_NEW"; do
   case $OUT in *"$VER1"*) ;; *) fail "bin/nb --version did not print $VER1 with PATH=$pp" ;; esac
 done
 
+if [ "$VER1" != "$VER2" ]; then
 # ---- update ----
 step "update: the marketplace now names $VER2"
 cp "$SRV/v2.json" "$SRV/mkt.json"
@@ -212,6 +230,8 @@ expect_ok "plugin update"
 expect_out "updated from $VER2 to $VER1" "rollback"
 [ "$(list_field version)" = "$VER1" ] || fail "the installed version is not $VER1 after the rollback"
 session "after the rollback" "$P_NEW" "$PROJ" newnode "$VER1"
+
+fi
 
 # ---- uninstall ----
 step "uninstall"
