@@ -173,4 +173,18 @@ A set env var is further annotated with how its value was actually resolved, so 
 
 Output with no problems is byte-identical to the pre-annotation form, apart from the `enabled=` line. Any `NB_*` variable that `nb` does not read (e.g. a typo like `NB_MAX_LINE`) is listed at the end as `not read by nb`, with a `did you mean …?` hint when a real variable is close. This is **informational only** — other tools may legitimately set `NB_*` variables, so it is never an error and the exit code stays `0`. The knobs `NB_BIN`, `NB_GIT_AUTOCOMMIT`, `NB_GIT_SESSION_TRAILER`, `NB_BACKUP_PUSH_TIMEOUT` and `NB_BACKUP_GIT_LOCK_WAIT`, read by the tooling this repo ships under [`examples/`](../examples/README.md), are not listed: they belong to those tools, not to `nb`. `nb retro` reads `NB_RETRO_EXTRA_PROMPT`, `NB_RETRO_TTL_DAYS` and `NB_PROJECT_SLUG`, and `nb brief` reads `NB_PROJECT_SLUG` and `NB_GLOBAL_SHELF` (issue #538), so those are not listed either; they get no line of their own.
 
+Once `~/.agent-notebook/messages/` exists (or `HOME` is empty or relative), `nb config` adds a `messages` block after those lines; without the folder, the output does not change:
+
+```text
+messages=~/.agent-notebook/messages  (read by nb brief and nb retro; hooks copied from 0.12 ignore it)
+brief.global=brief.txt  (in force, 412 characters, changed 2026-11-26 08:12)
+brief.project=acme-app.brief.txt  (none: no such file; project name from the git remote)
+retro.global=retro.txt  (not used: larger than 4000 characters)
+retro.project=-  (the project name comes from the folder: ...; it still fills {project})
+retro.env=-  (NB_RETRO_EXTRA_PROMPT is not set)
+ignored: brief.txt.txt, Brief.txt  (not a message file name)
+```
+
+The rows are for the working directory. `nb config --json` gains a `messages` key, only when the block is shown. See [your own start and end text](../examples/hooks/claude-code/README.md#your-own-start-and-end-text).
+
 `nb config --json` emits one object keyed by tunable name — `{ "maxLines": { "value": 50, "source": "default", "env": "NB_MAX_LINES", "status": null, "rawValue": null }, … }` — for a supervisor to read without parsing the lines. `status` is `"honored"`/`"clamped"`/`"ignored"` when the var is set (`null` when it is unset or for the derived row), and `rawValue` is the raw env string (`null` when unset). When `.nb.json` sets `maxChars`, that row's `source` is `".nb.json"`, and its `status` and `rawValue` describe the number in the file. An `unrecognized` array — `[{ "name": "NB_MAX_LINE", "suggestion": "NB_MAX_LINES" }, …]` — lists the same unknown variables, and an `enabled` object — `{ "value": "on", "source": "default", "origin": null, "warning": null }` — gives the per-repository state (`source` is `env`, `git` or `default`). All three are **additive**: the existing `{ value, source, env }` fields and the `source` values (`env`/`default`/`derived`) are unchanged; `.nb.json` is an added value. It is read-only, and scoped to *configuration* (the knobs), distinct from `nb stats` (usage, anomalies, engagement).

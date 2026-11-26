@@ -118,6 +118,10 @@ Lessons use the default folder, `~/.agent-notebook/notebooks`. Set `NB_DIR` to u
 
    Check: it prints one JSON line that starts `{"decision":"block","reason":"Before finishing, run the agent-notebook retrospective`. Run the same command again with the same `T`: it prints nothing (the hook asks once per session).
 
+### Your own start and end text (optional)
+
+To add your own words to the start-of-session and end-of-task text, put `brief.txt`, `retro.txt`, or `<project>.brief.txt` / `<project>.retro.txt` in `~/.agent-notebook/messages/`. It needs the new hooks, not copied 0.12 scripts. See [the hooks README](https://github.com/jeanibarz/agent-notebook/blob/main/examples/hooks/claude-code/README.md#your-own-start-and-end-text). If you use project files, set `NB_PROJECT_SLUG` per project, in that project's `.claude/settings.local.json` `env` block, never machine-wide: a machine-wide value makes one project's file apply in every project.
+
 ## 3. Path B: ideas
 
 Ideas live in a separate folder, `~/.agent-notebook/ideas`, and are read through a command named `nb-ideas`. It is plain `nb` pointed at that folder. `nb` has no notion of an "ideas" kind. The folder is kept apart from lessons for three reasons:

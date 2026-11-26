@@ -70,6 +70,15 @@ again, so two machines on different setups can write to two names. Two things fo
 - Once a shelf name in your store contains `@`, the session-start index is grouped by
   project under that name (see below). A store without one keeps the flat index.
 
+**Your own start and end text needs the new hooks (issue #539).** Copied 0.12 scripts hold their
+text themselves and never call `nb brief` or `nb retro`, so they ignore the files in
+`~/.agent-notebook/messages/`. To use them, switch to the new hooks (the adapter, or
+`print-settings`). That also brings the built-in start text of issue #538 in place of the
+0.12 text. If the [git wrapper](../../nb-git-wrapper.mjs) is installed as `nb`, the adapter
+inside the installed package still runs the package's own `nb` and skips the wrapper: keep a
+copied adapter (it runs `NB_BIN`, else `nb` on your `PATH`, which is the wrapper), or set
+`NB_BIN` to the wrapper.
+
 If a new `.sh` file is copied without `nb-claude-hook.mjs` beside it, or `node` or `nb`
 cannot be found, or `nb` is too old to have `nb brief`, the session-start hook prints
 one line naming the problem, which the agent can relay to you; the Stop hook stays
@@ -86,7 +95,7 @@ per-project `.claude/settings.json`.
 | `NB_RETRO_TTL_DAYS` | `7` | how many days a `.retro-<session>` sentinel survives before `nb retro` prunes it (see [below](#how-the-retrospective-nudge-avoids-looping)) |
 | `NB_SESSION` | — | set it (e.g. to Claude Code's session id) to unlock the per-session [surfacing metrics](https://github.com/jeanibarz/agent-notebook/blob/main/docs/operating.md#surfacing-metrics) in `nb stats` |
 | `NB_BIN` | `nb` | the `nb` the hooks run: a bare name is looked up on `PATH`, a path is used as is (a `.js`/`.mjs` file is run with `node`). Unset, the adapter runs the package it ships in, else `nb` on `PATH`. Point it at the [git-versioning wrapper](../../nb-git-wrapper.mjs) to commit each change |
-| `NB_PROJECT_SLUG` | unset | the project name, e.g. `acme-app`, for the [layered index](#optional-layered-index-project--domain--global) and for `{project}`. Unset, `nb project` derives it from the git `origin` remote (`owner-repo`), else the repository's folder |
+| `NB_PROJECT_SLUG` | unset | the project name, e.g. `acme-app`, for the [layered index](#optional-layered-index-project--domain--global), for `{project}` and for the project's [message files](#your-own-start-and-end-text). Set it per project, not machine-wide. Unset, `nb project` derives it from the git `origin` remote (`owner-repo`), else the repository's folder |
 | `NB_GLOBAL_SHELF` | `global` | with a layered index: the one bare shelf shown as the global layer |
 | `NB_ENABLED` | unset | `0`/`false`/`no`/`off` switches the hooks (and the text `nb list` index) off for this process, over `git config nb.enabled`; see [per-repository on/off](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#per-repository-onoff) |
 | `NB_RETRO_EXTRA_PROMPT` | unset | absolute path (a leading `~/` is expanded) of a text file that `nb retro` appends to its nudge, with `{project}` and `{session}` filled in; see [below](#optional-extra-prompt-for-the-retrospective-nudge) |
@@ -165,6 +174,55 @@ done            # 1 = the index was injected; 0 = the hook ran without effect, o
 The index gives a subagent the notebooks to read. It does not make the
 retrospective happen at the subagent's end: see the next section.
 
+## Your own start and end text
+
+You can add your own words to what the assistant reads at the start of a session and at
+the end of a task. Put plain UTF-8 text files in `~/.agent-notebook/messages/` (create the
+folder yourself; `nb` never does):
+
+| File | Added to | For |
+|---|---|---|
+| `brief.txt` | `nb brief` (session start; subagents get it too) | every project |
+| `retro.txt` | `nb retro` (the end-of-task nudge) | every project |
+| `<project>.brief.txt`, `<project>.retro.txt` | the same, after the global text | one project |
+
+- **Append only.** The built-in text always stays; yours comes after it, framed as "the
+  user's own instructions" so the model does not take it for one more lesson. It is added
+  before the `NB_RETRO_EXTRA_PROMPT` text, which is unchanged.
+- **The project file wins** where it differs from the global one. `<project>` is the name
+  `nb project` prints. It selects a file only when it comes from `NB_PROJECT_SLUG` or the git
+  `origin` remote (`acme-app.brief.txt`), not from the folder name, which unrelated
+  repositories can share.
+- **Caps.** A brief file holds at most 1,000 characters and a retro file 4,000, after
+  cleaning. A longer file is refused whole, never cut. A file that is empty, not UTF-8
+  (save it as UTF-8, not UTF-16 or ANSI) or not a regular file is refused too, and the brief
+  or retro then holds one warning line naming the file and why.
+- **Cleaning.** Control characters, bidi overrides, the zero-width space and the soft hyphen
+  show as `\uXXXX` (a soft hyphen pasted from a word processor shows as `\u00ad`); a tab becomes
+  a space. Accented letters, Japanese text and emoji pass unchanged.
+- **Retro files** may use `{project}` and `{session}`, filled in as for `NB_RETRO_EXTRA_PROMPT`.
+  A file that uses one with no value (outside a git repository, no session id) is left out
+  without a warning.
+- **Not read** when `HOME` is empty or relative, or when the folder lies inside `NB_DIR`.
+- **Check it:** `nb config` lists each file, whether it is in force, its size and when it
+  changed, and names files it ignores (`Brief.txt`, `brief.txt.txt`) or that belong to another
+  project. It prints this only once the folder exists. It asks for the project in the folder
+  you run it in; at the end of a task, `nb retro` asks in the folder the assistant last worked
+  in, which can be another project.
+- **Preview** without waiting for a session. Run both in the project's folder:
+
+  ```sh
+  nb brief
+  nb retro --session preview-$(date +%s)   # a fresh id, so no real session is marked as nudged
+  ```
+
+Claude Code shows a `SessionStart` output above 10,000 characters as a short preview. With
+the default `--max-chars 9000` the whole brief stays under that; with `--max-chars 0` or
+above 10,000 it may not.
+
+Hooks copied from 0.12 never call `nb brief` or `nb retro`, so they ignore these files (see
+[upgrading](#upgrading-from-012-copies)).
+
 ## Optional: extra prompt for the retrospective nudge
 
 Set `NB_RETRO_EXTRA_PROMPT` to the absolute path of a text file and
@@ -173,6 +231,12 @@ retrospective and a blank line. Same single nudge, same sentinel: no second hook
 `examples/hooks/ideas-end-prompt.txt` is one such file (an end-of-task check that
 records at most one improvement idea with `nb-ideas add`). Put the variable in the
 `env` block of your `settings.json`, never in a notebooks folder.
+
+Nothing has to move: `NB_RETRO_EXTRA_PROMPT` works as before, with no label around its text.
+To move it to a message file anyway: use the new hooks, copy the file to
+`~/.agent-notebook/messages/retro.txt` (at most 4,000 characters, UTF-8), check it with
+`nb config`, then unset the variable. If both stay, `nb config` says the nudge carries the
+text twice. See [your own start and end text](#your-own-start-and-end-text).
 
 The file may use two placeholders:
 

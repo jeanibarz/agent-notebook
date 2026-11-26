@@ -204,6 +204,10 @@ That's a working notebook. You just taught an assistant something it will keep.
   (plus optional convenience hooks) →
   [Harness setup guide](harness-setup.md) (Claude Code, Codex CLI; Windows, macOS,
   Linux).
+- **Add your own words** to the start-of-session and end-of-task text (for example, to
+  always answer in your language): put a `brief.txt` or `retro.txt` in
+  `~/.agent-notebook/messages/` →
+  [Your own start and end text](../examples/hooks/claude-code/README.md#your-own-start-and-end-text).
 - **Keep one project's lessons apart** (a client, an employer): run `nb place own` in its
   repository → [One notebook per project](harness-setup.md#one-notebook-per-project).
 - **Roll it out in a company** with security or data-sovereignty rules →

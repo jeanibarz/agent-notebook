@@ -110,6 +110,21 @@ same care as the agent's other outputs. The concrete risks:
   remote are your controls; a signed-commit policy (`git commit -S`) works because
   it's ordinary git.
 
+### Your own start and end text (`~/.agent-notebook/messages/`)
+
+The files in `~/.agent-notebook/messages/` are shown to the assistant as the user's own instructions, so treat the folder like `~/.claude/CLAUDE.md`.
+
+- **It is outside every notebooks folder.** The shipped sync and backup scripts never copy it, and `nb` never writes it. Back it up yourself. `nb` refuses a folder that lies inside `NB_DIR`, because the shipped scripts would then sync it.
+- **An agent with a shell could write it.** One that read a hostile page could add a line to `brief.txt` for the next session. Add user-level deny rules for the file tools in `~/.claude/settings.json`:
+
+  ```json
+  { "permissions": { "deny": ["Edit(~/.agent-notebook/messages/**)", "Write(~/.agent-notebook/messages/**)"] } }
+  ```
+
+  A `Bash` rule cannot fence this the same way: a shell command can write the file in too many ways to list. `nb config` shows when each file last changed, so an unexpected change is visible.
+- **A project file must never grant permissions or hold secrets.** The project name is not tied to a host, so a clone whose `origin` claims the same `owner/repo` on another host gets that project's text.
+- A project's own `.claude/settings.json` can declare hooks, so trusting a project already means trusting it; message files add no new way in.
+
 ### Hardening checklist
 
 ```text
@@ -119,6 +134,7 @@ same care as the agent's other outputs. The concrete risks:
 [ ] A secret scanner in the backup path (pre-push hook or CI on the notebooks repo).
 [ ] Decide shared vs per-developer notebooks (see Multi-user below) and set ACLs to match.
 [ ] Treat injected lessons as untrusted input to the agent; review shared ones.
+[ ] If you use message files: back up ~/.agent-notebook/messages/ and deny Edit/Write on it.
 ```
 
 ---
