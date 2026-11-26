@@ -99,7 +99,7 @@ import { describeSource, resolveEnabled, stateWord } from './enabled.js';
 import { describeProject, resolveProject } from './project.js';
 import { isWindowsDeviceName, placeRefusal, resolvePlace, scanProjects, sharedWriteRefusal, type Place } from './place.js';
 import { allShelves, isGitRepo, placeOwn, placeShared, sharedBlockers, type PlaceMove } from './place-ops.js';
-import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, messageProjectName, placeLine, projectOfCall, retro } from './loop.js';
+import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, extraPromptStatus, messageProjectName, placeLine, projectOfCall, retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import {
   fmt,
@@ -1613,7 +1613,22 @@ export async function runNbCli(
         const messages = messagesReport({
           home: homedir(),
           nbDir: sharedDir,
-          project: () => messageProjectName(place?.project ?? projectOfCall(process.env, currentDir(), resolveProject), isWindowsDeviceName),
+          project: () => {
+            const st = place?.project ?? projectOfCall(process.env, currentDir(), resolveProject);
+            return { ...messageProjectName(st, isWindowsDeviceName), fills: st.name };
+          },
+          extra: () => {
+            const x = extraPromptStatus(process.env);
+            let real: string | null = null;
+            if (x.set) {
+              try {
+                real = realpathSync(x.path);
+              } catch {
+                // unreadable: nothing to compare
+              }
+            }
+            return { ...x, real };
+          },
         });
         if (json) {
           // One object keyed by tunable name; each carries the effective value,
@@ -1817,7 +1832,7 @@ export async function runNbCli(
         // The marker lives in the shared notebook whatever the place (issue #548), so a
         // session that changes project, or a project that gets its own notebook, is
         // asked once, and the copied 0.12 bash Stop hook agrees on where it is.
-        const r = retro({ session: sessionRaw, workDir, dir: sharedDir, cwd: currentDir() });
+        const r = retro({ session: sessionRaw, workDir, dir: sharedDir, cwd: currentDir(), nbDir: sharedDir, isDeviceName: isWindowsDeviceName });
         if (r.err) process.stderr.write(r.err);
         meta.outcome = r.outcome;
         meta.session = r.session;

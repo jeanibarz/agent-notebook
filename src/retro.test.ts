@@ -656,6 +656,62 @@ describe('nb retro under concurrency (FR-RETRO-001)', () => {
     expect(nonEmpty(done)).toHaveLength(0);
   }, 60_000);
 
+  // Issue #539: the user's own retro text. The 0.12 script never calls nb retro, so it ignores the files.
+  const putRetroFile = (text: string): void => {
+    mkdirSync(join(home, '.agent-notebook', 'messages'), { recursive: true });
+    writeFileSync(join(home, '.agent-notebook', 'messages', 'retro.txt'), text);
+  };
+
+  test('50 parallel nb retro processes for one session with a retro.txt yield exactly one nudge, and it holds the block', async () => {
+    putRetroFile('MY OWN RETRO TEXT for {session}');
+    const barrier = join(tmp, 'barrier');
+    const env = childEnv();
+    const [cmd, args] = newCmd('fifty');
+    const done = await release(
+      barrier,
+      Array.from({ length: 50 }, () => gated(barrier, cmd, args, env)),
+    );
+    expect(done.every((d) => d.code === 0)).toBe(true);
+    expect(nonEmpty(done)).toHaveLength(1);
+    const out = nonEmpty(done)[0]!.out;
+    expect(out.startsWith(RETRO_LESSONS + '\n\n')).toBe(true);
+    expect(out).toContain("(from ~/.agent-notebook/messages/retro.txt); follow them:\nMY OWN RETRO TEXT for fifty\n(end of the user's instructions)\n");
+    expect(sentinels()).toEqual(['.retro-fifty']);
+  }, 120_000);
+
+  testOld('with a retro.txt present: the 0.12 Stop hook ignores it; the claim is shared, so whoever is second prints nothing', () => {
+    putRetroFile('MY OWN RETRO TEXT');
+    expect(oldHook('old-first')).toBe(RETRO_LESSONS);
+    expect(nb(['retro', '--session', 'old-first']).out).toBe('');
+    const r = nb(['retro', '--session', 'new-first']);
+    expect(r.out).toContain('MY OWN RETRO TEXT');
+    expect(oldHook('new-first')).toBeNull();
+  });
+
+  testOld('10 runs of the 0.12 Stop hook and 10 of nb retro with a retro.txt: one nudge in total, whole either way', async () => {
+    putRetroFile('MY OWN RETRO TEXT');
+    const barrier = join(tmp, 'barrier');
+    const env = childEnv({ NB_BIN: stub });
+    const runs: Array<Promise<Done>> = [];
+    for (let i = 0; i < 10; i++) {
+      const [c1, a1, in1] = oldCmd('mixed-msg');
+      runs.push(gated(barrier, c1, a1, env, in1));
+      const [c2, a2] = newCmd('mixed-msg');
+      runs.push(gated(barrier, c2, a2, env));
+    }
+    const done = await release(barrier, runs);
+    expect(done.every((d) => d.code === 0)).toBe(true);
+    const spoke = nonEmpty(done);
+    expect(spoke).toHaveLength(1);
+    // The old hook's reason is JSON; the new command prints plain text with the block.
+    const out = spoke[0]!.out;
+    if (out.startsWith('{')) {
+      expect((JSON.parse(out) as { reason: string }).reason).toBe(RETRO_LESSONS);
+    } else {
+      expect(out).toContain('MY OWN RETRO TEXT');
+    }
+  }, 120_000);
+
   test('30 distinct sessions in parallel yield 30 nudges and 30 sentinels', async () => {
     const barrier = join(tmp, 'barrier');
     const env = childEnv();

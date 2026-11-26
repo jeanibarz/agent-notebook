@@ -71,6 +71,14 @@ export interface RetroOptions {
   enabled?: (env: NodeJS.ProcessEnv, cwd: string) => EnabledState;
   /** Injectable clock for the sweep; the CLI uses `Date.now`. */
   now?: () => number;
+  /** Injectable for tests; the CLI uses the real resolver (FR-PROJECT-001). Asked at most once per call. */
+  project?: (env: NodeJS.ProcessEnv, cwd: string) => ProjectState;
+  /** The home folder whose `.agent-notebook/messages/` is read (issue #539); the CLI uses `os.homedir()`. */
+  home?: string;
+  /** The shared notebooks folder, for the check that the messages folder is not inside it; defaults to `dir`. */
+  nbDir?: string;
+  /** Whether a project name is a Windows device name, which never selects a message file (see `BriefOptions`). */
+  isDeviceName?: (name: string) => boolean;
 }
 
 /** Largest `NB_RETRO_EXTRA_PROMPT` file read, in bytes. Larger files are skipped with a warning. */
@@ -97,6 +105,17 @@ export function retroTtlDays(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(n) && n > 0 ? n : RETRO_TTL_DAYS_DEFAULT;
 }
 
+/** What `NB_RETRO_EXTRA_PROMPT` names and whether it can be used: `why` is the reason it cannot, else `null`. */
+export interface ExtraPromptStatus {
+  /** Whether the variable is set to a non-empty value. */
+  set: boolean;
+  /** The path it names, `~` expanded; `''` when unset. */
+  path: string;
+  /** The trimmed text; `''` when unset or unusable. */
+  text: string;
+  why: string | null;
+}
+
 /**
  * Read the `NB_RETRO_EXTRA_PROMPT` file. Returns its trimmed text, or `''` with
  * a reason when it is unset or unusable. The path must be absolute (a leading
@@ -105,19 +124,24 @@ export function retroTtlDays(env: NodeJS.ProcessEnv = process.env): number {
  * before the file is opened, and again on the open descriptor, so a FIFO or a
  * device never stalls the call.
  */
-export function readExtraPrompt(env: NodeJS.ProcessEnv): { text: string; warning: string | null } {
+export function extraPromptStatus(env: NodeJS.ProcessEnv): ExtraPromptStatus {
   const raw = env.NB_RETRO_EXTRA_PROMPT ?? '';
-  if (raw === '') return { text: '', warning: null };
+  if (raw === '') return { set: false, path: '', text: '', why: null };
   const p = raw === '~' || raw.startsWith('~/') ? expandHomeDir(raw) : raw;
-  const fail = (why: string): { text: string; warning: string } => ({
-    text: '',
-    warning: `nb retro: ignoring NB_RETRO_EXTRA_PROMPT (${why}); sending the lessons retrospective alone\n`,
-  });
-  if (!isAbsolute(p)) return fail('path must be absolute');
+  if (!isAbsolute(p)) return { set: true, path: p, text: '', why: 'path must be absolute' };
   // The shared reader (messages.ts) does the checks, in this order and with these
   // reasons; the text is decoded without a strictness check, as it always was.
   const r = readCheckedFile(p, EXTRA_PROMPT_MAX_BYTES);
-  return r.ok ? { text: r.bytes.toString('utf-8').trim(), warning: null } : fail(r.why);
+  return r.ok ? { set: true, path: p, text: r.bytes.toString('utf-8').trim(), why: null } : { set: true, path: p, text: '', why: r.why };
+}
+
+/** `extraPromptStatus` with the stderr warning `nb retro` prints for an unusable file. */
+export function readExtraPrompt(env: NodeJS.ProcessEnv): { text: string; warning: string | null } {
+  const st = extraPromptStatus(env);
+  return {
+    text: st.text,
+    warning: st.why === null ? null : `nb retro: ignoring NB_RETRO_EXTRA_PROMPT (${st.why}); sending the lessons retrospective alone\n`,
+  };
 }
 
 /** An existing absolute directory, resolved; else `null`. */
@@ -141,7 +165,8 @@ function existingAbsoluteDir(p: string | undefined): string | null {
  *   4. off in the project directory: print nothing, keep the claim;
  *   5. off in `workDir` only: print nothing, release the claim, so a later call
  *      from an on directory still nudges once (issue #517);
- *   6. print the nudge, plus the extra text when it applies.
+ *   6. print the nudge, then the user's retro message files (issue #539, read only
+ *      now), then the extra text when it applies.
  */
 export function retro(opts: RetroOptions): RetroResult {
   const env = opts.env ?? process.env;
@@ -201,19 +226,57 @@ export function retro(opts: RetroOptions): RetroResult {
     return { outcome: 'off-work-dir', text: '', session, err };
   }
 
-  // 6. The text. The extra prompt is appended only when both placeholders can be
-  //    filled: a session id was given and a project name is found.
-  let text = RETRO_LESSONS;
-  if (extra.text !== '' && opts.session !== '') {
-    const asked = workDir ?? projectDir;
-    // One rule for every caller (FR-PROJECT-001): the name `nb project` prints in that directory.
-    const project = asked === null ? (env.NB_PROJECT_SLUG ? cleanProjectName(env.NB_PROJECT_SLUG) : '') : resolveProject(env, asked).name;
+  // 6. The text: the nudge, then the user's message files (issue #539), then the extra
+  //    prompt. Nothing of the user's is read before this point: a repeated stop, or a
+  //    switch that is off, reads no message file. The project is resolved at most once,
+  //    in `--work-dir` else the working directory, and serves the file lookup and every
+  //    `{project}`.
+  const asked = workDir ?? projectDir;
+  let state: ProjectState | undefined;
+  const ask = (): ProjectState => (state ??= projectOfCall(env, asked, opts.project ?? resolveProject));
+  const hasSession = opts.session !== '';
+  const segments = [RETRO_LESSONS];
+  const blocks = retroBlocks(opts, ask, hasSession ? session : null);
+  if (blocks.length > 0) segments.push(blocks.join('\n'));
+  // The extra prompt is appended only when both placeholders can be filled: a session
+  // id was given and a project name is found.
+  if (extra.text !== '' && hasSession) {
+    const project = ask().name;
     if (project !== '') {
       const values: Record<string, string> = { project, session };
-      text = `${RETRO_LESSONS}\n\n${extra.text.replace(/\{(project|session)\}/g, (_, k: string) => values[k]!)}`;
+      segments.push(extra.text.replace(/\{(project|session)\}/g, (_, k: string) => values[k]!));
     }
   }
-  return { outcome: 'nudge', text, session, err };
+  return { outcome: 'nudge', text: segments.join('\n\n'), session, err };
+}
+
+const TOKEN_RE = /\{(project|session)\}/g;
+
+/**
+ * The lines the user's retro message files add to `nb retro` (issue #539): the global
+ * block, then the project block, each framed as in `nb brief`; a file that exists but
+ * cannot be used gives one warning line. `{project}` and `{session}` are filled in a used
+ * file; a block whose token has no value (no project name, no session id) is left out
+ * without a warning: that is "not applicable here", not a broken file (DP-5). The project
+ * is asked only when a `<project>.retro.txt` exists or a used block needs `{project}`.
+ */
+function retroBlocks(opts: RetroOptions, ask: () => ProjectState, session: string | null): string[] {
+  const listing = listMessages(opts.home ?? homedir(), opts.nbDir ?? opts.dir);
+  if (listing.state !== 'present' && listing.state !== 'inside-nb-dir') return [];
+  const isDevice = opts.isDeviceName ?? (() => false);
+  const selected = listing.projectFiles.retro.length > 0 ? messageProjectName(ask(), isDevice).name : null;
+  const set = readMessages(listing, 'retro', selected);
+  const lines = (f: MessageFile, label: string): string[] => {
+    if (f.status !== 'used') return blockLines(f, label);
+    const needs = new Set([...f.text.matchAll(TOKEN_RE)].map((m) => m[1]));
+    const values: Record<string, string> = { project: needs.has('project') ? ask().name : '', session: session ?? '' };
+    if ((needs.has('project') && values.project === '') || (needs.has('session') && session === null)) return [];
+    return [label, f.text.replace(TOKEN_RE, (_, k: string) => values[k]!), USER_INSTRUCTIONS.end];
+  };
+  return [
+    ...lines(set.global, USER_INSTRUCTIONS.globalLabel(set.global.file)),
+    ...(set.project === null || selected === null ? [] : lines(set.project, USER_INSTRUCTIONS.projectLabel(selected, set.project.file))),
+  ];
 }
 
 /** What `nb brief` printed in place of, or as, the index. */
