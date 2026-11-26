@@ -167,10 +167,29 @@ export function linkAll(
 }
 
 /** Unlink each linked source that is still the file that was linked; return the shelves moved. Exported for its test. */
-export function unlinkSame(from: string, linked: Map<string, Stats>, kept: PlaceMove['kept']): string[] {
+export function unlinkSame(
+  from: string,
+  linked: Map<string, Stats>,
+  kept: PlaceMove['kept'],
+  destOf?: (shelf: string) => string,
+): string[] {
   const moved: string[] = [];
   for (const [s, st] of linked) {
     const src = join(from, `${s}.md`);
+    // The destination must still be the file that was linked: a writer that renamed
+    // its own file over it (one that bypasses the guard) keeps the source in place.
+    if (destOf !== undefined) {
+      let there: Stats | null = null;
+      try {
+        there = lstatSync(destOf(s));
+      } catch {
+        // gone: keep the source
+      }
+      if (there === null || there.ino !== st.ino || there.dev !== st.dev) {
+        kept.push({ shelf: s, why: 'it changed during the move; run the command again' });
+        continue;
+      }
+    }
     try {
       const now = lstatSync(src);
       if (now.ino !== st.ino || now.dev !== st.dev) {
@@ -221,7 +240,7 @@ export async function placeOwn(shared: string, projectsDir: string, project: str
       if (created) removeFlat(into);
       throw e;
     }
-    const moved = unlinkSame(shared, linked, kept);
+    const moved = unlinkSame(shared, linked, kept, (x) => join(target, `${x}.md`));
     return { dir: target, created, moved, kept, lessons: moved.reduce((n, s) => n + (lessons.get(s) ?? 0), 0) };
   });
 }
@@ -256,9 +275,13 @@ export function sharedBlockers(shared: string, own: string, project: string): { 
     if (n.endsWith('.md') && !n.startsWith('.') && isFile(join(own, n))) continue;
     foreign.push(n);
   }
-  const clashes = allShelves(own)
-    .map((s) => sharedName(s, project))
-    .filter((s) => existsSync(join(shared, `${s}.md`)));
+  // A clash is a name the shared notebook already has, or two shelves of the folder
+  // that would arrive under one name (`review` and `review@<project>`), compared in
+  // lower case, as the write guard and a case-insensitive disk compare them.
+  const seen = new Map<string, number>();
+  const names2 = allShelves(own).map((s) => sharedName(s, project));
+  for (const n of names2) seen.set(n.toLowerCase(), (seen.get(n.toLowerCase()) ?? 0) + 1);
+  const clashes = names2.filter((s) => existsSync(join(shared, `${s}.md`)) || (seen.get(s.toLowerCase()) ?? 0) > 1);
   return { foreign: foreign.sort(), clashes };
 }
 
@@ -277,7 +300,7 @@ export async function placeShared(shared: string, own: string, project: string):
     // off it in the shared notebook until the folder is gone, and a shelf written in
     // the project does not merge into a general shelf of the same name.
     const linked = linkAll(own, shared, shelves, kept, (x) => sharedName(x, project));
-    const moved = unlinkSame(own, linked, kept);
+    const moved = unlinkSame(own, linked, kept, (x) => join(shared, `${sharedName(x, project)}.md`));
     for (const n of readdirSync(own)) {
       if (isNbOwnFile(n)) {
         try {

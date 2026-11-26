@@ -88,6 +88,26 @@ describe('placeOwn and placeShared (FR-PLACE-003)', () => {
     expect(sharedBlockers(shared, own, 'acme-app')).toEqual({ foreign: ['.git', '.nb.json'], clashes: ['testing@acme-app'] });
   });
 
+  test('two shelves of the folder that would arrive under one name are a clash, found before anything moves', () => {
+    mkdirSync(own, { recursive: true });
+    writeFileSync(join(own, 'review.md'), '+1 unscoped\n');
+    writeFileSync(join(own, 'review@acme-app.md'), '+1 scoped\n');
+    writeFileSync(join(own, 'other.md'), '+1 alone\n');
+    expect(sharedBlockers(shared, own, 'acme-app')).toEqual({ foreign: [], clashes: ['review@acme-app', 'review@acme-app'] });
+  });
+
+  test('a destination replaced after the link (a writer that bypasses the guard) keeps the source in place', () => {
+    mkdirSync(own, { recursive: true });
+    writeFileSync(join(own, 'x@acme-app.md'), '+1 the project lesson\n');
+    const kept: { shelf: string; why: string }[] = [];
+    const linked = linkAll(own, shared, ['x@acme-app'], kept);
+    writeFileSync(join(shared, 'x.tmp'), '+1 written over the link\n');
+    renameSync(join(shared, 'x.tmp'), join(shared, 'x@acme-app.md'));
+    expect(unlinkSame(own, linked, kept, (s) => join(shared, `${s}.md`))).toEqual([]);
+    expect(kept).toEqual([{ shelf: 'x@acme-app', why: 'it changed during the move; run the command again' }]);
+    expect(readFileSync(join(own, 'x@acme-app.md'), 'utf-8')).toBe('+1 the project lesson\n');
+  });
+
   test('sharedName', () => {
     expect([sharedName('testing', 'acme-app'), sharedName('x@acme-app', 'acme-app'), sharedName('x@Acme-App', 'acme-app'), sharedName('x@beta', 'acme-app')]).toEqual([
       'testing@acme-app',
@@ -262,11 +282,22 @@ describe('nb place own / shared through the built CLI (FR-PLACE-003)', { timeout
     expect(existsSync(projects)).toBe(false);
   });
 
+  test('shared refuses two shelves that would arrive under one name, and changes nothing', () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    nb(['add', 'review', 'unscoped']);
+    nb(['add', 'review@acme-app', 'scoped']);
+    const r = nb(['place', 'shared']);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('review@acme-app');
+    expect(shelves(own)).toEqual(['review.md', 'review@acme-app.md']);
+    expect(shelves(shared)).toEqual([]);
+  });
+
   test('shared refuses a clash and a foreign file, and keeps the folder', () => {
     mkdirSync(own, { recursive: true });
     nb(['add', 'testing', 'own copy']);
     writeFileSync(join(shared, 'testing@acme-app.md'), '+1 shared copy\n');
-    expect(nb(['place', 'shared']).err).toContain('the shared notebook already has shelves named testing@acme-app');
+    expect(nb(['place', 'shared']).err).toContain('testing@acme-app would clash in the shared notebook');
     rmSync(join(shared, 'testing@acme-app.md'));
     mkdirSync(join(own, '.git'));
     expect(nb(['place', 'shared']).err).toContain('holds files that are not lessons (.git)');

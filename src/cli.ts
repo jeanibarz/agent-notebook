@@ -1731,7 +1731,7 @@ export async function runNbCli(
           if (b.clashes.length > 0) {
             throw new NbError(
               'bad_args',
-              `the shared notebook already has shelves named ${b.clashes.join(', ')}; rename one side first (\`nb move\` within one notebook). Nothing changed.`,
+              `${[...new Set(b.clashes)].join(', ')} would clash in the shared notebook (a shelf there already has the name, or two shelves of this project would arrive under it: a shelf without @<project> comes back as <x>@<project>); rename one first (\`nb move\` within one notebook). Nothing changed.`,
             );
           }
           const r = await placeShared(p.shared, own, st!.name);

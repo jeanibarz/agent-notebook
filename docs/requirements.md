@@ -1902,7 +1902,7 @@ own notebook: create `~/.agent-notebook/projects/<project>/` (mode 0700) and mov
 regular shelf file of the shared notebook whose name ends in `@<project>`, whole (bytes, scores,
 order and ids kept, nothing deduplicated or evicted). Holding the shared notebook's lock, it SHALL
 link the shelves into a staging folder, rename it to the project folder, and only then unlink the
-shared copies, each only if it is still the file that was linked; any failure before the rename
+shared copies, each only if both it and its new copy are still the file that was linked; any failure before the rename
 SHALL leave nothing changed. A link SHALL never overwrite: a shelf already in the folder stays in
 the shared notebook and is reported, unless it is the same file (a run that stopped after the rename),
 which counts as moved. When the folder already exists, the move SHALL run under the folder's own lock.
@@ -1919,7 +1919,8 @@ notebook the same way, under the folder's lock, each as `<x>@<project>` (a shelf
 is renamed, so it stays the project's and the write guard keeps other calls off it until the folder
 is gone), remove `nb`'s own files there (the usage log and its
 count file, retrospective markers, `nb`'s temporary files), and remove the folder without recursing;
-it SHALL refuse (nothing changed) when a shelf name is already in the shared notebook or the folder
+it SHALL refuse (nothing changed) when a shelf name is already in the shared notebook, when two
+shelves of the folder would arrive under one name (letter case ignored), or the folder
 holds anything else (`.git`, `.nb.json`, a subfolder), and SHALL exit `1` and keep the folder when a
 write landed in it meanwhile. Run where no own notebook is in use, it SHALL say so and exit `0`.
 `--json` SHALL print `{ kind: "own", dir, created, moved, kept, lessons, unversioned }` and
