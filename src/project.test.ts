@@ -176,9 +176,9 @@ describe('resolveProject: the order of the rules and every git failure (FR-PROJE
 
   test('the origin remote, with exactly two git runs, in order', () => {
     const g = fakeGit({ remote: { stdout: 'git@github.com:Acme/App.git\n' } });
-    expect(resolveProject({}, work, g)).toEqual({ name: 'acme-app', source: 'remote', reason: 'git remote origin', oldName: 'my-app' });
+    expect(resolveProject({}, work, g)).toEqual({ name: 'acme-app', source: 'remote', reason: 'git remote origin', oldName: 'my-app', bare: false, undetermined: false });
     expect(g.calls).toEqual([
-      ['rev-parse', '--git-common-dir'],
+      ['rev-parse', '--git-common-dir', '--is-bare-repository'],
       ['config', '--get', 'remote.origin.url'],
     ]);
   });
@@ -196,16 +196,23 @@ describe('resolveProject: the order of the rules and every git failure (FR-PROJE
     }
   });
 
-  test.each<[string, Partial<GitRun>, string]>([
-    ['git missing', { status: null, error: 'ENOENT' }, 'git not found'],
-    ['git too slow', { status: null, error: 'ETIMEDOUT' }, 'git timed out'],
-    ['git killed otherwise', { status: null, error: 'EACCES' }, 'git could not be run'],
-    ['not a repository, or refused (dubious ownership)', { status: 128, stderr: 'fatal: detected dubious ownership' }, 'not in a git repository, or git refused this folder'],
-    ['a stub that exits 1', { status: 1, stderr: 'xcrun: error' }, 'not in a git repository, or git refused this folder'],
-  ])('the first run failing (%s) gives no name and no second run', (_label, top, reason) => {
+  // `undetermined` (issue #548): git could not answer although this may be a repository.
+  test.each<[string, Partial<GitRun>, string, boolean]>([
+    ['git missing', { status: null, error: 'ENOENT' }, 'git not found', false],
+    ['git too slow', { status: null, error: 'ETIMEDOUT' }, 'git timed out', true],
+    ['git killed otherwise', { status: null, error: 'EACCES' }, 'git could not be run', true],
+    ['not a repository', { status: 128, stderr: 'fatal: not a git repository (or any of the parent directories): .git' }, 'not in a git repository, or git refused this folder', false],
+    [
+      'refused for ownership (the literal safe.directory key)',
+      { status: 128, stderr: "fatal: detected dubious ownership in repository at '/x'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /x\n" },
+      'git refused this folder (safe.directory)',
+      true,
+    ],
+    ['a stub that exits 1', { status: 1, stderr: 'xcrun: error' }, 'not in a git repository, or git refused this folder', false],
+  ])('the first run failing (%s) gives no name and no second run', (_label, top, reason, undetermined) => {
     const g = fakeGit({ top });
     const st = resolveProject({}, work, g);
-    expect(st).toEqual({ name: '', source: 'none', reason, oldName: '' });
+    expect(st).toEqual({ name: '', source: 'none', reason, oldName: '', bare: false, undetermined });
     expect(g.calls).toHaveLength(1);
     expect(st.reason).not.toContain('fatal');
   });
@@ -215,7 +222,26 @@ describe('resolveProject: the order of the rules and every git failure (FR-PROJE
     ['a bad config file (exit 3)', { status: 3, stderr: 'fatal: bad config line 1' }, 'git failed (exit 3)'],
     ['git missing between runs', { status: null, error: 'ENOENT' }, 'git not found'],
   ])('the remote read failing (%s) gives no name, never the folder name', (_label, remote, reason) => {
-    expect(resolveProject({}, work, fakeGit({ remote }))).toEqual({ name: '', source: 'none', reason, oldName: '' });
+    expect(resolveProject({}, work, fakeGit({ remote }))).toEqual({ name: '', source: 'none', reason, oldName: '', bare: false, undetermined: true });
+  });
+
+  test('--is-bare-repository rides in the first run: its second line sets `bare`, the name is unchanged', () => {
+    const bare = (stdout2: string) => {
+      const g = fakeGit({ remote: { stdout: 'git@h:o/r.git\n' } });
+      return resolveProject({}, work, (args, cwd) => {
+        const r = g(args, cwd);
+        return args[0] === 'rev-parse' ? { ...r, stdout: r.stdout.replace(/\n$/, '') + '\n' + stdout2 } : r;
+      });
+    };
+    expect(bare('true\n')).toMatchObject({ name: 'o-r', source: 'remote', bare: true, undetermined: false });
+    expect(bare('false\n')).toMatchObject({ name: 'o-r', bare: false });
+    expect(bare('')).toMatchObject({ name: 'o-r', bare: false });
+  });
+
+  test('an env name is never bare nor undetermined, and runs no git', () => {
+    const g = fakeGit({});
+    expect(resolveProject({ NB_PROJECT_SLUG: 'Acme' }, work, g)).toEqual({ name: 'acme', source: 'env', reason: 'env NB_PROJECT_SLUG', oldName: '', bare: false, undetermined: false });
+    expect(g.calls).toEqual([]);
   });
 
   test('a common dir that cannot be resolved gives no name', () => {
@@ -240,7 +266,7 @@ describe('resolveProject: the order of the rules and every git failure (FR-PROJE
   });
 
   test('groupsIndex: only a name the user set or the remote gives', () => {
-    const st = (source: 'env' | 'remote' | 'folder' | 'none') => ({ name: 'x', source, reason: '', oldName: '' });
+    const st = (source: 'env' | 'remote' | 'folder' | 'none') => ({ name: 'x', source, reason: '', oldName: '', bare: false, undetermined: false });
     expect([groupsIndex(st('env')), groupsIndex(st('remote')), groupsIndex(st('folder')), groupsIndex(st('none'))]).toEqual([true, true, false, false]);
   });
 });
@@ -342,7 +368,7 @@ describe('nb project on real repositories (FR-PROJECT-001)', { timeout: 60_000 }
   test('a repository git refuses (dubious ownership) gives no name, and git\'s words are not shown', () => {
     const r = repo(join(tmp, 'theirs'), 'git@github.com:acme/app.git');
     const out = nb(['project', '--why'], r, { GIT_TEST_ASSUME_DIFFERENT_OWNER: '1' });
-    expect(out).toEqual({ code: 0, out: '(none: not in a git repository, or git refused this folder)\n', err: '' });
+    expect(out).toEqual({ code: 0, out: '(none: git refused this folder (safe.directory))\n', err: '' });
   });
 
   test('git missing gives no name, exit 0', () => {

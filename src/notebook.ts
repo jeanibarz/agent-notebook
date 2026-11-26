@@ -80,6 +80,19 @@ export function setCallMaxChars(n: number | undefined): void {
   callMaxChars = n;
 }
 
+/**
+ * The own project notebook of the `runNbCli` call in progress (issue #548), or
+ * `undefined`. Only `nb place own` may create a project folder, so while this is
+ * set `withLock` does not re-create that folder when it has gone (a concurrent
+ * `nb place shared` removed it): the write refuses instead of landing in a new,
+ * empty notebook. Set and cleared by the CLI, like `setCallMaxChars`; library
+ * callers never set it and keep today's `mkdir -p`. Internal: not on the root.
+ */
+let callNoCreateDir: string | undefined;
+export function setCallNoCreateDir(dir: string | undefined): void {
+  callNoCreateDir = dir;
+}
+
 /** `resolveIntTunable` plus how the value was resolved; `fromFile` marks the `.nb.json` override (which wins over the environment). */
 export function resolveIntTunableStatus(t: IntTunable): ResolvedInt & { fromFile: boolean; fileRaw?: string } {
   if (t === MAX_CHARS && callMaxChars !== undefined) {
@@ -796,6 +809,12 @@ export function drainPendingRecovery(): { lockSteals: number; tempReaps: number 
 }
 
 export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
+  if (callNoCreateDir !== undefined && dir === callNoCreateDir && !existsSync(dir)) {
+    throw new NbError(
+      'place_unknown',
+      `this project's own notebook (${dir}) was removed while the command ran; nothing was written. Run the command again.`,
+    );
+  }
   mkdirSync(dir, { recursive: true });
   const lock = join(dir, '.nb.lock');
   const staleMs = staleLockMs();
@@ -2527,6 +2546,7 @@ export const ERROR_CLASSES = [
   'bad_args', // a missing/malformed argument or flag, or an invalid shelf name
   'corrupt', // a mutation refused because the shelf holds a git merge-conflict marker (issue #333)
   'unknown_subcommand', // an unknown `nb` command (agents guessing names)
+  'place_unknown', // nb could not tell which notebook this directory uses (issue #548); nothing was read or written
   'other', // anything not (yet) classified — the escape hatch
 ] as const;
 

@@ -42,6 +42,22 @@ export interface ProjectState {
    * `nb project --why` so a user can find shelves written under the old name.
    */
   oldName: string;
+  /**
+   * The working directory is inside a bare repository (`rev-parse
+   * --is-bare-repository`, asked in the same run): a repository planted inside a
+   * clone, or the folder holding a `.bare` layout. Such a name never selects an
+   * own notebook (issue #548). `false` when git did not answer.
+   */
+  bare: boolean;
+  /**
+   * git could not answer although this may be a repository: a timeout, git that
+   * could not be started for another reason than "not found", a refusal for
+   * ownership (`safe.directory`), an unexpected exit of `git config`, or a
+   * repository folder that cannot be read. `nb place` then refuses to guess
+   * between an own notebook and the shared one (issue #548). Always `false` for
+   * a name from `NB_PROJECT_SLUG`, for "git not found" and for "not a repository".
+   */
+  undetermined: boolean;
 }
 
 /** How long each of the (at most two) git runs may take. */
@@ -118,7 +134,7 @@ export function groupsIndex(state: ProjectState): boolean {
   return state.source === 'env' || state.source === 'remote';
 }
 
-const none = (reason: string): ProjectState => ({ name: '', source: 'none', reason, oldName: '' });
+const none = (reason: string, undetermined = false): ProjectState => ({ name: '', source: 'none', reason, oldName: '', bare: false, undetermined });
 
 /** Why a failed git run gave no name, in nb's words. */
 function failure(r: GitRun): string {
@@ -136,14 +152,30 @@ export function resolveProject(env: NodeJS.ProcessEnv, cwd: string, git: Project
   const slug = env.NB_PROJECT_SLUG;
   if (slug) {
     const name = cleanProjectName(slug);
-    return { name, source: 'env', reason: name === '' ? 'env NB_PROJECT_SLUG has no usable character' : 'env NB_PROJECT_SLUG', oldName: '' };
+    return {
+      name,
+      source: 'env',
+      reason: name === '' ? 'env NB_PROJECT_SLUG has no usable character' : 'env NB_PROJECT_SLUG',
+      oldName: '',
+      bare: false,
+      undetermined: false,
+    };
   }
 
-  const top = git(['rev-parse', '--git-common-dir'], cwd);
-  if (top.error !== undefined) return none(failure(top));
-  if (top.status !== 0) return none('not in a git repository, or git refused this folder');
-  const out = top.stdout.trim();
-  if (out === '') return none('git gave no repository folder');
+  // `--is-bare-repository` rides in the same run (no extra process): its answer is the second line.
+  const top = git(['rev-parse', '--git-common-dir', '--is-bare-repository'], cwd);
+  if (top.error !== undefined) return none(failure(top), top.error !== 'ENOENT');
+  // git's message is read for one thing only: the literal config key of its
+  // ownership refusal (`safe.directory`), which git does not translate. Every other
+  // non-zero exit means "not a repository" (issue #548).
+  if (top.status !== 0) {
+    if (top.stderr.includes('safe.directory')) return none('git refused this folder (safe.directory)', true);
+    return none('not in a git repository, or git refused this folder');
+  }
+  const [firstLine = '', secondLine = ''] = top.stdout.split(/\r?\n/);
+  const out = firstLine.trim();
+  const bare = secondLine.trim() === 'true';
+  if (out === '') return none('git gave no repository folder', true);
   let folder: string;
   let old: string;
   try {
@@ -151,20 +183,22 @@ export function resolveProject(env: NodeJS.ProcessEnv, cwd: string, git: Project
     folder = folderOf(common);
     old = cleanProjectName(basename(dirname(common)));
   } catch {
-    return none('the repository folder could not be read');
+    return none('the repository folder could not be read', true);
   }
   const oldName = (name: string): string => (old !== name ? old : '');
 
   const remote = git(['config', '--get', 'remote.origin.url'], cwd);
-  if (remote.error !== undefined) return none(failure(remote));
+  if (remote.error !== undefined) return none(failure(remote), true);
   const fromFolder = (reason: string): ProjectState =>
-    folder === '' ? none(`${reason}, and the folder name has no usable character`) : { name: folder, source: 'folder', reason, oldName: oldName(folder) };
+    folder === ''
+      ? none(`${reason}, and the folder name has no usable character`)
+      : { name: folder, source: 'folder', reason, oldName: oldName(folder), bare, undetermined: false };
   if (remote.status === 1) return fromFolder('folder of the git repository (no origin remote)');
-  if (remote.status !== 0) return none(failure(remote));
+  if (remote.status !== 0) return none(failure(remote), true);
   // The whole value, never its first line: a URL holding a newline fails the safety check.
   const name = ownerRepo(remote.stdout.replace(/\r?\n$/, ''));
   if (name === '') return fromFolder('folder of the git repository (the origin remote is a local path or not usable as a name)');
-  return { name, source: 'remote', reason: 'git remote origin', oldName: oldName(name) };
+  return { name, source: 'remote', reason: 'git remote origin', oldName: oldName(name), bare, undetermined: false };
 }
 
 /** The one-line explanation `nb project --why` prints after the name. */

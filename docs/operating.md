@@ -97,6 +97,7 @@ Every non-zero `nb` call records a terse **error class** so a `high-error-rate` 
 | `bad_args` | a missing / malformed argument or flag, or an invalid shelf name |
 | `corrupt` | a mutation refused because the shelf holds an unresolved git merge-conflict marker |
 | `unknown_subcommand` | an unknown `nb` command (commonly an agent guessing a name, e.g. `nb upvote`) |
+| `place_unknown` | nb could not tell which notebook this directory uses (a project folder exists and git timed out or refused the folder); nothing was read or written (`nb place` says why) |
 | `other` | anything not yet classified — the escape hatch and the growth thermostat |
 
 With this, `nb stats` breaks a `high-error-rate` anomaly down by class, naming the single likely cause so the operator has a lever. **Illustrative:**

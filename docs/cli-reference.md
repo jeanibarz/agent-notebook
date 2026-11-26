@@ -229,6 +229,40 @@ under that name can be found; `--json` prints `{name, source, reason}`, with `so
 of `env`, `remote`, `folder`, `none` (`reason` is prose for people; scripts should read
 `source`). It exits 0 in every case.
 
+## Where a project's lessons live — `nb place`
+
+A project has its own notebook when the folder `~/.agent-notebook/projects/<project>/` exists,
+`<project>` being the name `nb project` prints. Otherwise it uses the shared notebook,
+`~/.agent-notebook/notebooks`. There is no setting: making the folder is the switch.
+
+```sh
+$ mkdir -p ~/.agent-notebook/projects/acme-app
+$ cd ~/git/app && nb place
+own: /home/you/.agent-notebook/projects/acme-app
+  project acme-app (git remote origin) has its own notebook. It is kept on this computer, separate from the notebook your other projects share, and does not include that notebook's general shelves.
+project folders (1): acme-app
+```
+
+- **`NB_DIR` wins.** When it is set, every project uses it and `projects/` is not read
+  (`env: <dir>`).
+- **Only a name from `NB_PROJECT_SLUG` or the git remote selects a folder.** A name taken from the
+  repository's folder (no `origin`, or a clone made from a local path) does not, because another
+  copy of the repository may sit in a folder with another name.
+- **The project's shelves stay in its folder.** From anywhere else (a plain folder, another
+  repository, git missing), a write to a shelf `<x>@<project>` of a project that has its own folder
+  is refused, so its lessons never land in the shared notebook by accident. `nb rm` and moving a
+  lesson *out of* such a shelf still work.
+- **`unknown`.** When a project folder exists and git times out, or refuses the folder for its
+  owner, nb cannot tell which notebook to use: every notebook command exits 1 with the error
+  class `place_unknown` and reads and writes nothing. A missing git is not such a case.
+- **What moves with it:** the usage log (and so `nb stats`) and `.nb.json` are per folder. The
+  retrospective's once-per-session marker stays in the shared notebook.
+
+`--json` prints `{kind, dir, shared, project, reason, folders}`, `kind` being `own`, `shared`,
+`env` or `unknown`. It exits 0 in every case. Once a project folder exists, every notebook command
+in a repository without `NB_PROJECT_SLUG` runs `git` twice (a few milliseconds) to learn the name;
+without a `projects/` folder no process is started.
+
 ## The start-of-session text — `nb brief`
 
 `nb brief` prints what an assistant should see at the start of a session: the

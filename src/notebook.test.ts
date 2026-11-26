@@ -2343,6 +2343,7 @@ describe('error-class usage column (issue #176)', () => {
       'bad_args',
       'corrupt',
       'unknown_subcommand',
+      'place_unknown',
       'other',
     ]);
   });

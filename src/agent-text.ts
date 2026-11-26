@@ -109,3 +109,20 @@ export const LAYERED_TEXT_DERIVED = {
   hidden: (hidden: number, name: string): string =>
     `  (${hidden} shelf(s) for other projects hidden (project name: ${name}, from \`nb project\`); \`nb list --limit 1000\` shows all)`,
 };
+
+/**
+ * The one line `nb brief` adds once a project folder exists (issue #548,
+ * FR-PLACE-004): where this project's lessons go. Printed only when the call is
+ * not under `NB_DIR` and at least one valid folder exists under
+ * `~/.agent-notebook/projects/`, so every other brief is byte-identical. The
+ * shared form gives a count only: a client's project name never reaches the
+ * session of another project.
+ */
+export const PLACE_TEXT = {
+  own: (name: string, dir: string): string =>
+    `Lessons for ${name} go to its own notebook (${dir}); it does not include the shared notebook's general shelves.`,
+  shared: (n: number): string =>
+    `${n} project${n === 1 ? ' has its' : 's have their'} own notebook; this one uses the shared notebook (\`nb place\` says why).`,
+  unknown: (reason: string): string =>
+    `agent-notebook could not tell which notebook this project uses (${reason}), so no lessons are shown; your lessons are untouched. \`nb place\` says why.`,
+};

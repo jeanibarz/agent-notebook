@@ -22,6 +22,7 @@
 //   nb config [--json]                      print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json = object keyed by name, string vars under `environment`)
 //   nb enabled [--why] [--json]             print `on` or `off`: whether the agent-facing loop (hooks, retrospective, text `nb list`) is on here (NB_ENABLED, then git config nb.enabled, default on)
 //   nb project [--why] [--json]             print the project name of this directory (NB_PROJECT_SLUG, then the git origin remote as owner-repo, then the repository's folder; issue #540)
+//   nb place  [--json]                      say where this directory's lessons live (own project notebook, shared, NB_DIR) and why, and list the project folders (issue #548)
 //   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  what an assistant sees at the start of a session (issue #538)
 //   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  the end-of-task retrospective text, once per session (issue #538)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
@@ -33,9 +34,10 @@
 // the usage ring so `nb stats` can surface loop / went-silent / high-error-rate
 // anomalies (and so a harness that only ever runs `--help` is still visible).
 
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
@@ -56,6 +58,7 @@ import {
   notebooksDir,
   readNbJson,
   setCallMaxChars,
+  setCallNoCreateDir,
   readShelf,
   releaseHeldLock,
   remove,
@@ -90,7 +93,8 @@ import {
 } from './config-report.js';
 import { describeSource, resolveEnabled, stateWord } from './enabled.js';
 import { describeProject, resolveProject } from './project.js';
-import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, retro } from './loop.js';
+import { resolvePlace, sharedWriteRefusal, type Place } from './place.js';
+import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, placeLine, retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import {
   fmt,
@@ -173,6 +177,7 @@ usage:
   nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under \`environment\`)
   nb enabled [--why] [--json]              print \`on\` or \`off\`: whether the agent-facing loop (hooks, retrospective, text \`nb list\`) is on in this directory
   nb project [--why] [--json]              print the project name of this directory (empty line when there is none)
+  nb place  [--json]                       say where this directory's lessons live and why, and list the project folders under ~/.agent-notebook/projects
   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  print what an assistant should see at the start of a session: instructions, the notebook index (default budget 9000 characters)
   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  print the end-of-task retrospective text the first time it is called for a session, nothing afterwards
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
@@ -336,6 +341,12 @@ notes:
     \`[A-Za-z0-9._~/-]\` in its path (a token, \`%\`, a space) gives the folder name instead. \`--why\` adds which
     rule decided, and the name nb 0.12 gave the retrospective's \`{project}\` when it differs; \`--json\` prints \`{name, source, reason}\` with \`source\` one of \`env\`/\`remote\`/\`folder\`/\`none\`.
     Read-only; exit 0 in every runtime state.
+  - \`nb place\` says where the lessons of this directory live. A project has its own notebook when the folder
+    \`~/.agent-notebook/projects/<project>/\` exists (\`<project>\` is what \`nb project\` prints, from
+    \`NB_PROJECT_SLUG\` or the git remote); otherwise it uses the shared notebook. \`NB_DIR\`, when set, wins and
+    project folders are not used. When nb cannot tell (git timed out or refused the folder), every notebook
+    command refuses and nothing is read or written. A shelf \`<x>@<project>\` of a project with its own folder
+    is written only from that project. Read-only; exit 0.
   - \`nb brief\` prints what an assistant should see at the start of a session: the instruction lines,
     one line framing the lessons as notes from earlier agent runs, and the index (\`nb list\`, indented;
     grouped into project, domain and global shelves by \`NB_PROJECT_SLUG\` or, when it is unset and a shelf
@@ -390,7 +401,7 @@ function parseDelta(arg: string): number {
  */
 export const KNOWN_COMMANDS = [
   'show', 'stale', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
-  'search', 'stats', 'doctor', 'path', 'config', 'enabled', 'project', 'brief', 'retro', 'completion', 'list', 'ls', 'shelves', 'roles',
+  'search', 'stats', 'doctor', 'path', 'config', 'enabled', 'project', 'place', 'brief', 'retro', 'completion', 'list', 'ls', 'shelves', 'roles',
   'help', 'version',
 ] as const;
 
@@ -612,6 +623,7 @@ export const KNOWN_FLAGS: Record<string, readonly string[]> = {
   config: [],
   enabled: ['--why'],
   project: ['--why'],
+  place: [],
   brief: ['--max-chars', '--session', '--hook'],
   retro: ['--session', '--work-dir', '--hook'],
   list: ['--limit'],
@@ -799,7 +811,16 @@ export async function runNbCli(
     return 0;
   }
 
-  const dir = notebooksDir();
+  // The shared notebook: `NB_DIR`, or the default folder. It also holds the
+  // retrospective's once-per-session marker, whatever the place (issue #548).
+  const sharedDir = notebooksDir();
+  // Where this call's lessons live (issue #548, FR-PLACE-001). Asked for every
+  // notebook command; not for the commands that never read a notebook, nor for an
+  // unknown command, so neither can start git for it.
+  const place: Place | null =
+    PLACE_FREE_COMMANDS.has(cmd) || !(KNOWN_COMMANDS as readonly string[]).includes(cmd) ? null : resolvePlace(process.env, currentDir());
+  // `unknown` has no folder: the call refuses below, and its usage row goes to the shared log.
+  const dir = place?.dir ?? sharedDir;
   const started = Date.now();
   let shelf = '-';
   let ok = false;
@@ -856,6 +877,7 @@ export async function runNbCli(
   const nbJson = readNbJson(dir);
   if (nbJson.warning !== undefined) process.stderr.write(nbJson.warning + '\n');
   setCallMaxChars(nbJson.maxChars);
+  setCallNoCreateDir(place?.kind === 'own' ? dir : undefined);
   try {
     // Refuse a typo'd/misplaced flag (e.g. `nb stats --exitcode`) before any
     // parsing consumes it, so it can never degrade silently (issue #267). Scans
@@ -890,6 +912,14 @@ export async function runNbCli(
     // empty), keeping every existing path byte-for-byte unchanged.
     args = args.concat(operands);
     assertOperandCount(cmd, args);
+    if (place !== null && place.kind === 'unknown' && !PLACE_REPORTING_COMMANDS.has(cmd)) {
+      throw new NbError(
+        'place_unknown',
+        `could not tell which notebook this project uses (${place.reason}); your lessons are untouched and nothing was read or written. If it persists, set NB_PROJECT_SLUG or NB_DIR (see \`nb place\`).`,
+      );
+    }
+    const refusal = place === null ? null : sharedWriteRefusal(place, args);
+    if (refusal !== null) throw new NbError('bad_args', refusal);
     switch (cmd) {
       case 'show': {
         // Resolve EVERY shelf positional from the --json-stripped args so
@@ -1621,7 +1651,7 @@ export async function runNbCli(
         const cwd = currentDir();
         const st =
           cwd === null && !process.env.NB_PROJECT_SLUG
-            ? { name: '', source: 'none' as const, reason: 'the working directory no longer exists', oldName: '' }
+            ? { name: '', source: 'none' as const, reason: 'the working directory no longer exists', oldName: '', bare: false, undetermined: false }
             : resolveProject(process.env, cwd ?? '.');
         if (json) {
           process.stdout.write(JSON.stringify({ name: st.name, source: st.source, reason: st.reason }) + '\n');
@@ -1629,6 +1659,17 @@ export async function runNbCli(
           const why = flagArgs.slice(1).includes('--why');
           process.stdout.write(why ? `${describeProject(st)}\n` : `${st.name}\n`);
         }
+        break;
+      }
+      case 'place': {
+        // Where this directory's lessons live (issue #548, FR-PLACE-002). Read-only;
+        // exit 0 in every runtime state, `unknown` included. Its usage row goes to
+        // the shared notebook (`dir` is the shared one unless the place is own).
+        const extraOperand = args.slice(1)[0];
+        if (extraOperand !== undefined) throw new NbError('bad_args', `unexpected extra argument "${extraOperand}" for \`nb place\``);
+        const p = place!;
+        if (json) process.stdout.write(JSON.stringify(placeJson(p)) + '\n');
+        else process.stdout.write(renderPlace(p));
         break;
       }
       case 'brief': {
@@ -1656,7 +1697,7 @@ export async function runNbCli(
               { command: cmd, flag: '--max-chars', value: maxRaw, usedDefault: BRIEF_MAX_CHARS_DEFAULT },
             );
         }
-        const r = brief({ dir, cwd: currentDir(), maxChars });
+        const r = brief({ dir, cwd: currentDir(), maxChars, ...briefPlace(place) });
         if (r.err) process.stderr.write(r.err);
         meta.outcome = r.outcome;
         if (sessionRaw !== undefined) meta.session = cleanSessionId(sessionRaw);
@@ -1684,7 +1725,10 @@ export async function runNbCli(
         const extraOperand = rest.slice(1).concat(operands)[0];
         if (extraOperand !== undefined) throw new NbError('bad_args', `unexpected extra argument "${extraOperand}" for \`nb retro\``);
         if (sessionRaw === undefined) throw new NbError('bad_args', 'missing --session <id> (the harness session id; pass --session "" when there is none)');
-        const r = retro({ session: sessionRaw, workDir, dir, cwd: currentDir() });
+        // The marker lives in the shared notebook whatever the place (issue #548), so a
+        // session that changes project, or a project that gets its own notebook, is
+        // asked once, and the copied 0.12 bash Stop hook agrees on where it is.
+        const r = retro({ session: sessionRaw, workDir, dir: sharedDir, cwd: currentDir() });
         if (r.err) process.stderr.write(r.err);
         meta.outcome = r.outcome;
         meta.session = r.session;
@@ -1834,11 +1878,68 @@ export async function runNbCli(
   } finally {
     // The `stats` read of the usage log happens above; logging it afterwards is fine.
     try {
-      if (!(ok && skipUsageRow)) logUsage(dir, shelf, cmd, ok, Date.now() - started, meta);
+      // An own folder removed meanwhile is not re-created by the log (issue #548).
+      const logDir = place?.kind === 'own' && !existsSync(dir) ? sharedDir : dir;
+      if (!(ok && skipUsageRow)) logUsage(logDir, shelf, cmd, ok, Date.now() - started, meta);
     } finally {
       setCallMaxChars(undefined);
+      setCallNoCreateDir(undefined);
     }
   }
+}
+
+/** The commands that never read a notebook, so never ask where it is (issue #548). */
+const PLACE_FREE_COMMANDS = new Set(['completion', 'enabled', 'project']);
+
+/** The commands that still run when the place is `unknown`, to say so (issue #548). */
+const PLACE_REPORTING_COMMANDS = new Set(['place', 'brief', 'retro', 'config']);
+
+/** What `nb brief` adds for the place (issue #548): nothing unless a project folder exists. */
+function briefPlace(place: Place | null): { placeLine?: string; placeUnknown?: boolean; project?: () => NonNullable<Place['project']> } {
+  if (place === null || place.kind === 'env') return {};
+  if (place.kind !== 'unknown' && place.folders.length === 0) return {};
+  const project = place.project === null ? {} : { project: () => place.project! };
+  if (place.kind === 'unknown') return { placeLine: placeLine({ kind: 'unknown', reason: place.reason }), placeUnknown: true };
+  if (place.kind === 'own') return { ...project, placeLine: placeLine({ kind: 'own', name: place.project!.name, dir: place.dir! }) };
+  return { ...project, placeLine: placeLine({ kind: 'shared', folders: place.folders.length }) };
+}
+
+/** `nb place --json` (FR-PLACE-002). */
+function placeJson(p: Place): object {
+  return {
+    kind: p.kind,
+    dir: p.dir,
+    shared: p.shared,
+    project: p.project === null ? null : { name: p.project.name, source: p.project.source, reason: p.project.reason },
+    reason: p.reason,
+    folders: p.folders.map((name) => ({ name, dir: join(p.projectsDir, name) })),
+  };
+}
+
+/** The plain `nb place` text (FR-PLACE-002). Folder names are already `[a-z0-9._-]`; paths are cleaned of control characters. */
+function renderPlace(p: Place): string {
+  const clean = stripControlChars;
+  const lines: string[] = [];
+  if (p.kind === 'env') {
+    lines.push(`env: ${clean(p.dir!)}`);
+    lines.push('  NB_DIR is set, so project folders are not used. To use them, unset NB_DIR, or set NB_DIR for one project only.');
+    if (resolve(p.dir!) === resolve(join(homedir(), '.agent-notebook', 'notebooks'))) {
+      lines.push('  NB_DIR is the default path: if you did not set it, a copied nb-git-wrapper from nb 0.12 may set it; update the wrapper.');
+    }
+  } else if (p.kind === 'unknown') {
+    lines.push(`unknown: ${clean(p.reason)}`);
+    lines.push('  nb reads and writes no lessons here; your lessons are untouched. If it persists, set NB_PROJECT_SLUG or NB_DIR.');
+  } else if (p.kind === 'own') {
+    lines.push(`own: ${clean(p.dir!)}`);
+    lines.push(`  ${clean(p.reason)}. It is kept on this computer, separate from the notebook your other projects share, and does not include that notebook's general shelves.`);
+  } else {
+    lines.push(`shared: ${clean(p.dir!)}`);
+    lines.push(`  ${clean(p.reason)}.`);
+  }
+  if (p.kind !== 'env') {
+    lines.push(p.folders.length === 0 ? `project folders: none (in ${clean(p.projectsDir)})` : `project folders (${p.folders.length}): ${p.folders.join(', ')}`);
+  }
+  return lines.join('\n') + '\n';
 }
 
 /** The working directory, or `null` when it no longer exists (`process.cwd()` then throws). */
