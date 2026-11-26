@@ -112,6 +112,17 @@ The index hook injects the *index of descriptions*, not a guessed notebook for t
 is this?". It saves the agent one `nb list` call; the agent still chooses what to
 open. Skip it and nothing breaks — the instruction already tells the agent to list.
 
+### Moving to the plugin
+
+*For people who copied the hook scripts by hand (the 0.12 `nb-session-start.sh` family) or pasted a `print-settings` block into a Claude Code settings file, and now install the Claude Code plugin.* Nothing breaks and nothing is lost, but two things are visible until you clean up:
+
+- **The notebook index appears twice** at the start of a session (and for each subagent): once from your old hooks and once from the plugin's.
+- **The end-of-task question still comes once.** The old scripts and the plugin share one marker file per session (`.retro-<session>` in the notebook folder), so whichever fires first asks and the other stays quiet.
+
+To stop the duplicate, remove agent-notebook's entries from the `hooks` of the settings file you edited (`~/.claude/settings.json`, or the project's `.claude/settings.json`), or open `/hooks` in Claude Code and delete them there. They are the entries whose command runs `nb-session-start.sh`, `nb-subagent-start.sh`, `nb-retrospective.sh`, `nb-claude-hook.mjs` or `nb-hook-entry.cjs`. Leave the rest of the file alone. Your notebooks are not touched, and the scripts you copied can stay on disk or be deleted.
+
+Your global `nb` (from `npm install -g agent-notebook`) can stay: the plugin's hooks always run the plugin's own copy, and when the `nb` on your `PATH` is a different version the plugin's skill tells the assistant to run the plugin's copy by its path, so the two never write to different notebooks by mistake. Or remove it with `npm uninstall -g agent-notebook` if you only want the plugin's.
+
 ### Codex CLI
 
 Codex auto-loads `AGENTS.md` (the global `~/.codex/AGENTS.md`, the repo root, and the

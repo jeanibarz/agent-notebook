@@ -27,6 +27,10 @@ The requirement is [NFR-REL-001](requirements.md#nfr-rel-001).
 4. **The marketplace pull request.** The release does not touch the marketplace entry. Someone
    opens a pull request that points `marketplace.json` at the new zip and its sha256, and **a
    person merges it**. Until then no plugin user receives the version.
+   The `marketplace-check` workflow runs on that pull request and on no other: it runs
+   `scripts/check-marketplace.mjs` (the file's shape, the release, the zip's sha256 and versions, the
+   version against `main`'s), rebuilds the tag and compares the sha256, and installs the real zip on
+   Linux, macOS and Windows. A version lower than `main`'s needs the `Rollback:` line (below).
 
 ## What each job holds
 

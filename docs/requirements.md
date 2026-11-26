@@ -2467,6 +2467,33 @@ scripts, the package files or the workflow, and nightly.
 and `describe('the old-node-entry leg (FR-PLUGIN-002, issue #559)')`, which pin the workflow's safety and
 shape; the checks themselves are run by the `plugin-e2e` workflow.
 
+<a id="fr-plugin-006"></a>
+**FR-PLUGIN-006 (Should).** `.claude-plugin/marketplace.json` is the one file that names what every plugin
+user downloads at their next update, so it SHALL name exactly one plugin, `agent-notebook`, in a marketplace
+named `agent-notebook` with a `description`, from an archive source whose URL is
+`https://github.com/jeanibarz/agent-notebook/releases/download/v<V>/agent-notebook-plugin-<V>.zip` (`<V>` is
+`X.Y.Z` or `X.Y.Z-name.N`, the same on both sides) and whose `sha256` is 64 lowercase hex digits. A person
+SHALL merge every change to it; no workflow writes it. The `marketplace-check` workflow
+(`.github/workflows/marketplace-check.yml`) SHALL run on a pull request that changes this file, and on no other
+event, with `contents: read` and no secret, and SHALL fail unless `scripts/check-marketplace.mjs` finds that:
+the file is JSON of that shape; when `main` already names a version `W`, `V` is not `W`, and a `V` below `W`
+(semantic-version order, a prerelease below its release) comes with a line `Rollback: <why>` in the pull
+request body; release `v<V>` exists, is not a draft, and is a prerelease exactly when `<V>` has a `-`
+(read from the public API, no token); the zip downloads (redirects followed, at most 20 MB), has the entry's
+sha256, and holds a `.claude-plugin/plugin.json` and a `package.json` that both say `<V>`; the zip equals the
+one a rebuild of the tag gives (`npm ci --ignore-scripts`, `npm run build`, `node scripts/build-plugin.mjs`);
+and, on Linux, macOS and Windows, the real zip installs from `main`'s entry (when there is one), updates to
+this change's, rolls back, and uninstalls. The script exits 1 for a broken rule and 2 for a wrong call or a
+network failure.
+*Proven by:* `check-marketplace.test.ts` → `describe('the marketplace check accepts a good entry (FR-PLUGIN-006, issue #559)')`,
+`describe('the marketplace check refuses a file of the wrong shape (FR-PLUGIN-006, issue #559)')`,
+`describe('the marketplace check looks the release up (FR-PLUGIN-006, issue #559)')`,
+`describe('the marketplace check looks at the zip (FR-PLUGIN-006, issue #559)')`,
+`describe('the marketplace check compares with what main names (FR-PLUGIN-006, issue #559)')` and
+`describe('the marketplace check refuses a wrong call (FR-PLUGIN-006, issue #559)')`; the workflow's
+trigger, permissions and shape by `plugin-workflows.test.ts` → `describe('the marketplace-check workflow (FR-PLUGIN-006, issue #559)')`;
+the rebuild and the three-system install are run by the workflow itself and cannot run before a release exists.
+
 <a id="nfr-rel-001"></a>
 **NFR-REL-001 (Must).** The release workflow (`.github/workflows/release.yml`) SHALL give each job only
 what it needs: the top-level `permissions` is `{}`, `verify` and `build-plugin` hold `contents: read`,
