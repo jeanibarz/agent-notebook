@@ -23,6 +23,9 @@ const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 let dir: string;
 const SAVED = { ...process.env };
+// `nb config` and `nb brief` read ~/.agent-notebook/messages (issue #539): point the home folder at a
+// throwaway one for every test, so the developer's real folder can never change an output here.
+const SAVED_HOME = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
 // Every NB_* env var this suite reads or sets. Hoisted to one list so the
 // clean-baseline `beforeEach` and the restore-to-parent `afterEach` can never
 // drift apart (issue #230).
@@ -49,16 +52,23 @@ beforeEach(() => {
   // then pointed at this test's temp dir below (issue #230).
   for (const k of MANAGED_ENV) delete process.env[k];
   process.env.NB_DIR = dir;
+  process.env.HOME = `${dir}-home`;
+  process.env.USERPROFILE = process.env.HOME;
   // Reset the process-global crash-recovery tally (issue #309) so a steal/reap in
   // one in-process CLI run can never leak its count into a later test's usage row.
   drainPendingRecovery();
 });
 afterEach(() => {
+  for (const k of ['HOME', 'USERPROFILE'] as const) {
+    if (SAVED_HOME[k] === undefined) delete process.env[k];
+    else process.env[k] = SAVED_HOME[k];
+  }
   for (const k of MANAGED_ENV) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
   rmSync(dir, { recursive: true, force: true });
+  rmSync(`${dir}-home`, { recursive: true, force: true });
 });
 
 /**

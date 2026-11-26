@@ -20,18 +20,8 @@
  * This module asks `git` through `enabled.ts` (the switch) and `project.ts` (the
  * project name, issue #540), never directly. It never writes stdout: `cli.ts` does.
  */
-import {
-  closeSync,
-  constants as fsConstants,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
   BRIEF_EMPTY_LINE,
@@ -43,6 +33,7 @@ import {
   LAYERED_UNAVAILABLE_LINE,
   PLACE_TEXT,
   RETRO_LESSONS,
+  USER_INSTRUCTIONS,
   briefBrokenLine,
   briefCutLine,
   layeredPreamble,
@@ -50,6 +41,7 @@ import {
 import { resolveEnabled, type EnabledState } from './enabled.js';
 import { cleanProjectName, groupsIndex, resolveProject, type ProjectState } from './project.js';
 import { escapeDiskName, expandHomeDir, listNotebooks, stripControlChars, type NotebookSummary } from './notebook.js';
+import { listMessages, readCheckedFile, readMessages, type MessageFile } from './messages.js';
 import { formatListing, renderConflicts, renderSkipped } from './render.js';
 
 /** What `nb retro` decided. `already` means a sentinel for this session existed. */
@@ -122,32 +114,10 @@ export function readExtraPrompt(env: NodeJS.ProcessEnv): { text: string; warning
     warning: `nb retro: ignoring NB_RETRO_EXTRA_PROMPT (${why}); sending the lessons retrospective alone\n`,
   });
   if (!isAbsolute(p)) return fail('path must be absolute');
-  let fd: number | undefined;
-  try {
-    const st = statSync(p);
-    if (!st.isFile()) return fail('not a regular file');
-    if (st.size > EXTRA_PROMPT_MAX_BYTES) return fail(`larger than ${EXTRA_PROMPT_MAX_BYTES} bytes`);
-    fd = openSync(p, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
-    const fst = fstatSync(fd);
-    if (!fst.isFile()) return fail('not a regular file');
-    if (fst.size > EXTRA_PROMPT_MAX_BYTES) return fail(`larger than ${EXTRA_PROMPT_MAX_BYTES} bytes`);
-    const buf = readFileSync(fd);
-    if (buf.length > EXTRA_PROMPT_MAX_BYTES) return fail(`larger than ${EXTRA_PROMPT_MAX_BYTES} bytes`);
-    if (buf.includes(0)) return fail('the file holds NUL bytes; save it as UTF-8 text');
-    let text = buf.toString('utf-8');
-    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // a UTF-8 byte-order mark
-    return { text: text.trim(), warning: null };
-  } catch (err) {
-    return fail((err as NodeJS.ErrnoException).code ?? (err as Error).message ?? String(err));
-  } finally {
-    if (fd !== undefined) {
-      try {
-        closeSync(fd);
-      } catch {
-        // already closed or never opened: nothing to release
-      }
-    }
-  }
+  // The shared reader (messages.ts) does the checks, in this order and with these
+  // reasons; the text is decoded without a strictness check, as it always was.
+  const r = readCheckedFile(p, EXTRA_PROMPT_MAX_BYTES);
+  return r.ok ? { text: r.bytes.toString('utf-8').trim(), warning: null } : fail(r.why);
 }
 
 /** An existing absolute directory, resolved; else `null`. */
@@ -274,8 +244,54 @@ export interface BriefOptions {
    * framing line; omitted when no project folder exists, so the text is unchanged.
    */
   placeLine?: string;
-  /** The call could not tell which notebook to use: print the header and `placeLine` only (outcome `broken`). */
+  /** The call could not tell which notebook to use: print the header, `placeLine` and the user's message blocks, with no index (outcome `broken`). */
   placeUnknown?: boolean;
+  /** The home folder whose `.agent-notebook/messages/` is read (issue #539); the CLI uses `os.homedir()`. */
+  home?: string;
+  /** The shared notebooks folder, for the check that the messages folder is not inside it; defaults to `dir`. */
+  nbDir?: string;
+  /**
+   * Whether a project name is a Windows device name, which never selects a message file.
+   * The CLI passes `place.ts`'s test, which this module cannot import (issue #539).
+   */
+  isDeviceName?: (name: string) => boolean;
+}
+
+/**
+ * The project name that may select a message file (issue #539, FR-MSG-001), or `null`,
+ * with one sentence saying why for `nb config`. Only a name from `NB_PROJECT_SLUG` or the
+ * git remote selects a file, as for an own notebook (FR-PLACE-001): a name taken from the
+ * folder can be shared by unrelated repositories. A Windows device name never does.
+ */
+export function messageProjectName(
+  st: ProjectState,
+  isDeviceName: (name: string) => boolean,
+): { name: string | null; why: string } {
+  if (st.name === '' || st.source === 'none') return { name: null, why: `no project name (${st.reason})` };
+  if (st.bare) return { name: null, why: 'a bare repository never selects a project file' };
+  if (st.source === 'folder') {
+    return { name: null, why: 'the project name comes from the folder: set NB_PROJECT_SLUG or an origin remote for a project file' };
+  }
+  if (isDeviceName(st.name)) return { name: null, why: `"${st.name}" is a Windows device name, which never selects a file` };
+  return { name: st.name, why: st.source === 'env' ? 'project name from NB_PROJECT_SLUG' : 'project name from the git remote' };
+}
+
+/** The project of a call whose directory may be gone: the state of `nb project`, or `NB_PROJECT_SLUG` alone, or none. */
+export function projectOfCall(
+  env: NodeJS.ProcessEnv,
+  cwd: string | null,
+  ask: (env: NodeJS.ProcessEnv, cwd: string) => ProjectState,
+): ProjectState {
+  if (cwd !== null) return ask(env, resolve(cwd));
+  const name = env.NB_PROJECT_SLUG ? cleanProjectName(env.NB_PROJECT_SLUG) : '';
+  return { name, source: name === '' ? 'none' : 'env', reason: 'the working directory no longer exists', oldName: '', bare: false, undetermined: false };
+}
+
+/** The lines of one message file's block, or its warning line, or none. */
+function blockLines(f: MessageFile, label: string): string[] {
+  if (f.status === 'absent') return [];
+  if (f.status === 'refused') return [USER_INSTRUCTIONS.notUsed(f.file, f.reason)];
+  return [label, f.text, USER_INSTRUCTIONS.end];
 }
 
 /**
@@ -424,6 +440,27 @@ function layeredBody(
 }
 
 /**
+ * The lines the user's message files add to `nb brief` (issue #539): the global block,
+ * then the project block, each framed by its label and the end line; a file that exists
+ * but cannot be used gives one warning line in place of its block. Empty when the
+ * folder is absent, not read, or holds neither file. The project name is asked (`ask`)
+ * only when a `<project>.brief.txt` exists, so a user without one never starts git for it.
+ */
+function briefBlocks(opts: BriefOptions, ask: () => ProjectState): string[] {
+  const listing = listMessages(opts.home ?? homedir(), opts.nbDir ?? opts.dir);
+  if (listing.state !== 'present' && listing.state !== 'inside-nb-dir') return [];
+  let project: string | null = null;
+  if (listing.projectFiles.brief.length > 0) project = messageProjectName(ask(), opts.isDeviceName ?? (() => false)).name;
+  const set = readMessages(listing, 'brief', project);
+  return [
+    ...blockLines(set.global, USER_INSTRUCTIONS.globalLabel(set.global.file)),
+    ...(set.project === null || project === null
+      ? []
+      : blockLines(set.project, USER_INSTRUCTIONS.projectLabel(project, set.project.file))),
+  ];
+}
+
+/**
  * `nb brief`: what an assistant should see at the start of a session
  * (FR-BRIEF-001..003). The 0.12 `nb-session-start.sh` output, plus one framing
  * line, a size budget, and cleaning of every value placed in the text.
@@ -433,7 +470,15 @@ export function brief(opts: BriefOptions): BriefResult {
   const enabled = opts.enabled ?? resolveEnabled;
   // A removed working directory cannot be asked: the switch fails open, as in retro().
   if (opts.cwd !== null && !enabled(env, resolve(opts.cwd)).enabled) return { outcome: 'off', text: BRIEF_OFF_LINE + '\n', err: '' };
-  const head = [...BRIEF_HEADER_LINES, FRAMING_LINE, ...(opts.placeLine !== undefined ? [opts.placeLine] : []), ''];
+  const placed = [...BRIEF_HEADER_LINES, FRAMING_LINE, ...(opts.placeLine !== undefined ? [opts.placeLine] : [])];
+  // The project name, asked at most once for the call (FR-PROJECT-001): by the messages
+  // below and by the grouping of the index.
+  let asked: ProjectState | undefined;
+  const ask = (): ProjectState => (asked ??= projectOfCall(env, opts.cwd, opts.project ?? resolveProject));
+  // The user's own message files (issue #539): after the place line, before the index, in
+  // the part that is never cut. No `messages/` folder: no lines, and no process started.
+  const blocks = briefBlocks(opts, ask);
+  const head = [...placed, ...blocks, ''];
   if (opts.placeUnknown) return { outcome: 'broken', text: head.join('\n') + '\n', err: '' };
   const room = opts.maxChars > 0 ? Math.max(1, opts.maxChars - size(head)) : 0;
   // The project the index is grouped by: NB_PROJECT_SLUG exactly as before (its raw
@@ -443,11 +488,16 @@ export function brief(opts: BriefOptions): BriefResult {
   let slug = (env.NB_PROJECT_SLUG ?? '').trim().slice(0, 128);
   let derived = false;
   if (!env.NB_PROJECT_SLUG && opts.cwd !== null && hasProjectShelf(opts.dir)) {
-    const st = (opts.project ?? resolveProject)(env, resolve(opts.cwd));
+    const st = ask();
     if (groupsIndex(st) && st.name !== '') {
       slug = st.name;
       derived = true;
     }
+  }
+  // The blocks are part of the head, which is never cut: when they alone fill the budget,
+  // one line says so in place of the index.
+  if (blocks.length > 0 && opts.maxChars > 0 && size(head) > opts.maxChars) {
+    return { outcome: 'index', text: [...head, USER_INSTRUCTIONS.noRoom(opts.maxChars)].join('\n') + '\n', err: '' };
   }
   const out = (lines: string[], outcome: BriefOutcome, err: string): BriefResult => ({
     outcome,

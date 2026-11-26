@@ -4,7 +4,8 @@
  * This module holds text only, so it imports nothing: the commands that print it
  * (`nb brief` and `nb retro` in `loop.ts`) decide when. The example hooks under
  * `examples/hooks/claude-code/` hold none of it; a test greps them for every line
- * here. Custom text (issue #539) will plug in at this point.
+ * here. The user's own message files (issue #539) are framed by the lines at the end of this
+ * file; their content comes from `messages.ts`.
  *
  * `RETRO_LESSONS` is byte for byte the nudge of the 0.12 `nb-retrospective.sh`,
  * so a hook that switches from the script to `nb retro` sends the model the same
@@ -125,4 +126,25 @@ export const PLACE_TEXT = {
     `${n} project${n === 1 ? ' has its' : 's have their'} own notebook; this one uses the shared notebook (\`nb place\` says why).`,
   unknown: (reason: string): string =>
     `agent-notebook could not tell which notebook this project uses (${reason}), so no lessons are shown; your lessons are untouched. \`nb place\` says why.`,
+};
+
+/**
+ * The framing of the user's own message files (issue #539, `~/.agent-notebook/messages/`).
+ * `nb brief` prints each used file between a label and the end line; a file that cannot
+ * be used gives one warning line in place of its block. The path is always the fixed
+ * `~/` form, never the real home folder; `file` is an exact file name nb matched, and
+ * `name` a cleaned project name, so no value from disk reaches these lines unchecked.
+ * Why a label: the lines above say the lessons are notes, not instructions from the
+ * user; without the label the user's own text would read as one more note.
+ */
+export const USER_INSTRUCTIONS = {
+  globalLabel: (file: string): string => `The user's own instructions for you (from ~/.agent-notebook/messages/${file}); follow them:`,
+  projectLabel: (name: string, file: string): string =>
+    `The user's own instructions for project ${name} (from ~/.agent-notebook/messages/${file}); where they differ from the ones above, these win:`,
+  end: "(end of the user's instructions)",
+  notUsed: (file: string, reason: string): string =>
+    `agent-notebook: the user's instructions file ~/.agent-notebook/messages/${file} was not used (${reason}); tell the user once.`,
+  /** Printed in place of the index when the message files alone fill `--max-chars`. */
+  noRoom: (maxChars: number): string =>
+    `agent-notebook: the user's instructions above leave no room for the notebook index within --max-chars ${maxChars}; run \`nb list\` yourself to see the shelves.`,
 };

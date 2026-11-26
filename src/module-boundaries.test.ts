@@ -116,7 +116,7 @@ describe('module boundaries (issue #478)', () => {
     expect(graph.get('cli')).toEqual(expect.arrayContaining(['suggest', 'config-report', 'render', 'enabled']));
     expect(graph.get('suggest')).toEqual([]);
     expect(graph.get('enabled')).toEqual(['git']);
-    expect(graph.get('config-report')?.slice().sort()).toEqual(['enabled', 'notebook', 'stats', 'suggest']);
+    expect(graph.get('config-report')?.slice().sort()).toEqual(['enabled', 'messages', 'notebook', 'stats', 'suggest']);
     expect(graph.get('render')?.slice().sort()).toEqual(['notebook', 'stats']);
     for (const [mod, deps] of graph) {
       expect(deps, `${mod}.ts imports the CLI entry point`).not.toContain('cli');
@@ -128,7 +128,7 @@ describe('module boundaries (issue #478)', () => {
   test('the agent-facing loop modules sit below cli.ts and the mechanism never imports them (issue #538)', () => {
     const graph = importGraph();
     expect(graph.get('agent-text')).toEqual([]);
-    expect(graph.get('loop')?.slice().sort()).toEqual(['agent-text', 'enabled', 'notebook', 'project', 'render']);
+    expect(graph.get('loop')?.slice().sort()).toEqual(['agent-text', 'enabled', 'messages', 'notebook', 'project', 'render']);
     expect(graph.get('cli')).toEqual(expect.arrayContaining(['loop']));
     expect(graph.get('notebook')).toEqual([]);
     for (const [mod, deps] of graph) {
@@ -160,6 +160,23 @@ describe('module boundaries (issue #478)', () => {
     for (const [mod, deps] of graph) {
       if (mod !== 'cli') expect(deps, `${mod}.ts imports place`).not.toContain('place');
     }
+  });
+
+  // Issue #539: the user's message files. The module reads a folder and takes plain values (the home
+  // folder, a project name): it never runs git, never writes, and knows no project or place module,
+  // so the rules about who selects a file stay in the commands that call it.
+  test('the message-file module imports only the standard library and the mechanism, and only loop and config-report import it (issue #539)', () => {
+    const graph = importGraph();
+    expect(graph.get('messages')).toEqual(['notebook']);
+    const text = readFileSync(join(srcDir, 'messages.ts'), 'utf-8');
+    const external = [...text.matchAll(/^import\b[^;]*?\bfrom '([^']+)'/gm)].map((m) => m[1]).filter((m) => !m!.startsWith('./'));
+    expect(new Set(external)).toEqual(new Set(['node:fs', 'node:path']));
+    expect(/from 'node:child_process'|\bimport\(/.test(text)).toBe(false);
+    expect(/\b(writeFileSync|appendFileSync|mkdirSync|renameSync|unlinkSync|rmSync|copyFileSync|openSync\([^)]*['"]w)/.test(text.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''))).toBe(false);
+    for (const [mod, deps] of graph) {
+      if (mod !== 'loop' && mod !== 'config-report') expect(deps, `${mod}.ts imports messages`).not.toContain('messages');
+    }
+    expect(graph.get('cli')).not.toContain('messages');
   });
 
   test('no source module speaks a harness hook format (issue #538)', () => {

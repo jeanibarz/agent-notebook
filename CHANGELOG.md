@@ -9,6 +9,10 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Added
+
+- **Your own words in the start-of-session text (issue #539, first part).** Put plain UTF-8 text in `~/.agent-notebook/messages/brief.txt` and `nb brief` shows it to the assistant after the built-in text, framed as the user's own instructions; `<project>.brief.txt` (the name `nb project` prints, from `NB_PROJECT_SLUG` or the git remote) is added after it for one project and wins where the two differ. Each file holds at most 1,000 characters after cleaning; a file that cannot be used (too long, not UTF-8, not a regular file, ...) gives one warning line in the brief instead of being skipped silently. The folder is never created or written by `nb`, is not read when the home folder is empty or relative, and is refused when it lies inside `NB_DIR`. `nb config` shows which files are in force, but only once `~/.agent-notebook/messages/` exists (or the home folder is not absolute); without it every output is unchanged. The end-of-task text (`retro.txt`) comes in the next change. Hooks copied from 0.12 never call `nb brief`, so they ignore these files.
+
 ## [0.13.0-beta.1] - 2026-11-26
 
 **TL;DR.** A beta of the new setup core from epic #537. Try it with `npm install -g agent-notebook@beta`; a plain `npm install agent-notebook` still gives 0.12.0.
