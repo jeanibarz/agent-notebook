@@ -101,6 +101,11 @@ export default defineConfig({
     // Issue #420: rebuild a missing/stale `dist/` before the suites exec it, so a
     // bare `npx vitest run` never tests an old build. No-op when dist/ is current.
     globalSetup: ['./scripts/vitest-global-setup.mjs'],
+    // Most suites spawn real `nb`, git and hook processes. On a busy shared macOS runner one
+    // such test took 5.3 to 7 s, past Vitest's 5 s default, which turned main red with no
+    // code at fault (#577). In CI the default is therefore 20 s, which still stops a hang;
+    // locally it stays 5 s. A test that asserts a time limit belongs to the [timing] project.
+    testTimeout: process.env.GITHUB_ACTIONS === 'true' ? 20_000 : 5_000,
     // Reporters, outputFile and coverage are run-global: they stay at the root
     // (not inside a project) so the aggregate run annotates/records once and the
     // #248 and #233 wiring is unchanged by the #249 project split.
