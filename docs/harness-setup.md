@@ -282,6 +282,58 @@ the scripts' format.
 the git wrapper and the backup keep working from any directory, and shell completion still
 completes shelf names.
 
+### One notebook per project
+
+By default every project writes into one shared notebook (`~/.agent-notebook/notebooks`).
+Lessons true only in one repository go to shelves named `<situation>@<project>`, which
+`nb brief` groups per project ([memory layers](memory-layers.md)). That is usually enough.
+
+To keep one project's lessons apart, for a client or employer for example, give it **its own
+notebook**. Run this once in its repository:
+
+```sh
+nb place own
+```
+
+This creates `~/.agent-notebook/projects/<project>/` and moves that project's
+`<x>@<project>` shelves into it. `<project>` is the name `nb project` prints: `NB_PROJECT_SLUG`,
+else the git `origin` remote as `owner-repo`. From then on, every `nb` command run in that
+repository, its worktrees and its fresh clones reads and writes only that folder. Other projects
+keep the shared notebook, and their session start shows only a count of own notebooks, never
+their names. There is no setting to change: the folder is the switch. `nb place` says which
+notebook a directory uses and why, and `nb place shared` moves the shelves back.
+
+- **`NB_DIR` wins.** With `NB_DIR` set, every project uses it and project folders are ignored,
+  as before. To use project folders, unset it. A per-project `NB_DIR` (for example in that
+  repository's `.claude/settings.local.json` `env` block) still works too.
+- **The name must not come from the folder.** A repository without an `origin` remote, or one
+  cloned from a local path, is named after its folder, which another copy may not share, so
+  `nb place own` refuses. Add an origin remote, or point an origin that is a local path at the
+  real URL (neither uploads anything), or set `NB_PROJECT_SLUG` for that project only.
+- **It is separate both ways.** The project does not see the shared notebook's general shelves.
+- **What it does not do.** It is routing on this computer, not access control or encryption.
+  `nb place own` creates the folder readable by you only (mode 0700 on macOS and Linux); a
+  folder you made by hand keeps its mode, and `nb place` warns when others can read it. Lessons
+  written before stay in the shared notebook's git history and backups, and the assistant's own
+  transcripts are not covered.
+- **When nb cannot tell** which notebook to use (for example a project folder exists and git
+  times out or refuses the folder; `nb place` gives the reason), `nb` refuses to read or write
+  rather than guess, and `nb brief` says so.
+- **Versioning and backups** cover one folder each, so set them up for an own notebook too. The
+  backup script pushes a folder only when it has a git remote; without one it commits locally,
+  pushes nothing and still exits 0:
+  ```sh
+  cd ~/.agent-notebook/projects/<project> && git init        # then the git wrapper commits there
+  git remote add origin git@github.com:you/<project>-notebook.git   # a PRIVATE repository
+  for d in ~/.agent-notebook/projects/*/; do NB_DIR="$d" /path/to/examples/nb-backup.sh; done
+  node nb-janitor.mjs                                         # the shared notebook
+  NB_DIR=~/.agent-notebook/projects/<project> node nb-janitor.mjs
+  ```
+  The git wrapper commits into whichever folder `nb` wrote. A copy of the wrapper from nb 0.12
+  sets `NB_DIR` itself, which keeps every call on the shared notebook: copy it again.
+  With a project folder present, a call through the wrapper runs `git` four times to learn the
+  project's name, against two for `nb` alone (a few milliseconds); with no project folder, none.
+
 ---
 
 ## Git-versioning

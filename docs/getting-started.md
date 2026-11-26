@@ -204,6 +204,8 @@ That's a working notebook. You just taught an assistant something it will keep.
   (plus optional convenience hooks) →
   [Harness setup guide](harness-setup.md) (Claude Code, Codex CLI; Windows, macOS,
   Linux).
+- **Keep one project's lessons apart** (a client, an employer): run `nb place own` in its
+  repository → [One notebook per project](harness-setup.md#one-notebook-per-project).
 - **Roll it out in a company** with security or data-sovereignty rules →
   [Enterprise integration guide](enterprise.md).
 - **Watch the idea on one page** → [Visual explainer](visual-explainer.html).
