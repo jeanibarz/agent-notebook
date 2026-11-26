@@ -31,7 +31,14 @@ beforeEach(() => {
   globalCfg = join(tmp, 'global.gitconfig');
   writeFileSync(globalCfg, '');
 });
-afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+afterEach(() => {
+  try {
+    rmSync(tmp, { recursive: true, force: true });
+  } catch (e) {
+    console.log('DEBUG545-AFTER', String(e), (e as Error).stack);
+    throw e;
+  }
+});
 
 function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -209,6 +216,34 @@ describe('the adapter (FR-HOOKS-001)', () => {
       expect(stop.out).toBe('');
       expect(stop.err).toContain('nb-claude-hook:');
     }
+    // Switched off in the environment, the start hooks skip even that line.
+    for (const off of ['0', 'off']) {
+      for (const ev of ['session-start', 'subagent-start']) {
+        const r = adapter(ev, {}, { NB_BIN: join(tmp, 'missing-nb'), NB_ENABLED: off });
+        expect(r.code).toBe(0);
+        expect(r.out, `${ev} NB_ENABLED=${off}`).toBe('');
+      }
+    }
+  });
+
+  testSh('a copied adapter never runs an nb found through a relative PATH entry', () => {
+    const copy = join(tmp, 'hooks copy');
+    const proj = join(tmp, 'proj');
+    mkdirSync(copy);
+    mkdirSync(proj);
+    copyFileSync(ADAPTER, join(copy, 'nb-claude-hook.mjs'));
+    const marker = join(tmp, 'ran');
+    writeFileSync(join(proj, 'nb'), `#!/bin/sh\ntouch "${marker}"\n`, { mode: 0o755 });
+    const r = done(
+      spawnSync(process.execPath, [join(copy, 'nb-claude-hook.mjs'), 'session-start'], {
+        cwd: proj,
+        env: childEnv({ PATH: '.', CLAUDE_PROJECT_DIR: proj }),
+        input: '{}',
+        encoding: 'utf-8',
+      }),
+    );
+    expect(existsSync(marker)).toBe(false);
+    expect(r.out).toMatch(/nb was not found/);
   });
 
   test('NB_BIN as a bare name is looked up on PATH, as a relative path from the working directory', () => {
@@ -239,7 +274,13 @@ describe('the adapter (FR-HOOKS-001)', () => {
     const big = adapter('subagent-start');
     const small = done(spawnSync(process.execPath, [ADAPTER, 'subagent-start', '--max-chars', '3000'], { cwd: tmp, env: childEnv(), input: '{}', encoding: 'utf-8' }));
     console.log('DEBUG545', JSON.stringify({ big: [big.code, big.out.length, big.out.slice(0, 300), big.err], small: [small.code, small.out.length, small.out.slice(-400), small.err] }));
-    expect(JSON.parse(big.out).hookSpecificOutput.additionalContext.length).toBeGreaterThan(3000);
+    try {
+      expect(JSON.parse(big.out).hookSpecificOutput.additionalContext.length).toBeGreaterThan(3000);
+      expect(JSON.parse(small.out).hookSpecificOutput.additionalContext.length).toBeLessThanOrEqual(3000);
+    } catch (e) {
+      console.log('DEBUG545-BODY', String(e));
+      throw e;
+    }
     expect(JSON.parse(small.out).hookSpecificOutput.additionalContext.length).toBeLessThanOrEqual(3000);
   });
 
@@ -283,8 +324,12 @@ describe('the trampolines keep the 0.12 file names working (FR-HOOKS-001)', () =
     const start = script(copy, 'nb-session-start.sh');
     expect(start.code).toBe(0);
     expect(start.out).toMatch(/^agent-notebook: .*nb-claude-hook\.mjs is missing.*\n$/);
-    expect(script(copy, 'nb-subagent-start.sh').out).toBe('');
-    expect(script(copy, 'nb-retrospective.sh', { session_id: 's' }).out).toBe('');
+    for (const [f, p] of [['nb-subagent-start.sh', {}], ['nb-retrospective.sh', { session_id: 's' }]] as const) {
+      const r = script(copy, f, p);
+      expect(r.code, f).toBe(0);
+      expect(r.out).toBe('');
+      expect(r.err).toContain('nb-claude-hook.mjs is missing');
+    }
     expect(sentinels()).toEqual([]);
   });
 

@@ -415,7 +415,8 @@ setups, easiest first:
    everywhere; run `nb-backup.sh` and the hook scripts from Git Bash. The
    `nb-git-wrapper.mjs` and `nb-janitor.mjs` are pure Node and run from any shell.
 3. **Native, no bash.** The Node pieces (`nb`, `nb-git-wrapper.mjs`,
-   `nb-janitor.mjs`) run directly. For the daily push, skip `nb-backup.sh` and
+   `nb-janitor.mjs`, and the Claude Code hook adapter `nb-claude-hook.mjs`, registered
+   with its `print-settings` block) run directly. For the daily push, skip `nb-backup.sh` and
    schedule the equivalent two commands with **Task Scheduler**:
    ```powershell
    git -C "$env:USERPROFILE\.agent-notebook\notebooks" add -A
