@@ -75,7 +75,7 @@ function importGraph(): Map<string, string[]> {
 }
 
 /** Internals exported by a module for the other src modules, deliberately NOT on the package root. */
-const INTERNAL = ['preserveMode', 'skipUnreadable', 'readNbJson', 'setCallMaxChars', 'resolveIntTunableStatus', 'setCallNoCreateDir']; // readNbJson..resolveIntTunableStatus: RFC 0530's call-scoped .nb.json override; setCallNoCreateDir: issue #548
+const INTERNAL = ['preserveMode', 'skipUnreadable', 'readNbJson', 'setCallMaxChars', 'resolveIntTunableStatus', 'setCallNoCreateDir', 'setCallLockCheck']; // readNbJson..resolveIntTunableStatus: RFC 0530's call-scoped .nb.json override; setCallNoCreateDir: issue #548
 
 describe('module boundaries (issue #478)', () => {
   test('src/*.ts has no import cycle', () => {
@@ -154,6 +154,8 @@ describe('module boundaries (issue #478)', () => {
   test('the place resolver sits on the project name and the mechanism, below cli.ts (issue #548)', () => {
     const graph = importGraph();
     expect(graph.get('place')?.slice().sort()).toEqual(['notebook', 'project']);
+    expect(graph.get('place-ops')).toEqual(['notebook']);
+    expect(graph.get('cli')).toEqual(expect.arrayContaining(['place-ops']));
     expect(graph.get('cli')).toEqual(expect.arrayContaining(['place']));
     for (const [mod, deps] of graph) {
       if (mod !== 'cli') expect(deps, `${mod}.ts imports place`).not.toContain('place');

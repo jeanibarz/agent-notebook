@@ -62,7 +62,7 @@
 import { createRequire } from 'node:module';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { existsSync, writeFileSync, mkdirSync, rmdirSync, rmSync, renameSync, statSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdirSync, rmdirSync, rmSync, renameSync, statSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 
@@ -293,9 +293,18 @@ function changedShelfPaths(cmd, args) {
   return names.map((name) => `${name}.md`);
 }
 
+/** The `*.md` file names of a folder (none when it cannot be read). */
+function shelfFiles(dir) {
+  try {
+    return new Set(readdirSync(dir).filter((f) => f.endsWith('.md') && !f.startsWith('.')));
+  } catch {
+    return new Set();
+  }
+}
+
 /** Commit a notebook change when NB_DIR is a git repo. Best-effort, fail-open.
  *  Runs AFTER the lesson is already on disk; only the git calls are serialized. */
-async function autoCommit(dir, argv, sessionTrailer = '') {
+async function autoCommit(dir, argv, sessionTrailer = '', paths = null) {
   if (process.env.NB_GIT_AUTOCOMMIT === '0') return;
   if (!existsSync(join(dir, '.git'))) return;
   const env = cleanGitEnv();
@@ -316,7 +325,7 @@ async function autoCommit(dir, argv, sessionTrailer = '') {
       // ...then add back ONLY the shelves THIS command wrote. A sibling wrapper's
       // already-written .md is a different path, so it is never bundled into our
       // commit — one commit per change, with an accurate message.
-      const shelves = changedShelfPaths(cmd, args);
+      const shelves = paths ?? changedShelfPaths(cmd, args);
       if (shelves.length) run(['add', '-A', '--', ...shelves]);
       try {
         run(['diff', '--cached', '--quiet']); // exit 0 → nothing staged → nothing to commit
@@ -402,8 +411,19 @@ async function main() {
   // Lesson first: the CLI writes it before any lock or git call, so a git problem
   // can never delay or lose it. Only AFTER it is on disk do we commit a successful
   // mutating command — that git section is where the lock lives (see autoCommit).
+  // `nb place own` and `nb place shared` (issue #548) move whole shelf files out of
+  // or back into the shared notebook: commit there the shelves that appeared or went.
+  const placeMove = (argv[0] ?? '').trim() === 'place' && ['own', 'shared'].includes(cliPositionals(argv)[1] ?? '');
+  const shared = notebooksDir();
+  const before = placeMove ? shelfFiles(shared) : null;
   const code = await mod.runNbCli(argv);
   process.exitCode = code;
+  if (before !== null) {
+    const after = shelfFiles(shared);
+    const changed = [...before].filter((f) => !after.has(f)).concat([...after].filter((f) => !before.has(f)));
+    if (changed.length > 0) await autoCommit(shared, argv, await sessionTrailerFor(entry, shared), changed);
+    return;
+  }
   if (code === 0 && MUTATING.has((argv[0] ?? '').trim())) {
     await autoCommit(dir, argv, await sessionTrailerFor(entry, dir));
   }

@@ -23,6 +23,7 @@
 //   nb enabled [--why] [--json]             print `on` or `off`: whether the agent-facing loop (hooks, retrospective, text `nb list`) is on here (NB_ENABLED, then git config nb.enabled, default on)
 //   nb project [--why] [--json]             print the project name of this directory (NB_PROJECT_SLUG, then the git origin remote as owner-repo, then the repository's folder; issue #540)
 //   nb place  [--json]                      say where this directory's lessons live (own project notebook, shared, NB_DIR) and why, and list the project folders (issue #548)
+//   nb place  own|shared [--json]           move this project's shelves into its own folder, or back to the shared notebook (issue #548)
 //   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  what an assistant sees at the start of a session (issue #538)
 //   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  the end-of-task retrospective text, once per session (issue #538)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
@@ -34,7 +35,7 @@
 // the usage ring so `nb stats` can surface loop / went-silent / high-error-rate
 // anomalies (and so a harness that only ever runs `--help` is still visible).
 
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -59,6 +60,8 @@ import {
   readNbJson,
   setCallMaxChars,
   setCallNoCreateDir,
+  setCallLockCheck,
+  escapeDiskName,
   readShelf,
   releaseHeldLock,
   remove,
@@ -93,7 +96,8 @@ import {
 } from './config-report.js';
 import { describeSource, resolveEnabled, stateWord } from './enabled.js';
 import { describeProject, resolveProject } from './project.js';
-import { resolvePlace, sharedWriteRefusal, type Place } from './place.js';
+import { placeRefusal, resolvePlace, scanProjects, sharedWriteRefusal, type Place } from './place.js';
+import { allShelves, isGitRepo, placeOwn, placeShared, sharedBlockers, type PlaceMove } from './place-ops.js';
 import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, placeLine, retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import {
@@ -178,6 +182,8 @@ usage:
   nb enabled [--why] [--json]              print \`on\` or \`off\`: whether the agent-facing loop (hooks, retrospective, text \`nb list\`) is on in this directory
   nb project [--why] [--json]              print the project name of this directory (empty line when there is none)
   nb place  [--json]                       say where this directory's lessons live and why, and list the project folders under ~/.agent-notebook/projects
+  nb place  own [--json]                   give this project its own notebook: create ~/.agent-notebook/projects/<project>/ and move its shelves there
+  nb place  shared [--json]                move this project's shelves back to the shared notebook and remove its folder
   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  print what an assistant should see at the start of a session: instructions, the notebook index (default budget 9000 characters)
   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  print the end-of-task retrospective text the first time it is called for a session, nothing afterwards
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
@@ -346,7 +352,11 @@ notes:
     \`NB_PROJECT_SLUG\` or the git remote); otherwise it uses the shared notebook. \`NB_DIR\`, when set, wins and
     project folders are not used. When nb cannot tell (git timed out or refused the folder), every notebook
     command refuses and nothing is read or written. A shelf \`<x>@<project>\` of a project with its own folder
-    is written only from that project. Read-only; exit 0.
+    is written only from that project. Read-only; exit 0. \`nb place own\` creates the folder (mode 0700) and
+    moves the project's \`<x>@<project>\` shelves into it, whole files, scores kept; run again, it moves what
+    is left. It refuses when \`NB_DIR\` is set or the name comes only from the repository's folder.
+    \`nb place shared\` moves every shelf of the folder back and removes it; it refuses when a shelf name is
+    already in the shared notebook or the folder holds anything else (\`.git\`, \`.nb.json\`).
   - \`nb brief\` prints what an assistant should see at the start of a session: the instruction lines,
     one line framing the lessons as notes from earlier agent runs, and the index (\`nb list\`, indented;
     grouped into project, domain and global shelves by \`NB_PROJECT_SLUG\` or, when it is unset and a shelf
@@ -920,6 +930,17 @@ export async function runNbCli(
     }
     const refusal = place === null ? null : sharedWriteRefusal(place, args);
     if (refusal !== null) throw new NbError('bad_args', refusal);
+    // Asked again under the shared notebook's lock (issue #548): `nb place own` creates
+    // the project folder while holding that lock, so a write that resolved the shared
+    // notebook before it and waited on the lock refuses instead of landing there.
+    if (place !== null && place.kind === 'shared') {
+      const p = place;
+      setCallLockCheck((locked) => {
+        if (locked !== p.shared) return;
+        const late = sharedWriteRefusal({ ...p, folders: presentFolders(p) }, args);
+        if (late !== null) throw new NbError('bad_args', late);
+      });
+    }
     switch (cmd) {
       case 'show': {
         // Resolve EVERY shelf positional from the --json-stripped args so
@@ -1662,14 +1683,73 @@ export async function runNbCli(
         break;
       }
       case 'place': {
-        // Where this directory's lessons live (issue #548, FR-PLACE-002). Read-only;
-        // exit 0 in every runtime state, `unknown` included. Its usage row goes to
-        // the shared notebook (`dir` is the shared one unless the place is own).
-        const extraOperand = args.slice(1)[0];
+        // Where this directory's lessons live (issue #548). `nb place` is read-only and
+        // exits 0 in every runtime state, `unknown` included (FR-PLACE-002); `nb place
+        // own` and `nb place shared` move the project's shelves (FR-PLACE-003). The
+        // usage row goes to the shared notebook unless the place is an existing own folder.
+        const action = args[1];
+        if (action !== undefined && action !== 'own' && action !== 'shared') {
+          throw new NbError('bad_args', `unknown action "${action}" for \`nb place\` (use \`nb place\`, \`nb place own\` or \`nb place shared\`)`);
+        }
+        const extraOperand = args.slice(2)[0];
         if (extraOperand !== undefined) throw new NbError('bad_args', `unexpected extra argument "${extraOperand}" for \`nb place\``);
         const p = place!;
-        if (json) process.stdout.write(JSON.stringify(placeJson(p)) + '\n');
-        else process.stdout.write(renderPlace(p));
+        if (action === undefined) {
+          if (json) process.stdout.write(JSON.stringify(placeJson(p)) + '\n');
+          else process.stdout.write(renderPlace(p));
+          break;
+        }
+        const cwd = currentDir();
+        const st = p.project ?? (cwd === null && !process.env.NB_PROJECT_SLUG ? null : resolveProject(process.env, cwd ?? '.'));
+        const refused = placeRefusal(p, st, action);
+        if (refused !== null) throw new NbError('bad_args', `${refused} Nothing changed.`);
+        if (action === 'own') {
+          const r = await placeOwn(p.shared, p.projectsDir, st!.name);
+          meta.outcome = r.created ? 'own-created' : 'own';
+          meta.entries = r.moved.slice(0, 20);
+          const unversioned = isGitRepo(p.shared) && !isGitRepo(r.dir);
+          const old = st!.oldName === '' ? [] : allShelves(p.shared).filter((x) => x.endsWith(`@${st!.oldName}`));
+          if (json) {
+            process.stdout.write(JSON.stringify({ kind: 'own', dir: r.dir, created: r.created, moved: r.moved, kept: r.kept, lessons: r.lessons, unversioned }) + '\n');
+          } else {
+            process.stdout.write(renderMove('own', r, st!.name, unversioned, old.length, st!.oldName));
+          }
+        } else if (p.kind !== 'own') {
+          // Nothing to move back: this directory does not use an own notebook.
+          meta.outcome = 'shared';
+          if (json) process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: [], kept: [], lessons: 0, removed: false }) + '\n');
+          else process.stdout.write(`shared: ${stripControlChars(p.shared)}\n  this directory does not use an own notebook (${stripControlChars(p.reason)}); nothing to move.\n`);
+        } else {
+          const own = p.dir!;
+          const b = sharedBlockers(p.shared, own);
+          if (b.foreign.length > 0) {
+            throw new NbError(
+              'bad_args',
+              `${own} holds files that are not lessons (${b.foreign.map(escapeDiskName).join(', ')}); move or remove them first. Nothing changed.`,
+            );
+          }
+          if (b.clashes.length > 0) {
+            throw new NbError(
+              'bad_args',
+              `the shared notebook already has shelves named ${b.clashes.join(', ')}; rename one side first (\`nb move\` within one notebook). Nothing changed.`,
+            );
+          }
+          const r = await placeShared(p.shared, own);
+          meta.outcome = r.removed ? 'shared' : 'shared-partial';
+          meta.entries = r.moved.slice(0, 20);
+          if (json) {
+            process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: r.moved, kept: r.kept, lessons: r.lessons, removed: r.removed }) + '\n');
+          } else {
+            process.stdout.write(renderMove('shared', r, st!.name, false, 0, ''));
+          }
+          if (!r.removed) {
+            throw new Error(
+              r.kept.length > 0
+                ? `${own} was kept: ${r.kept.length} shelf(s) could not be moved (listed above); run \`nb place shared\` again.`
+                : `a lesson was written to ${own} while it was being emptied, so the folder was kept; run \`nb place shared\` again.`,
+            );
+          }
+        }
         break;
       }
       case 'brief': {
@@ -1884,6 +1964,7 @@ export async function runNbCli(
     } finally {
       setCallMaxChars(undefined);
       setCallNoCreateDir(undefined);
+      setCallLockCheck(undefined);
     }
   }
 }
@@ -1904,6 +1985,27 @@ function briefPlace(place: Place | null): { placeLine?: string; placeUnknown?: b
   return { ...project, placeLine: placeLine({ kind: 'shared', folders: place.folders.length }) };
 }
 
+/** The project folders now (`nb place own` may have made one since the call resolved its place). */
+function presentFolders(p: Place): string[] {
+  return scanProjects(p.projectsDir).folders;
+}
+
+/** The shelves of an own project still in the shared notebook (written there before the folder existed). */
+function strandedShelves(p: Place): string[] {
+  if (p.kind !== 'own') return [];
+  return allShelves(p.shared).filter((x) => x.toLowerCase().endsWith(`@${p.project!.name}`));
+}
+
+/** Whether a folder can be read or entered by the group or by others (POSIX only). */
+function readableByOthers(dir: string): boolean {
+  if (process.platform === 'win32') return false;
+  try {
+    return (lstatSync(dir).mode & 0o077) !== 0;
+  } catch {
+    return false;
+  }
+}
+
 /** `nb place --json` (FR-PLACE-002). */
 function placeJson(p: Place): object {
   return {
@@ -1913,6 +2015,7 @@ function placeJson(p: Place): object {
     project: p.project === null ? null : { name: p.project.name, source: p.project.source, reason: p.project.reason },
     reason: p.reason,
     folders: p.folders.map((name) => ({ name, dir: join(p.projectsDir, name) })),
+    stranded: strandedShelves(p),
   };
 }
 
@@ -1932,12 +2035,54 @@ function renderPlace(p: Place): string {
   } else if (p.kind === 'own') {
     lines.push(`own: ${clean(p.dir!)}`);
     lines.push(`  ${clean(p.reason)}. It is kept on this computer, separate from the notebook your other projects share, and does not include that notebook's general shelves.`);
+    const name = p.project!.name;
+    const left = strandedShelves(p);
+    if (left.length > 0) lines.push(`  ${shelfCount(left.length)} of ${name} ${left.length === 1 ? 'is' : 'are'} still in the shared notebook; \`nb place own\` moves them.`);
+    const old = p.project!.oldName;
+    const oldLeft = old === '' ? 0 : allShelves(p.shared).filter((x) => x.endsWith(`@${old}`)).length;
+    if (oldLeft > 0) lines.push(`  ${shelfCount(oldLeft)} ending in @${old} (this project's name before nb 0.13, \`nb project --why\`) ${oldLeft === 1 ? 'is' : 'are'} in the shared notebook.`);
+    if (readableByOthers(p.dir!)) lines.push('  warning: other users of this computer can read this folder; `chmod 700` it to keep its lessons private.');
   } else {
     lines.push(`shared: ${clean(p.dir!)}`);
     lines.push(`  ${clean(p.reason)}.`);
   }
   if (p.kind !== 'env') {
     lines.push(p.folders.length === 0 ? `project folders: none (in ${clean(p.projectsDir)})` : `project folders (${p.folders.length}): ${p.folders.join(', ')}`);
+  }
+  return lines.join('\n') + '\n';
+}
+
+const shelfCount = (n: number): string => `${n} ${n === 1 ? 'shelf' : 'shelves'}`;
+
+/** The text of `nb place own` and `nb place shared` (FR-PLACE-003). */
+function renderMove(action: 'own' | 'shared', r: PlaceMove, name: string, unversioned: boolean, oldCount: number, oldName: string): string {
+  const clean = stripControlChars;
+  const lines: string[] = [];
+  const list = (xs: string[]): string => (xs.length > 10 ? `${xs.slice(0, 10).join(', ')}, and ${xs.length - 10} more` : xs.join(', '));
+  if (action === 'own') {
+    lines.push(`own: ${clean(r.dir)}${r.created ? ' (created)' : ''}`);
+    lines.push(
+      r.moved.length === 0
+        ? `  nothing to move: the shared notebook holds no shelf ending in @${name}`
+        : `  moved ${plural(r.lessons, 'lesson')} (${shelfCount(r.moved.length)}) from the shared notebook: ${list(r.moved)}`,
+    );
+  } else {
+    lines.push(`shared: ${clean(r.dir)}`);
+    lines.push(
+      r.moved.length === 0
+        ? `  nothing to move back`
+        : `  moved ${plural(r.lessons, 'lesson')} (${shelfCount(r.moved.length)}) back to the shared notebook: ${list(r.moved)}`,
+    );
+  }
+  for (const k of r.kept) lines.push(`  kept ${k.shelf}: ${k.why}`);
+  if (action === 'own') {
+    lines.push("  This project now reads and writes only this folder. It is kept on this computer, and does not include the shared notebook's general shelves.");
+    if (oldCount > 0) {
+      lines.push(`  ${shelfCount(oldCount)} ending in @${oldName} (this project's name before nb 0.13, \`nb project --why\`) stay in the shared notebook.`);
+    }
+    if (unversioned) lines.push('  warning: the shared notebook is a git repository and this folder is not, so its lessons are not versioned; run `git init` in it to version them.');
+  } else if (r.moved.length > 0 || r.kept.length === 0) {
+    lines.push(`  This project now uses the shared notebook again.`);
   }
   return lines.join('\n') + '\n';
 }

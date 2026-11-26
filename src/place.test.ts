@@ -404,8 +404,9 @@ describe('nb with project folders, through the built CLI (FR-PLACE-001, -002, -0
     const plain = join(tmp, 'plain');
     mkdirSync(plain);
     expect(nb(['place'], r).out).toBe(`shared: ${shared}\n  no project folders.\nproject folders: none (in ${projects})\n`);
-    mkdirSync(join(projects, 'acme-app'), { recursive: true });
-    mkdirSync(join(projects, 'beta'), { recursive: true });
+    // 0700, as `nb place own` makes them: a folder others can read adds a warning line (FR-PLACE-002).
+    mkdirSync(join(projects, 'acme-app'), { recursive: true, mode: 0o700 });
+    mkdirSync(join(projects, 'beta'), { recursive: true, mode: 0o700 });
     expect(nb(['place'], r)).toEqual({
       code: 0,
       out:
@@ -424,6 +425,7 @@ describe('nb with project folders, through the built CLI (FR-PLACE-001, -002, -0
         { name: 'acme-app', dir: join(projects, 'acme-app') },
         { name: 'beta', dir: join(projects, 'beta') },
       ],
+      stranded: [],
     });
     expect(nb(['place'], plain).out).toBe(
       `shared: ${shared}\n  no project name (not in a git repository, or git refused this folder).\nproject folders (2): acme-app, beta\n`,

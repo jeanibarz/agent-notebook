@@ -231,6 +231,8 @@ nb config [--json]                       print the effective (post-clamp) NB_* t
 nb enabled [--why] [--json]              print `on` or `off`: whether the agent-facing loop (hooks, retrospective, text `nb list`) is on in this directory
 nb project [--why] [--json]              print the project name of this directory (empty line when there is none)
 nb place  [--json]                       say where this directory's lessons live and why, and list the project folders under ~/.agent-notebook/projects
+nb place  own [--json]                   give this project its own notebook: create ~/.agent-notebook/projects/<project>/ and move its shelves there
+nb place  shared [--json]                move this project's shelves back to the shared notebook and remove its folder
 nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  print what an assistant should see at the start of a session: instructions, the notebook index (default budget 9000 characters)
 nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  print the end-of-task retrospective text the first time it is called for a session, nothing afterwards
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
