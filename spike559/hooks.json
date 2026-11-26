@@ -13,7 +13,7 @@
           },
           {
             "type": "command",
-            "command": "echo \"SPIKE559-SH v=$(cat \"$CLAUDE_PLUGIN_ROOT/SPIKE_VERSION\") node=$(command -v node || echo ABSENT) git=$(command -v git || echo ABSENT) sh=$0 envfile=${CLAUDE_ENV_FILE:-UNSET}\"; if [ -n \"$CLAUDE_ENV_FILE\" ]; then echo 'export NB_SPIKE_ENV=reached' >> \"$CLAUDE_ENV_FILE\"; fi"
+            "command": "echo \"SPIKE559-SH cwd=$(pwd) v=$(cat \"$CLAUDE_PLUGIN_ROOT/SPIKE_VERSION\") node=$(command -v node || echo ABSENT) git=$(command -v git || echo ABSENT) sh=$0 envfile=${CLAUDE_ENV_FILE:-UNSET}\"; if [ -n \"$CLAUDE_ENV_FILE\" ]; then echo 'export NB_SPIKE_ENV=reached' >> \"$CLAUDE_ENV_FILE\"; fi"
           },
           {
             "type": "command",
@@ -22,7 +22,7 @@
           {
             "type": "command",
             "shell": "powershell",
-            "command": "Write-Output ('SPIKE559-PS ps=' + $PSVersionTable.PSVersion + ' edition=' + $PSVersionTable.PSEdition + ' node=' + [string](Get-Command node -ErrorAction SilentlyContinue).Source + ' git=' + [string](Get-Command git -ErrorAction SilentlyContinue).Source + ' envfile=' + [string]$env:CLAUDE_ENV_FILE + ' root=' + $env:CLAUDE_PLUGIN_ROOT)"
+            "command": "Write-Output ('SPIKE559-PS cwd=' + (Get-Location).Path + ' ps=' + $PSVersionTable.PSVersion + ' edition=' + $PSVersionTable.PSEdition + ' node=' + [string](Get-Command node -ErrorAction SilentlyContinue).Source + ' git=' + [string](Get-Command git -ErrorAction SilentlyContinue).Source + ' envfile=' + [string]$env:CLAUDE_ENV_FILE + ' root=' + $env:CLAUDE_PLUGIN_ROOT)"
           },
           {
             "type": "command",

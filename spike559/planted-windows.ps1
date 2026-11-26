@@ -9,7 +9,7 @@ $RealNode = (Get-Command node).Source
 "=== $([Environment]::OSVersion.VersionString) PS $($PSVersionTable.PSVersion) claude $(& claude --version) node $(& node -v) real node: $RealNode date $((Get-Date).ToUniversalTime().ToString('s'))Z"
 $env:USERPROFILE = $H; $env:HOME = $H; $env:APPDATA = "$H\AppData\Roaming"; $env:LOCALAPPDATA = "$H\AppData\Local"
 $env:CLAUDE_CONFIG_DIR = "$H\.claude"; $env:DISABLE_AUTOUPDATER = '1'
-"installed plugin:"; & claude plugin list --json | node -e 'const l=JSON.parse(require("fs").readFileSync(0,"utf8"));for(const p of l)if(p.id.startsWith("agent-notebook"))console.log(p.id,p.version,p.installPath)'
+"installed plugin:"; Get-ChildItem "$H\.claude\plugins\cache\nbloop\agent-notebook" | ForEach-Object { $_.FullName }
 $Plug = Get-ChildItem "$H\.claude\plugins\cache\nbloop\agent-notebook" | Select-Object -First 1
 $Root = $Plug.FullName
 # Compile a tiny exe whose output names itself.
@@ -24,12 +24,14 @@ function Plant($dir, $names) {
     elseif ($n -like '*.cmd') { Set-Content -Encoding ASCII (Join-Path $dir $n) ('@echo PLANTED-' + $n.ToUpper()) }
   }
 }
-function Run($label, $names) {
+function Run($label, $names, $nonode) {
   "################ $label : planted = $($names -join ', ')"
   $d = Join-Path $H ("p-" + ($label -replace '[^a-z0-9]', '')); Plant $d $names; Set-Location $d
   $f = Join-Path $H 'out.jsonl'
+  $saved = $env:PATH; if ($nonode) { $env:PATH = "$ClaudeDir;C:\Windows\System32;C:\Windows;C:\Windows\System32\WindowsPowerShell\v1.0"; "PATH has node: $([bool](Get-Command node -ErrorAction SilentlyContinue))" }
   $null | & claude -p hi --output-format stream-json --verbose 2>$null | Out-File -Encoding utf8 $f
-  & node "$Here\hookrep.mjs" $f | Where-Object { $_ -notmatch 'SPIKE559-' }
+  $env:PATH = $saved
+  & node "$Here\hookrep.mjs" $f | Where-Object { $_ -notmatch 'EXEC-' }
 }
 Run 'control nothing planted' @()
 Run 'node.exe' @('node.exe')
@@ -37,6 +39,9 @@ Run 'node.cmd' @('node.cmd')
 Run 'powershell.exe' @('powershell.exe')
 Run 'sh.exe' @('sh.exe')
 Run 'sh.cmd' @('sh.cmd')
+Run 'node.exe and no node on PATH' @('node.exe') $true
+Run 'node.cmd and no node on PATH' @('node.cmd') $true
+Run 'nothing planted and no node on PATH' @() $true
 
 "################ nb.cmd from a project folder with planted node (cmd /c), real node on PATH"
 $Bin = Join-Path $Root 'bin'

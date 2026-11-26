@@ -120,4 +120,4 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - name: Q4 entry file
-        run: echo "placeholder until the entry file exists"
+        run: bash spike559/entry-test.sh

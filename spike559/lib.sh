@@ -30,6 +30,6 @@ fresh_home() { # fresh_home <name> ; sets H, exports HOME etc
 CL() { echo "\$ claude $*"; ( cd "$H/proj" && tt claude "$@" < /dev/null 2>&1 ); echo "[exit $?]"; }
 session() { # session <projdir> : one -p session, print hook events
   ( cd "$1" && tt claude -p hi --output-format stream-json --verbose < /dev/null > "$H/out.jsonl" 2> "$H/err.txt" ); echo "[session exit $?]"
-  node "$(native "$HERE/hookrep.mjs")" "$(native "$H/out.jsonl")" | grep -v 'SPIKE559-\|EXEC-' || true
+  node "$(native "$HERE/hookrep.mjs")" "$(native "$H/out.jsonl")" | grep -v 'EXEC-' || true
 }
 plugver() { claude plugin list --json | node -e 'const l=JSON.parse(require("fs").readFileSync(0,"utf8"));for(const p of l)if(p.id.startsWith("agent-notebook"))console.log("   installed:",p.id,"version",p.version,"path",p.installPath)'; }
