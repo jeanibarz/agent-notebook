@@ -196,6 +196,37 @@ A bare `prefix` scopes by name (`nb search lock review.`). `--limit N` bounds th
 
 **A failed search is itself a signal.** When a search finds nothing it is not an error (exit 0) — it is logged (with your query), so that if you then `add` a lesson in the same session, `nb stats` reads the pair back as a **`failed-search`** diagnostic signal: a coverage gap the notebook did not hold, labelled by your own query. High search volume for a topic is exactly where *surfacing* is failing for that topic, and you flag it for free just by using the tool. See [Free diagnostic signals](operating.md#free-diagnostic-signals).
 
+## The project name — `nb project`
+
+`nb project` prints which project the current directory belongs to, the name that shelves of
+that project end with (`<situation>@<name>`, see [memory layers](memory-layers.md)):
+
+```sh
+$ cd ~/git/agent-notebook && nb project --why
+jeanibarz-agent-notebook (git remote origin)
+```
+
+The first rule that applies decides:
+
+1. `NB_PROJECT_SLUG`, when set. No git runs.
+2. The git `origin` remote: its path, the segments joined by `-`, the host left out.
+   `git@github.com:acme/app.git` and `https://github.com/acme/app` both give `acme-app`;
+   a GitLab group `a/b/c` gives `a-b-c`.
+3. The name of the repository's folder, when there is no `origin`, or when `origin` is a local
+   path or holds anything but letters, digits and `. _ ~ / -` in its path (a token, a `%`, a space).
+4. Nothing (an empty line), outside a git repository, or when git is missing, takes more than
+   2 seconds, or refuses the folder ("dubious ownership").
+
+Every name is lower case, made of `a-z 0-9 . _ -`, at most 100 characters. A remote URL is never
+printed. Two forms of one repository can give two names on some hosts (Azure DevOps over ssh
+and https, Bitbucket Server's `/scm/` prefix); set `NB_PROJECT_SLUG` for such a repository, for
+example in its `.claude/settings.local.json` `env` block. The name includes the remote's owner,
+often an employer or a client; set `NB_PROJECT_SLUG` to choose another.
+
+`--why` adds the rule that decided; `--json` prints `{name, source, reason}`, with `source` one
+of `env`, `remote`, `folder`, `none` (`reason` is prose for people; scripts should read
+`source`). It exits 0 in every case.
+
 ## The start-of-session text — `nb brief`
 
 `nb brief` prints what an assistant should see at the start of a session: the

@@ -21,6 +21,7 @@
 //   nb path   [<shelf> | --usage] [--json]   print the notebooks dir, a shelf's file path, or the usage-log path (--json = {dir, shelf, path} object)
 //   nb config [--json]                      print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json = object keyed by name, string vars under `environment`)
 //   nb enabled [--why] [--json]             print `on` or `off`: whether the agent-facing loop (hooks, retrospective, text `nb list`) is on here (NB_ENABLED, then git config nb.enabled, default on)
+//   nb project [--why] [--json]             print the project name of this directory (NB_PROJECT_SLUG, then the git origin remote as owner-repo, then the repository's folder; issue #540)
 //   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  what an assistant sees at the start of a session (issue #538)
 //   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  the end-of-task retrospective text, once per session (issue #538)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
@@ -88,6 +89,7 @@ import {
   type ConfigStatus,
 } from './config-report.js';
 import { describeSource, resolveEnabled, stateWord } from './enabled.js';
+import { describeProject, resolveProject } from './project.js';
 import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import {
@@ -170,6 +172,7 @@ usage:
   nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
   nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under \`environment\`)
   nb enabled [--why] [--json]              print \`on\` or \`off\`: whether the agent-facing loop (hooks, retrospective, text \`nb list\`) is on in this directory
+  nb project [--why] [--json]              print the project name of this directory (empty line when there is none)
   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  print what an assistant should see at the start of a session: instructions, the notebook index (default budget 9000 characters)
   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  print the end-of-task retrospective text the first time it is called for a session, nothing afterwards
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
@@ -325,6 +328,14 @@ notes:
     one repository, \`--global\` for all of them); otherwise on. A missing \`git\` or an invalid value resolves to
     on, with a warning on stderr. \`--why\` adds which input decided. Read-only; it switches off only the hooks
     that ask it and the text \`nb list\` index, never the other \`nb\` commands.
+  - \`nb project\` prints the project name of the current directory: \`NB_PROJECT_SLUG\` when set (no git runs);
+    otherwise the git \`origin\` remote's path with its segments joined by \`-\` (\`git@github.com:acme/app.git\` gives
+    \`acme-app\`, the host left out); otherwise the name of the repository's folder; outside a git repository, or
+    when git is missing, slow or refuses the folder, nothing (an empty line). Every name is lower case
+    \`[a-z0-9._-]\`, at most 100 characters. A remote URL is never printed, and one holding anything but
+    \`[A-Za-z0-9._~/-]\` in its path (a token, \`%\`, a space) gives the folder name instead. \`--why\` adds which
+    rule decided; \`--json\` prints \`{name, source, reason}\` with \`source\` one of \`env\`/\`remote\`/\`folder\`/\`none\`.
+    Read-only; exit 0 in every runtime state.
   - \`nb brief\` prints what an assistant should see at the start of a session: the instruction lines,
     one line framing the lessons as notes from earlier agent runs, and the index (\`nb list\`, indented;
     grouped into project, domain and global shelves when \`NB_PROJECT_SLUG\` is set, the global one named
@@ -378,7 +389,7 @@ function parseDelta(arg: string): number {
  */
 export const KNOWN_COMMANDS = [
   'show', 'stale', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
-  'search', 'stats', 'doctor', 'path', 'config', 'enabled', 'brief', 'retro', 'completion', 'list', 'ls', 'shelves', 'roles',
+  'search', 'stats', 'doctor', 'path', 'config', 'enabled', 'project', 'brief', 'retro', 'completion', 'list', 'ls', 'shelves', 'roles',
   'help', 'version',
 ] as const;
 
@@ -599,6 +610,7 @@ export const KNOWN_FLAGS: Record<string, readonly string[]> = {
   path: ['--usage'],
   config: [],
   enabled: ['--why'],
+  project: ['--why'],
   brief: ['--max-chars', '--session', '--hook'],
   retro: ['--session', '--work-dir', '--hook'],
   list: ['--limit'],
@@ -1594,6 +1606,27 @@ export async function runNbCli(
           const why = flagArgs.slice(1).includes('--why');
           process.stdout.write(why ? `${stateWord(st)} (${describeSource(st)})\n` : `${stateWord(st)}\n`);
           if (!why && st.warning !== null) process.stderr.write(`nb enabled: warning: ${st.warning}\n`);
+        }
+        break;
+      }
+      case 'project': {
+        // The project name of this directory (issue #540, FR-PROJECT-001):
+        // NB_PROJECT_SLUG, then the origin remote, then the repository folder.
+        // Read-only; exit 0 in every runtime state. The plain output is the name
+        // alone (an empty line when there is none) so `$(nb project)` works; the
+        // reason is shown by --why and --json, never on stderr.
+        // A removed working directory cannot be asked, but NB_PROJECT_SLUG still wins
+        // (rule 1 runs no git), as it does for `nb retro`.
+        const cwd = currentDir();
+        const st =
+          cwd === null && !process.env.NB_PROJECT_SLUG
+            ? { name: '', source: 'none' as const, reason: 'the working directory no longer exists', folderName: '' }
+            : resolveProject(process.env, cwd ?? '.');
+        if (json) {
+          process.stdout.write(JSON.stringify({ name: st.name, source: st.source, reason: st.reason }) + '\n');
+        } else {
+          const why = flagArgs.slice(1).includes('--why');
+          process.stdout.write(why ? `${describeProject(st)}\n` : `${st.name}\n`);
         }
         break;
       }

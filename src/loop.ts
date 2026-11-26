@@ -17,8 +17,8 @@
  * that the file is a regular file of at most 64 KiB before it is opened
  * (requirements FR-RETRO-001..003).
  *
- * This module spawns `git` (through `enabled.ts`, and once for the project name
- * of the extra prompt). It never writes stdout: `cli.ts` does.
+ * This module asks `git` (through `enabled.ts`, and once for the project name
+ * of the extra prompt), always through `git.ts`. It never writes stdout: `cli.ts` does.
  */
 import {
   closeSync,
@@ -33,7 +33,6 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import {
   BRIEF_EMPTY_LINE,
@@ -48,6 +47,8 @@ import {
   layeredPreamble,
 } from './agent-text.js';
 import { resolveEnabled, type EnabledState } from './enabled.js';
+import { runGit } from './git.js';
+import { cleanProjectName } from './project.js';
 import { escapeDiskName, expandHomeDir, listNotebooks, type NotebookSummary } from './notebook.js';
 import { formatListing, renderConflicts, renderSkipped } from './render.js';
 
@@ -99,23 +100,6 @@ export function cleanSessionId(raw: string): string {
 }
 
 /**
- * Clean a project name as the 0.12 Stop hook did for `{project}`: lower case,
- * `[a-z0-9._-]` only, no `..`, letter or digit at both ends, at most 100
- * characters. `''` when nothing usable is left.
- */
-export function cleanProjectName(raw: string): string {
-  const trimEnds = (s: string): string => s.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');
-  return trimEnds(
-    trimEnds(
-      String(raw)
-        .toLowerCase()
-        .replace(/[^a-z0-9._-]/g, '-')
-        .replace(/\.{2,}/g, '.'),
-    ).slice(0, 100),
-  );
-}
-
-/**
  * The project name for `{project}`: `NB_PROJECT_SLUG` when set, else the folder
  * that holds the repository's git common directory (one name for a checkout and
  * all its worktrees), asked in `cwd`. `''` when there is no usable name (not a
@@ -124,13 +108,8 @@ export function cleanProjectName(raw: string): string {
 export function projectName(env: NodeJS.ProcessEnv, cwd: string): string {
   if (env.NB_PROJECT_SLUG) return cleanProjectName(env.NB_PROJECT_SLUG);
   try {
-    const r = spawnSync('git', ['rev-parse', '--git-common-dir'], {
-      cwd,
-      encoding: 'utf-8',
-      timeout: 5000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    const out = r.error || r.status !== 0 ? '' : (r.stdout || '').trim();
+    const r = runGit(['rev-parse', '--git-common-dir'], cwd, 5000);
+    const out = r.error !== undefined || r.status !== 0 ? '' : r.stdout.trim();
     if (out === '') return '';
     const common = realpathSync(resolve(cwd, out));
     return cleanProjectName(basename(dirname(common)));
