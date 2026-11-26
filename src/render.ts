@@ -62,7 +62,7 @@ function engagementDiagnosisLines(diag: EngagementDiagnosis | null): string[] {
     } else if (cause === 'injection-hook') {
       out.push(
         `  surfacing: no engaged sessions — notebooks hold ${plural(diag.storedLessons, 'lesson')} but had 0 reads in this window; ` +
-          `the SessionStart injection hook is probably not wired`,
+          `the SessionStart injection hook is probably not wired (nb status says whether chats start the notebook)`,
       );
     }
   }

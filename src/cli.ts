@@ -26,20 +26,21 @@
 //   nb place  own|shared [--json]           move this project's shelves into its own folder, or back to the shared notebook (issue #548)
 //   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  what an assistant sees at the start of a session (issue #538)
 //   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  the end-of-task retrospective text, once per session (issue #538)
+//   nb status [--json]                      say whether chats start the notebook here: two plain lines, then the details; read-only, writes no usage row, exit 0 only when it is running (issue #558)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
 //   nb ls / nb shelves / nb roles          aliases of `nb list` (`roles` is deprecated)
 //   nb completion <bash|zsh>               print a static shell-completion script to source
 //   nb --help                              this help
 //
 // Every call — including `nb --help` and `nb --version` — appends one line to
-// the usage ring so `nb stats` can surface loop / went-silent / high-error-rate
+// the usage ring (except `nb status`, which writes nothing, and a repeated `nb retro` stop) so `nb stats` can surface loop / went-silent / high-error-rate
 // anomalies (and so a harness that only ever runs `--help` is still visible).
 
 import { lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   addEntry,
@@ -101,6 +102,8 @@ import { isWindowsDeviceName, placeRefusal, resolvePlace, scanProjects, sharedWr
 import { allShelves, isGitRepo, placeOwn, placeShared, sharedName, unfinishedMoves, type PlaceMove } from './place-ops.js';
 import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, existingAbsoluteDir, extraPromptStatus, messageProjectName, placeLine, projectOfCall, retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
+import { decideStatus, renderStatus, statusJson } from './status.js';
+import { gatherFacts } from './status-facts.js';
 import {
   fmt,
   plural,
@@ -187,6 +190,7 @@ usage:
   nb place  shared [--json]                move this project's shelves back to the shared notebook and remove its folder
   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  print what an assistant should see at the start of a session: instructions, the notebook index (default budget 9000 characters)
   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  print the end-of-task retrospective text the first time it is called for a session, nothing afterwards
+  nb status [--json]                       say whether chats start the notebook here: two plain lines, then the details (read-only; exit 0 only when it is running)
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
   nb shelves [prefix] [--limit N]         alias of \`nb list\`
@@ -358,6 +362,12 @@ notes:
     is left. It refuses when \`NB_DIR\` is set or the name comes only from the repository's folder.
     \`nb place shared\` moves every shelf of the folder back and removes it; it refuses when a shelf name is
     already in the shared notebook or the folder holds anything else (\`.git\`, \`.nb.json\`).
+  - \`nb status\` says whether chats start the notebook here. It prints two plain lines (what is the case, what to do
+    next), a blank line, then details: the version, the switch, where the lessons live, the last chat starts it
+    saw, and, in a final group you may want to remove before posting, names and paths. The verdict is \`running\`,
+    \`not_seen\`, \`off\`, \`place_unknown\` or \`broken\`; \`--json\` prints them as fields (no paths). It reads the
+    usage log and shelf names only, writes nothing (not even a usage row) and takes no lock. It shows that the start
+    step ran, not that the assistant read the list. Exit 0 only when it is running, else 1.
   - \`nb brief\` prints what an assistant should see at the start of a session: the instruction lines,
     one line framing the lessons as notes from earlier agent runs, and the index (\`nb list\`, indented;
     grouped into project, domain and global shelves by \`NB_PROJECT_SLUG\` or, when it is unset and a shelf
@@ -412,7 +422,7 @@ function parseDelta(arg: string): number {
  */
 export const KNOWN_COMMANDS = [
   'show', 'stale', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
-  'search', 'stats', 'doctor', 'path', 'config', 'enabled', 'project', 'place', 'brief', 'retro', 'completion', 'list', 'ls', 'shelves', 'roles',
+  'search', 'stats', 'doctor', 'path', 'config', 'enabled', 'project', 'place', 'brief', 'retro', 'status', 'completion', 'list', 'ls', 'shelves', 'roles',
   'help', 'version',
 ] as const;
 
@@ -637,6 +647,7 @@ export const KNOWN_FLAGS: Record<string, readonly string[]> = {
   place: [],
   brief: ['--max-chars', '--session', '--hook'],
   retro: ['--session', '--work-dir', '--hook'],
+  status: [],
   list: ['--limit'],
   ls: ['--limit'],
   shelves: ['--limit'],
@@ -1876,6 +1887,30 @@ export async function runNbCli(
         }
         break;
       }
+      case 'status': {
+        // Is the notebook running here (issue #558, FR-STATUS-001..003). Read-only: no
+        // lock, no folder created, no usage row (see the `finally`); runs when the place
+        // is `unknown`. Exit 0 only for `running`; callers branch on `verdict`.
+        const extraOperand = args.slice(1)[0];
+        if (extraOperand !== undefined) throw new NbError('bad_args', `unexpected extra argument "${extraOperand}" for \`nb status\``);
+        const cwd = currentDir();
+        const st = place?.project ?? projectOfCall(process.env, cwd, resolveProject);
+        const facts = gatherFacts({
+          env: process.env,
+          cwd,
+          place: { kind: place!.kind, dir: place!.dir, shared: sharedDir, reason: place!.reason },
+          project: st,
+          messageProject: messageProjectName(st, isWindowsDeviceName).name,
+          programFile: fileURLToPath(import.meta.url),
+          argv1: process.argv[1],
+          version: pkgVersion(),
+        });
+        const now = Date.now();
+        const decision = decideStatus(facts, now);
+        process.stdout.write(json ? JSON.stringify(statusJson(facts, decision, now)) + '\n' : renderStatus(facts, decision, now));
+        ok = true;
+        return decision.verdict === 'running' ? 0 : 1;
+      }
       case 'list':
       case 'ls':
       case 'shelves':
@@ -2012,7 +2047,8 @@ export async function runNbCli(
     try {
       // An own folder removed meanwhile is never re-created by the log (issue #548,
       // #551): the row is written there without `mkdir -p`, else to the shared log.
-      if (!(ok && skipUsageRow)) {
+      // `nb status` writes no usage row in any case, an error included (FR-STATUS-001, FR-USAGE-001).
+      if (cmd !== 'status' && !(ok && skipUsageRow)) {
         const ms = Date.now() - started;
         if (place?.kind !== 'own' || !appendUsage(dir, shelf, cmd, ok, ms, meta, { noCreate: true })) {
           logUsage(place?.kind === 'own' ? sharedDir : dir, shelf, cmd, ok, ms, meta);
@@ -2030,7 +2066,7 @@ export async function runNbCli(
 const PLACE_FREE_COMMANDS = new Set(['completion', 'enabled', 'project']);
 
 /** The commands that still run when the place is `unknown`, to say so (issue #548). */
-const PLACE_REPORTING_COMMANDS = new Set(['place', 'brief', 'retro', 'config']);
+const PLACE_REPORTING_COMMANDS = new Set(['place', 'brief', 'retro', 'config', 'status']);
 
 /** What `nb brief` adds for the place (issue #548): nothing unless a project folder exists. */
 function briefPlace(place: Place | null): { placeLine?: string; placeUnknown?: boolean; project?: () => NonNullable<Place['project']> } {
