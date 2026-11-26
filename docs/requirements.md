@@ -1886,7 +1886,17 @@ entry ([NG-005](#ng-005)).
 *Proven by:* `retro.test.ts` → `describe('nb retro sweeps old sentinels (FR-RETRO-003)')`.
 
 <a id="fr-hooks-001"></a>
-**FR-HOOKS-001 (Should).** The Claude Code example hooks SHALL be one Node adapter that
+**FR-HOOKS-001 (Should).** Every hook adapter SHALL pass `--hook <harness>.<event>` to
+`nb brief` and `nb retro`, and the core SHALL store that label as opaque text: it never
+splits it or matches it against a harness name, and shows it as the hook named itself. The
+example adapter `nb-claude-hook.mjs`, which serves Claude Code and Codex, takes
+`--harness <name>` (`^[a-z0-9][a-z0-9-]{0,23}$`; an invalid or empty value is ignored). Without
+it the harness is `claude-code` only when `CLAUDE_CODE_SESSION_ID` and the payload's
+`session_id` are both non-empty and equal, compared before any cleaning, and `hook`
+otherwise. Only an explicit valid `--harness` other than `claude-code` makes the adapter run
+`nb` in the payload's `cwd` (an existing absolute folder, else its own working directory)
+instead of `CLAUDE_PROJECT_DIR`; the inferred harness never changes the folder. The Claude Code
+example hooks SHALL be one Node adapter that
 reads the hook payload, applies the Claude Code rules (a stop while the lead waits for
 delegated work, a subagent's stop and a repeated stop never nudge), calls `nb brief` or
 `nb retro`, and wraps their output in Claude Code's reply format. The hooks SHALL contain no
@@ -1896,7 +1906,8 @@ or fails, a start hook SHALL inject one diagnostic line naming the fix (skipped 
 existing `.sh` file names SHALL keep working, so existing `settings.json` files need no
 change.
 *Proven by:* `nb-claude-hook.test.ts` → `describe('the hooks send what the 0.12 scripts sent (FR-HOOKS-001, acceptance criterion 1)')`,
-`describe('the adapter (FR-HOOKS-001)')` and
+`describe('the adapter (FR-HOOKS-001)')`,
+`describe('the harness label and the project folder (FR-HOOKS-001, issue #558)')` and
 `describe('the trampolines keep the 0.12 file names working (FR-HOOKS-001)')`; the stop rules by
 `nb-retrospective.test.ts` → `describe('nb-retrospective.sh nudge timing (issue #520)')`.
 

@@ -155,8 +155,8 @@ else
   mkdir -p "$CODEX_DIR" && cat > "$CODEX_DIR/hooks.json" <<EOF
 {
   "hooks": {
-    "SessionStart": [{ "hooks": [{ "type": "command", "command": "node \"$HOOK\" session-start" }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "command": "node \"$HOOK\" stop" }] }]
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "node \"$HOOK\" session-start --harness codex" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node \"$HOOK\" stop --harness codex" }] }]
   }
 }
 EOF
@@ -172,6 +172,10 @@ ignores the `args` field that Claude Code accepts, so the `print-settings` block
 the Claude Code adapter (`"command": "node"` plus `args`) does not work in Codex: the
 hook starts `node` with no script and fails. That is also why one hooks file cannot
 serve both tools.
+
+`--harness codex` makes the usage log record these runs as `codex.session-start` and
+`codex.stop`, and makes `nb` run in the folder Codex reports for the session. Hooks pasted
+before this change are recorded as `hook.*`, or as `claude-code.*` by an older adapter.
 
 **2. Trust the hooks, in an interactive session.** Codex runs a hook only after you
 trust it. Start `codex` (not `codex exec`) in any folder. It opens with:

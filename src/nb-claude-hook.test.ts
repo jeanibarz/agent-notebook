@@ -302,6 +302,102 @@ describe('the adapter (FR-HOOKS-001)', () => {
   });
 });
 
+// Issue #558 (FR-HOOKS-001): the label every hook run records, `<harness>.<event>`, and
+// the folder `nb` runs in. A stand-in `nb` (NB_BIN) records what it was called with.
+describe('the harness label and the project folder (FR-HOOKS-001, issue #558)', () => {
+  /** Runs the adapter with a stand-in `nb`; returns the `--hook` label and the folder `nb` ran in. */
+  function probe(event: string, flags: string[], payload: unknown, env: Record<string, string | undefined> = {}) {
+    const record = join(tmp, 'record.json');
+    const fake = join(tmp, 'fake-nb.mjs');
+    writeFileSync(fake, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }));\n`);
+    const e = childEnv({ NB_BIN: fake });
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete e[k];
+      else e[k] = v;
+    }
+    const r = spawnSync(process.execPath, [ADAPTER, event, ...flags], { cwd: tmp, env: e, input: JSON.stringify(payload), encoding: 'utf-8', timeout: 20_000 });
+    expect(r.status).toBe(0);
+    const seen = JSON.parse(readFileSync(record, 'utf-8')) as { argv: string[]; cwd: string };
+    return { label: seen.argv[seen.argv.indexOf('--hook') + 1], argv: seen.argv, cwd: realpathSync(seen.cwd) };
+  }
+
+  test('--harness names the label, for every event', () => {
+    expect(probe('session-start', ['--harness', 'codex'], {}).label).toBe('codex.session-start');
+    expect(probe('subagent-start', ['--harness', 'codex'], {}).label).toBe('codex.subagent-start');
+    expect(probe('stop', ['--harness', 'codex'], { session_id: 's' }).label).toBe('codex.stop');
+  });
+
+  test('an invalid or empty --harness is ignored, as if absent', () => {
+    for (const bad of ['BAD!', '', '-x', '--max-chars', 'a'.repeat(25), 'Codex', 'a b', '.x', 'é']) {
+      expect(probe('session-start', ['--harness', bad], {}, { CLAUDE_CODE_SESSION_ID: undefined }).label, JSON.stringify(bad)).toBe('hook.session-start');
+      expect(probe('session-start', ['--harness', bad], { session_id: 'sid' }, { CLAUDE_CODE_SESSION_ID: 'sid' }).label, JSON.stringify(bad)).toBe('claude-code.session-start');
+    }
+    expect(probe('session-start', ['--harness'], {}, { CLAUDE_CODE_SESSION_ID: undefined }).label).toBe('hook.session-start');
+    expect(probe('session-start', ['--harness', 'a'.repeat(24)], {}).label).toBe(`${'a'.repeat(24)}.session-start`);
+  });
+
+  test('without --harness, equal non-empty session ids make it claude-code', () => {
+    expect(probe('session-start', [], { session_id: 'abc' }, { CLAUDE_CODE_SESSION_ID: 'abc' }).label).toBe('claude-code.session-start');
+    expect(probe('stop', [], { session_id: 'abc' }, { CLAUDE_CODE_SESSION_ID: 'abc' }).label).toBe('claude-code.stop');
+  });
+
+  test('the ids are compared raw, before the adapter cleans the session id', () => {
+    // 'a b' and 'a_b' are one id once cleaned; as sent they are two.
+    expect(probe('session-start', [], { session_id: 'a b' }, { CLAUDE_CODE_SESSION_ID: 'a_b' }).label).toBe('hook.session-start');
+    expect(probe('session-start', [], { session_id: 'a b' }, { CLAUDE_CODE_SESSION_ID: 'a b' }).label).toBe('claude-code.session-start');
+  });
+
+  test('without --harness, an unset, empty or different CLAUDE_CODE_SESSION_ID gives hook', () => {
+    const payload = { session_id: 'abc' };
+    expect(probe('session-start', [], payload, { CLAUDE_CODE_SESSION_ID: undefined }).label).toBe('hook.session-start');
+    expect(probe('session-start', [], payload, { CLAUDE_CODE_SESSION_ID: '' }).label).toBe('hook.session-start');
+    expect(probe('session-start', [], payload, { CLAUDE_CODE_SESSION_ID: 'other' }).label).toBe('hook.session-start');
+  });
+
+  test('an empty or missing payload session id gives hook, even beside an empty environment id', () => {
+    expect(probe('session-start', [], { session_id: '' }, { CLAUDE_CODE_SESSION_ID: '' }).label).toBe('hook.session-start');
+    expect(probe('session-start', [], {}, { CLAUDE_CODE_SESSION_ID: '' }).label).toBe('hook.session-start');
+    expect(probe('session-start', [], { session_id: '' }, { CLAUDE_CODE_SESSION_ID: 'abc' }).label).toBe('hook.session-start');
+    expect(probe('session-start', [], { session_id: 7 }, { CLAUDE_CODE_SESSION_ID: '7' }).label).toBe('hook.session-start');
+  });
+
+  test('--harness works before and after --max-chars, which still reaches nb brief', () => {
+    for (const flags of [['--harness', 'codex', '--max-chars', '3000'], ['--max-chars', '3000', '--harness', 'codex']]) {
+      const r = probe('session-start', flags, {});
+      expect(r.label, flags.join(' ')).toBe('codex.session-start');
+      expect(r.argv.slice(r.argv.indexOf('--max-chars'), r.argv.indexOf('--max-chars') + 2)).toEqual(['--max-chars', '3000']);
+    }
+  });
+
+  test('an explicit --harness wins over a matching Claude Code session id', () => {
+    expect(probe('session-start', ['--harness', 'codex'], { session_id: 'abc' }, { CLAUDE_CODE_SESSION_ID: 'abc' }).label).toBe('codex.session-start');
+  });
+
+  test('--harness claude-code keeps CLAUDE_PROJECT_DIR; so does the inferred label, even with mismatched ids', () => {
+    const proj = join(tmp, 'proj');
+    const work = join(tmp, 'work dir');
+    mkdirSync(proj);
+    mkdirSync(work);
+    const env = { CLAUDE_PROJECT_DIR: proj, CLAUDE_CODE_SESSION_ID: 'other' };
+    expect(probe('session-start', ['--harness', 'claude-code'], { cwd: work }, env).cwd).toBe(proj);
+    const mismatched = probe('session-start', [], { cwd: work, session_id: 'abc' }, env);
+    expect(mismatched.label).toBe('hook.session-start');
+    expect(mismatched.cwd).toBe(proj);
+    const matched = probe('session-start', [], { cwd: work, session_id: 'abc' }, { CLAUDE_PROJECT_DIR: proj, CLAUDE_CODE_SESSION_ID: 'abc' });
+    expect(matched.label).toBe('claude-code.session-start');
+    expect(matched.cwd).toBe(proj);
+    // An invalid --harness is "as if absent": it does not move the folder either.
+    expect(probe('session-start', ['--harness', 'BAD!'], { cwd: work }, { CLAUDE_PROJECT_DIR: proj }).cwd).toBe(proj);
+  });
+
+  test('print-settings is byte for byte what it was: Claude Code needs no flag', () => {
+    const adapterPath = ADAPTER.replace(/\\/g, '/');
+    const hook = (name: string) => [{ hooks: [{ type: 'command', command: 'node', args: [adapterPath, name] }] }];
+    const expected = JSON.stringify({ hooks: { SessionStart: hook('session-start'), SubagentStart: hook('subagent-start'), Stop: hook('stop') } }, null, 2) + '\n';
+    expect(adapter('print-settings').out).toBe(expected);
+  });
+});
+
 describe('the trampolines keep the 0.12 file names working (FR-HOOKS-001)', () => {
   testSh('they run under a POSIX sh (dash), not only bash', () => {
     shelf('build', 1);
