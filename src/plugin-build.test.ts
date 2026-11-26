@@ -126,6 +126,7 @@ describe('the plugin zip holds exactly these files (FR-PLUGIN-001, issue #559)',
   test('the golden entry list, with the Unix mode of each', () => {
     const fixed: Array<[string, number]> = [
       ['.claude-plugin/plugin.json', 0o100644],
+      ['CHANGELOG.md', 0o100644],
       ['LICENSE', 0o100644],
       ['bin/nb', 0o100755],
       ['bin/nb.cmd', 0o100644],
@@ -187,7 +188,7 @@ describe('the build is reproducible (FR-PLUGIN-001, issue #559)', () => {
 
   test('a CRLF checkout of the text inputs gives the same bytes (a Windows checkout)', () => {
     const copy = layout();
-    for (const f of ['LICENSE', 'plugin/hooks/hooks.json', 'plugin/bin/nb', 'plugin/skills/agent-notebook/SKILL.md', 'examples/hooks/claude-code/nb-claude-hook.mjs', 'dist/cli.js']) {
+    for (const f of ['LICENSE', 'CHANGELOG.md', 'plugin/hooks/hooks.json', 'plugin/bin/nb', 'plugin/skills/agent-notebook/SKILL.md', 'examples/hooks/claude-code/nb-claude-hook.mjs', 'dist/cli.js']) {
       const p = join(copy, ...f.split('/'));
       writeFileSync(p, readFileSync(p, 'utf-8').replace(/\r?\n/g, '\r\n'));
     }
@@ -254,6 +255,27 @@ describe('what the zip contains matches the sources (FR-PLUGIN-001, issue #559)'
     for (const p of paths) expect(entries.map((e) => e.name), p).toContain(p);
   });
 
+  test('CHANGELOG.md is the repo file with LF, byte-equal to what the npm package holds (FR-PLUGIN-001, issue #560)', () => {
+    // package.json "files" puts the same CHANGELOG.md in the npm package; the release job compares the two.
+    expect(byName('CHANGELOG.md').data.equals(lf(join(root, 'CHANGELOG.md')))).toBe(true);
+    expect(JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8')).files).toContain('CHANGELOG.md');
+  });
+
+  test('nb status run from the staged plugin prints the release date from the shipped CHANGELOG.md', () => {
+    const staged = join(out, base);
+    expect(existsSync(join(staged, 'CHANGELOG.md'))).toBe(true);
+    const home = mkdtempSync(join(tmp, 'status home '));
+    const r = spawnSync(process.execPath, [join(staged, 'dist', 'cli.js'), 'status'], {
+      encoding: 'utf-8',
+      env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, NB_DIR: join(home, 'nb'), NB_HOME: join(home, 'nb') },
+    });
+    const heading = new RegExp(`^## \\[${pkg.version.replace(/[.+]/g, '\\$&')}\\] - (\\d{4}-\\d{2}-\\d{2})`, 'm').exec(readFileSync(join(root, 'CHANGELOG.md'), 'utf-8'));
+    expect(r.stdout).toContain(`Version: ${pkg.version}`);
+    // The repo's heading for this version, if it has one yet, is what the staged copy must show.
+    if (heading) expect(r.stdout).toContain(`Version: ${pkg.version} (released ${heading[1]})`);
+    else expect(r.stdout).not.toContain('(released');
+  }, 30_000);
+
   test('bin/nb.cmd is exactly these CRLF lines, and no other entry holds a carriage return', () => {
     const cmd = ['@echo off', 'setlocal', 'set NoDefaultCurrentDirectoryInExePath=1', 'node "%~dp0..\\dist\\cli.js" %*', 'exit /b %errorlevel%', ''].join('\r\n');
     expect(byName('bin/nb.cmd').data.toString('utf-8')).toBe(cmd);
@@ -274,7 +296,7 @@ function layout(): string {
   const copy = mkdtempSync(join(tmp, 'layout '));
   mkdirSync(join(copy, 'scripts'));
   cpSync(SCRIPT, join(copy, 'scripts', 'build-plugin.mjs'));
-  for (const f of ['package.json', 'LICENSE']) cpSync(join(root, f), join(copy, f));
+  for (const f of ['package.json', 'LICENSE', 'CHANGELOG.md']) cpSync(join(root, f), join(copy, f));
   cpSync(join(root, 'plugin'), join(copy, 'plugin'), { recursive: true });
   cpSync(join(root, 'examples', 'hooks', 'claude-code'), join(copy, 'examples', 'hooks', 'claude-code'), { recursive: true });
   mkdirSync(join(copy, 'dist'));

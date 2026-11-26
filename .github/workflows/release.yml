@@ -295,7 +295,7 @@ jobs:
           # The file list first: the zip holds the tarball's dist/**/*.js, the fixed
           # plugin files, and nothing else.
           expected="$( { (cd "$npmdir" && find dist -type f -name '*.js'); printf '%s\n' \
-            .claude-plugin/plugin.json package.json LICENSE bin/nb bin/nb.cmd hooks/hooks.json \
+            .claude-plugin/plugin.json package.json LICENSE CHANGELOG.md bin/nb bin/nb.cmd hooks/hooks.json \
             skills/agent-notebook/SKILL.md \
             examples/hooks/claude-code/nb-claude-hook.mjs examples/hooks/claude-code/nb-hook-entry.cjs; } | LC_ALL=C sort)"
           actual="$(unzip -Z1 "$zip" | LC_ALL=C sort)"
@@ -319,7 +319,7 @@ jobs:
           # Byte for byte with what npm published.
           while IFS= read -r f; do
             cmp -s "$zipdir/$f" "$npmdir/$f" || fail "$f in the zip differs from the npm package."
-          done < <(cd "$npmdir" && find dist -type f -name '*.js'; printf '%s\n' LICENSE \
+          done < <(cd "$npmdir" && find dist -type f -name '*.js'; printf '%s\n' LICENSE CHANGELOG.md \
             examples/hooks/claude-code/nb-claude-hook.mjs examples/hooks/claude-code/nb-hook-entry.cjs)
           jq -S -c '{name, version, type: "module", engines, license}' "$npmdir/package.json" > ../check/pkg.npm
           jq -S -c . "$zipdir/package.json" > ../check/pkg.zip

@@ -277,9 +277,9 @@ function world(v: string = GOOD, change: { zip?: (f: Map<string, Buffer>) => voi
   const sums = [...zips[v].files].sort(([x], [y]) => Buffer.compare(Buffer.from(x), Buffer.from(y))).map(([name, d]) => `${sha(d)}  ${name}`);
   writeFileSync(join(rin, 'SHA256SUMS'), sums.join('\n') + '\n');
 
-  // The npm package: the zip's dist/ and hook files, the real LICENSE, a package.json with its fields.
+  // The npm package: the zip's dist/ and hook files, the real LICENSE and CHANGELOG.md, a package.json with its fields.
   const tgzFiles = new Map<string, Buffer>();
-  for (const [name, d] of zips[v].files) if (name.startsWith('dist/') || name.startsWith('examples/') || name === 'LICENSE' || name === 'package.json') tgzFiles.set(name, d);
+  for (const [name, d] of zips[v].files) if (name.startsWith('dist/') || name.startsWith('examples/') || name === 'LICENSE' || name === 'CHANGELOG.md' || name === 'package.json') tgzFiles.set(name, d);
   change.tarball?.(tgzFiles);
   const pkgDir = join(ws, 'tgz', 'package');
   for (const [name, d] of tgzFiles) {
@@ -463,6 +463,15 @@ describe('the github-release job proves the zip equals the npm package and the t
       expect(r.out, name).toContain(DIFFER(name));
       expect(r.code, name).toBe(1);
     }
+  });
+
+  test('a CHANGELOG.md in the zip that differs from the npm package is refused, and one missing from the zip too (issue #560)', () => {
+    const r = world(GOOD, { zip: (f) => flip(f, 'CHANGELOG.md') }).run(step);
+    expect(r.out).toContain(DIFFER('CHANGELOG.md'));
+    expect(r.code).toBe(1);
+    const missing = world(GOOD, { zip: (f) => f.delete('CHANGELOG.md') }).run(step);
+    expect(missing.out).toContain("::error::the zip's file list differs");
+    expect(missing.code).toBe(1);
   });
 
   test('an extra file in the zip is refused by the file list, before anything is unpacked', () => {
