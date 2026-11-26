@@ -2533,7 +2533,6 @@ the Node-18 leg runs a dependency-free runtime smoke of the built CLI
 minimum engine is actually executed and not merely compiled. A Windows leg (Node 22)
 runs the tests of the agent-facing loop added by issue #538 (`src/brief.test.ts`, `src/retro.test.ts`,
 `src/loop-stats.test.ts`, `src/module-boundaries.test.ts`) and of the project name added by issue #540
-<<<<<<< HEAD
 (`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`) and of the message files added by issue #539 (`src/messages.test.ts`) and of the usage record added by issue #558 (`src/usage-record.test.ts`) and of `nb status` (`src/status.test.ts`, `src/status-cli.test.ts`) and of the plugin's hook entry added by issue #559 (`src/nb-hook-entry.test.ts`) and of the plugin's build and hooks (`src/plugin-workflows.test.ts` with them); the rest of the suite is not
 yet run on Windows. The `plugin-e2e` workflow installs, updates, rolls back and uninstalls the plugin on Linux, macOS and Windows ([FR-PLUGIN-005](#fr-plugin-005)). An `old-node-entry` leg runs that entry on Node 12 and 16, the versions it exists for. *(Proven by
 `src/smoke-node18.test.ts`.)*
