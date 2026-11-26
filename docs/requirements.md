@@ -11,7 +11,7 @@ load-bearing behavior links to the test that proves it; if you change a behavior
 change the requirement and its test together (see [Keeping this document honest](#keeping-this-document-honest)).
 
 - **Source of truth for behavior:** `src/notebook.ts` (library: storage, cap-and-vote, search), `src/usage.ts` (the usage log), `src/stats.ts` (`nb stats`) and `src/cli.ts` (CLI: argument parsing, dispatch, help, shell completion, stdin reading and process guards), with the CLI's helpers in `src/render.ts` (the read-side report text), `src/config-report.ts` (`nb config`), `src/suggest.ts` (did-you-mean), `src/doctor.ts` (`nb doctor`) and `src/enabled.ts` (`nb enabled`), `src/project.ts` (`nb project`, the project name), `src/git.ts` (the one place a process, `git`, is started). `src/index.ts` is the package root that re-exports the three library modules.
-- **Tests:** `src/notebook.test.ts`, `src/cli.test.ts`, `src/enabled.test.ts`; the module layout and the published export list are pinned by `src/module-boundaries.test.ts` and `src/package-exports.test.ts`.
+- **Tests:** `src/notebook.test.ts`, `src/cli.test.ts`, `src/enabled.test.ts`, `src/project.test.ts`; the module layout and the published export list are pinned by `src/module-boundaries.test.ts` and `src/package-exports.test.ts`.
 - **Design rationale (signals & self-observation):** [`self-observing-notebook.md`](./self-observing-notebook.md) — why the tool instruments itself and how engagement / coverage / recall / precision / serendipity are told apart.
 
 ---

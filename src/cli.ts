@@ -1615,8 +1615,13 @@ export async function runNbCli(
         // Read-only; exit 0 in every runtime state. The plain output is the name
         // alone (an empty line when there is none) so `$(nb project)` works; the
         // reason is shown by --why and --json, never on stderr.
+        // A removed working directory cannot be asked, but NB_PROJECT_SLUG still wins
+        // (rule 1 runs no git), as it does for `nb retro`.
         const cwd = currentDir();
-        const st = cwd === null ? { name: '', source: 'none' as const, reason: 'the working directory no longer exists', folderName: '' } : resolveProject(process.env, cwd);
+        const st =
+          cwd === null && !process.env.NB_PROJECT_SLUG
+            ? { name: '', source: 'none' as const, reason: 'the working directory no longer exists', folderName: '' }
+            : resolveProject(process.env, cwd ?? '.');
         if (json) {
           process.stdout.write(JSON.stringify({ name: st.name, source: st.source, reason: st.reason }) + '\n');
         } else {

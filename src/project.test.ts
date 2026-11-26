@@ -49,6 +49,7 @@ describe('the origin remote gives owner-repo (FR-PROJECT-001)', () => {
     ['file:///srv/git/app.git', ''],
     ['C:\\repos\\x', ''],
     ['C:/src/app.git', ''],
+    ['C:repo', ''],
     ['\\\\server\\share\\app', ''],
     // Fail closed.
     ['', ''],
@@ -245,7 +246,9 @@ describe('resolveProject: the order of the rules and every git failure (FR-PROJE
 });
 
 // Real git, real layouts, through the built CLI.
-describe('nb project on real repositories (FR-PROJECT-001)', () => {
+// Each test here creates real repositories and spawns git and nb several times:
+// slow on a loaded Windows runner, so the time limit is raised (not a timing assertion).
+describe('nb project on real repositories (FR-PROJECT-001)', { timeout: 60_000 }, () => {
   let tmp: string;
   let home: string;
   let globalCfg: string;
@@ -365,10 +368,17 @@ describe('nb project on real repositories (FR-PROJECT-001)', () => {
   test('hostile remote values give one safe name or the folder', () => {
     const r = repo(join(tmp, 'r'));
     git(r, 'remote', 'add', 'origin', 'x');
-    for (const url of ['git@h:../../etc.git', 'git@h:o/r\nevil', 'git@h:$(touch x)/`id`', '-oProxyCommand=touch pwned', 'git@h:CON/NUL.git', 'git@h:' + 'z/'.repeat(250) + 'r']) {
+    const cases: Array<[string, string]> = [
+      ['git@h:../../etc.git', 'r'],
+      ['git@h:o/r\nevil', 'r'],
+      ['git@h:$(touch x)/`id`', 'r'],
+      ['-oProxyCommand=touch pwned', 'r'],
+      ['git@h:CON/NUL.git', 'con-nul'],
+      ['git@h:' + 'z/'.repeat(250) + 'r', 'z-'.repeat(49) + 'z'],
+    ];
+    for (const [url, want] of cases) {
       git(r, 'config', 'remote.origin.url', url);
-      const name = nb(['project'], r).out.replace(/\n$/, '');
-      expect(name === 'r' || SAFE.test(name), JSON.stringify(url)).toBe(true);
+      expect(nb(['project'], r).out, JSON.stringify(url)).toBe(want + '\n');
     }
     expect(existsSync(join(r, 'pwned'))).toBe(false);
   });
@@ -382,6 +392,17 @@ describe('nb project on real repositories (FR-PROJECT-001)', () => {
       const name = nb(['project'], d).out.replace(/\n$/, '');
       expect(name === '' || SAFE.test(name), JSON.stringify(n)).toBe(true);
     }
+  });
+
+  (isWin ? test.skip : test)('NB_PROJECT_SLUG still wins when the working directory was removed', () => {
+    const run = (slug?: string): string =>
+      execFileSync('sh', ['-c', 'mkdir gone && cd gone && rmdir ../gone && exec "$0" "$1" project --why', process.execPath, CLI], {
+        cwd: tmp,
+        env: env(slug === undefined ? {} : { NB_PROJECT_SLUG: slug }),
+        encoding: 'utf-8',
+      });
+    expect(run('Mine')).toBe('mine (env NB_PROJECT_SLUG)\n');
+    expect(run()).toBe('(none: the working directory no longer exists)\n');
   });
 
   test('an unknown flag is refused, as for every command', () => {

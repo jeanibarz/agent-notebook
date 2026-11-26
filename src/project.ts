@@ -79,7 +79,8 @@ export function ownerRepo(url: string): string {
   const u = String(url).trim();
   if (u === '') return '';
   // Local: an absolute or relative path, a home path, a drive letter, file:.
-  if (/^(\/|\.{1,2}([/\\]|$)|~|[A-Za-z]:([/\\]|$)|\\)/.test(u) || /^file:/i.test(u)) return '';
+  // A single letter before the colon is a drive (`C:repo`, `C:\x`), as git on Windows reads it.
+  if (/^(\/|\.{1,2}([/\\]|$)|~|[A-Za-z]:|\\)/.test(u) || /^file:/i.test(u)) return '';
   let path: string;
   const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(u);
   if (scheme) {
