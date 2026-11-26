@@ -137,11 +137,11 @@ For a guided, checked setup of lessons, ideas or both, an agent can follow [`exa
 
 **Check it worked:** start a fresh session and give it a task. The agent should run `nb list` and open a notebook that fits. After the task, `nb show <shelf>` should show its votes and any lesson it added. For the hooks, see [Verify it's working](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#verify-its-working) and `nb stats`.
 
-**Optional hooks for Claude Code** inject the index at session start, hand the same index to each subagent, and nudge the retrospective at the stop. They ship in the package. Copy them somewhere stable, then print a hooks block with your paths filled in:
+**Optional hooks for Claude Code** inject the index at session start, hand the same index to each subagent, and nudge the retrospective at the stop. They ship in the package. Copy them somewhere stable (the three `.sh` scripts run `nb-claude-hook.mjs`, so keep the four files together), then print a hooks block with your paths filled in:
 
 ```sh
 mkdir -p ~/.agent-notebook/hooks
-cp "$(npm root -g)/agent-notebook/examples/hooks/claude-code/"nb-*.sh ~/.agent-notebook/hooks/
+cp "$(npm root -g)/agent-notebook/examples/hooks/claude-code/"nb-* ~/.agent-notebook/hooks/
 chmod +x ~/.agent-notebook/hooks/*.sh
 sed -e '/^  "\/\//d' -e "s|/ABSOLUTE/PATH/examples/hooks/claude-code|$HOME/.agent-notebook/hooks|" "$(npm root -g)/agent-notebook/examples/hooks/claude-code/settings.json"
 ```

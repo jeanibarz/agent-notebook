@@ -81,15 +81,15 @@ Lessons use the default folder, `~/.agent-notebook/notebooks`. Set `NB_DIR` to u
 
 4. (Optional, Claude Code only.) Add the hooks. They inject the notebook index at session start, hand it to each subagent, and ask for the retrospective at the first stop. Skip this step for Codex CLI.
 
-   Copy the scripts somewhere stable.
+   Copy the scripts somewhere stable. The three `.sh` scripts run `nb-claude-hook.mjs`, so copy the four files together.
 
    ```sh
    mkdir -p ~/.agent-notebook/hooks
-   cp "$(npm root -g)/agent-notebook/examples/hooks/claude-code/"nb-*.sh ~/.agent-notebook/hooks/
+   cp "$(npm root -g)/agent-notebook/examples/hooks/claude-code/"nb-* ~/.agent-notebook/hooks/
    chmod +x ~/.agent-notebook/hooks/*.sh
    ```
 
-   Check: `ls ~/.agent-notebook/hooks` lists `nb-retrospective.sh`, `nb-session-start.sh` and `nb-subagent-start.sh`.
+   Check: `ls ~/.agent-notebook/hooks` lists `nb-claude-hook.mjs`, `nb-retrospective.sh`, `nb-session-start.sh` and `nb-subagent-start.sh`.
 
    Print the hooks block with your paths filled in.
 
@@ -99,7 +99,7 @@ Lessons use the default folder, `~/.agent-notebook/notebooks`. Set `NB_DIR` to u
 
    Check: it prints JSON that starts `{` / `"hooks": {` and has `SessionStart`, `SubagentStart` and `Stop`, each with a `command` that starts with the user's home folder and ends in one of the copied scripts.
 
-   Merge the `hooks` block into `.claude/settings.json` (this project) or `~/.claude/settings.json` (every project). If the file already has a `hooks` key, add these entries to its arrays instead of replacing them. If the file does not exist, create `.claude/` and save the printed block as the whole file. For path C (both), skip this merge and write the complete file shown in section 4 once, after section 3. Then restart Claude Code: hooks load at startup. In the new session, the `/hooks` command lists the registered hooks. The hooks run `nb`, so it must be on the `PATH` Claude Code starts with; `NB_BIN` takes a full path instead. Tell the user before you edit their settings file.
+   Merge the `hooks` block into `.claude/settings.json` (this project) or `~/.claude/settings.json` (every project). If the file already has a `hooks` key, add these entries to its arrays instead of replacing them. If the file does not exist, create `.claude/` and save the printed block as the whole file. For path C (both), skip this merge and write the complete file shown in section 4 once, after section 3. Then restart Claude Code: hooks load at startup. In the new session, the `/hooks` command lists the registered hooks. The hooks run `node` and `nb`, so both must be on the `PATH` Claude Code starts with; `NB_BIN` takes a full path to `nb` instead. Tell the user before you edit their settings file.
 
 5. Verify. Run the session-start hook by hand.
 
@@ -289,5 +289,5 @@ Do section 2, then section 3. Then note these points.
 | An idea shows up in a lessons shelf | An agent ran `nb add` because `nb-ideas` was not found | Fix the shim and `PATH`. Move the line with `nb rm` on the lessons shelf and `nb-ideas add`. |
 | `$(npm root -g)/agent-notebook/...: No such file or directory` | `npm root -g` prints a different folder from where the package is (a custom prefix, or npm masking part of the path) | Print the right folder with `dirname "$(dirname "$(dirname "$(readlink -f "$(command -v nb)")")")"` (it holds `agent-notebook/`) and use it wherever `$(npm root -g)` appears. |
 | The Stop hook prints nothing, so the agent is never asked | The sentinel `.retro-<session id>` already exists in the lessons folder (the hook asks once per session), or `nb enabled` prints `off` | Run `ls -A "$(nb path)"` and delete that file to test again. Run `nb enabled`: if it prints `off`, run `git config nb.enabled true` in the repository. |
-| The nudge has the lessons text but no ideas text | The prompt file is missing or relative (the hook prints `nb-retrospective: ignoring NB_RETRO_EXTRA_PROMPT (...)` on stderr), or `cwd` is not a git directory, or the payload has no `session_id` | Fix the path (absolute), or run the hook from a git `cwd`, or set `NB_PROJECT_SLUG` for the project. |
+| The nudge has the lessons text but no ideas text | The prompt file is missing or relative (the hook prints `nb retro: ignoring NB_RETRO_EXTRA_PROMPT (...)` on stderr), or `cwd` is not a git directory, or the payload has no `session_id` | Fix the path (absolute), or run the hook from a git `cwd`, or set `NB_PROJECT_SLUG` for the project. |
 | Two repositories write to the same shelves | Their folders have the same name | Set `NB_PROJECT_SLUG` in each project's `.claude/settings.json`, not at user level. |

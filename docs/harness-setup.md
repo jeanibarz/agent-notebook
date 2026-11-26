@@ -25,8 +25,8 @@ flowchart TB
     end
     subgraph layer["The layer you set up (all optional except the instruction)"]
         I["the instruction<br/>(list & open; retrospect) — in AGENTS.md / CLAUDE.md"]
-        H1["index hook (optional)<br/>inject nb list at session start"]
-        H2["retrospective hook (optional)<br/>nudge vote / prune / add, once per session"]
+        H1["index hook (optional)<br/>inject nb brief at session start"]
+        H2["retrospective hook (optional)<br/>inject nb retro, once per session"]
         H3["git wrapper (optional)<br/>a commit per change"]
         H4["backup job (optional)<br/>daily push to a remote"]
         H5["janitor (optional)<br/>offline diagnostics"]
@@ -40,13 +40,15 @@ Nothing in this layer runs *inside* an `nb` call; all of it reads or wraps the
 plain files. The one thing that matters is the instruction; adopt the rest piece
 by piece, or not at all.
 
-**Planned change ([issue #538](https://github.com/jeanibarz/agent-notebook/issues/538)).**
-The package MAY hold the default words an agent is told at the start and at the end of a
+**Since [issue #538](https://github.com/jeanibarz/agent-notebook/issues/538).**
+The package holds the default words an agent is told at the start and at the end of a
 task, and the rule that the end-of-task text is said once per session (`nb brief`,
 `nb retro`, [requirements §4.17](requirements.md#fr-brief-001)). It stays harness-blind:
 it never reads a hook payload or prints a vendor's reply format. What knows a harness
 (which event fires, its payload, its reply format) stays in an adapter: `examples/` today,
-a plugin later. Until those commands ship, the hooks below work as described.
+a plugin later. The Claude Code hooks below are such an adapter
+([`nb-claude-hook.mjs`](../examples/hooks/claude-code/nb-claude-hook.mjs)): the index and
+the retrospective text they inject come from `nb brief` and `nb retro`.
 
 ---
 
@@ -96,7 +98,7 @@ at the start of a task and open what fits.
 
 | Hook | What it adds | Moment |
 |---|---|---|
-| `SessionStart` → `nb-session-start.sh` | injects the `nb list` **index** into context so the agent sees it without spending a call — the hook never picks a notebook, so it is the same for every project | ① |
+| `SessionStart` → `nb-session-start.sh` | injects `nb brief` (the instruction lines and the `nb list` **index**) into context so the agent sees it without spending a call — the hook never picks a notebook, so it is the same for every project | ① |
 | `SubagentStart` → `nb-subagent-start.sh` | hands the same index to each subagent, which never sees the `SessionStart` one ([Subagents](#subagents)) | ③ |
 | `Stop` → `nb-retrospective.sh` | nudges the lead's retrospective once per session, at its first stop with no subagent still running (not always the end of the task: see [what the hooks do not cover](#what-the-hooks-do-not-cover)). It never nudges a subagent | ④ |
 
@@ -413,7 +415,8 @@ setups, easiest first:
    everywhere; run `nb-backup.sh` and the hook scripts from Git Bash. The
    `nb-git-wrapper.mjs` and `nb-janitor.mjs` are pure Node and run from any shell.
 3. **Native, no bash.** The Node pieces (`nb`, `nb-git-wrapper.mjs`,
-   `nb-janitor.mjs`) run directly. For the daily push, skip `nb-backup.sh` and
+   `nb-janitor.mjs`, and the Claude Code hook adapter `nb-claude-hook.mjs`, registered
+   with its `print-settings` block) run directly. For the daily push, skip `nb-backup.sh` and
    schedule the equivalent two commands with **Task Scheduler**:
    ```powershell
    git -C "$env:USERPROFILE\.agent-notebook\notebooks" add -A

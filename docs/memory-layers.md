@@ -207,7 +207,8 @@ repeated in two shelves may be correct in each.
 
 ## An example hook that groups the index by layer
 
-[`examples/hooks/claude-code/nb-session-start.sh`](../examples/hooks/claude-code/nb-session-start.sh)
+[`nb brief`](cli-reference.md#the-start-of-session-text--nb-brief), which the example
+session-start hook [`examples/hooks/claude-code/nb-session-start.sh`](../examples/hooks/claude-code/nb-session-start.sh) injects,
 has an optional layered variant, **off unless you set `NB_PROJECT_SLUG`**. Set it
 to the repo's slug and the hook prints the index in three groups (project,
 domain, global, in that order) instead of one flat list, after stating the

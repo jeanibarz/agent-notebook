@@ -106,14 +106,9 @@ describe('NB_* env-var documentation drift guard (issue #164)', () => {
 // Allow-list for the examples scan: a token matched by the `NB_[A-Z_]+` regex
 // that is intentionally NOT a documented user-facing knob. As with the src
 // allow-list, WHY must be stated next to each entry and the list stays as short
-// as honesty allows.
-//   - NB_DIR_DEFAULT: a *local shell variable* in
-//     examples/hooks/claude-code/nb-retrospective.sh
-//     (`NB_DIR_DEFAULT="${HOME}/.agent-notebook/notebooks"`), used only to hold
-//     the fallback for the real `NB_DIR` env var. It is never read from the
-//     environment and is nothing a user sets, so it is not a knob to document;
-//     it only matches the regex because the token prefix collides.
-const EXAMPLE_ALLOW_LIST = new Set<string>(['NB_DIR_DEFAULT']);
+// as honesty allows. It is empty since issue #538 removed the last entry (a local
+// shell variable of the 0.12 Stop hook).
+const EXAMPLE_ALLOW_LIST = new Set<string>([]);
 
 // The scripts users copy: every file under `examples/**` that is NOT a Markdown
 // doc. The `*.md` files are the DOCUMENTATION surface (scanned below as the doc
@@ -169,11 +164,11 @@ function isDocumented(token: string, docs: string): boolean {
 }
 
 // Anchor tokens that each live only in a particular examples subtree
-// (`NB_GIT_AUTOCOMMIT` in a top-level `.mjs`, `NB_RETRO_TTL_DAYS` only under
+// (`NB_GIT_AUTOCOMMIT` in a top-level `.mjs`, `NB_BIN` only under
 // `hooks/claude-code/`). Requiring all of them in the scanned set proves the
 // recursive walk reached the nested script dirs, so a broken recursion can't
 // make the guard vacuously pass on a partial file set.
-const EXAMPLE_SCAN_ANCHORS = ['NB_DIR', 'NB_GIT_AUTOCOMMIT', 'NB_RETRO_TTL_DAYS'];
+const EXAMPLE_SCAN_ANCHORS = ['NB_DIR', 'NB_GIT_AUTOCOMMIT', 'NB_BIN'];
 
 describe('NB_* env-var documentation drift guard for shipped examples (issue #207)', () => {
   test('every NB_* var read by a shipped example script is documented in a shipped doc', () => {
@@ -199,7 +194,8 @@ describe('NB_* env-var documentation drift guard for shipped examples (issue #20
     const scanned = envTokensInExampleScripts();
     // Pin both halves: the knob is still actually read by a shipped script (so a
     // rename/removal is caught, not silently "documented") and is documented.
-    for (const v of ['NB_RETRO_TTL_DAYS', 'NB_GIT_AUTOCOMMIT', 'NB_BIN']) {
+    // (NB_RETRO_TTL_DAYS was the third; since issue #538 `nb retro` reads it, not a script.)
+    for (const v of ['NB_GIT_AUTOCOMMIT', 'NB_BIN']) {
       expect(scanned.has(v), `${v} is no longer read by any example script`).toBe(true);
       expect(isDocumented(v, docs), `${v} missing from shipped docs`).toBe(true);
     }

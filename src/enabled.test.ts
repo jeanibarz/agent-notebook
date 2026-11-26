@@ -212,17 +212,16 @@ describe('nb config reports the on/off state (issue #514)', () => {
   });
 });
 
-/** A stub `nb` for the hooks: answers `enabled` with `state` and logs every call. */
-function stubNb(state: string, enabledExit = 0): { bin: string; log: string } {
+/** A stub `nb` that exits `code` with no output, as an `nb` older than `nb brief` / `nb retro` does (2). */
+function stubNb(code: number): string {
   const bin = join(tmp, 'nb-stub');
-  const log = join(tmp, 'nb-calls.log');
-  writeFileSync(
-    bin,
-    `#!/usr/bin/env bash\necho "$PWD $*" >> '${log}'\nif [ "$1" = enabled ]; then printf '%s' '${state}'; exit ${enabledExit}; fi\necho "  some-shelf  3  when testing"\n`,
-  );
+  writeFileSync(bin, `#!/usr/bin/env bash\nexit ${code}\n`);
   chmodSync(bin, 0o755);
-  return { bin, log };
+  return bin;
 }
+
+const OFF_LINE =
+  'agent-notebook is switched off for this repository: skip the notebook steps (no `nb list`, no end-of-task retrospective). `nb enabled --why` shows which setting decided.\n';
 
 function sessionStart(env: Record<string, string>, cwd = tmp): string {
   return execFileSync('bash', [join(HOOKS, 'nb-session-start.sh')], { cwd, env: childEnv(env), encoding: 'utf-8' });
@@ -238,48 +237,45 @@ function stopHook(env: Record<string, string>, session = 's1', cwd = tmp, payloa
   });
 }
 
-const callLog = (log: string) => (existsSync(log) ? execFileSync('cat', [log], { encoding: 'utf-8' }) : '');
-
+// Since issue #538 the hooks run `nb brief` / `nb retro`, which read the switch
+// themselves; these run the real CLI (the package the hooks ship in) in real
+// git repositories.
 describe('the example hooks honour nb enabled (issue #514)', () => {
+  function offRepo(): string {
+    const r = repo('off-repo');
+    git(r, 'config', 'nb.enabled', 'false');
+    return r;
+  }
+
   test('session start: `off` prints the one skip line and never lists the index', () => {
-    const { bin, log } = stubNb('off\n');
-    const out = sessionStart({ NB_BIN: bin });
-    expect(out).toBe(
-      'agent-notebook is switched off for this repository: skip the notebook steps (no `nb list`, no end-of-task retrospective). `nb enabled --why` shows which setting decided.\n',
-    );
-    expect(callLog(log)).not.toContain(' list');
+    expect(sessionStart({}, offRepo())).toBe(OFF_LINE);
   });
 
-  test('session start: `on`, an old nb without the subcommand (exit 2, no stdout), or any other answer shows the index', () => {
-    for (const [state, code] of [['on\n', 0], ['', 2], ['offline\n', 0], ['error: off\n', 1]] as const) {
-      const { bin } = stubNb(state, code);
-      const out = sessionStart({ NB_BIN: bin });
-      expect(out, `state=${JSON.stringify(state)}`).toContain('some-shelf');
-      expect(out).not.toContain('switched off');
-    }
+  test('session start: `on` shows the index; an nb without `brief` or a missing nb gives one line naming the fix', () => {
+    expect(sessionStart({}, repo('on-repo'))).toContain('## Your agent-notebook index');
+    const old = sessionStart({ NB_BIN: stubNb(2) });
+    expect(old).toMatch(/^agent-notebook: the session-start hook could not load the notebook index \(this nb is older than the hooks/);
+    expect(old.trimEnd().split('\n')).toHaveLength(1);
+    expect(sessionStart({ NB_BIN: join(tmp, 'missing-nb') })).toMatch(/^agent-notebook: .*nb could not run/);
+    // Switched off in the environment, even that line is skipped.
+    expect(sessionStart({ NB_BIN: join(tmp, 'missing-nb'), NB_ENABLED: '0' })).toBe('');
   });
 
   test('session start: asks from CLAUDE_PROJECT_DIR when set', () => {
-    const proj = join(tmp, 'proj');
-    mkdirSync(proj);
-    const { bin, log } = stubNb('on\n');
-    sessionStart({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj });
-    expect(callLog(log)).toContain(`${proj} enabled`);
+    expect(sessionStart({ CLAUDE_PROJECT_DIR: offRepo() }, tmp)).toBe(OFF_LINE);
   });
 
   test('stop: `off` lets the stop through silently, and later stops do not ask again', () => {
-    const { bin, log } = stubNb('off\n');
-    expect(stopHook({ NB_BIN: bin })).toBe('');
-    expect(stopHook({ NB_BIN: bin })).toBe('');
-    expect(callLog(log).match(/ enabled/g)).toHaveLength(1);
+    const off = offRepo();
+    expect(stopHook({}, 's1', off)).toBe('');
+    expect(existsSync(join(tmp, 'store', '.retro-s1'))).toBe(true);
+    expect(stopHook({}, 's1', off)).toBe('');
   });
 
-  test('stop: `on`, an old nb, any other answer, or a missing nb still nudges once', () => {
-    for (const [i, [state, code]] of ([['on\n', 0], ['', 2], ['offline\n', 0], ['error: off\n', 1]] as const).entries()) {
-      const { bin } = stubNb(state, code);
-      expect(JSON.parse(stopHook({ NB_BIN: bin }, `on-${i}`)).decision).toBe('block');
-    }
-    expect(JSON.parse(stopHook({ NB_BIN: join(tmp, 'missing-nb') }, 'missing')).decision).toBe('block');
+  test('stop: `on` nudges once; an nb without `retro` or a missing nb sends nothing', () => {
+    expect(JSON.parse(stopHook({}, 'on', repo('on-repo'))).decision).toBe('block');
+    expect(stopHook({ NB_BIN: stubNb(2) }, 'old')).toBe('');
+    expect(stopHook({ NB_BIN: join(tmp, 'missing-nb') }, 'missing')).toBe('');
   });
 
   test('stop: when off, old sentinels are still pruned (issue #165)', () => {
@@ -288,17 +284,12 @@ describe('the example hooks honour nb enabled (issue #514)', () => {
     writeFileSync(stale, 'x');
     const t = (Date.now() - 30 * 86400000) / 1000;
     utimesSync(stale, t, t);
-    const { bin } = stubNb('off\n');
-    expect(stopHook({ NB_BIN: bin })).toBe('');
+    expect(stopHook({}, 's1', offRepo())).toBe('');
     expect(existsSync(stale)).toBe(false);
   });
 
   test('stop: asks from CLAUDE_PROJECT_DIR when set', () => {
-    const proj = join(tmp, 'proj');
-    mkdirSync(proj);
-    const { bin, log } = stubNb('off\n');
-    expect(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj })).toBe('');
-    expect(callLog(log)).toContain(`${proj} enabled`);
+    expect(stopHook({ CLAUDE_PROJECT_DIR: offRepo() }, 's1', tmp)).toBe('');
   });
 });
 
@@ -394,28 +385,17 @@ describe('the Stop hook: off in the project directory or in the payload cwd wins
     expect(stopHook({ NB_BIN: realNb() }, 'b', off, { cwd: on })).toBe('');
   });
 
-  test('asks once when the payload cwd is the project directory, from each directory otherwise', () => {
-    const proj = join(tmp, 'proj');
-    const elsewhere = join(tmp, 'elsewhere');
-    mkdirSync(proj);
-    mkdirSync(elsewhere);
-    const { bin, log } = stubNb('on\n');
-    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 'same', tmp, { cwd: `${proj}/` })).decision).toBe('block');
-    expect(callLog(log)).toBe(`${proj} enabled\n`);
-    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 'diff', tmp, { cwd: elsewhere })).decision).toBe('block');
-    expect(callLog(log)).toBe(`${proj} enabled\n${proj} enabled\n${elsewhere} enabled\n`);
-    // A trailing slash on the project side, or an empty payload cwd, is still one directory.
-    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: `${proj}/` }, 'slash', tmp, { cwd: proj })).decision).toBe('block');
-    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 'empty', tmp, { cwd: '' })).decision).toBe('block');
-    expect(callLog(log)).toBe(`${proj} enabled\n${proj} enabled\n${elsewhere} enabled\n${proj} enabled\n${proj} enabled\n`);
+  test('a payload cwd equal to the project directory, with a trailing slash or empty, still nudges', () => {
+    const proj = repo('proj');
+    const env = { CLAUDE_PROJECT_DIR: proj };
+    expect(JSON.parse(stopHook(env, 'same', tmp, { cwd: `${proj}/` })).decision).toBe('block');
+    expect(JSON.parse(stopHook({ CLAUDE_PROJECT_DIR: `${proj}/` }, 'slash', tmp, { cwd: proj })).decision).toBe('block');
+    expect(JSON.parse(stopHook(env, 'empty', tmp, { cwd: '' })).decision).toBe('block');
   });
 
   test('a non-string payload cwd is ignored', () => {
-    const proj = join(tmp, 'proj');
-    mkdirSync(proj);
-    const { bin, log } = stubNb('on\n');
-    expect(JSON.parse(stopHook({ NB_BIN: bin, CLAUDE_PROJECT_DIR: proj }, 's1', tmp, { cwd: 42 })).decision).toBe('block');
-    expect(callLog(log)).toBe(`${proj} enabled\n`);
+    const { on, off } = twoRepos();
+    expect(JSON.parse(stopHook({ CLAUDE_PROJECT_DIR: on }, 's1', off, { cwd: 42 })).decision).toBe('block');
   });
 });
 

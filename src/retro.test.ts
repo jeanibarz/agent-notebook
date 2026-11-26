@@ -25,7 +25,7 @@ import { parseUsage } from './usage.js';
 // Requirements: FR-RETRO-001..003.
 const here = dirname(fileURLToPath(import.meta.url));
 const CLI = join(here, '..', 'dist', 'cli.js');
-const OLD_HOOK = join(here, '..', 'examples', 'hooks', 'claude-code', 'nb-retrospective.sh');
+const OLD_HOOK = join(here, '..', 'test', 'fixtures', 'hooks-0.12', 'nb-retrospective.sh');
 const DAY_MS = 86_400_000;
 const isWin = process.platform === 'win32';
 // The 0.12 Stop hook is a bash script; the Windows CI leg has no POSIX shell it can rely on.

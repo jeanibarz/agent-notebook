@@ -13,7 +13,7 @@ in this directory. (Planned in [issue #538](https://github.com/jeanibarz/agent-n
 | [`nb-backup.sh`](nb-backup.sh) | daily push of that history to a remote | bash, git |
 | [`nb-janitor.mjs`](nb-janitor.mjs) | read-only diagnostics: near-duplicate lessons and near-duplicate shelf names (including the same base under two `@project` slugs), the same lesson held by several project shelves, lessons lost to eviction, growth trends, shelf co-access (which shelves are shown together) | Node (git optional) |
 | [`hooks/claude-code/`](hooks/claude-code/) | optional hooks: inject the `nb list` index at session start and into each subagent + nudge the retrospective once per session | Claude Code |
-| [`hooks/ideas-end-prompt.txt`](hooks/ideas-end-prompt.txt) | the end-of-task question for the ideas use case: the text `nb-retrospective.sh` appends to its nudge when `NB_RETRO_EXTRA_PROMPT` points at a copy of it (with `{project}` and `{session}` filled in), or that you append to `AGENTS.md` | Claude Code, or any harness that reads `AGENTS.md` |
+| [`hooks/ideas-end-prompt.txt`](hooks/ideas-end-prompt.txt) | the end-of-task question for the ideas use case: the text `nb retro` (run by `nb-retrospective.sh`) appends to its nudge when `NB_RETRO_EXTRA_PROMPT` points at a copy of it (with `{project}` and `{session}` filled in), or that you append to `AGENTS.md` | Claude Code, or any harness that reads `AGENTS.md` |
 | [`hooks/codex-cli/`](hooks/codex-cli/) | the AGENTS.md contract + PATH wrapper for Codex CLI | Codex CLI |
 | [`completion/`](completion/) | tab-completion scripts for bash & zsh, as emitted by `nb completion <bash\|zsh>` (source them, or install into your completion dir) | bash or zsh |
 
