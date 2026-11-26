@@ -545,7 +545,8 @@ export function brief(opts: BriefOptions): BriefResult {
   if (opts.placeUnknown) return { outcome: 'broken', text: head.join('\n') + '\n', err: '' };
   const room = opts.maxChars > 0 ? Math.max(1, opts.maxChars - size(head)) : 0;
   // The project the index is grouped by: NB_PROJECT_SLUG exactly as before (its raw
-  // trimmed value; set but blank keeps the flat index, and no git runs); else, when the
+  // trimmed value; a value of only spaces keeps the flat index and runs no git, while an
+  // empty value counts as unset, as `!env.NB_PROJECT_SLUG` below reads it); else, when the
   // store already holds a project shelf, the derived name, if it came from the remote
   // (a folder name could be shared by two unrelated repositories, FR-BRIEF-003).
   let slug = (env.NB_PROJECT_SLUG ?? '').trim().slice(0, 128);

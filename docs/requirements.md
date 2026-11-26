@@ -1648,8 +1648,9 @@ append the deciding input on the same line (e.g. `off (git config nb.enabled=fal
 file:.git/config)`); `--json` SHALL emit `{ enabled, state, source, value, origin, warning }`
 with `source` one of `env`/`git`/`default`. It is read-only and writes no notebook. Only
 `nb enabled`, `nb config`, the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)), `nb brief` and
-`nb retro` ([FR-RETRO-001](#fr-retro-001), which also runs `git rev-parse` for the project name of
-[FR-RETRO-002](#fr-retro-002)) read the switch, and only they and `nb project`
+`nb retro` ([FR-RETRO-001](#fr-retro-001); it and `nb brief` also run `git rev-parse` and
+`git config --get remote.origin.url` for the project name of [FR-RETRO-002](#fr-retro-002) and
+[FR-BRIEF-003](#fr-brief-003)) read the switch, and only they and `nb project`
 ([FR-PROJECT-001](#fr-project-001)) spawn `git`, plus every notebook command once a valid project folder
 exists under `~/.agent-notebook/projects/` and `NB_DIR` is unset ([FR-PLACE-001](#fr-place-001)); otherwise
 `nb list --json` and every other command do not; reading a local git config is offline

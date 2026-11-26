@@ -179,7 +179,9 @@ describe('the adapter (FR-HOOKS-001)', () => {
     }
   });
 
-  test('hostile session ids become one safe argument and one sentinel inside the store', () => {
+  // Eleven adapter runs, each a node process: 5.5 s was seen on a loaded Windows runner, over
+  // Vitest's 5 s default. The time limit is raised; nothing here asserts a time.
+  test('hostile session ids become one safe argument and one sentinel inside the store', { timeout: 30_000 }, () => {
     for (const id of ['--json', '--', '-x', '../escape', '$(id)', '`id`', "a'b", 'c\nd', 'CON', 'é'.repeat(3), 'x'.repeat(10_000)]) {
       const r = adapter('stop', { session_id: id });
       expect(r.code, id.slice(0, 20)).toBe(0);
