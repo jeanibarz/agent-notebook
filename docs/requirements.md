@@ -170,8 +170,14 @@ a dependency on an external service being up.
 
 <a id="dp-7"></a>
 ### DP-7: Zero runtime dependencies — **Must**
-The published package SHALL have no runtime `dependencies`; it SHALL use only the
-Node.js standard library.
+Every distribution of the tool, the npm package and the Claude Code plugin's zip
+([§4.22](#fr-plugin-001)), SHALL have no runtime `dependencies` and no `node_modules`;
+it SHALL use only the Node.js standard library. The scripts that build or release a
+distribution (`scripts/`) and the workflows are not the tool and ship in neither.
+*Proven by:* `plugin-build.test.ts` → "package.json has the name, version, type, engines and license, and no dependencies or bin",
+"the zip has no declaration files, no source maps and no node_modules" and
+"dist/*.js is byte-equal to the repo's dist/*.js"; `pack-install.test.ts` →
+"the tarball holds no plugin/ or scripts/ file and does hold the hook entry".
 **Rationale:** The whole mechanism is small enough not to need them, and a memory
 tool an agent calls constantly should not drag a dependency tree or its CVEs.
 
@@ -1756,7 +1762,14 @@ What an assistant is told at the start and at the end of a task lives today in t
 bash scripts under `examples/hooks/claude-code/` that each user copies. These
 requirements move the *text* and the *once-per-session rule* into two harness-blind
 commands, and leave everything that knows a harness (which event fires, its payload, its
-reply format) to an adapter outside the core ([FR-HOOKS-001](#fr-hooks-001)).
+reply format) to an adapter outside the core ([FR-HOOKS-001](#fr-hooks-001)). The rule is
+kept file by file: `src/` and `dist/` are harness-blind; the supported harness files are
+`plugin/**` ([§4.22](#fr-plugin-001)), `examples/hooks/claude-code/nb-claude-hook.mjs` and
+`examples/hooks/claude-code/nb-hook-entry.cjs`; the rest of `examples/` is optional, copied
+or registered by hand. None of them runs inside an `nb` call ([DP-6](#dp-6)).
+*Proven by:* `module-boundaries.test.ts` → "no source module speaks a harness hook format (issue #538)",
+"src/*.ts imports nothing from outside src/ (issue #559)" and
+"the supported harness files are exactly these (issue #559)".
 
 <a id="fr-brief-001"></a>
 **FR-BRIEF-001 (Should).** `nb brief [--max-chars N] [--session <id>] [--hook <label>] [--json]`
@@ -2343,6 +2356,77 @@ object:
 `project.name` are untrusted data: callers repeat only `headline` and `next`, and never put `evidence` into the
 model's context. An `nb` older than `status` exits 2 with `unknown_subcommand`; callers read that as "nb is too old".
 
+### 4.22 The Claude Code plugin (issue #559)
+
+> **Status: the build and the hooks are implemented ([issue #559](https://github.com/jeanibarz/agent-notebook/issues/559),
+> second part); the release, the end-to-end tests and the marketplace entry follow.**
+> The plugin is a second distribution of the same tool: its zip holds the package's `dist/`
+> and no dependency ([DP-7](#dp-7), [NG-003](#ng-003)).
+
+<a id="fr-plugin-001"></a>
+**FR-PLUGIN-001 (Should).** `node scripts/build-plugin.mjs [--out DIR]` SHALL, from a built `dist/`,
+stage `agent-notebook-plugin-<V>/` and write `agent-notebook-plugin-<V>.zip` and its `.sha256`
+(`sha256sum` format), `<V>` being the version in `package.json`. The zip SHALL hold only:
+`.claude-plugin/plugin.json` (the source file plus `version`), `package.json` (`name`, `version`,
+`type`, `engines` and `license`, no `dependencies` and no `bin`), `LICENSE`, `bin/nb`, `bin/nb.cmd`,
+`dist/**/*.js` (byte-equal to the repo's, no declarations or maps), the two files `nb-claude-hook.mjs`
+and `nb-hook-entry.cjs` of `examples/hooks/claude-code/`, `hooks/hooks.json` and
+`skills/agent-notebook/SKILL.md` with every `{{VERSION}}` filled in. The zip SHALL be reproducible: the
+same inputs give the same bytes whatever the output folder, umask, time zone or operating system. For
+that the build writes the zip itself (method 0, entries sorted by UTF-8 bytes, no directory entries,
+dates 1980-01-01 00:00, Unix modes from a table: `bin/nb` and `dist/cli.js` are `0755`, the rest `0644`),
+reads text inputs as UTF-8 with CRLF turned into LF, and generates `bin/nb.cmd` (CRLF) itself. It SHALL
+refuse, with exit 1, an entry name with a `..` segment, an absolute path, a backslash or a Windows
+reserved name (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`, with any extension), a text input that is
+not UTF-8, and a `{{placeholder}}` left in the skill. It imports only `node:*` modules and ships in
+neither the npm package nor the zip.
+**Rationale:** anyone can rebuild a tag and compare the checksum; a Windows checkout turns text into
+CRLF, which measured differently from Linux and macOS before the normalising.
+*Proven by:* `plugin-build.test.ts` → `describe('the plugin zip holds exactly these files (FR-PLUGIN-001, issue #559)')`,
+`describe('the build is reproducible (FR-PLUGIN-001, issue #559)')`,
+`describe('what the zip contains matches the sources (FR-PLUGIN-001, issue #559)')` and
+`describe('the build refuses what it should not pack (FR-PLUGIN-001, issue #559)')`; the package version
+and the absence of `plugin/` and `scripts/` in the npm package by `pack-install.test.ts` →
+"the tarball holds no plugin/ or scripts/ file and does hold the hook entry".
+
+<a id="fr-plugin-002"></a>
+**FR-PLUGIN-002 (Should).** `plugin/hooks/hooks.json` SHALL run, for `SessionStart`, `SubagentStart`
+and `Stop`, the command `node` with the arguments `${CLAUDE_PLUGIN_ROOT}/examples/hooks/claude-code/nb-hook-entry.cjs`
+and `session-start`, `subagent-start` or `stop`, with no shell. For `SessionStart` it SHALL add two
+twins that only test that `node` exists: an `sh -c` command (`command -v node`, a no-op on Git Bash) and
+a `powershell.exe` command (`Get-Command node -CommandType Application`). Each prints the entry's notice
+when `node` is missing, so a computer without Node.js shows the user exactly one notice, because the
+entry cannot start to print it. A twin SHALL NOT run `node` or any program found through the working
+directory: the `sh` twin keeps only the absolute `PATH` entries (never an empty `PATH`) before it
+runs `uname`. For each event the command and arguments SHALL equal those of `print-settings`, except for
+the file name (the entry instead of the adapter). What the entry itself does is in
+[FR-HOOKS-002](#fr-hooks-002).
+**Rationale:** measured on Linux and macOS (#559): a twin that ran `node -e` executed a `./node` planted
+in the project through an empty `PATH` element.
+*Proven by:* `plugin-hooks.test.ts` → `describe('hooks.json runs the entry with node and an argument list (FR-PLUGIN-002, issue #559)')`,
+`describe('the node-check twins test that node exists and never run it (FR-PLUGIN-002, issue #559)')` and
+`describe('hooks.json and print-settings start the same program (FR-PLUGIN-002, issue #559)')`; the
+packaged paths by `plugin-build.test.ts` → "every ${CLAUDE_PLUGIN_ROOT} path in hooks.json is a file in the zip".
+
+<a id="fr-plugin-003"></a>
+**FR-PLUGIN-003 (Should).** `plugin/skills/agent-notebook/SKILL.md` SHALL have the frontmatter name
+`agent-notebook` and a description that carries the cue "no agent-notebook index reached you at the start
+of this session". Its body SHALL be under 90 lines, stamp the plugin version with `{{VERSION}}` (filled in
+by the build), tell the assistant to compare `nb --version` with it and to run the plugin's own `nb` by
+`${CLAUDE_PLUGIN_ROOT}` when they differ, give the managed-settings path of each operating system, show a
+Windows lesson sent on standard input as UTF-8, and speak to the user in plain words.
+*Proven by:* `plugin-hooks.test.ts` → `describe('the skill and the manifest (FR-PLUGIN-003, issue #559)')`;
+the stamp by `plugin-build.test.ts` → "SKILL.md has no {{VERSION}} left and names the version".
+
+<a id="fr-plugin-004"></a>
+**FR-PLUGIN-004 (Should).** `plugin/bin/nb` SHALL keep only the absolute entries of `PATH` (with `set -f`
+so that a `*` is not expanded, and never an empty `PATH`, which would mean the current folder) before it runs `node`, and the generated `bin/nb.cmd` SHALL set
+`NoDefaultCurrentDirectoryInExePath` inside `setlocal`, so that neither runs a `node` or `dirname`
+placed in the working directory.
+*Proven by:* `plugin-launchers.test.ts` → `describe('bin/nb never runs a program from the working directory (FR-PLUGIN-004, issue #559)')`
+and `describe('bin/nb.cmd never runs a program from the working directory (FR-PLUGIN-004, issue #559)')`;
+the bytes of `nb.cmd` by `plugin-build.test.ts` → "bin/nb.cmd is exactly these CRLF lines, and no other entry holds a carriage return".
+
 ## 5. Non-functional requirements
 
 <a id="nfr-perf-001"></a>
@@ -2440,6 +2524,12 @@ line per lesson, period.
 <a id="ng-003"></a>
 **NG-003.** The tool SHALL NOT make network calls, run a server, or sync between
 machines. Backup is whatever already backs up the home directory (or git on `NB_DIR`).
+This binds every distribution of the tool, the npm package and the plugin zip, which
+hold the same `dist/` ([§4.22](#fr-plugin-001)); scripts and workflows are not the tool
+and ship in neither.
+*Proven by:* `plugin-build.test.ts` → "dist/*.js is byte-equal to the repo's dist/*.js" and
+`describe('the build is reproducible (FR-PLUGIN-001, issue #559)')`; `pack-install.test.ts` →
+"the tarball holds no plugin/ or scripts/ file and does hold the hook entry".
 
 <a id="ng-004"></a>
 **NG-004.** The tool SHALL NOT add a multi-field schema — a lesson is a string, a

@@ -1,0 +1,10 @@
+{
+  "name": "agent-notebook",
+  "description": "Plain-text memory for your AI assistant: short lessons from past tasks, shown at the start of each session and updated when it ends.",
+  "author": {
+    "name": "Jean Ibarz"
+  },
+  "homepage": "https://github.com/jeanibarz/agent-notebook",
+  "repository": "https://github.com/jeanibarz/agent-notebook",
+  "license": "MIT"
+}

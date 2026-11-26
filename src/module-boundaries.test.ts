@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as root from './index.js';
@@ -185,10 +185,30 @@ describe('module boundaries (issue #478)', () => {
     for (const f of readdirSync(srcDir)) {
       if (!f.endsWith('.ts') || f.endsWith('.test.ts')) continue;
       const text = readFileSync(join(srcDir, f), 'utf-8');
-      for (const term of ['hookSpecificOutput', 'stop_hook_active', 'additionalContext', 'hook_event_name', 'background_tasks']) {
+      for (const term of ['hookSpecificOutput', 'stop_hook_active', 'additionalContext', 'hook_event_name', 'background_tasks', 'CLAUDE_PLUGIN_ROOT']) {
         expect(text.includes(term), `${f} mentions ${term}`).toBe(false);
       }
     }
+  });
+
+  // Issue #559: src/ and dist/ know no harness. The files that do are listed here; everything
+  // else under examples/ is optional, copied or registered by hand, and runs in neither the
+  // package nor the plugin. Neither group runs inside an `nb` call (DP-6).
+  test('src/*.ts imports nothing from outside src/ (issue #559)', () => {
+    for (const f of readdirSync(srcDir)) {
+      if (!f.endsWith('.ts') || f.endsWith('.test.ts')) continue;
+      const text = readFileSync(join(srcDir, f), 'utf-8');
+      const outside = [...text.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.\.\/[^'"]*)['"]/g)].map((m) => m[1]);
+      expect(outside, `${f} imports a path above src/`).toEqual([]);
+    }
+  });
+
+  test('the supported harness files are exactly these (issue #559)', () => {
+    const repo = join(srcDir, '..');
+    const files = (dir: string, prefix = ''): string[] =>
+      readdirSync(join(repo, dir)).flatMap((n) => (statSync(join(repo, dir, n)).isDirectory() ? files(`${dir}/${n}`, `${prefix}${n}/`) : [`${prefix}${n}`]));
+    expect(files('plugin').sort()).toEqual(['.claude-plugin/plugin.json', 'bin/nb', 'hooks/hooks.json', 'skills/agent-notebook/SKILL.md']);
+    for (const f of ['nb-claude-hook.mjs', 'nb-hook-entry.cjs']) expect(existsSync(join(repo, 'examples', 'hooks', 'claude-code', f)), f).toBe(true);
   });
 
   test('the root re-exports every module export except the named internals', () => {

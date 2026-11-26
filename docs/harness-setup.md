@@ -50,6 +50,11 @@ a plugin later. The Claude Code hooks below are such an adapter
 ([`nb-claude-hook.mjs`](../examples/hooks/claude-code/nb-claude-hook.mjs)): the index and
 the retrospective text they inject come from `nb brief` and `nb retro`.
 
+**A Claude Code plugin is coming** (issue #559): the same hooks, a skill and an `nb` launcher in
+one zip, with nothing to copy by hand. It is not released yet. To try the build from a clone
+(after `npm ci && npm run build`): `node scripts/build-plugin.mjs`, then
+`claude --plugin-dir build/plugin/agent-notebook-plugin-<version>`.
+
 ---
 
 ## Install
