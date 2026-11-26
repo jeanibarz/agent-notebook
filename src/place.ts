@@ -98,6 +98,33 @@ function currentUid(): number | null {
 }
 
 /**
+ * The project folders under `projectsDir` (rules 2 and 3), sorted, and the
+ * entries that have a project name but fail the check (a symlink, another
+ * user's folder), with why. `error` is `'missing'` when there is no such folder,
+ * the error code when it cannot be read, `null` otherwise.
+ */
+export function scanProjects(projectsDir: string, uid: number | null = currentUid()): { folders: string[]; rejected: Map<string, string>; error: string | null } {
+  const folders: string[] = [];
+  const rejected = new Map<string, string>();
+  let names: string[];
+  try {
+    names = readdirSync(projectsDir);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return { folders, rejected, error: code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : (code ?? 'error') };
+  }
+  for (const name of names) {
+    if (name.startsWith('.') || cleanProjectName(name) !== name || isWindowsDeviceName(name)) continue;
+    const why = invalidReason(projectsDir, name, uid);
+    if (why === null) folders.push(name);
+    // A plain file is never a project folder, and never makes nb ask git (AC2).
+    else if (why !== 'not a folder') rejected.set(name, why);
+  }
+  folders.sort();
+  return { folders, rejected, error: null };
+}
+
+/**
  * Resolve where a call made in `cwd` (`null` when the working directory no
  * longer exists) reads and writes lessons.
  */
@@ -108,25 +135,10 @@ export function resolvePlace(env: NodeJS.ProcessEnv, cwd: string | null, deps: P
   if (env.NB_DIR && env.NB_DIR.trim() !== '') {
     return { ...base, kind: 'env', dir: shared, reason: 'NB_DIR is set, so project folders are not used' };
   }
-  let names: string[];
-  try {
-    names = readdirSync(projectsDir);
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return { ...base, kind: 'shared', dir: shared, reason: 'no project folders' };
-    return { ...base, kind: 'unknown', dir: null, reason: `the folder ${projectsDir} could not be read (${code ?? 'error'})` };
-  }
-  const uid = deps.uid !== undefined ? deps.uid : currentUid();
-  const folders: string[] = [];
-  const rejected = new Map<string, string>();
-  for (const name of names) {
-    if (name.startsWith('.') || cleanProjectName(name) !== name || isWindowsDeviceName(name)) continue;
-    const why = invalidReason(projectsDir, name, uid);
-    if (why === null) folders.push(name);
-    // A plain file is never a project folder, and never makes nb ask git (AC2).
-    else if (why !== 'not a folder') rejected.set(name, why);
-  }
-  folders.sort();
+  const scan = scanProjects(projectsDir, deps.uid !== undefined ? deps.uid : currentUid());
+  if (scan.error === 'missing') return { ...base, kind: 'shared', dir: shared, reason: 'no project folders' };
+  if (scan.error !== null) return { ...base, kind: 'unknown', dir: null, reason: `the folder ${projectsDir} could not be read (${scan.error})` };
+  const { folders, rejected } = scan;
   // No folder, and no entry that could be one (a project name that is a symlink, a
   // file, another user's folder): shared, and git is never started (AC2).
   if (folders.length === 0 && rejected.size === 0) return { ...base, kind: 'shared', dir: shared, reason: 'no project folders' };
@@ -191,3 +203,44 @@ export function sharedWriteRefusal(place: Place, args: readonly string[]): strin
     `Run nb from that project's repository, or see \`nb place\`.`
   );
 }
+
+/** The longest project name `nb place own` makes a folder for: with a 128-character shelf it keeps a typical Windows path under 260 characters. */
+export const OWN_NAME_MAX = 64;
+
+/**
+ * Why `nb place own` or `nb place shared` must not act here, in plain words for a
+ * person who may not know git, or `null` when it may (FR-PLACE-003). `st` is the
+ * project state (asked by the caller when the place did not need it).
+ */
+export function placeRefusal(place: Place, st: ProjectState | null, action: 'own' | 'shared'): string | null {
+  if (place.kind === 'env') {
+    return `NB_DIR is set (${place.dir}), so project folders are not used. To use them, unset NB_DIR, or set NB_DIR for this project only.`;
+  }
+  if (place.kind === 'unknown') return `could not tell which notebook this project uses (${place.reason}).`;
+  if (action === 'shared') return null; // not in an own notebook: nothing to move back, the caller says so
+  if (place.kind === 'own') return null; // already own: a re-run sweeps what is left
+  if (st === null || st.name === '') {
+    return `no project name here (${st?.reason ?? 'the working directory no longer exists'}), so no own notebook can be made. In a git repository with an origin remote the name is found by itself; elsewhere set NB_PROJECT_SLUG for this project only.`;
+  }
+  if (st.source === 'folder') {
+    return `this repository's name ("${st.name}") comes from its folder, which another copy of it may not share. Add an origin remote (it uploads nothing), or set NB_PROJECT_SLUG for this project only.`;
+  }
+  if (st.bare) return `this is a bare repository; run nb from one of its worktrees.`;
+  if (isWindowsDeviceName(st.name)) return `"${st.name}" cannot be a folder name on Windows; set NB_PROJECT_SLUG to another name for this project.`;
+  if (st.name.length > OWN_NAME_MAX) {
+    return `the project name is ${st.name.length} characters long, over ${OWN_NAME_MAX} (paths would get too long on Windows); set a shorter NB_PROJECT_SLUG for this project.`;
+  }
+  let names: string[] = [];
+  try {
+    names = readdirSync(place.projectsDir);
+  } catch {
+    // no projects/ yet
+  }
+  const twin = names.find((n) => n !== st.name && n.toLowerCase() === st.name);
+  if (twin !== undefined) return `${join(place.projectsDir, JSON.stringify(twin).slice(1, -1))} differs from "${st.name}" only in letter case; rename or remove it first.`;
+  if (names.includes(st.name)) {
+    return `${join(place.projectsDir, st.name)} exists but is not usable as a project folder (a symbolic link, a file, or another user's folder).`;
+  }
+  return null;
+}
+

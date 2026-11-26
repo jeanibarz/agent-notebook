@@ -675,7 +675,7 @@ shelves; `--json` emits a lone object for one shelf, an array for several),
 `stats [<shelf>] [--since <N{d,h,m}>] [--json] [--exit-code]`, `doctor [--json] [--exit-code]`, `path [<shelf>] [--usage] [--json]`, `config [--json]`,
 `enabled [--why] [--json]` ([FR-ENABLED-001](#fr-enabled-001)),
 `project [--why] [--json]` ([FR-PROJECT-001](#fr-project-001)),
-`place [--json]` ([FR-PLACE-002](#fr-place-002)),
+`place [own|shared] [--json]` ([FR-PLACE-002](#fr-place-002), [FR-PLACE-003](#fr-place-003)),
 `brief [--max-chars N] [--session <id>] [--hook <label>] [--json]` ([FR-BRIEF-001](#fr-brief-001)),
 `retro --session <id> [--work-dir <dir>] [--hook <label>] [--json]` ([FR-RETRO-001](#fr-retro-001)),
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`),
@@ -1889,7 +1889,47 @@ say how to use project folders, and, when `NB_DIR` is the default path, that a c
 `project` being `{ name, source, reason }` or `null` and each folder `{ name, dir }`. It is read-only,
 logs its row in the shared notebook unless the place is a project folder, and exits `0` in every
 runtime state. No form SHALL print a remote URL or a message from git.
-*Proven by:* `place.test.ts` → "nb place: the four forms, plain and --json (golden)".
+In a project's own notebook it SHALL also say how many of the project's shelves are still in the
+shared notebook (`--json`: `stranded`, the list), how many shelves end in the project's 0.12 name, and,
+on POSIX, warn when the folder can be read by the group or others.
+*Proven by:* `place.test.ts` → "nb place: the four forms, plain and --json (golden)";
+`place-ops.test.ts` → "own --json, and nb place counts shelves left in the shared notebook" and
+"nb place warns about a hand-made folder other users can read".
+
+<a id="fr-place-003"></a>
+**FR-PLACE-003 (Should).** `nb place own [--json]` SHALL give the project of the working directory its
+own notebook: create `~/.agent-notebook/projects/<project>/` (mode 0700) and move into it every
+regular shelf file of the shared notebook whose name ends in `@<project>`, whole (bytes, scores,
+order and ids kept, nothing deduplicated or evicted). Holding the shared notebook's lock, it SHALL
+link the shelves into a staging folder, rename it to the project folder, and only then unlink the
+shared copies, each only if both it and its new copy are still the file that was linked; any failure before the rename
+SHALL leave nothing changed. A link SHALL never overwrite: a shelf already in the folder stays in
+the shared notebook and is reported, unless it is the same file (a run that stopped after the rename),
+which counts as moved. When the folder already exists, the move SHALL run under the folder's own lock.
+A source that cannot be removed SHALL be kept and reported, never counted as moved. Run again, it
+SHALL move what is left and remove staging folders of dead processes. It SHALL refuse (exit `1`, `bad_args`, nothing changed) when `NB_DIR` is
+set, the place is unknown, there is no project name, the name comes from the repository's folder,
+the working directory is in a bare repository, the name is a Windows device name or longer than 64
+characters, or an entry of `projects/` differs from it only in letter case. It SHALL warn when the
+shared notebook is a git repository and the new folder is not. A write to the shared notebook SHALL
+ask the write guard of [FR-PLACE-001](#fr-place-001) again once it holds the shared notebook's lock,
+so a write that resolved the shared notebook before the folder existed refuses rather than land
+there. `nb place shared [--json]` SHALL move every shelf of the project's folder back into the shared
+notebook the same way, under the folder's lock, each as `<x>@<project>` (a shelf without that suffix
+is renamed, so it stays the project's and the write guard keeps other calls off it until the folder
+is gone), remove `nb`'s own files there (the usage log and its
+count file, retrospective markers, `nb`'s temporary files), and remove the folder without recursing;
+it SHALL refuse (nothing changed) when a shelf name is already in the shared notebook, when two
+shelves of the folder would arrive under one name (letter case ignored), or the folder
+holds anything else (`.git`, `.nb.json`, a subfolder), and SHALL exit `1` and keep the folder when a
+write landed in it meanwhile. Run where no own notebook is in use, it SHALL say so and exit `0`.
+`--json` SHALL print `{ kind: "own", dir, created, moved, kept, lessons, unversioned }` and
+`{ kind: "shared", dir, moved, renamed, kept, lessons, removed }`.
+**Rationale:** whole-file moves keep every vote; `nb move` works within one folder and could
+deduplicate or evict on the way. The issue's "through the existing `nb move` code" is departed from
+for that reason (design comment on issue #548).
+*Proven by:* `place-ops.test.ts` → `describe('placeOwn and placeShared (FR-PLACE-003)')` and
+`describe('nb place own / shared through the built CLI (FR-PLACE-003)')`.
 
 <a id="fr-place-004"></a>
 **FR-PLACE-004 (Should).** Only when `NB_DIR` is unset and a project folder exists (or the place is
@@ -1922,7 +1962,7 @@ the Node-18 leg runs a dependency-free runtime smoke of the built CLI
 minimum engine is actually executed and not merely compiled. A Windows leg (Node 22)
 runs the tests of the agent-facing loop added by issue #538 (`src/brief.test.ts`, `src/retro.test.ts`,
 `src/loop-stats.test.ts`, `src/module-boundaries.test.ts`) and of the project name added by issue #540
-(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`); the rest of the suite is not
+(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`); the rest of the suite is not
 yet run on Windows. *(Proven by
 `src/smoke-node18.test.ts`.)*
 
@@ -1944,7 +1984,7 @@ shell completion, stdin reading and process guards). The read-side report render
 `nb config` report (`src/config-report.ts`), the did-you-mean helpers (`src/suggest.ts`),
 `nb doctor` (`src/doctor.ts`), the `nb enabled` resolver (`src/enabled.ts`), the agent-facing loop
 (`src/loop.ts`, with its text in `src/agent-text.ts`, issue #538), the project name (`src/project.ts`,
-issue #540) and the place resolver (`src/place.ts`, issue #548) SHALL live in modules that `src/cli.ts`
+issue #540), the place resolver and its moves (`src/place.ts`, `src/place-ops.ts`, issue #548) SHALL live in modules that `src/cli.ts`
 imports and that never import it; `src/notebook.ts` SHALL NOT import the loop modules. Only
 `src/git.ts` SHALL start a process (`git`, read-only, a fixed argument list, no shell). Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
 

@@ -236,8 +236,11 @@ A project has its own notebook when the folder `~/.agent-notebook/projects/<proj
 `~/.agent-notebook/notebooks`. There is no setting: making the folder is the switch.
 
 ```sh
-$ mkdir -p ~/.agent-notebook/projects/acme-app
-$ cd ~/git/app && nb place
+$ cd ~/git/app && nb place own
+own: /home/you/.agent-notebook/projects/acme-app (created)
+  moved 41 lessons (3 shelves) from the shared notebook: build@acme-app, review@acme-app, testing@acme-app
+  This project now reads and writes only this folder. It is kept on this computer, and does not include the shared notebook's general shelves.
+$ nb place
 own: /home/you/.agent-notebook/projects/acme-app
   project acme-app (git remote origin) has its own notebook. It is kept on this computer, separate from the notebook your other projects share, and does not include that notebook's general shelves.
 project folders (1): acme-app
@@ -255,6 +258,13 @@ project folders (1): acme-app
 - **`unknown`.** When a project folder exists and git times out, or refuses the folder for its
   owner, nb cannot tell which notebook to use: every notebook command exits 1 with the error
   class `place_unknown` and reads and writes nothing. A missing git is not such a case.
+- **`nb place own`** makes the folder (mode 0700) and moves the project's `<x>@<project>` shelves
+  into it, whole files with their scores. Run it again to move anything written to the shared
+  notebook meanwhile. **`nb place shared`** moves every shelf back and removes the folder (a shelf without the
+  `@<project>` suffix comes back as `<x>@<project>`); it refuses
+  while a shelf of the same name is in the shared notebook, or the folder holds something that is
+  not a lesson (a `.git`, a `.nb.json`). Neither rewrites history: earlier copies stay in the shared
+  notebook's git history and backups.
 - **What moves with it:** the usage log (and so `nb stats`) and `.nb.json` are per folder. The
   retrospective's once-per-session marker stays in the shared notebook.
 

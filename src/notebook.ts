@@ -89,6 +89,18 @@ export function setCallMaxChars(n: number | undefined): void {
  * callers never set it and keep today's `mkdir -p`. Internal: not on the root.
  */
 let callNoCreateDir: string | undefined;
+/**
+ * A check the `runNbCli` call in progress runs once `withLock` holds a folder's
+ * lock, before the change (issue #548): the write guard asked again, so a write
+ * that waited on the shared notebook's lock while `nb place own` gave the
+ * project its folder refuses instead of re-creating the shelf there. It throws
+ * to refuse; the lock is released as for any error. Set and cleared by the CLI;
+ * library callers never set it. Internal: not on the root.
+ */
+let callLockCheck: ((dir: string) => void) | undefined;
+export function setCallLockCheck(fn: ((dir: string) => void) | undefined): void {
+  callLockCheck = fn;
+}
 export function setCallNoCreateDir(dir: string | undefined): void {
   callNoCreateDir = dir;
 }
@@ -892,6 +904,7 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
     // tally the count so recovery is observable (issue #309). reapLeftoverTemps
     // reports how many it removed; noteRecovery ignores a zero.
     noteRecovery('temp-reap', reapLeftoverTemps(dir));
+    callLockCheck?.(dir);
     return fn();
   } finally {
     // Release THIS invocation's own lock directly and unconditionally, and clear
