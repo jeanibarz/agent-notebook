@@ -145,11 +145,11 @@ export function readCheckedFile(path: string, maxBytes: number, opts: CheckedRea
  * Clean a decoded message: lines split on `\r\n`, `\r` and `\n`; a tab becomes one
  * space; each line goes through the cleaner `nb brief` applies to lesson text
  * (`escapeDiskName`: control characters, line and paragraph separators, bidi overrides,
- * zero-width space and soft hyphen become visible `\uXXXX` escapes); trailing white space
+ * zero-width space and soft hyphen become visible `\uXXXX` escapes); trailing ASCII spaces
  * is trimmed; blank lines at both ends are dropped. Blank lines inside stay.
  */
 export function cleanMessage(text: string): string {
-  const lines = text.split(/\r\n|\r|\n/).map((l) => escapeDiskName(l.replace(/\t/g, ' ')).trimEnd());
+  const lines = text.split(/\r\n|\r|\n/).map((l) => escapeDiskName(l.replace(/\t/g, ' ')).replace(/ +$/, ''));
   while (lines.length > 0 && lines[0] === '') lines.shift();
   while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
   return lines.join('\n');

@@ -2044,7 +2044,7 @@ decode (cp1252, Shift-JIS, UTF-16 without a mark), refuse it with `not UTF-8 (sa
 `NB_RETRO_EXTRA_PROMPT` keeps its own checks and wording: no UTF-8 check, 64 KiB. Cleaning, in this order: lines split
 on `\r\n`, `\r` and `\n`; a tab becomes a space; each line goes through the cleaner `nb brief` applies to lesson text
 (control characters, U+2028 and U+2029, bidi overrides, U+200B and the soft hyphen U+00AD become visible `\uXXXX`
-escapes; the joiners U+200C and U+200D and the plain direction marks stay); trailing white space is trimmed; blank
+escapes; the joiners U+200C and U+200D and the plain direction marks stay); trailing ASCII spaces are trimmed (a non-breaking or ideographic space stays); blank
 lines at both ends are dropped. After cleaning, a brief file SHALL hold at most 1,000 characters (a retro file 4,000),
 counted in Unicode code points; a longer file is refused whole, never cut, and a file over 4 bytes per allowed
 character plus 1,024 is refused before it is decoded. A file that exists and cannot be used SHALL give, in `nb brief`

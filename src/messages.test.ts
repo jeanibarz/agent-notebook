@@ -163,6 +163,8 @@ describe('the message files are read by one cleaner and one reader (FR-MSG-002)'
     expect(used(read('\r\n\n  first \t\r\nsecond\rthird\t \n\n\r\n'))).toBe('  first\nsecond\nthird');
     expect(used(read('a\tb'))).toBe('a b');
     expect(used(read('a\n\n\nb\n'))).toBe('a\n\n\nb');
+    // Only ASCII spaces are trimmed: a no-break or ideographic space at a line end stays.
+    expect(used(read('fin\u00a0\nend\u3000\nx'))).toBe('fin\u00a0\nend\u3000\nx');
   });
 
   test('control characters, line separators, bidi overrides and soft hyphens become visible escapes (golden)', () => {
@@ -785,7 +787,8 @@ describe('nb never writes in the messages folder (NG-008, NFR-SAFE-001)', () => 
       for (const c of commands) nb(c, e);
     }
     expect(snapshot(msgDir)).toBe(before);
-  });
+    // 32 nb processes: well over vitest's 5 s default on a Windows runner.
+  }, 120_000);
 });
 
 describe('concurrent use (FR-MSG-002)', () => {
