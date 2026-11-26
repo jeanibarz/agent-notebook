@@ -90,4 +90,22 @@ jobs:
       - run: npm run build
       - run: npm test
 
-      - run: npm publish --access public --provenance
+      # A prerelease (a version with a hyphen, such as 0.13.0-beta.1) goes out
+      # under its identifier (`beta`), never under `latest`, so a plain
+      # `npm install agent-notebook` keeps giving the last stable release.
+      - name: Publish to npm
+        run: |
+          set -eu
+          version="$(node -p "require('./package.json').version")"
+          case "$version" in
+            *-*) pre="${version#*-}"; dist_tag="${pre%%.*}" ;;
+            *) dist_tag=latest ;;
+          esac
+          case "$version:$dist_tag" in
+            *-*:latest | *:*[!a-z]* | *:)
+              echo "::error::Prerelease '${version}' needs a lowercase identifier such as -beta.1, not '${dist_tag}'." >&2
+              exit 1
+              ;;
+          esac
+          echo "Publishing ${version} under the npm dist-tag '${dist_tag}'."
+          npm publish --access public --provenance --tag "$dist_tag"

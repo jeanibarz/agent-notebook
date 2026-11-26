@@ -2,7 +2,7 @@ import { describe, test, expect, beforeAll, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Guard for issue #265: the release workflow triggers on any `v*.*.*` tag push
@@ -28,8 +28,8 @@ const MISMATCH_MARKER = 'does not match package.json version';
 
 // Isolate the guard step: from its `- name:` line to the next top-level step
 // (a line beginning with six spaces then `- `) or end of file.
-function guardStepBlock(): string {
-  const start = release.indexOf(`- name: ${STEP_NAME}`);
+function guardStepBlock(name: string = STEP_NAME): string {
+  const start = release.indexOf(`- name: ${name}`);
   expect(start).toBeGreaterThanOrEqual(0);
   const rest = release.slice(start + 1);
   const nextStep = rest.search(/\n {6}- /);
@@ -38,8 +38,8 @@ function guardStepBlock(): string {
 
 // Pull the `run: |` block-scalar body out of the step and dedent it so it can
 // be executed as a standalone shell script — the same bytes CI runs.
-function guardRunScript(): string {
-  const block = guardStepBlock();
+function guardRunScript(name: string = STEP_NAME): string {
+  const block = guardStepBlock(name);
   const runIdx = block.indexOf('run: |');
   expect(runIdx).toBeGreaterThanOrEqual(0);
   const lines = block.slice(runIdx).split('\n').slice(1); // drop the `run: |` line
@@ -227,5 +227,50 @@ describe('release.yml guard — against the real package.json', () => {
     });
     expect(r.code).toBe(1);
     expect(r.stderr).toContain(MISMATCH_MARKER);
+  });
+});
+
+// A prerelease must never reach npm's `latest` tag: `npm install agent-notebook`
+// would then give every user the beta. The publish step's real script runs here
+// with a stub `npm` that records its arguments instead of publishing.
+describe('release.yml publish step — npm dist-tag', () => {
+  function publish(version: string): { code: number; out: string } {
+    const cwd = mkdtempSync(join(tmpdir(), 'release-publish-'));
+    tempDirs.push(cwd);
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({ name: 'fixture', version }));
+    writeFileSync(join(cwd, 'npm'), '#!/bin/sh\necho "npm $*"\n', { mode: 0o755 });
+    const env = { ...process.env, PATH: `${cwd}${delimiter}${process.env.PATH ?? ''}` };
+    try {
+      const out = execFileSync('bash', ['-c', guardRunScript('Publish to npm')], { cwd, env, stdio: 'pipe' });
+      return { code: 0, out: String(out) };
+    } catch (err) {
+      const e = err as { status?: number; stderr?: Buffer | string };
+      expect(typeof e.status).toBe('number');
+      return { code: e.status as number, out: String(e.stderr ?? '') };
+    }
+  }
+
+  test('a stable version is published under latest', () => {
+    const r = publish('1.2.3');
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('npm publish --access public --provenance --tag latest');
+  });
+
+  test('a prerelease is published under its identifier, never latest', () => {
+    for (const [version, tag] of [['0.13.0-beta.1', 'beta'], ['2.0.0-rc.4', 'rc'], ['1.0.0-alpha', 'alpha']]) {
+      const r = publish(version);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain(`--tag ${tag}\n`);
+      expect(r.out).not.toContain('--tag latest');
+    }
+  });
+
+  test('a prerelease whose identifier is not a lowercase word is refused before npm runs', () => {
+    for (const version of ['1.0.0-1', '1.0.0-latest', '1.0.0-Beta.1', '1.0.0-beta-2.1']) {
+      const r = publish(version);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('needs a lowercase identifier');
+      expect(r.out).not.toContain('npm publish');
+    }
   });
 });
