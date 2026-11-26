@@ -229,6 +229,7 @@ nb path   [<shelf>] [--json]             print the notebooks dir, or a shelf's r
 nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
 nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under `environment`)
 nb enabled [--why] [--json]              print `on` or `off`: whether the agent-facing loop (hooks, retrospective, text `nb list`) is on in this directory
+nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  print the end-of-task retrospective text the first time it is called for a session, nothing afterwards
 nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
 nb ls     [prefix] [--limit N]          alias of `nb list`
 nb shelves [prefix] [--limit N]         alias of `nb list`
@@ -264,6 +265,9 @@ Every `show` line starts with a short stable id — pass that id (or a unique pr
 | `NB_NEAR_DUP` | `0.5` | how similar an add must be to an existing lesson to print a merge note; `0` turns it off |
 | `NB_SESSION` | unset | a session id logged with each call; four of the five `nb stats` signals and the surfacing metrics need it |
 | `NB_ENABLED` | unset | `0`/`false`/`no`/`off` switches the agent loop off for one process, over `git config nb.enabled` |
+| `NB_RETRO_EXTRA_PROMPT` | unset | `nb retro`: absolute path of a text file (at most 64 KiB) appended to the retrospective, with `{project}` and `{session}` filled in |
+| `NB_RETRO_TTL_DAYS` | `7` | `nb retro`: days before an old `.retro-<session>` marker is removed |
+| `NB_PROJECT_SLUG` | unset | `nb retro`: the project name for `{project}` (else the repository's folder name) |
 | `NB_ASCII` | unset (locale decides) | ASCII digits instead of Unicode blocks in the `nb stats` sparkline |
 | `NB_USAGE_RING` | `5000` | usage-log rows kept |
 | `NB_STALE_LOCK_MS` | `10000` | milliseconds before a crashed process's lock is taken over |
@@ -277,7 +281,7 @@ Every `show` line starts with a short stable id — pass that id (or a unique pr
 | `NB_COVERAGE_HI` | `0.5` | share of add attempts that are new lessons, at or above which `nb stats` reads coverage as high |
 | `NB_RECALL_MISS_HI` | `0.2` | share of add attempts blocked as duplicates (a stored lesson did not reach the agent), at or above which `nb stats` reads it as high |
 
-The example tools in [`examples/`](examples/README.md) read their own: `NB_BIN` (which `nb` the hooks run), `NB_RETRO_TTL_DAYS` (retrospective sentinel lifetime), `NB_GIT_AUTOCOMMIT` and `NB_GIT_SESSION_TRAILER` (git wrapper), `NB_BACKUP_PUSH_TIMEOUT` and `NB_BACKUP_GIT_LOCK_WAIT` (backup script). `nb` itself ignores them. The hooks' remaining variables are in [their README](examples/hooks/claude-code/README.md#configuration-environment).
+The example tools in [`examples/`](examples/README.md) read their own: `NB_BIN` (which `nb` the hooks run), `NB_GIT_AUTOCOMMIT` and `NB_GIT_SESSION_TRAILER` (git wrapper), `NB_BACKUP_PUSH_TIMEOUT` and `NB_BACKUP_GIT_LOCK_WAIT` (backup script). `nb` itself ignores them. The hooks' remaining variables are in [their README](examples/hooks/claude-code/README.md#configuration-environment).
 
 ## Programmatic use
 

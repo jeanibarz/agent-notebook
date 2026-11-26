@@ -666,6 +666,7 @@ shelves; `--json` emits a lone object for one shelf, an array for several),
 `search <query> [prefix] [--any] [--limit <N>]`,
 `stats [<shelf>] [--since <N{d,h,m}>] [--json] [--exit-code]`, `doctor [--json] [--exit-code]`, `path [<shelf>] [--usage] [--json]`, `config [--json]`,
 `enabled [--why] [--json]` ([FR-ENABLED-001](#fr-enabled-001)),
+`retro --session <id> [--work-dir <dir>] [--hook <label>] [--json]` ([FR-RETRO-001](#fr-retro-001)),
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`),
 `completion <bash|zsh>` ([FR-CLI-010](#fr-cli-010)), `--help`, `--version`. Every command
 dispatched by `src/cli.ts` SHALL be named in this paragraph (guarded by `cli.test.ts` →
@@ -836,8 +837,11 @@ variable it does not read as *not read by `nb`* (with a nearest-name `did you me
 one is close) — in the human output as a trailing block and in `--json` as an additive top-level
 `unrecognized` array — derived from the SAME registry `effectiveConfig` uses, informational only
 (never an error, exit code stays `0`). Variables read only by the tooling shipped under
-`examples/` (`NB_BIN`, `NB_RETRO_TTL_DAYS`, `NB_GIT_AUTOCOMMIT`, `NB_GIT_SESSION_TRAILER`, `NB_BACKUP_PUSH_TIMEOUT`,
-`NB_BACKUP_GIT_LOCK_WAIT`) SHALL NOT be flagged — they belong to those tools, not to `nb`. `nb config` SHALL be read-only (it mutates no notebook) and is scoped
+`examples/` (`NB_BIN`, `NB_GIT_AUTOCOMMIT`, `NB_GIT_SESSION_TRAILER`, `NB_BACKUP_PUSH_TIMEOUT`,
+`NB_BACKUP_GIT_LOCK_WAIT`) SHALL NOT be flagged — they belong to those tools, not to `nb`. The
+variables `nb retro` reads (`NB_RETRO_EXTRA_PROMPT`, `NB_RETRO_TTL_DAYS`, `NB_PROJECT_SLUG`,
+[FR-RETRO-002](#fr-retro-002), [FR-RETRO-003](#fr-retro-003)) SHALL count as read by `nb`; they get
+no line of their own. `nb config` SHALL be read-only (it mutates no notebook) and is scoped
 to *configuration*, distinct from `nb stats` (usage, anomalies, engagement). To surface the
 `nb stats` thresholds without duplicating their clamp logic, `stats()` reads them through those
 exported getters rather than inline — a behavior-preserving extraction (same defaults, same
@@ -989,6 +993,13 @@ row written by an older `nb` cannot emit an escape sequence either.
 **Rationale:** Monitoring must itself be bounded and must never break a real call;
 the "every call appends one row" invariant is what lets `nb stats` see the classic
 integration-not-wired symptom of a harness that only ever calls `--help`.
+**One exception (issue #538):** a successful `nb retro` that finds the session already
+claimed (outcome `already`) SHALL append no row. A stop hook calls it on every stop of a
+session, and those rows would carry no information while shortening the history the
+ring keeps. For a `retro` row the `session` column holds the cleaned `--session` value
+(not `NB_SESSION`), and the `note` column holds the adapter's `--hook` label, cleaned to
+`[a-z0-9._-]`, when one is given. *Proven by* (the exception): `retro.test.ts` →
+"an already call adds no usage row" and "a nudge logs one retro row with outcome nudge, the cleaned session and the hook label".
 *Proven by:* `notebook.test.ts` → `describe('usage log + stats')`; the `--help`/`--version`
 rows by `cli.test.ts` → `describe('runNbCli')` → the two `issue #250` usage-row tests.
 
@@ -997,14 +1008,15 @@ rows by `cli.test.ts` → `describe('runNbCli')` → the two `issue #250` usage-
 base columns, five entry-level/outcome columns:
 `"\t<session>\t<entry-ids>\t<outcome>\t<collided-id>\t<evicted-id:score>"`, where
 `session` is the value of `NB_SESSION` at call time (blank when unset — co-access is
-then not computed), `entry-ids` is the comma-joined stable id(s) the call touched,
+then not computed; a `retro` row holds its cleaned `--session` instead, see [FR-USAGE-001](#fr-usage-001)), `entry-ids` is the comma-joined stable id(s) the call touched,
 `outcome` is `accepted`/`dedup-blocked`/`empty`/`too-long` for `add` (plus
 `rejected-full` in logs predating the always-admit policy; `add` no longer emits it),
 `up`/`down` for `vote`, `removed` for `rm`, `merged` for `merge`, `split` for `split`,
 `moved`/`move-blocked` for `move` (the latter when the target already held a
 near-duplicate), `no-shelf` for a `show` of a shelf with no notebook file (issue #480;
 for `nb show a b` the row names the first shelf, so the outcome is about that one), `off` for a
-text `nb list` that printed the switched-off line ([FR-ENABLED-004](#fr-enabled-004)), and blank for a
+text `nb list` that printed the switched-off line ([FR-ENABLED-004](#fr-enabled-004)),
+`nudge`/`off`/`off-work-dir` for `retro` ([FR-RETRO-001](#fr-retro-001)), and blank for a
 read-only command otherwise, `collided-id` is the id of the existing entry that blocked a
 `dedup-blocked` add or a `move-blocked` move, and `evicted-id:score` records the
 entry/entries an `add`/`merge`/`split`/`move` evicted, each as `<id>:<finalScore>`.
@@ -1090,12 +1102,16 @@ call are not one stuck agent, and blank-session rows are grouped together as bef
 **went-silent** (used historically, zero in-window, and last seen longer than `NB_SILENT_H`
 ago; rows with error class `unknown_subcommand` do not count as use, so a mistyped command
 name is never reported),
-**high-error-rate** (≥`NB_ERR_MIN` calls and ≥`NB_ERR_RATE` failures).
+**high-error-rate** (≥`NB_ERR_MIN` calls and ≥`NB_ERR_RATE` failures). The commands a harness
+runs on its own events, `brief` and `retro` (issue #538), SHALL NOT count toward a **loop**, and
+while either of them has a row in the window, `enabled` and `list` SHALL NOT be reported as
+**went-silent**: the example hooks that called those two now call the new commands.
 The **high-error-rate** detail names the causes of the flagged command's error rows with the
 same rule as the per-command error-cause readout: the row's error class, else `too_long` when a
 row without a class recorded the `too-long` outcome, else `unclassified` — so the two lines
 report the same split for the same rows (issue #418).
-*Proven by:* `notebook.test.ts` → `the high-error-rate detail and the error-causes readout agree on a mixed-age log (issue #418)`.
+*Proven by:* `notebook.test.ts` → `the high-error-rate detail and the error-causes readout agree on a mixed-age log (issue #418)`;
+the issue #538 rules by `loop-stats.test.ts` → `describe('nb stats with the brief and retro hook commands (issue #538)')`.
 
 <a id="fr-stats-002"></a>
 **FR-STATS-002 (Should).** A malformed anomaly-tuning value SHALL fall back to the
@@ -1541,9 +1557,9 @@ and `describe('nb-janitor sections 2 & 8 — read-only and neutral (issue #362)'
 A machine-wide install (hooks in `~/.claude/settings.json`, the contract in
 `~/.claude/CLAUDE.md`) turns the agent-facing loop on in every repository. These
 requirements let a user switch it off in some repositories, or keep it off everywhere and
-switch it on in one. The switch is read by the shipped hooks and by the text form of `nb list`
-([FR-ENABLED-004](#fr-enabled-004)); it is not an access lock on the store, and no other notebook
-command changes behavior with it.
+switch it on in one. The switch is read by the shipped hooks, by the text form of `nb list`
+([FR-ENABLED-004](#fr-enabled-004)) and by `nb retro` ([FR-RETRO-001](#fr-retro-001)); it is not an
+access lock on the store, and no other notebook command changes behavior with it.
 
 <a id="fr-enabled-001"></a>
 **FR-ENABLED-001 (Should).** `nb enabled` SHALL print `on` or `off`, and nothing else on
@@ -1559,8 +1575,9 @@ the plain form; inside the line or object with `--why`/`--json`)
 append the deciding input on the same line (e.g. `off (git config nb.enabled=false,
 file:.git/config)`); `--json` SHALL emit `{ enabled, state, source, value, origin, warning }`
 with `source` one of `env`/`git`/`default`. It is read-only and writes no notebook. Only
-`nb enabled`, `nb config` and the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)) read the
-switch or spawn `git`; `nb list --json` and every other command do not; reading a local git config is offline
+`nb enabled`, `nb config`, the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)) and
+`nb retro` ([FR-RETRO-001](#fr-retro-001), which also runs `git rev-parse` for the project name of
+[FR-RETRO-002](#fr-retro-002)) read the switch or spawn `git`; `nb list --json` and every other command do not; reading a local git config is offline
 and deterministic for the same files, so [DP-6](#dp-6) holds.
 **Rationale:** git config already gives the three scopes a user asks for (one repository, every
 repository, a folder) without a new file format, and its per-repository value is never committed,
@@ -1612,8 +1629,9 @@ still complete in an off repository.
 
 ### 4.17 Start and end of a task: `nb brief`, `nb retro` (issue #538)
 
-> **Status: proposed — not yet implemented ([issue #538](https://github.com/jeanibarz/agent-notebook/issues/538)).**
-> These requirements land before the code, as the issue asks. Each one gains its
+> **Status: FR-RETRO-001..003 are implemented; the others are proposed — not yet
+> implemented ([issue #538](https://github.com/jeanibarz/agent-notebook/issues/538)).**
+> These requirements landed before the code, as the issue asks. Each one gains its
 > *Proven by* line and loses this status in the pull request that implements it.
 > Until then, the three example hooks behave as [FR-ENABLED-003](#fr-enabled-003)
 > describes. Where this section departs from a requirement still in force, the code pull
@@ -1688,6 +1706,13 @@ SHALL NOT read standard input or a hook payload, SHALL exit `0` in every runtime
 `1` only on bad usage, and SHALL never exit `2`. `--json` SHALL print
 `{ outcome, text, session }` with `outcome` one of `nudge`, `already`, `off`,
 `off-work-dir`.
+*Proven by:* `retro.test.ts` → `describe('nb retro sends what the 0.12 Stop hook sent (FR-RETRO-001, FR-RETRO-002)')`,
+`describe('nb retro speaks once per session and shares the 0.12 sentinel (FR-RETRO-001)')`,
+`describe('nb retro cleans the session id before it becomes a file name (FR-RETRO-001)')`,
+`describe('nb retro respects the per-repository switch (FR-RETRO-001)')`,
+`describe('nb retro fails open (FR-RETRO-001)')`,
+`describe('nb retro exit codes and the usage log (FR-RETRO-001, FR-USAGE-001)')` and
+`describe('nb retro under concurrency (FR-RETRO-001)')`.
 
 <a id="fr-retro-002"></a>
 **FR-RETRO-002 (Should).** When `NB_RETRO_EXTRA_PROMPT` names an absolute path (a leading
@@ -1699,12 +1724,15 @@ holds the repository's git common directory (asked in `--work-dir`, else the wor
 directory), cleaned as today's Stop hook cleans it. Any other non-empty value SHALL print one warning
 on stderr and send the retrospective text alone. The file SHALL be checked before it is
 opened, so a FIFO or a device can never stall the call.
+*Proven by:* `retro.test.ts` → `describe('nb retro and a broken NB_RETRO_EXTRA_PROMPT (FR-RETRO-002)')` and
+"a leading ~/ in NB_RETRO_EXTRA_PROMPT expands to the home directory".
 
 <a id="fr-retro-003"></a>
-**FR-RETRO-003 (Should).** After a successful claim, `nb retro` SHALL remove `.retro-*`
+**FR-RETRO-003 (Should).** After its claim attempt, unless the session was already claimed, `nb retro` SHALL remove `.retro-*`
 files in `NB_DIR` older than `NB_RETRO_TTL_DAYS` days (default 7), best-effort: a failure
 SHALL never change what it prints. A sentinel holds no lesson, so this does not age an
 entry ([NG-005](#ng-005)).
+*Proven by:* `retro.test.ts` → `describe('nb retro sweeps old sentinels (FR-RETRO-003)')`.
 
 <a id="fr-hooks-001"></a>
 **FR-HOOKS-001 (Should).** The Claude Code example hooks SHALL be one Node adapter that
@@ -1745,13 +1773,19 @@ supported target (no Linux-specific syscalls) and is covered by CI. Because the 
 runner (Vitest) itself needs Node 20.12+ ([the guard](../scripts/check-node-for-tests.mjs)),
 the Node-18 leg runs a dependency-free runtime smoke of the built CLI
 ([`scripts/smoke-node18.mjs`](../scripts/smoke-node18.mjs)) instead of the suite, so the
-minimum engine is actually executed and not merely compiled. *(Proven by
+minimum engine is actually executed and not merely compiled. A Windows leg (Node 22)
+runs the tests of the agent-facing loop added by issue #538 (`src/retro.test.ts`,
+`src/loop-stats.test.ts`, `src/module-boundaries.test.ts`); the rest of the suite is not
+yet run on Windows. *(Proven by
 `src/smoke-node18.test.ts`.)*
 
 <a id="nfr-safe-001"></a>
 **NFR-SAFE-001 (Must).** No operation SHALL write, read, or delete outside `NB_DIR`;
 shelf validation ([FR-SAFE-001](#fr-safe-001)) is the sole guard and SHALL be applied
-on every shelf-to-path conversion.
+on every shelf-to-path conversion. Named read-only exceptions: the commands that read the
+per-repository switch read git configuration ([FR-ENABLED-001](#fr-enabled-001)), and
+`nb retro` reads the one file `NB_RETRO_EXTRA_PROMPT` names, after checking it is a regular
+file of at most 64 KiB ([FR-RETRO-002](#fr-retro-002)).
 
 <a id="nfr-maint-001"></a>
 **NFR-MAINT-001 (Should).** The whole mechanism SHALL stay in `src/notebook.ts` (the
@@ -1759,8 +1793,9 @@ library), with the self-monitoring layer (`src/usage.ts`, `src/stats.ts`) beside
 never imported by it, and `src/cli.ts` a thin wrapper (argument parsing, dispatch, help,
 shell completion, stdin reading and process guards). The read-side report renderers (`src/render.ts`), the
 `nb config` report (`src/config-report.ts`), the did-you-mean helpers (`src/suggest.ts`),
-`nb doctor` (`src/doctor.ts`) and the `nb enabled` resolver (`src/enabled.ts`) SHALL live in modules that `src/cli.ts` imports and that never
-import it. Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
+`nb doctor` (`src/doctor.ts`), the `nb enabled` resolver (`src/enabled.ts`) and the agent-facing loop
+(`src/loop.ts`, with its text in `src/agent-text.ts`, issue #538) SHALL live in modules that `src/cli.ts`
+imports and that never import it; `src/notebook.ts` SHALL NOT import the loop modules. Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
 
 *Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)".
 
@@ -1836,6 +1871,9 @@ to the default (integer vars also fall back on a non-numeric string).
 | `NB_ADD_BURST_N` | 15 | 1–100000 | `add-burst` signal ([FR-STATS-010](#fr-stats-010)): a session with more than this many accepted adds to one shelf. |
 | `NB_ERR_RATE` | 0.3 | 0–1 | High-error-rate anomaly: min failure fraction. |
 | `NB_ENABLED` | _(unset → `git config nb.enabled`, else on)_ | — | Per-process override of the per-repository on/off state ([FR-ENABLED-001](#fr-enabled-001)): `0`, `false`, `no`, `off` = off; any other non-blank value = on; blank defers to git config. Read only by `nb enabled`, `nb config` and the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)). |
+| `NB_RETRO_EXTRA_PROMPT` | _(unset)_ | — | `nb retro`: absolute path (a leading `~/` expanded) of a regular file of at most 64 KiB appended to the retrospective text, with `{project}` and `{session}` filled in ([FR-RETRO-002](#fr-retro-002)). |
+| `NB_RETRO_TTL_DAYS` | 7 | > 0 | `nb retro`: age in days past which a `.retro-*` sentinel is removed ([FR-RETRO-003](#fr-retro-003)); a non-positive or non-numeric value means 7. |
+| `NB_PROJECT_SLUG` | _(unset)_ | — | `nb retro`: the project name for `{project}` (else the folder holding the git common directory) ([FR-RETRO-002](#fr-retro-002)). |
 | `NB_ASCII` | _(unset → locale decides)_ | — | Force the activity sparkline's glyph ramp to ASCII (truthy) or Unicode (`''`, `0`, `false`, `no`, `off`); unset, the locale decides. |
 | `NB_STALE_LOCK_MS` | 10000 | 100–600000 | `.nb.lock` age (ms) past which a lock is treated as abandoned by a crashed `nb` and stolen. |
 | `NB_LOCK_GRACE_MS` | 2000 | 0–600000 | Extra wait past `NB_STALE_LOCK_MS` to notice and steal an abandoned lock before failing with `notebook is locked`. |

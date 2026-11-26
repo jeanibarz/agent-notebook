@@ -196,6 +196,35 @@ A bare `prefix` scopes by name (`nb search lock review.`). `--limit N` bounds th
 
 **A failed search is itself a signal.** When a search finds nothing it is not an error (exit 0) — it is logged (with your query), so that if you then `add` a lesson in the same session, `nb stats` reads the pair back as a **`failed-search`** diagnostic signal: a coverage gap the notebook did not hold, labelled by your own query. High search volume for a topic is exactly where *surfacing* is failing for that topic, and you flag it for free just by using the tool. See [Free diagnostic signals](operating.md#free-diagnostic-signals).
 
+## The end-of-task retrospective — `nb retro`
+
+`nb retro --session <id>` prints the end-of-task retrospective text (vote, prune, add at
+most one lesson) the first time it is called for a session, and nothing afterwards. A
+harness's stop hook can therefore call it on every stop and show the model whatever it
+prints. It reads no hook payload and exits 0 in every runtime state.
+
+```sh
+nb retro --session "$SESSION_ID"                # the text, once; nothing on later calls
+nb retro --session "$SESSION_ID" --json         # {"outcome":"nudge|already|off|off-work-dir","text":"…","session":"…"}
+nb retro --session "$SESSION_ID" --work-dir "$PWD_OF_THE_AGENT"   # also ask the on/off switch there
+```
+
+- **Once per session** is decided by creating `<NB_DIR>/.retro-<id>` exclusively, the file
+  the 0.12 example Stop hook creates, so an old copied hook and this command nudge once
+  between them. The id keeps only `A-Za-z0-9._-` (others become `_`), at most 128
+  characters, and a leading `-` becomes `_`. `.retro-*` files older than
+  `NB_RETRO_TTL_DAYS` (7) are removed after the claim attempt (unless the session was already claimed).
+- **Off** (see `nb enabled`) in the working directory prints nothing and keeps the claim;
+  off only in `--work-dir` prints nothing and releases it, so a later stop from an on
+  directory still nudges.
+- **`NB_RETRO_EXTRA_PROMPT`**, an absolute path (a leading `~/` is expanded) to a regular
+  UTF-8 file of at most 64 KiB, is appended after a blank line, with `{project}` and
+  `{session}` filled in. Anything else prints a warning on stderr and the text goes alone.
+- **`--hook <label>`** is for adapters: it is recorded in the usage log's note column and
+  never changes the output. A call that finds the session already claimed logs no row.
+
+The example Claude Code hooks do not call `nb retro` yet (issue #538).
+
 ## Shell completion
 
 `nb` is run dozens of times a session, so it ships tab-completion for **bash** and **zsh**. `nb completion <bash|zsh>` prints a static, dependency-free script to stdout; source it to complete the command set and — where a command takes a shelf — existing shelf names:

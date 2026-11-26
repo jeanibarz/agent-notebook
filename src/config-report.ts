@@ -197,8 +197,13 @@ export function environmentRows(): EnvRow[] {
  */
 function recognizedEnvVars(): string[] {
   // NB_ENABLED (issue #514) is read by `nb enabled` and reported on the `enabled=` line.
-  return [...TUNABLE_REGISTRY.map((t) => t.env), ...environmentRows().map((r) => r.name), 'NB_ENABLED'];
+  // The three `nb retro` reads (issue #538) are listed here, so they are no longer
+  // reported as "not read by nb"; they get no row of their own.
+  return [...TUNABLE_REGISTRY.map((t) => t.env), ...environmentRows().map((r) => r.name), 'NB_ENABLED', ...RETRO_ENV_VARS];
 }
+
+/** The variables `nb retro` reads (issue #538, FR-RETRO-002/003). */
+const RETRO_ENV_VARS: readonly string[] = ['NB_RETRO_EXTRA_PROMPT', 'NB_RETRO_TTL_DAYS', 'NB_PROJECT_SLUG'];
 
 /**
  * `NB_*` variables read by the tooling this repo SHIPS (the harness hooks, the
@@ -211,7 +216,6 @@ function recognizedEnvVars(): string[] {
  */
 const SHIPPED_TOOL_ENV_VARS: readonly string[] = [
   'NB_BIN',
-  'NB_RETRO_TTL_DAYS',
   'NB_GIT_AUTOCOMMIT',
   'NB_GIT_SESSION_TRAILER',
   'NB_BACKUP_PUSH_TIMEOUT',
