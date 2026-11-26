@@ -72,6 +72,40 @@ jobs:
       - run: node scripts/smoke-node18.mjs
         if: matrix.node-version == 18
 
+  # Issue #559: the plugin's hooks start from nb-hook-entry.cjs, which must still be
+  # read by a Node.js too old for the adapter (Node 12 cannot parse it; 14 and 16 run it
+  # although the package needs 18) and say so once, at session start. Vitest cannot run
+  # on these versions, so this leg runs the real file on the real old engines.
+  old-node-entry:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [12, 16]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: The hook entry says Node.js is too old, at session start only
+        run: |
+          set -eu
+          entry=examples/hooks/claude-code/nb-hook-entry.cjs
+          notice="$(sed -n "s/^var NOTICE = '\(.*\)';\$/\1/p" "$entry")"
+          [ -n "$notice" ]
+          node --version
+          out="$(echo '{}' | node "$entry" session-start)"
+          [ "$out" = "$notice" ] || { echo "::error::session-start printed: $out"; exit 1; }
+          for event in subagent-start stop; do
+            out="$(echo '{"session_id":"s"}' | node "$entry" "$event")"
+            [ -z "$out" ] || { echo "::error::$event printed: $out"; exit 1; }
+          done
+          echo "ok: one notice at session start, nothing else, exit 0"
+
   # Issue #538: the agent-facing loop (`nb brief`, `nb retro`, later the hook
   # adapter) is meant to work on native Windows, so its tests run there too. The
   # rest of the suite has never run on Windows and is not run here yet. npm runs
@@ -94,4 +128,4 @@ jobs:
       - run: npm ci
       - run: npm config set script-shell "C:\\Program Files\\Git\\bin\\bash.exe"
       - run: npm run build
-      - run: npx vitest run src/brief.test.ts src/retro.test.ts src/loop-stats.test.ts src/module-boundaries.test.ts src/nb-claude-hook.test.ts src/project.test.ts src/usage-record.test.ts src/place.test.ts src/place-ops.test.ts src/messages.test.ts src/retro-messages.test.ts
+      - run: npx vitest run src/brief.test.ts src/retro.test.ts src/loop-stats.test.ts src/module-boundaries.test.ts src/nb-claude-hook.test.ts src/project.test.ts src/usage-record.test.ts src/place.test.ts src/place-ops.test.ts src/messages.test.ts src/retro-messages.test.ts src/nb-hook-entry.test.ts

@@ -14,6 +14,7 @@ before relying on them in long sessions or with subagents.
 | `nb-session-start.sh` | `SessionStart` | injects `nb brief`: the instruction lines and the notebook **index** (every notebook + its "open me when…" description), so the agent sees it without a call. It never picks a notebook for the agent, so it is the same hook in every project. An opt-in [layered variant](#optional-layered-index-project--domain--global) groups the index by project / domain / global. |
 | `nb-subagent-start.sh` | `SubagentStart` | hands the same index to each **subagent**, which never sees the `SessionStart` one. See [below](#give-subagents-the-index-subagentstart) for when to prefer a line in the brief. |
 | `nb-retrospective.sh` | `Stop` | once per session, at the lead agent's first stop with no subagent still running, sends `nb retro`: a nudge to vote / prune / add on the notebooks it used. It never nudges a subagent. |
+| `nb-hook-entry.cjs` | all three | what the Claude Code plugin's hooks run first (issue #559): with a Node.js older than 18 it tells the assistant, at session start, to install Node.js 18 or later; otherwise it runs `nb-claude-hook.mjs` unchanged. Written in old JavaScript so that an old Node.js can still read it. You can register it in place of the adapter (`node nb-hook-entry.cjs <event>`); add `--managed` in an administrator's managed settings to make it ignore `NB_BIN`. |
 | `settings.json` | — | the config that registers the three scripts. |
 
 Each `.sh` file is a short `sh` script that runs `node nb-claude-hook.mjs <event>`

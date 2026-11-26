@@ -145,6 +145,7 @@ export default defineConfig({
             'src/place.test.ts',
             'src/place-ops.test.ts',
             'src/messages.test.ts',
+            'src/nb-hook-entry.test.ts',
           ],
           // @ts-expect-error — same: accepted per project at runtime, missing from the types
           testNamePattern: TIMING_TAG,
