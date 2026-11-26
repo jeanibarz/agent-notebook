@@ -1,40 +1,29 @@
-// Candidate entry file for the Claude Code plugin hooks (#559). ES5 only, so any Node that can run a script at all
-// can parse it: no arrow, no template string, no let/const, no ??, no ?., no `import(` token (the loader below
-// builds it at run time). It reads the minimum Node major from the package's own `engines.node`, and:
-//   too old  -> on `session-start` only, print the ASCII notice; nothing for any other event; exit 0
-//   ok       -> load the real adapter next to this file (an ES module) and let it run.
+// Old-Node gate (design-v1 section 4, spike candidate). ES5 only; `import(` exists only inside new Function.
 'use strict';
-var fs = require('fs');
 var path = require('path');
 var url = require('url');
-
+var MIN_NODE = 18;
+var NOTICE = 'agent-notebook: Node.js 18 or later is needed; it is missing or too old here, so the notebook is off. Tell the user: install the LTS version from https://nodejs.org, then quit and reopen Claude Code.';
 var event = process.argv[2] || '';
-
-function minimumMajor() {
-  var fallback = 18;
-  try {
-    var pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'package.json'), 'utf8'));
-    var range = pkg && pkg.engines && pkg.engines.node;
-    var m = /(\d+)/.exec(typeof range === 'string' ? range : '');
-    return m ? parseInt(m[1], 10) : fallback;
-  } catch (e) {
-    return fallback;
-  }
-}
-
-var need = minimumMajor();
 var have = parseInt(process.versions.node.split('.')[0], 10);
 
-if (have < need) {
+if (have < MIN_NODE) {
   if (event === 'session-start') {
-    process.stdout.write(
-      'agent-notebook: Node.js ' + need + ' or later is needed; this one is ' + process.versions.node +
-      ', so the notebook is off. Tell the user: install Node.js LTS from https://nodejs.org, then quit and reopen the app.\n'
-    );
+    process.stdout.write(NOTICE + '\n');
+  } else if (event === 'subagent-start') {
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SubagentStart', additionalContext: NOTICE } }) + '\n');
+  } else if (event !== 'stop') {
+    process.stderr.write(NOTICE + '\n');
+    process.exitCode = 1;
   }
 } else {
   var load = new Function('u', 'return import(u)');
   load(url.pathToFileURL(path.join(__dirname, 'nb-claude-hook.mjs')).href).catch(function (err) {
-    process.stderr.write('nb-claude-hook: ' + (err && err.message ? err.message : String(err)) + '\n');
+    var msg = String(err && err.message ? err.message : err).replace(/\s+/g, ' ').slice(0, 200);
+    if (event === 'session-start' || event === 'subagent-start') {
+      process.stdout.write('agent-notebook: the ' + event + ' hook could not start (' + msg + '). Tell the user: reinstall the agent-notebook plugin.\n');
+    } else {
+      process.stderr.write('nb-claude-hook: ' + msg + '\n');
+    }
   });
 }
