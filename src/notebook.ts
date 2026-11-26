@@ -105,6 +105,30 @@ export function setCallNoCreateDir(dir: string | undefined): void {
   callNoCreateDir = dir;
 }
 
+/**
+ * A test-only hook at named points of the lock code (issue #551), so a test can
+ * force an interleaving (remove a folder, take a lock) at an exact step instead of
+ * sleeping and hoping. `undefined` in production: nothing but a test sets it (no
+ * environment variable or `.nb.json` key reaches it), and it is not on the package
+ * root. Points: `before-mkdir` (in `withLock`, before the lock's folder is created
+ * or checked).
+ */
+export type LockTestPoint = 'before-mkdir';
+let lockTestHook: ((point: LockTestPoint, dir: string) => void) | undefined;
+export function setLockTestHook(fn: ((point: LockTestPoint, dir: string) => void) | undefined): void {
+  lockTestHook = fn;
+}
+
+/** The refusal of a call whose own project notebook was moved back to the shared notebook while it ran. */
+function movedBack(dir: string): NbError {
+  return new NbError(
+    'place_unknown',
+    `this project's notebook (${dir}) was moved back to the shared notebook while this command ran (\`nb place shared\`). ` +
+      'Nothing was written and nothing is lost. Run the same command again: it will use the shared notebook. ' +
+      'Someone moved it back on purpose; do not run `nb place own` unless the user asks.',
+  );
+}
+
 /** `resolveIntTunable` plus how the value was resolved; `fromFile` marks the `.nb.json` override (which wins over the environment). */
 export function resolveIntTunableStatus(t: IntTunable): ResolvedInt & { fromFile: boolean; fileRaw?: string } {
   if (t === MAX_CHARS && callMaxChars !== undefined) {
@@ -821,13 +845,13 @@ export function drainPendingRecovery(): { lockSteals: number; tempReaps: number 
 }
 
 export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
-  if (callNoCreateDir !== undefined && dir === callNoCreateDir && !existsSync(dir)) {
-    throw new NbError(
-      'place_unknown',
-      `this project's own notebook (${dir}) was removed while the command ran; nothing was written. Run the command again.`,
-    );
-  }
-  mkdirSync(dir, { recursive: true });
+  lockTestHook?.('before-mkdir', dir);
+  // A call resolved to a project's own notebook never creates that folder (issue
+  // #548, #551): only `nb place own` may. There is no `existsSync` first: the
+  // `mkdir` of the lock below is the existence check, and its ENOENT is the
+  // refusal, so no check-then-create window is left. Library callers keep `mkdir -p`.
+  const noCreate = callNoCreateDir !== undefined && dir === callNoCreateDir;
+  if (!noCreate) mkdirSync(dir, { recursive: true });
   const lock = join(dir, '.nb.lock');
   const staleMs = staleLockMs();
   // Acquire budget is the stale threshold plus a grace margin, so the deadline
@@ -868,6 +892,8 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
       // report a misleading 'notebook is locked' when no other process exists.
       // Fail fast with the real cause instead (issue #263).
       const code = (err as NodeJS.ErrnoException)?.code;
+      // The own folder is gone (removed before, or while we waited): refuse, never re-create.
+      if (noCreate && code === 'ENOENT') throw movedBack(dir);
       if (code !== 'EEXIST') {
         throw new Error(
           `cannot acquire notebook lock at ${lock}: notebook directory is not writable (${code ?? String(err)})`,

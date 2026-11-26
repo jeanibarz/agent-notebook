@@ -1046,7 +1046,9 @@ append one tab-delimited row to the usage ring, bounded to `usageRing` rows (old
 dropped). The row's first five columns SHALL be
 `"<iso-ts>\t<shelf>\t<command>\t<ok|err>\t<ms>ms"`, followed by the five entry-level
 columns of [FR-USAGE-002](#fr-usage-002) and the two reason columns of
-[FR-USAGE-003](#fr-usage-003). A failure to log SHALL NOT fail the
+[FR-USAGE-003](#fr-usage-003). For a call resolved to a project's own notebook
+([FR-PLACE-001](#fr-place-001)) the row SHALL be written without creating that folder, and SHALL go
+to the shared notebook's log when the folder is gone (issue #551). A failure to log SHALL NOT fail the
 operation (so `--help`/`--version` still succeed on a read-only `NB_DIR`), and every
 field SHALL be sanitized (tab/CR/LF collapsed to spaces, other control characters such
 as ESC/BEL dropped) so a value cannot inject an extra column or row or reach a terminal.
@@ -1066,7 +1068,10 @@ ring keeps. For a `retro` row the `session` column holds the cleaned `--session`
 `[a-z0-9._-]`, when one is given; a `brief` row records them the same way. *Proven by* (the exception): `retro.test.ts` →
 "an already call adds no usage row" and "a nudge logs one retro row with outcome nudge, the cleaned session and the hook label".
 *Proven by:* `notebook.test.ts` → `describe('usage log + stats')`; the `--help`/`--version`
-rows by `cli.test.ts` → `describe('runNbCli')` → the two `issue #250` usage-row tests.
+rows by `cli.test.ts` → `describe('runNbCli')` → the two `issue #250` usage-row tests; the
+own-notebook rule by `place.test.ts` → `describe('the no-re-create switch (issue #548)')` →
+"the no-create usage-log write never creates the folder and says so; the public logUsage still creates it (issue #551)"
+and "the add refuses, the folder is not re-created, and the usage row goes to the shared log".
 
 <a id="fr-usage-002"></a>
 **FR-USAGE-002 (Should).** Each usage row SHALL additionally record, after the five
@@ -1964,8 +1969,11 @@ notebook; `nb brief` and `nb retro` exit `0` and `nb place` and `nb config` run.
 resolved to that folder; `rm` and the source of `move` are not refused, so a shelf left in the wrong
 notebook can be repaired. The usage log, the lock and `.nb.json` follow the resolved folder; the
 retrospective's once-per-session marker SHALL stay in the shared notebook. A command resolved to a
-project folder SHALL NOT re-create that folder if it was removed meanwhile: a write refuses with
-`place_unknown`, and the usage row goes to the shared notebook.
+project folder SHALL NOT re-create that folder if it was removed meanwhile, neither through the
+lock nor through the usage log: the `mkdir` of the folder's lock is the existence check (no separate
+check, so no check-then-create window), a write refuses with `place_unknown` and a message that says
+the notebook was moved back to the shared notebook and that nothing is lost, and the usage row goes to
+the shared notebook (issue #551).
 **Rationale:** the folder is the setting, so "one notebook per project" needs nothing set by hand
 (epic #537). A name from the folder never selects, because a fresh clone into another folder would
 then use another notebook; a refusal is cheap to recover from, a lesson silently written to the

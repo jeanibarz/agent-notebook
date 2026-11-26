@@ -5,7 +5,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { isWindowsDeviceName, resolvePlace, sharedWriteRefusal, type Place } from './place.js';
-import { setCallNoCreateDir, withLock } from './notebook.js';
+import { setCallNoCreateDir, setLockTestHook, withLock } from './notebook.js';
+import { appendUsage } from './usage.js';
+import { runNbCli } from './cli.js';
 import type { ProjectState } from './project.js';
 
 // Issue #548 (FR-PLACE-001, -002, -004): a project has its own notebook when
@@ -254,6 +256,85 @@ describe('the no-re-create switch (issue #548)', () => {
     }
     expect(await withLock(gone, () => 2)).toBe(2);
     expect(existsSync(gone)).toBe(true);
+  });
+
+  test('the no-create usage-log write never creates the folder and says so; the public logUsage still creates it (issue #551)', () => {
+    const gone = join(tmp, 'gone');
+    expect(appendUsage(gone, 'build', 'add', true, 1, {}, { noCreate: true })).toBe(false);
+    expect(existsSync(gone)).toBe(false);
+    mkdirSync(gone);
+    expect(appendUsage(gone, 'build', 'add', true, 1, {}, { noCreate: true })).toBe(true);
+    expect(readFileSync(join(gone, '.nb-usage.log'), 'utf-8')).toContain('\tbuild\tadd\tok\t');
+    const other = join(tmp, 'other');
+    expect(appendUsage(other, 'build', 'add', true, 1)).toBe(true);
+    expect(existsSync(join(other, '.nb-usage.log'))).toBe(true);
+  });
+
+  // Through the CLI (issue #551, item 5): the wiring of the switch and of the usage-log
+  // fallback. A lock test hook removes the project's folder at the start of the add's
+  // lock, the moment a concurrent `nb place shared` would have moved it away.
+  describe('through runNbCli, when the own folder goes away mid-call', () => {
+    const KEYS = ['HOME', 'USERPROFILE', 'NB_DIR', 'NB_PROJECT_SLUG'] as const;
+    let saved: Record<string, string | undefined>;
+    beforeEach(() => {
+      saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+      process.env.HOME = home;
+      process.env.USERPROFILE = home;
+      delete process.env.NB_DIR;
+      process.env.NB_PROJECT_SLUG = 'acme-app';
+      mkdirSync(join(projects, 'acme-app'), { recursive: true, mode: 0o700 });
+      mkdirSync(shared, { recursive: true });
+    });
+    afterEach(() => {
+      setLockTestHook(undefined);
+      for (const k of KEYS) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    });
+    async function run(argv: string[]): Promise<{ code: number; out: string; err: string }> {
+      let out = '';
+      let err = '';
+      const origOut = process.stdout.write.bind(process.stdout);
+      const origErr = process.stderr.write.bind(process.stderr);
+      process.stdout.write = (x: string) => ((out += x), true);
+      process.stderr.write = (x: string) => ((err += x), true);
+      try {
+        return { code: await runNbCli(argv), out, err };
+      } finally {
+        process.stdout.write = origOut;
+        process.stderr.write = origErr;
+      }
+    }
+    const own = (): string => join(projects, 'acme-app');
+    const sharedLog = (): string => join(shared, '.nb-usage.log');
+
+    test('control: the add lands in the own folder, and so does its usage row', async () => {
+      const r = await run(['add', 'build', 'run the tests with npm test']);
+      expect(r.code).toBe(0);
+      expect(readFileSync(join(own(), 'build.md'), 'utf-8')).toContain('run the tests with npm test');
+      expect(readFileSync(join(own(), '.nb-usage.log'), 'utf-8')).toContain('\tbuild\tadd\tok\t');
+      expect(existsSync(sharedLog())).toBe(false);
+    });
+
+    test('the add refuses, the folder is not re-created, and the usage row goes to the shared log', async () => {
+      let removed = 0;
+      setLockTestHook((point, dir) => {
+        if (point === 'before-mkdir' && dir === own()) {
+          rmSync(dir, { recursive: true, force: true });
+          removed++;
+        }
+      });
+      const r = await run(['add', 'build', 'a lesson that must not land', '--json']);
+      expect(removed).toBe(1);
+      expect(r.code).toBe(1);
+      expect(JSON.parse(r.out).error.class).toBe('place_unknown');
+      expect(r.err).toContain('was moved back to the shared notebook while this command ran');
+      expect(r.err).toContain('do not run `nb place own` unless the user asks');
+      expect(existsSync(own())).toBe(false);
+      expect(readFileSync(sharedLog(), 'utf-8')).toMatch(/\tbuild\tadd\terr\t.*\tplace_unknown/);
+      expect(existsSync(join(shared, 'build.md'))).toBe(false);
+    });
   });
 });
 

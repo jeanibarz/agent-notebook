@@ -35,7 +35,7 @@
 // the usage ring so `nb stats` can surface loop / went-silent / high-error-rate
 // anomalies (and so a harness that only ever runs `--help` is still visible).
 
-import { existsSync, lstatSync, realpathSync } from 'node:fs';
+import { lstatSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -78,7 +78,7 @@ import {
   voteMany,
   type Entry,
 } from './notebook.js';
-import { formatEvictedUsage, logUsage, normalizeReason, type UsageMeta } from './usage.js';
+import { appendUsage, formatEvictedUsage, logUsage, normalizeReason, type UsageMeta } from './usage.js';
 import {
   isValidWindow,
   parseWindowMs,
@@ -1982,9 +1982,14 @@ export async function runNbCli(
   } finally {
     // The `stats` read of the usage log happens above; logging it afterwards is fine.
     try {
-      // An own folder removed meanwhile is not re-created by the log (issue #548).
-      const logDir = place?.kind === 'own' && !existsSync(dir) ? sharedDir : dir;
-      if (!(ok && skipUsageRow)) logUsage(logDir, shelf, cmd, ok, Date.now() - started, meta);
+      // An own folder removed meanwhile is never re-created by the log (issue #548,
+      // #551): the row is written there without `mkdir -p`, else to the shared log.
+      if (!(ok && skipUsageRow)) {
+        const ms = Date.now() - started;
+        if (place?.kind !== 'own' || !appendUsage(dir, shelf, cmd, ok, ms, meta, { noCreate: true })) {
+          logUsage(place?.kind === 'own' ? sharedDir : dir, shelf, cmd, ok, ms, meta);
+        }
+      }
     } finally {
       setCallMaxChars(undefined);
       setCallNoCreateDir(undefined);
