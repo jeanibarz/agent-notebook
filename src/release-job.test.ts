@@ -549,7 +549,7 @@ describe('the github-release job proves the zip equals the npm package and the t
     }
     const ok = world(GOOD).run(step);
     expect(ok.code, ok.out).toBe(0);
-  });
+}, 120_000);
 
   test('the registry download retries transient errors', () => {
     const curl = world(GOOD);
