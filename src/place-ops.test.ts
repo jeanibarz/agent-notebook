@@ -1,10 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { chmodSync, existsSync, linkSync, mkdirSync, renameSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, renameSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { isNbOwnFile, linkAll, placeOwn, placeShared, sharedBlockers, sharedName, unlinkSame } from './place-ops.js';
+import { isNbOwnFile, linkAll, placeOwn, placeShared, sharedBlockers, sharedName, unfinishedMoves, unlinkSame } from './place-ops.js';
 import { releaseHeldLock, setLockTestHook } from './notebook.js';
 
 // Issue #548, FR-PLACE-003: `nb place own` and `nb place shared` move whole shelf
@@ -213,11 +213,12 @@ describe('two locks in a fixed order: the shared notebook first, then the projec
   test('place shared links into the shared notebook while holding its lock: a writer that takes the lock is kept out (defect 1)', async () => {
     mkdirSync(own, { recursive: true, mode: 0o700 });
     writeFileSync(join(own, 'build.md'), SHELF);
-    const seen: { won: boolean; sharedOurs: boolean; ownOurs: boolean }[] = [];
+    const seen: { won: boolean; sharedOurs: boolean; ownGone: boolean }[] = [];
     const r = await placeShared(shared, own, 'acme-app', {
-      beforeLink: () => seen.push({ won: tryLock(shared), sharedOurs: ours(shared), ownOurs: ours(own) }),
+      // The links are made out of the folder renamed away (issue #551, part 3).
+      beforeLink: () => seen.push({ won: tryLock(shared), sharedOurs: ours(shared), ownGone: !existsSync(own) }),
     });
-    expect(seen).toEqual([{ won: false, sharedOurs: true, ownOurs: true }]);
+    expect(seen).toEqual([{ won: false, sharedOurs: true, ownGone: true }]);
     expect(r).toMatchObject({ moved: ['build'], kept: [], removed: true });
     expect(existsSync(lockOf(shared))).toBe(false);
   });
@@ -265,7 +266,8 @@ describe('two locks in a fixed order: the shared notebook first, then the projec
     const seen: boolean[] = [];
     const check = (): number => seen.push(ours(shared) && ours(own));
     await placeOwn(shared, projects, 'acme-app', { onLocked: check, beforeLink: check });
-    await placeShared(shared, own, 'acme-app', { onLocked: check, beforeLink: check });
+    // At beforeLink the folder (and its lock, still ours) has been renamed away.
+    await placeShared(shared, own, 'acme-app', { onLocked: check, beforeLink: () => seen.push(ours(shared) && !existsSync(own)) });
     expect(seen).toEqual([true, true, true, true]);
   });
 
@@ -324,14 +326,164 @@ describe('two locks in a fixed order: the shared notebook first, then the projec
     expect(r.moved).toEqual([]);
     expect(r.kept).toEqual([{ shelf: 'build', why: 'a lock of this move was taken over (a stalled run); run the command again' }]);
     expect(r.removed).toBe(false);
-    // Both copies are the same file; nothing is lost. Once the thief is gone, a re-run
-    // counts the shared copy as linked, not as a clash, and finishes.
+    // Both copies are the same file; nothing is lost. The shelf stays in the folder
+    // renamed away; once the thief is gone, a re-run finishes that move, counting the
+    // shared copy as linked, not as a clash.
     expect(readFileSync(join(shared, 'build@acme-app.md'), 'utf-8')).toBe(SHELF);
+    expect(r.left).toMatch(/[\\/]\.old-acme-app-\d+-[0-9a-f]{16}$/);
+    expect(readFileSync(join(r.left!, 'build.md'), 'utf-8')).toBe(SHELF);
     rmSync(lockOf(shared), { recursive: true, force: true });
-    expect(sharedBlockers(shared, own, 'acme-app')).toEqual({ foreign: [], clashes: [] });
     const again = await placeShared(shared, own, 'acme-app');
-    expect(again).toMatchObject({ moved: ['build'], kept: [], removed: true });
+    expect(again).toMatchObject({ moved: ['build'], kept: [], gone: true, resumed: [r.left] });
+    expect(existsSync(r.left!)).toBe(false);
     expect(readFileSync(join(shared, 'build@acme-app.md'), 'utf-8')).toBe(SHELF);
+  });
+});
+
+// Issue #551, part 3: nb place shared renames the folder away first, then moves the
+// shelves out of the renamed folder, so no writer can re-fill the folder it removes.
+describe('removing the project folder: renamed away first, then emptied (issue #551)', () => {
+  /** A dead process id: far above any pid the OS hands out. */
+  const DEAD = 999_999_999;
+  /** A folder an earlier `nb place shared` renamed away and left, as a crash leaves it. */
+  function leftover(pid: number, opts: { stale: boolean }): string {
+    const d = join(projects, `.old-acme-app-${pid}-0123456789abcdef`);
+    mkdirSync(join(d, '.nb.lock'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(d, '.nb.lock', 'owner'), `${pid}.0123456789abcdef`);
+    writeFileSync(join(d, 'build.md'), SHELF);
+    writeFileSync(join(d, '.nb-usage.log'), 'a row\n');
+    if (opts.stale) {
+      const old = new Date(Date.now() - 3_600_000);
+      utimesSync(join(d, '.nb.lock'), old, old);
+    }
+    return d;
+  }
+  afterEach(() => setLockTestHook(undefined));
+
+  test('when the folder lock is released the folder is already gone: no waiting writer can re-fill it (defect 3)', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    writeFileSync(join(own, '.nb-usage.log'), 'a row\n');
+    const atRelease: boolean[] = [];
+    setLockTestHook((point, dir) => {
+      if (point === 'released' && dir === own) atRelease.push(existsSync(own));
+    });
+    const r = await placeShared(shared, own, 'acme-app');
+    expect(atRelease).toEqual([false]);
+    expect(r).toMatchObject({ moved: ['build'], kept: [], removed: true });
+    expect(existsSync(own)).toBe(false);
+    expect(readdirSync(projects)).toEqual([]);
+    expect(readFileSync(join(shared, 'build@acme-app.md'), 'utf-8')).toBe(SHELF);
+  });
+
+  test('a refused rename (Windows: a file held open) changes nothing', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    let calls = 0;
+    const refuse = (): void => {
+      calls++;
+      throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+    };
+    await expect(placeShared(shared, own, 'acme-app', { rename: refuse })).rejects.toThrow(
+      /could not move .* aside \(EPERM\): something may hold a file open in it\. Nothing changed; run `nb place shared` again\./,
+    );
+    expect(calls).toBe(1);
+    expect(shelves(own)).toEqual(['build.md']);
+    expect(shelves(shared)).toEqual([]);
+    expect(existsSync(join(own, '.nb.lock'))).toBe(false);
+    expect(await placeShared(shared, own, 'acme-app')).toMatchObject({ moved: ['build'], removed: true });
+  });
+
+  test('a move a crash left halfway is finished by the next place shared, and place own refuses until then', async () => {
+    const d = leftover(DEAD, { stale: true });
+    expect(unfinishedMoves(projects, 'acme-app')).toEqual([{ dir: d, pid: DEAD, shelves: ['build'], inProgress: false }]);
+    await expect(placeOwn(shared, projects, 'acme-app')).rejects.toThrow(/an earlier `nb place shared` of this project did not finish .*nothing changed\. Run `nb place shared` to finish it first\./);
+    expect(existsSync(own)).toBe(false);
+    const r = await placeShared(shared, own, 'acme-app');
+    expect(r).toMatchObject({ moved: ['build'], kept: [], gone: true, resumed: [d] });
+    expect(r.left).toBeUndefined();
+    expect(existsSync(d)).toBe(false);
+    expect(readFileSync(join(shared, 'build@acme-app.md'), 'utf-8')).toBe(SHELF);
+    expect((await placeOwn(shared, projects, 'acme-app')).moved).toEqual(['build@acme-app']);
+  });
+
+  test('a move still in progress (its process alive, its lock fresh) is left alone', async () => {
+    const d = leftover(process.pid, { stale: false });
+    await expect(placeShared(shared, own, 'acme-app')).rejects.toThrow(/a move of this project is in progress .*nothing changed\. Wait a few seconds, then run `nb place shared` again\./);
+    expect(shelves(d)).toEqual(['build.md']);
+    expect(shelves(shared)).toEqual([]);
+  });
+
+  test('a shelf that cannot leave the renamed folder stays there, never removed, and the next run finishes it', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    const r = await placeShared(shared, own, 'acme-app', {
+      // A different file takes the name after the check (a writer that ignores the lock).
+      beforeLink: () => writeFileSync(join(shared, 'build@acme-app.md'), '+1 another file\n'),
+    });
+    expect(r.kept).toEqual([{ shelf: 'build', why: 'a shelf of that name is already there' }]);
+    expect(r.removed).toBe(false);
+    expect(readFileSync(join(r.left!, 'build.md'), 'utf-8')).toBe(SHELF);
+    expect(existsSync(join(r.left!, '.nb.lock'))).toBe(false);
+    // The user frees the name (`nb move`), then runs place shared again.
+    renameSync(join(shared, 'build@acme-app.md'), join(shared, 'other@acme-app.md'));
+    expect(await placeShared(shared, own, 'acme-app')).toMatchObject({ moved: ['build'], gone: true, resumed: [r.left] });
+    expect(readFileSync(join(shared, 'build@acme-app.md'), 'utf-8')).toBe(SHELF);
+  });
+
+  test('a link that fails after the rename takes back what it linked and puts the folder back: nothing changed', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    let calls = 0;
+    const fail = (): void => {
+      calls++;
+      throw Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM' });
+    };
+    await expect(placeShared(shared, own, 'acme-app', { beforeLink: fail })).rejects.toThrow(
+      /could not move the shelves to the shared notebook \(EPERM\); nothing changed, the project keeps its own notebook/,
+    );
+    expect(calls).toBe(1);
+    expect(shelves(own)).toEqual(['build.md']);
+    expect(readdirSync(projects)).toEqual(['acme-app']);
+    expect(existsSync(join(own, '.nb.lock'))).toBe(false);
+    expect(shelves(shared)).toEqual([]);
+    expect(await placeShared(shared, own, 'acme-app')).toMatchObject({ moved: ['build'], removed: true });
+  });
+
+  test.skipIf(isWin)('a shelf whose shared name is too long for the file system: the links made are taken back, nothing changed', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    // A valid file whose name plus `@acme-app` passes the 255-byte limit of a name.
+    writeFileSync(join(own, `${'x'.repeat(250)}.md`), '+1 a long one\n');
+    await expect(placeShared(shared, own, 'acme-app')).rejects.toThrow(/could not move the shelves to the shared notebook \(ENAMETOOLONG\); nothing changed/);
+    expect(shelves(own)).toEqual(['build.md', `${'x'.repeat(250)}.md`]);
+    expect(readdirSync(projects)).toEqual(['acme-app']);
+    expect(shelves(shared)).toEqual([]);
+  });
+
+  test.skipIf(isWin)('a resumed move whose link fails puts the folder back as the own notebook, nothing lost', async () => {
+    const d = leftover(DEAD, { stale: true });
+    writeFileSync(join(d, `${'x'.repeat(250)}.md`), '+1 a long one\n');
+    await expect(placeShared(shared, own, 'acme-app')).rejects.toThrow(
+      /could not move the shelves to the shared notebook \(ENAMETOOLONG\); nothing changed, the project keeps its own notebook/,
+    );
+    expect(existsSync(d)).toBe(false);
+    expect(shelves(own)).toEqual(['build.md', `${'x'.repeat(250)}.md`]);
+    expect(existsSync(join(own, '.nb.lock'))).toBe(false);
+    expect(shelves(shared)).toEqual([]);
+  });
+
+  test.skipIf(isWin)('the sweep never follows a link named like a staging or renamed-away folder', async () => {
+    const victim = join(tmp, 'victim');
+    mkdirSync(victim);
+    writeFileSync(join(victim, 'keep.md'), '+1 not nb\'s\n');
+    mkdirSync(projects, { recursive: true, mode: 0o700 });
+    symlinkSync(victim, join(projects, `.new-acme-app-${DEAD}`));
+    symlinkSync(victim, join(projects, `.old-acme-app-${DEAD}-0123456789abcdef`));
+    expect(unfinishedMoves(projects, 'acme-app')).toEqual([]);
+    await placeOwn(shared, projects, 'acme-app');
+    await placeShared(shared, own, 'acme-app');
+    expect(readFileSync(join(victim, 'keep.md'), 'utf-8')).toBe("+1 not nb's\n");
   });
 });
 
@@ -486,6 +638,53 @@ describe('nb place own / shared through the built CLI (FR-PLACE-003)', { timeout
     expect(existsSync(join(shared, 'x@acme-app.md'))).toBe(false);
     if (code === 0) expect(readFileSync(join(own, 'x@acme-app.md'), 'utf-8')).toContain('must not land');
     else expect(JSON.parse(out).error.class).toBe('bad_args');
+  });
+
+  test('nb place lists a move left halfway, nb place own refuses, and nb place shared finishes it (issue #551)', () => {
+    const d = join(projects, '.old-acme-app-999999999-0123456789abcdef');
+    mkdirSync(d, { recursive: true, mode: 0o700 });
+    writeFileSync(join(d, 'build.md'), SHELF);
+    expect(nb(['place']).out).toContain(`an earlier \`nb place shared\` stopped halfway and left 1 shelf in ${d}; nothing is lost. Do not delete that folder; run \`nb place shared\` to finish.`);
+    expect(nb(['place', 'own'])).toMatchObject({ code: 1, err: expect.stringContaining('did not finish') });
+    const r = nb(['place', 'shared', '--json']);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ kind: 'shared', moved: ['build'], removed: true });
+    expect(existsSync(d)).toBe(false);
+    expect(readFileSync(join(shared, 'build@acme-app.md'), 'utf-8')).toBe(SHELF);
+    expect(nb(['place']).out).not.toContain('stopped halfway');
+  });
+
+  test.skipIf(isWin)('a place shared killed while it waits for the folder lock is finished by the next one [timing]', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    mkdirSync(join(own, '.nb.lock'));
+    writeFileSync(join(own, '.nb.lock', 'owner'), '1.fake');
+    const env = childEnv({ NB_STALE_LOCK_MS: '60000' });
+    const child = spawn(process.execPath, [CLI, 'place', 'shared'], { cwd: repo, env, stdio: 'ignore' });
+    const exited = new Promise((res) => child.on('exit', res));
+    // The barrier: the child owns the shared lock (its pid in the owner file), so it is
+    // now waiting for the folder's lock. Polled, never a fixed sleep.
+    const ownerOfShared = (): string => {
+      try {
+        return readFileSync(join(shared, '.nb.lock', 'owner'), 'utf-8');
+      } catch {
+        return '';
+      }
+    };
+    for (let i = 0; i < 1000 && !ownerOfShared().startsWith(`${child.pid}.`); i++) await new Promise((r) => setTimeout(r, 10));
+    expect(ownerOfShared().startsWith(`${child.pid}.`)).toBe(true);
+    child.kill('SIGKILL');
+    await exited;
+    rmSync(join(own, '.nb.lock'), { recursive: true, force: true });
+    // The killed run's shared lock is left behind; a re-run steals it once stale (its folder
+    // and its owner file both aged, as an hour after the kill).
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(join(shared, '.nb.lock', 'owner'), old, old);
+    utimesSync(join(shared, '.nb.lock'), old, old);
+    const r = nb(['place', 'shared']);
+    expect(r.code).toBe(0);
+    expect(existsSync(own)).toBe(false);
+    expect(readFileSync(join(shared, 'build@acme-app.md'), 'utf-8')).toBe(SHELF);
   });
 
   test('a bad action is refused', () => {

@@ -1798,8 +1798,8 @@ bidi controls and zero-width characters replaced, so that no value can start a l
 own ([DP-5](#dp-5)). `NB_PROJECT_SLUG` SHALL be cut to 128 characters. When
 `NB_PROJECT_SLUG` is set and not blank, `nb brief` SHALL group the index into project,
 domain and global shelves as today's `nb-session-start.sh` does (the convention of
-[docs/memory-layers.md](memory-layers.md)), matching its trimmed value as before; set but blank, the
-index SHALL stay flat and no `git` SHALL run. When `NB_PROJECT_SLUG` is unset, the notebooks
+[docs/memory-layers.md](memory-layers.md)), matching its trimmed value as before; set to spaces only, the
+index SHALL stay flat and no `git` SHALL run (an empty value counts as unset). When `NB_PROJECT_SLUG` is unset, the notebooks
 folder holds a shelf whose file name contains `@` (only file names are read; hidden files and
 files not ending in `.md` do not count), and the project name of
 [FR-PROJECT-001](#fr-project-001) came from the git remote, `nb brief` SHALL group the index the
@@ -2008,8 +2008,11 @@ logs its row in the shared notebook unless the place is a project folder, and ex
 runtime state. No form SHALL print a remote URL or a message from git.
 In a project's own notebook it SHALL also say how many of the project's shelves are still in the
 shared notebook (`--json`: `stranded`, the list), how many shelves end in the project's 0.12 name, and,
-on POSIX, warn when the folder can be read by the group or others.
+on POSIX, warn when the folder can be read by the group or others. It SHALL list a folder that an
+unfinished `nb place shared` of this directory's project renamed away and left shelves in, with the
+command that finishes it (the text form only; `--json` is unchanged) (issue #551).
 *Proven by:* `place.test.ts` → "nb place: the four forms, plain and --json (golden)";
+`place-ops.test.ts` → "nb place lists a move left halfway, nb place own refuses, and nb place shared finishes it (issue #551)";
 `place-ops.test.ts` → "own --json, and nb place counts shelves left in the shared notebook" and
 "nb place warns about a hand-made folder other users can read".
 
@@ -2036,12 +2039,21 @@ there. `nb place shared [--json]` SHALL move every shelf of the project's folder
 notebook the same way, holding the shared notebook's lock and then the folder's, each as `<x>@<project>` (a shelf without that suffix
 is renamed, so it stays the project's and the write guard keeps other calls off it until the folder
 is gone), remove `nb`'s own files there (the usage log and its
-count file, retrospective markers, `nb`'s temporary files), and remove the folder without recursing;
+count file, retrospective markers, `nb`'s temporary files), and remove the folder without recursing.
+Holding both locks, it SHALL first rename the folder away to `.old-<project>-<pid>-<16 hex>` (issue #551):
+from then on the project uses the shared notebook and no `nb` call can write into the folder, so a
+writer that waited on its lock refuses instead of re-filling it. It SHALL then move the shelves out of
+the renamed folder and remove it once it holds no shelf. A refused rename (on Windows, a file held
+open) SHALL change nothing, and so SHALL a link that fails after it (a name too long, a file system
+without hard links): the links made are taken back and the folder is renamed back. A shelf that cannot move SHALL stay in the renamed folder, reported, with
+exit `1`; `nb` SHALL never remove a folder that holds a shelf, and the next `nb place shared` of the
+project SHALL finish a move whose process is dead or whose lock is stale (one still in progress is
+reported, nothing changed), while `nb place own` refuses until then. Staging and renamed-away folders
+SHALL be touched only when they are real folders of the user, never through a link.
 it SHALL refuse (nothing changed), deciding it once both locks are held and before anything moves,
 when a shelf name is already in the shared notebook as a different file (the same file, left by a run
 that stopped between link and unlink, counts as moved), when two shelves of the folder would arrive
-under one name (letter case ignored), or the folder holds anything else (`.git`, `.nb.json`, a subfolder), and SHALL exit `1` and keep the folder when a
-write landed in it meanwhile. Run where no own notebook is in use, or once the folder is already gone
+under one name (letter case ignored), or the folder holds anything else (`.git`, `.nb.json`, a subfolder). Run where no own notebook is in use, or once the folder is already gone
 when the locks are held, it SHALL say so and exit `0`. Both commands SHALL check, before they unlink
 anything, that their locks still carry their owner token; if a stalled run's lock was taken over, every
 source stays where it is, reported, and a re-run finishes the move.
@@ -2051,7 +2063,8 @@ source stays where it is, reported, and a re-run finishes the move.
 deduplicate or evict on the way. The issue's "through the existing `nb move` code" is departed from
 for that reason (design comment on issue #548).
 *Proven by:* `place-ops.test.ts` → `describe('placeOwn and placeShared (FR-PLACE-003)')`,
-`describe('two locks in a fixed order: the shared notebook first, then the project folder (issue #551)')` and
+`describe('two locks in a fixed order: the shared notebook first, then the project folder (issue #551)')`,
+`describe('removing the project folder: renamed away first, then emptied (issue #551)')` and
 `describe('nb place own / shared through the built CLI (FR-PLACE-003)')`.
 
 <a id="fr-place-004"></a>
