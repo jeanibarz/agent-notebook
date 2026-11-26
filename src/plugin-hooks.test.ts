@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -82,6 +82,40 @@ describe('the node-check twins test that node exists and never run it (FR-PLUGIN
     const power = ps.args[3]!.replace(NOTICE, '<NOTICE>').replace('Get-Command node -CommandType Application', '');
     expect(shell).not.toMatch(/\bnode\b/);
     expect(power).not.toMatch(/\bnode\b/);
+  });
+
+  test.skipIf(process.platform === 'win32')('the sh twin runs no program from the current folder, not even uname, whatever the PATH', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'nb twin ')));
+    try {
+      for (const name of ['uname', 'node', 'sh']) writeFileSync(join(dir, name), `#!/bin/sh\ntouch RAN-${name}\n`, { mode: 0o755 });
+      for (const path of [':/usr/bin:/bin', '::', '', '.', 'rel:/usr/bin:/bin', '/usr/bin:/bin:', '/usr/bin::/bin']) {
+        const r = spawnSync('/bin/sh', sh.args, { cwd: dir, env: { PATH: path }, encoding: 'utf-8' });
+        expect(r.status, path).toBe(0);
+      }
+      expect(readdirSync(dir).filter((f) => f.startsWith('RAN-'))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform === 'win32')('the sh twin stays quiet under Git Bash, MSYS and Cygwin, where the PowerShell twin speaks', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'nb twin ')));
+    try {
+      for (const kernel of ['MINGW64_NT-10.0-26100', 'MSYS_NT-10.0', 'CYGWIN_NT-10.0']) {
+        writeFileSync(join(dir, 'uname'), `#!/bin/sh\necho ${kernel}\n`, { mode: 0o755 });
+        // No node on this PATH: without the guard the twin would print the notice.
+        expect(spawnSync('/bin/sh', sh.args, { env: { PATH: dir }, encoding: 'utf-8' }).stdout, kernel).toBe('');
+      }
+      writeFileSync(join(dir, 'uname'), '#!/bin/sh\necho Linux\n', { mode: 0o755 });
+      expect(spawnSync('/bin/sh', sh.args, { env: { PATH: dir }, encoding: 'utf-8' }).stdout).toBe(NOTICE + '\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('the PowerShell twin stops first when CLAUDE_PLUGIN_ROOT is absent (WSL reaching a Windows powershell.exe)', () => {
+    expect(ps.args.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command']);
+    expect(ps.args[3]!.startsWith('if (-not $env:CLAUDE_PLUGIN_ROOT) { exit 0 }; ')).toBe(true);
   });
 
   test.skipIf(process.platform === 'win32')('the sh twin prints the notice with no node, and runs nothing when a node is planted in the current folder', () => {

@@ -11,7 +11,8 @@ for d in $PATH; do
   esac
 done
 unset IFS
-PATH=$p
+# An empty PATH would mean the current folder too, so it is never left empty.
+PATH=${p:-/nonexistent}
 set +f
 export PATH
 exec node "${0%/*}/../dist/cli.js" "$@"

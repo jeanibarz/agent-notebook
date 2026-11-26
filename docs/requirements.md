@@ -2397,7 +2397,8 @@ twins that only test that `node` exists: an `sh -c` command (`command -v node`, 
 a `powershell.exe` command (`Get-Command node -CommandType Application`). Each prints the entry's notice
 when `node` is missing, so a computer without Node.js shows the user exactly one notice, because the
 entry cannot start to print it. A twin SHALL NOT run `node` or any program found through the working
-directory. For each event the command and arguments SHALL equal those of `print-settings`, except for
+directory: the `sh` twin keeps only the absolute `PATH` entries (never an empty `PATH`) before it
+runs `uname`. For each event the command and arguments SHALL equal those of `print-settings`, except for
 the file name (the entry instead of the adapter). What the entry itself does is in
 [FR-HOOKS-002](#fr-hooks-002).
 **Rationale:** measured on Linux and macOS (#559): a twin that ran `node -e` executed a `./node` planted
@@ -2419,7 +2420,7 @@ the stamp by `plugin-build.test.ts` → "SKILL.md has no {{VERSION}} left and na
 
 <a id="fr-plugin-004"></a>
 **FR-PLUGIN-004 (Should).** `plugin/bin/nb` SHALL keep only the absolute entries of `PATH` (with `set -f`
-so that a `*` is not expanded) before it runs `node`, and the generated `bin/nb.cmd` SHALL set
+so that a `*` is not expanded, and never an empty `PATH`, which would mean the current folder) before it runs `node`, and the generated `bin/nb.cmd` SHALL set
 `NoDefaultCurrentDirectoryInExePath` inside `setlocal`, so that neither runs a `node` or `dirname`
 placed in the working directory.
 *Proven by:* `plugin-launchers.test.ts` → `describe('bin/nb never runs a program from the working directory (FR-PLUGIN-004, issue #559)')`

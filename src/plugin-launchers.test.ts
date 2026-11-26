@@ -71,6 +71,15 @@ describe('bin/nb never runs a program from the working directory (FR-PLUGIN-004,
     }
   });
 
+  test('a PATH with no absolute entry is not left empty, which would mean the current folder', () => {
+    plant(cwd, 'node');
+    for (const path of ['', 'rel', '.:rel', '::']) {
+      const r = nb(path);
+      expect(r.stdout + r.stderr, JSON.stringify(path)).not.toContain('PLANTED');
+      expect(r.status, JSON.stringify(path)).not.toBe(0);
+    }
+  });
+
   test('it works when run from a folder that is not the plugin\'s, by a path with a space', () => {
     expect(stage).toContain(' ');
     expect(nb(GOOD, ['--version'], tmp).stdout).toBe(`nb (agent-notebook) ${pkg.version}\n`);
