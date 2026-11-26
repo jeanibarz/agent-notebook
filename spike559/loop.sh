@@ -9,8 +9,10 @@ setmkt() { node "$(native "$HERE/genmkt.mjs")" "$(native "$W/srv")" "$1" "$2" "$
 CA=$(native "$W/cert.pem")
 echo; echo "################ Q2a: archive URL over plain http loopback (expected refusal)"
 fresh_home q2a; setmkt plugin-v1.zip 1.0.0
-sed -i "s#$BASE/#http://127.0.0.1:$PORT/#" "$W/srv/marketplace.json"
-CL plugin install agent-notebook --marketplace "http://127.0.0.1:$PORT/marketplace.json"
+sed "s#$BASE/#http://127.0.0.1:18558/#" "$W/srv/marketplace.json" > "$W/srv/loop.json"
+node "$(native "$HERE/serve.mjs")" "$(native "$W/srv")" 18558 127.0.0.1 > "$W/server-http.log" 2>&1 &
+HTTP_PID=$!; sleep 2; cat "$W/srv/loop.json" | head -4 | cut -c1-200
+CL plugin install agent-notebook --marketplace "http://127.0.0.1:18558/loop.json"; kill $HTTP_PID 2>/dev/null
 echo; echo "################ Q2b: https on the runner's own non-loopback IP, no CA setting (expected TLS refusal)"
 fresh_home q2b; setmkt plugin-v1.zip 1.0.0
 CL plugin install agent-notebook --marketplace "$BASE/marketplace.json"
