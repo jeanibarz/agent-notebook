@@ -30,7 +30,11 @@ The requirement is [NFR-REL-001](requirements.md#nfr-rel-001).
    The `marketplace-check` workflow runs on that pull request and on no other: it runs
    `scripts/check-marketplace.mjs` (the file's shape, the release, the zip's sha256 and versions, the
    version against `main`'s), rebuilds the tag and compares the sha256, and installs the real zip on
-   Linux, macOS and Windows. A version lower than `main`'s needs the `Rollback:` line (below).
+   Linux, macOS and Windows. A version lower than `main`'s needs the `Rollback:` line (below). Editing
+   the pull request's description runs the check again.
+   The check runs the pull request's own copy of its scripts. So it refuses a pull request that also
+   changes `scripts/check-marketplace.mjs`, `scripts/build-plugin.mjs`, `scripts/plugin-e2e/` or the
+   workflow itself: change those in a pull request of their own.
 
 ## What each job holds
 

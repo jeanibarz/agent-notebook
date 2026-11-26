@@ -105,6 +105,16 @@ describe('the marketplace-check workflow (FR-PLUGIN-006, issue #559)', () => {
     expect(on).toMatch(/^ {2}pull_request:$/m);
     expect(on).not.toMatch(/^ {2}(push|schedule|workflow_dispatch|pull_request_target):/m);
     expect(listItems(block(block(on, 'pull_request', 2).join('\n'), 'paths', 4))).toEqual(['.claude-plugin/marketplace.json']);
+    // An edited description (a Rollback: line added later) runs the check again.
+    expect(on).toMatch(/^ {4}types: \[opened, synchronize, reopened, edited\]$/m);
+  });
+
+  test('a pull request that also changes the checker is refused, before the check runs', () => {
+    const check = block(jobs, 'check', 2).join('\n');
+    const guard = check.indexOf('- name: The checker is the one on main');
+    expect(guard).toBeGreaterThan(check.indexOf('- name: Read main\'s marketplace file'));
+    expect(guard).toBeLessThan(check.indexOf('node scripts/check-marketplace.mjs'));
+    for (const p of ['scripts/check-marketplace.mjs', 'scripts/build-plugin.mjs', 'scripts/plugin-e2e', '.github/workflows/marketplace-check.yml']) expect(check).toContain(p);
   });
 
   test('nothing is granted at the top, and each job reads the repository at most', () => {

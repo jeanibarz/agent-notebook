@@ -257,7 +257,13 @@ That setting turns the plugin's hooks off, silently: the plugin's skill still lo
    }
    ```
 
-`--managed` makes the entry ignore the `NB_BIN` environment variable, which otherwise chooses the `nb` program the adapter runs, so a project's own settings cannot make a managed hook run a program of their choice. The block has no node-check twin: you chose the `node` and checked it.
+`--managed` makes the entry ignore one variable, `NB_BIN`, which otherwise chooses the `nb` program the adapter runs. It does not shut out a project's environment: Claude Code also passes the `env` of a project's settings to hooks, and other variables still reach the hook.
+- **`NODE_OPTIONS`** can make your `node` load a file of the project's before the entry runs.
+- **`PATH`** decides which `git` the notebook starts, to read `nb.enabled` and the project name.
+
+If projects you do not trust can be opened on these machines, set those variables in the managed settings' own `env`: `NODE_OPTIONS` to an empty string, and `PATH` to the system folders. Otherwise, opening a project means trusting its settings, as it does for any hook.
+
+The block has no node-check twin: you chose the `node` and checked it.
 
 - **An existing managed `hooks` block:** keep it, and append each of the three entries above to the list under the same event name (`SessionStart`, `SubagentStart`, `Stop`) instead of replacing the list.
 - **Only with `allowManagedHooksOnly: true`.** Without it the plugin's own hooks run too, and the notebook index would appear twice.

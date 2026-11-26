@@ -15,6 +15,8 @@ name: marketplace-check
 
 on:
   pull_request:
+    # edited: a `Rollback:` line added to the description later is read again.
+    types: [opened, synchronize, reopened, edited]
     paths:
       - '.claude-plugin/marketplace.json'
 
@@ -54,6 +56,19 @@ jobs:
             git show "origin/$BASE_REF:.claude-plugin/marketplace.json" > "$RUNNER_TEMP/main-marketplace.json"
           else
             echo "main has no marketplace file yet"
+          fi
+
+      # The check runs this pull request's own copies of the checker. A pull request that also changes
+      # them could make itself pass, so it is refused: change the checker in a pull request of its own.
+      - name: The checker is the one on main
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only "origin/$BASE_REF" HEAD -- scripts/check-marketplace.mjs scripts/build-plugin.mjs scripts/plugin-e2e .github/workflows/marketplace-check.yml)"
+          if [ -n "$changed" ]; then
+            echo "::error::this pull request changes the marketplace file and the checker that judges it ($(echo $changed)). Change the checker in a pull request of its own." >&2
+            exit 1
           fi
 
       - name: Check the file, the release and the zip
