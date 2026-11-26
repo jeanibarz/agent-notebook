@@ -231,6 +231,7 @@ describe('the marketplace check refuses a file of the wrong shape (FR-PLUGIN-006
     ['another host', `https://example.com/jeanibarz/agent-notebook/releases/download/v2.0.0/agent-notebook-plugin-2.0.0.zip`],
     ['a file name with another version', `${REL}/v2.0.0/agent-notebook-plugin-2.0.1.zip`],
     ['another file name', `${REL}/v2.0.0/evil.zip`],
+    ['text in front of it', `evil:${REL}/v2.0.0/agent-notebook-plugin-2.0.0.zip`],
     ['a query string', `${REL}/v2.0.0/agent-notebook-plugin-2.0.0.zip?x=1`],
     ['a version with no v', `${REL}/2.0.0/agent-notebook-plugin-2.0.0.zip`],
     ['a path inside the tag', `${REL}/v2.0.0/../v1.0.0/agent-notebook-plugin-2.0.0.zip`],
