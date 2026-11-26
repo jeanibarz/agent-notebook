@@ -75,7 +75,7 @@ function importGraph(): Map<string, string[]> {
 }
 
 /** Internals exported by a module for the other src modules, deliberately NOT on the package root. */
-const INTERNAL = ['preserveMode', 'skipUnreadable', 'readNbJson', 'setCallMaxChars', 'resolveIntTunableStatus', 'setCallNoCreateDir', 'setCallLockCheck', 'setLockTestHook', 'appendUsage']; // readNbJson..resolveIntTunableStatus: RFC 0530's call-scoped .nb.json override; setCallNoCreateDir: issue #548; setLockTestHook, appendUsage: issue #551
+const INTERNAL = ['preserveMode', 'skipUnreadable', 'readNbJson', 'setCallMaxChars', 'resolveIntTunableStatus', 'setCallNoCreateDir', 'setCallLockCheck', 'setLockTestHook', 'appendUsage', 'acquireLock', 'releaseLock']; // readNbJson..resolveIntTunableStatus: RFC 0530's call-scoped .nb.json override; setCallNoCreateDir: issue #548; setLockTestHook, appendUsage, acquireLock, releaseLock: issue #551
 
 describe('module boundaries (issue #478)', () => {
   test('src/*.ts has no import cycle', () => {

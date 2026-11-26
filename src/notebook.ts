@@ -110,10 +110,11 @@ export function setCallNoCreateDir(dir: string | undefined): void {
  * force an interleaving (remove a folder, take a lock) at an exact step instead of
  * sleeping and hoping. `undefined` in production: nothing but a test sets it (no
  * environment variable or `.nb.json` key reaches it), and it is not on the package
- * root. Points: `before-mkdir` (in `withLock`, before the lock's folder is created
- * or checked).
+ * root. Points: `before-mkdir` (before the lock's folder is created or checked),
+ * `spin` (each wait while another process holds the lock), `released` (right after
+ * a lock was released; `dir` is the folder it was taken on).
  */
-export type LockTestPoint = 'before-mkdir';
+export type LockTestPoint = 'before-mkdir' | 'spin' | 'released';
 let lockTestHook: ((point: LockTestPoint, dir: string) => void) | undefined;
 export function setLockTestHook(fn: ((point: LockTestPoint, dir: string) => void) | undefined): void {
   lockTestHook = fn;
@@ -695,25 +696,23 @@ export function setMetaValue(lines: string[], key: string, value: string): strin
 // locking (tiny mkdir spinlock — single-host, serial CLI calls, rare contention)
 // ---------------------------------------------------------------------------
 
-// The `.nb.lock` directory this process currently owns, or null when it owns
-// none. Set only once THIS process's atomic `mkdirSync(lock)` wins the create
+// The `.nb.lock` directories this process currently owns, innermost last. An
+// entry is added only once THIS process's atomic `mkdirSync(lock)` wins the create
 // (below) — never for a stale lock we steal, and never for a fresh lock we are
-// still spinning on — so it is a true ownership flag a SIGINT/SIGTERM handler can
-// consult (via `releaseHeldLock`) to reap only a lock we actually own.
+// still spinning on — so it is a true ownership record a SIGINT/SIGTERM handler can
+// consult (via `releaseHeldLock`) to reap only locks we actually own.
 //
-// A single slot suffices because withLock is never nested and never runs
-// concurrently with itself: its critical section is synchronous (no `await`
-// between acquire and release) and every caller awaits one mutation at a time, so
-// at most one lock is owned at any instant. withLock's `finally` still releases
-// its OWN `lock` path directly rather than through this flag, so the normal
-// release never depends on the flag's value — even a hypothetical future nested
-// withLock on a different dir could not strand the outer lock. The flag is only a
-// hint for the signal handler, never the sole release path. (issue #247)
-let heldLock: string | null = null;
-// Owner token of `heldLock` (issue #331): `<pid>.<random nonce>`, written to
-// `<lock>/owner` right after the mkdir wins. Release and steal compare it, so a
-// holder that outlived the stale threshold can never free the thief's live lock.
-let heldToken: string | null = null;
+// Every mutation owns at most one lock at a time; only `nb place own` and `nb place
+// shared` own two (the shared notebook's, then the project folder's, issue #551),
+// and they hold the first across the `await` of the second's acquire, which is why
+// this is a list and not one slot. `releaseLock` still releases its OWN handle's
+// path directly, so the normal release never depends on this record: it is only a
+// hint for the signal handler, never the sole release path. (issues #247, #551)
+// Each entry carries its owner token (issue #331): `<pid>.<random nonce>`, written
+// to `<lock>/owner` right after the mkdir wins (`null` when that write failed).
+// Release and steal compare it, so a holder that outlived the stale threshold can
+// never free the thief's live lock.
+const held: { lock: string; token: string | null }[] = [];
 
 const OWNER_FILE = 'owner';
 const REAP_DIR = 'reap';
@@ -778,24 +777,23 @@ function releaseOwned(lock: string, token: string | null): void {
 }
 
 /**
- * Release the `.nb.lock` this process owns, if any, and clear the ownership flag.
- * A no-op when this process owns no lock, so the SIGINT/SIGTERM handler that calls
- * it (see cli.ts) can never remove another live `nb`'s lock nor a fresh lock we are
- * only spinning on. The flag is cleared before the `rmdir`, so it is idempotent and
- * safe to call more than once.
+ * Release every `.nb.lock` this process owns (innermost first), if any, and clear
+ * the ownership record. A no-op when this process owns no lock, so the
+ * SIGINT/SIGTERM handler that calls it (see cli.ts) can never remove another live
+ * `nb`'s lock nor a fresh lock we are only spinning on. Each entry is cleared before
+ * its `rmdir`, so it is idempotent and safe to call more than once.
  *
- * This is the signal handler's release path. withLock's own `finally` releases its
- * lock directly; this helper exists only so an interrupt can promptly reap a lock
- * the process still owns instead of leaving it for the next caller's ~12s
- * stale-steal (issue #247).
+ * This is the signal handler's release path. `withLock` and `releaseLock` release
+ * their own lock directly; this helper exists only so an interrupt can promptly reap
+ * the locks the process still owns instead of leaving them for the next caller's
+ * ~12s stale-steal (issues #247, #551: `nb place` may own two while it waits).
  */
 export function releaseHeldLock(): void {
-  const lock = heldLock;
-  const token = heldToken;
-  if (lock === null) return;
-  heldLock = null; // clear first so a second call is a no-op
-  heldToken = null;
-  releaseOwned(lock, token);
+  // Innermost first; each entry is removed before its release, so a second call is a no-op.
+  while (held.length > 0) {
+    const h = held.pop()!;
+    releaseOwned(h.lock, h.token);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -845,12 +843,49 @@ export function drainPendingRecovery(): { lockSteals: number; tempReaps: number 
 }
 
 export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
+  const h = await acquireLock(dir);
+  try {
+    return fn();
+  } finally {
+    releaseLock(h);
+  }
+}
+
+/** A lock this process owns, from `acquireLock` (issue #551). Internal: not on the package root. */
+export interface LockHandle {
+  /** The folder whose `.nb.lock` this is. */
+  readonly dir: string;
+  /** Whether the lock still carries this process's owner token (a stalled holder's lock can be stolen). */
+  holds(): boolean;
+  /** The folder was renamed with its lock inside: follow it, so release and the signal handler find it. */
+  rebase(newDir: string): void;
+}
+
+interface Held extends LockHandle {
+  lock: string;
+  token: string | null;
+  released: boolean;
+}
+
+/**
+ * Take `dir`'s `.nb.lock` (the spinlock of FR-LOCK-001), reap leftover temps and run
+ * the CLI's call-scoped lock check, then return a handle for `releaseLock`. `withLock`
+ * is this, `fn`, release. `noCreate` never creates `dir` (its absence is an
+ * `place_unknown` refusal); it is also implied for the CLI's own-notebook call (see
+ * `setCallNoCreateDir`). `deadline` (a `performance.now()` time) ends the wait
+ * before the usual budget; `busy` then builds the error thrown. Used directly only by
+ * `nb place`, which takes two locks in a fixed order. Internal: not on the root.
+ */
+export async function acquireLock(
+  dir: string,
+  opts: { noCreate?: boolean; deadline?: number; busy?: () => Error } = {},
+): Promise<LockHandle> {
   lockTestHook?.('before-mkdir', dir);
   // A call resolved to a project's own notebook never creates that folder (issue
   // #548, #551): only `nb place own` may. There is no `existsSync` first: the
   // `mkdir` of the lock below is the existence check, and its ENOENT is the
   // refusal, so no check-then-create window is left. Library callers keep `mkdir -p`.
-  const noCreate = callNoCreateDir !== undefined && dir === callNoCreateDir;
+  const noCreate = opts.noCreate === true || (callNoCreateDir !== undefined && dir === callNoCreateDir);
   if (!noCreate) mkdirSync(dir, { recursive: true });
   const lock = join(dir, '.nb.lock');
   const staleMs = staleLockMs();
@@ -861,25 +896,36 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
   const budgetMs = staleMs + lockGraceMs();
   const deadline = Date.now() + budgetMs;
   const token = `${process.pid}.${randomBytes(8).toString('hex')}`;
-  let ownToken: string | null = token;
+  let h: Held;
   for (;;) {
     try {
       mkdirSync(lock); // atomic: succeeds only if it did not exist
-      heldLock = lock; // we now own this lock (the signal handler may reap it)
+      const entry = { lock, token: token as string | null };
+      held.push(entry); // we now own this lock (the signal handler may reap it)
       try {
         writeFileSync(join(lock, OWNER_FILE), token, 'utf-8');
-        heldToken = token;
       } catch (werr) {
         if ((werr as NodeJS.ErrnoException)?.code === 'ENOENT') {
           // The lock dir was removed under us (a racing stealer): we do NOT hold
           // the lock. Do not run fn or release anything — re-acquire.
-          heldLock = null;
-          heldToken = null;
+          held.splice(held.indexOf(entry), 1);
           continue;
         }
-        heldToken = null; // cannot prove ownership; release falls back to unconditional
+        entry.token = null; // cannot prove ownership; release falls back to unconditional
       }
-      ownToken = heldToken;
+      h = {
+        dir,
+        lock,
+        token: entry.token,
+        released: false,
+        holds() {
+          return this.token === null || readOwner(this.lock) === this.token;
+        },
+        rebase(newDir: string) {
+          this.lock = join(newDir, '.nb.lock');
+          entry.lock = this.lock;
+        },
+      };
       break;
     } catch (err) {
       // EEXIST is the ONLY code that means "the lock is genuinely held": the
@@ -919,9 +965,13 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
       } catch {
         /* lock vanished between mkdir and stat — just retry */
       }
+      if (opts.deadline !== undefined && performance.now() > opts.deadline) {
+        throw opts.busy?.() ?? new Error(`notebook is locked (another nb process did not release ${lock} in time)`);
+      }
       if (Date.now() > deadline) {
         throw new Error(`notebook is locked (another nb process did not release within ${budgetMs}ms)`);
       }
+      lockTestHook?.('spin', dir);
       await sleep(20);
     }
   }
@@ -931,21 +981,28 @@ export async function withLock<T>(dir: string, fn: () => T): Promise<T> {
     // reports how many it removed; noteRecovery ignores a zero.
     noteRecovery('temp-reap', reapLeftoverTemps(dir));
     callLockCheck?.(dir);
-    return fn();
-  } finally {
-    // Release THIS invocation's own lock directly and unconditionally, and clear
-    // the ownership flag if it still names this lock. Removing `lock` itself
-    // (rather than whatever `heldLock` points at) keeps the normal path correct
-    // regardless of the flag: a signal handler that already reaped and nulled it,
-    // or a hypothetical future nested withLock, cannot strand this lock.
-    if (heldLock === lock) {
-      heldLock = null;
-      heldToken = null;
-    }
-    // Ownership-checked (issue #331): if we outlived the stale threshold and a
-    // thief took the lock, its token differs and we leave its live lock alone.
-    releaseOwned(lock, ownToken);
+  } catch (e) {
+    releaseLock(h);
+    throw e;
   }
+  return h;
+}
+
+/**
+ * Release a lock from `acquireLock`, once. Ownership-checked (issue #331): if we
+ * outlived the stale threshold and a thief took the lock, its token differs and we
+ * leave its live lock alone.
+ */
+export function releaseLock(handle: LockHandle): void {
+  const h = handle as Held;
+  if (h.released) return;
+  h.released = true;
+  // Remove THIS handle's entry from the ownership record, then release its own path
+  // directly: a signal handler that already reaped it cannot strand anything.
+  const i = held.findIndex((e) => e.lock === h.lock);
+  if (i >= 0) held.splice(i, 1);
+  releaseOwned(h.lock, h.token);
+  lockTestHook?.('released', h.dir);
 }
 
 /**

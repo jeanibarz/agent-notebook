@@ -1,10 +1,11 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { chmodSync, existsSync, linkSync, mkdirSync, renameSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, renameSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { isNbOwnFile, linkAll, placeOwn, placeShared, sharedBlockers, sharedName, unlinkSame } from './place-ops.js';
+import { releaseHeldLock, setLockTestHook } from './notebook.js';
 
 // Issue #548, FR-PLACE-003: `nb place own` and `nb place shared` move whole shelf
 // files between the shared notebook and ~/.agent-notebook/projects/<project>/.
@@ -168,6 +169,169 @@ describe('placeOwn and placeShared (FR-PLACE-003)', () => {
     ['x.md', false],
   ])('isNbOwnFile(%s) is %s', (name, yes) => {
     expect(isNbOwnFile(name)).toBe(yes);
+  });
+});
+
+// Issue #551: the lock-order rule. Each race is forced at an exact step by a hook
+// (no sleep): the place commands' own `hooks` argument, or the lock test hook.
+describe('two locks in a fixed order: the shared notebook first, then the project folder (issue #551)', () => {
+  const lockOf = (d: string): string => join(d, '.nb.lock');
+  const ownerOf = (d: string): string | null => {
+    try {
+      return readFileSync(join(lockOf(d), 'owner'), 'utf-8');
+    } catch {
+      return null;
+    }
+  };
+  /** Whether `d`'s lock is held by this process (the owner token starts with our pid). */
+  const ours = (d: string): boolean => (ownerOf(d) ?? '').startsWith(`${process.pid}.`);
+  /** One attempt to take `d`'s lock the way nb does (`mkdir`): true when it was free. */
+  const tryLock = (d: string): boolean => {
+    try {
+      mkdirSync(lockOf(d));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw e;
+    }
+    rmSync(lockOf(d), { recursive: true, force: true });
+    return true;
+  };
+  /** A fresh lock held by another (fake) process. */
+  const holdFake = (d: string): void => {
+    mkdirSync(lockOf(d), { recursive: true });
+    writeFileSync(join(lockOf(d), 'owner'), '1.fake');
+  };
+  const SAVED = { NB_STALE_LOCK_MS: process.env.NB_STALE_LOCK_MS, NB_LOCK_GRACE_MS: process.env.NB_LOCK_GRACE_MS };
+  afterEach(() => {
+    setLockTestHook(undefined);
+    for (const [k, v] of Object.entries(SAVED)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  test('place shared links into the shared notebook while holding its lock: a writer that takes the lock is kept out (defect 1)', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    const seen: { won: boolean; sharedOurs: boolean; ownOurs: boolean }[] = [];
+    const r = await placeShared(shared, own, 'acme-app', {
+      beforeLink: () => seen.push({ won: tryLock(shared), sharedOurs: ours(shared), ownOurs: ours(own) }),
+    });
+    expect(seen).toEqual([{ won: false, sharedOurs: true, ownOurs: true }]);
+    expect(r).toMatchObject({ moved: ['build'], kept: [], removed: true });
+    expect(existsSync(lockOf(shared))).toBe(false);
+  });
+
+  test('a second place own that started before the first created the folder takes the folder lock too (defect 2)', async () => {
+    writeFileSync(join(shared, 'build@acme-app.md'), SHELF);
+    holdFake(shared);
+    const seen: { ownOurs: boolean; sharedOurs: boolean }[] = [];
+    // Not awaited: placeOwn runs synchronously up to its wait on the held shared lock,
+    // so it has looked at the folder (absent) before the first run's result appears.
+    const p = placeOwn(shared, projects, 'acme-app', { beforeLink: () => seen.push({ ownOurs: ours(own), sharedOurs: ours(shared) }) });
+    expect(existsSync(own)).toBe(false);
+    // What the first `nb place own` leaves: the folder, with a shelf of its own.
+    mkdirSync(own, { mode: 0o700 });
+    writeFileSync(join(own, 'testing@acme-app.md'), '+1 a lesson moved by the first run\n');
+    rmSync(lockOf(shared), { recursive: true, force: true });
+    const r = await p;
+    expect(seen).toEqual([{ ownOurs: true, sharedOurs: true }]);
+    expect(r).toMatchObject({ created: false, moved: ['build@acme-app'], kept: [] });
+    expect(shelves(own)).toEqual(['build@acme-app.md', 'testing@acme-app.md']);
+  });
+
+  test('a clash that appears after the command started is found under the locks, before anything moves (defect 4)', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    writeFileSync(join(own, 'testing.md'), '+1 one test file at a time\n');
+    let calls = 0;
+    const r = await placeShared(shared, own, 'acme-app', {
+      // A concurrent add (another project's, or one that bypasses the guard) lands the name now.
+      onLocked: () => {
+        calls++;
+        writeFileSync(join(shared, 'testing@acme-app.md'), '+1 written meanwhile\n');
+      },
+    });
+    expect(calls).toBe(1);
+    expect(r.blocked).toEqual({ foreign: [], clashes: ['testing@acme-app'] });
+    expect(r).toMatchObject({ moved: [], kept: [], removed: false });
+    expect(shelves(own)).toEqual(['build.md', 'testing.md']);
+    expect(shelves(shared)).toEqual(['testing@acme-app.md']);
+  });
+
+  test('place own of an existing folder and place shared hold both locks, ours, when they act', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(shared, 'build@acme-app.md'), SHELF);
+    const seen: boolean[] = [];
+    const check = (): number => seen.push(ours(shared) && ours(own));
+    await placeOwn(shared, projects, 'acme-app', { onLocked: check, beforeLink: check });
+    await placeShared(shared, own, 'acme-app', { onLocked: check, beforeLink: check });
+    expect(seen).toEqual([true, true, true, true]);
+  });
+
+  test('a signal while place shared waits for the folder lock frees the shared lock, never the lock it waits on', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    holdFake(own);
+    const seen: { sharedFreed: boolean; fakeKept: boolean }[] = [];
+    setLockTestHook((point, dir) => {
+      if (point !== 'spin' || dir !== own) return;
+      const before = ours(shared);
+      releaseHeldLock(); // what the SIGINT/SIGTERM handler does
+      seen.push({ sharedFreed: before && !existsSync(lockOf(shared)), fakeKept: ownerOf(own) === '1.fake' });
+      throw new Error('the process exits here');
+    });
+    await expect(placeShared(shared, own, 'acme-app')).rejects.toThrow('the process exits here');
+    expect(seen).toEqual([{ sharedFreed: true, fakeKept: true }]);
+    expect(shelves(own)).toEqual(['build.md']);
+  });
+
+  test('a busy folder lock is waited for at most half the stale threshold, then refused with nothing changed', async () => {
+    process.env.NB_STALE_LOCK_MS = '400';
+    process.env.NB_LOCK_GRACE_MS = '0';
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    holdFake(own);
+    let spins = 0;
+    setLockTestHook((point, dir) => {
+      if (point !== 'spin' || dir !== own) return;
+      spins++;
+      // A live holder: its lock stays fresh, so a slow runner cannot turn the wait into a steal.
+      const now = new Date();
+      utimesSync(lockOf(own), now, now);
+    });
+    await expect(placeShared(shared, own, 'acme-app')).rejects.toThrow(
+      /another assistant session \(or nb command\) is using this project's notebook .*nothing changed\. Run `nb place shared` again in about 1 seconds\./,
+    );
+    expect(spins).toBeGreaterThan(0);
+    expect(ownerOf(own)).toBe('1.fake');
+    expect(existsSync(lockOf(shared))).toBe(false);
+    expect(shelves(own)).toEqual(['build.md']);
+    expect(shelves(shared)).toEqual([]);
+  });
+
+  test('a lock taken over during the move (a stalled run) unlinks nothing; a re-run finishes the move', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    let calls = 0;
+    const r = await placeShared(shared, own, 'acme-app', {
+      beforeLink: () => {
+        calls++;
+        writeFileSync(join(lockOf(shared), 'owner'), '1.thief');
+      },
+    });
+    expect(calls).toBe(1);
+    expect(r.moved).toEqual([]);
+    expect(r.kept).toEqual([{ shelf: 'build', why: 'a lock of this move was taken over (a stalled run); run the command again' }]);
+    expect(r.removed).toBe(false);
+    // Both copies are the same file; nothing is lost. Once the thief is gone, a re-run
+    // counts the shared copy as linked, not as a clash, and finishes.
+    expect(readFileSync(join(shared, 'build@acme-app.md'), 'utf-8')).toBe(SHELF);
+    rmSync(lockOf(shared), { recursive: true, force: true });
+    expect(sharedBlockers(shared, own, 'acme-app')).toEqual({ foreign: [], clashes: [] });
+    const again = await placeShared(shared, own, 'acme-app');
+    expect(again).toMatchObject({ moved: ['build'], kept: [], removed: true });
+    expect(readFileSync(join(shared, 'build@acme-app.md'), 'utf-8')).toBe(SHELF);
   });
 });
 

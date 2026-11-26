@@ -25,7 +25,82 @@
  */
 import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, renameSync, rmdirSync, unlinkSync, type Stats } from 'node:fs';
 import { join } from 'node:path';
-import { readShelf, withLock } from './notebook.js';
+import { acquireLock, readShelf, releaseLock, staleLockMs, type LockHandle } from './notebook.js';
+
+/** Test-only hooks, called synchronously inside the locked section (issue #551). Never set outside tests. */
+export interface PlaceHooks {
+  /** Both locks are held, before anything is read or decided. */
+  onLocked?: () => void;
+  /** Just before the shelves are linked. */
+  beforeLink?: () => void;
+}
+
+/** Whether `p` is a real directory (not a link), owned by this user on POSIX. */
+export function isOwnRealDir(p: string): boolean {
+  try {
+    const st = lstatSync(p);
+    if (!st.isDirectory()) return false;
+    return typeof process.getuid !== 'function' || st.uid === process.getuid();
+  } catch {
+    return false;
+  }
+}
+
+/** The locks of one place command: the shared notebook's, and the project folder's when it exists. */
+interface PlaceLocks {
+  shared: LockHandle;
+  own: LockHandle | null;
+}
+
+/**
+ * The lock-order rule (issue #551, FR-LOCK-001): only `nb place own` and `nb place
+ * shared` hold two locks, and always the shared notebook's first, then the project
+ * folder's. Every other mutation takes one lock, so no process waits for a lock
+ * while holding one except here, and both commands use this one order: no cycle.
+ * Shared first because a folder that may not exist cannot be locked without creating
+ * it; under the shared lock, whether `projects/<p>` exists is stable against every
+ * nb CLI call, since only these two commands create or remove it, holding that lock.
+ *
+ * The folder's lock is waited for at most half the stale threshold from the
+ * shared acquire, so the shared lock (never refreshed) cannot age into a steal
+ * while we wait; then the command refuses with nothing changed. `fn` runs with both
+ * locks held; they are released in reverse order.
+ */
+async function withPlaceLocks<T>(shared: string, own: string, cmd: 'own' | 'shared', fn: (l: PlaceLocks) => T): Promise<T> {
+  const start = performance.now();
+  const sharedLock = await acquireLock(shared);
+  let ownLock: LockHandle | null = null;
+  try {
+    if (isOwnRealDir(own)) {
+      ownLock = await acquireLock(own, {
+        noCreate: true,
+        deadline: start + staleLockMs() / 2,
+        busy: () =>
+          new Error(
+            `another assistant session (or nb command) is using this project's notebook (${own}), or one stopped mid-write; nothing changed. ` +
+              `Run \`nb place ${cmd}\` again in about ${Math.max(1, Math.ceil(staleLockMs() / 1000))} seconds.`,
+          ),
+      });
+    }
+    const l = { shared: sharedLock, own: ownLock };
+    assertHeld(l, cmd);
+    return fn(l);
+  } finally {
+    if (ownLock !== null) releaseLock(ownLock);
+    releaseLock(sharedLock);
+  }
+}
+
+/** Refuse (nothing changed yet) when a lock no longer carries our token: a stalled run's lock was taken over. */
+function assertHeld(l: PlaceLocks, cmd: 'own' | 'shared'): void {
+  if (!stillHeld(l)) {
+    throw new Error(`a lock of this move was taken over while nb waited (a stalled run); nothing changed. Run \`nb place ${cmd}\` again.`);
+  }
+}
+
+function stillHeld(l: PlaceLocks): boolean {
+  return l.shared.holds() && (l.own === null || l.own.holds());
+}
 
 /** What a move did. `moved` and `kept` are shelf names; `lessons` counts the moved lessons. */
 export interface PlaceMove {
@@ -208,41 +283,77 @@ export function unlinkSame(
   return moved;
 }
 
+/** Whether anything (a file, a folder, a link) has the name `p`. */
+function present(p: string): boolean {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * `nb place own`: move the shared notebook's `*@<project>` shelves into
- * `projects/<project>/`, creating it (mode 0700) when it does not exist.
+ * `projects/<project>/`, creating it (mode 0700) when it does not exist. Everything
+ * is decided under the shared notebook's lock (issue #551): whether the folder
+ * exists, and so which further lock is needed.
  */
-export async function placeOwn(shared: string, projectsDir: string, project: string): Promise<PlaceMove> {
+export async function placeOwn(shared: string, projectsDir: string, project: string, hooks: PlaceHooks = {}): Promise<PlaceMove> {
   const target = join(projectsDir, project);
   mkdirSync(projectsDir, { recursive: true, mode: 0o700 });
-  sweepStaging(projectsDir, project);
   mkdirSync(shared, { recursive: true });
-  // A new folder is filled while it is still a staging folder, under the shared
-  // notebook's lock, then renamed into place. An existing folder is written by its
-  // own project's calls, so it is filled under its own lock; the shared copies of its
-  // shelves are frozen meanwhile, because the write guard refuses `<x>@<project>` in
-  // the shared notebook while the folder exists (FR-PLACE-001).
-  return withLock(existsSync(target) ? target : shared, () => {
+  // A new folder is filled while it is still a staging folder, then renamed into
+  // place. An existing folder is filled holding its own lock as well, since its
+  // project's calls write it; the shared copies of its shelves are frozen meanwhile,
+  // because the write guard refuses `<x>@<project>` in the shared notebook while the
+  // folder exists (FR-PLACE-001).
+  return withPlaceLocks(shared, target, 'own', (l) => {
+    sweepStaging(projectsDir, project);
+    hooks.onLocked?.();
     const kept: PlaceMove['kept'] = [];
-    const created = !existsSync(target);
+    const created = l.own === null;
+    if (created && present(target)) {
+      throw new Error(`projects/${project} exists but is not a folder nb can use (a link, or another user's); nothing changed.`);
+    }
     const into = created ? join(projectsDir, `.new-${project}-${process.pid}`) : target;
     if (created) mkdirSync(into, { mode: 0o700 });
     const shelves = projectShelves(shared, project);
     const lessons = new Map(shelves.map((s) => [s, lessonsIn(shared, s)]));
     let linked: Map<string, Stats>;
     try {
+      hooks.beforeLink?.();
       linked = linkAll(shared, into, shelves, kept);
       if (created) {
-        if (existsSync(target)) throw new Error(`projects/${project} appeared while nb place own ran; nothing changed. Run it again.`);
+        if (present(target)) throw new Error(`projects/${project} appeared while nb place own ran; nothing changed. Run it again.`);
         renameSync(into, target);
       }
     } catch (e) {
       if (created) removeFlat(into);
       throw e;
     }
-    const moved = unlinkSame(shared, linked, kept, (x) => join(target, `${x}.md`));
+    const moved = unlinkUnlessTakenOver(l, shared, linked, kept, (x) => join(target, `${x}.md`));
     return { dir: target, created, moved, kept, lessons: moved.reduce((n, s) => n + (lessons.get(s) ?? 0), 0) };
   });
+}
+
+/**
+ * `unlinkSame`, unless a lock was taken over since the link (a stalled run): then
+ * every source stays where it is, reported; a re-run finishes the move, since a
+ * copy that is the same file counts as linked.
+ */
+function unlinkUnlessTakenOver(
+  l: PlaceLocks,
+  from: string,
+  linked: Map<string, Stats>,
+  kept: PlaceMove['kept'],
+  destOf: (shelf: string) => string,
+): string[] {
+  if (!stillHeld(l)) {
+    for (const s of linked.keys()) kept.push({ shelf: s, why: 'a lock of this move was taken over (a stalled run); run the command again' });
+    return [];
+  }
+  return unlinkSame(from, linked, kept, destOf);
 }
 
 /** nb's own files in a notebooks folder, removed by `nb place shared`: never lessons. */
@@ -254,6 +365,16 @@ export function isNbOwnFile(name: string): boolean {
     /^\.retro-/.test(name) ||
     /^.+\.md\.\d+\.tmp$/.test(name)
   );
+}
+
+function sameFile(a: string, b: string): boolean {
+  try {
+    const x = lstatSync(a);
+    const y = lstatSync(b);
+    return x.ino === y.ino && x.dev === y.dev;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -278,29 +399,52 @@ export function sharedBlockers(shared: string, own: string, project: string): { 
   // A clash is a name the shared notebook already has, or two shelves of the folder
   // that would arrive under one name (`review` and `review@<project>`), compared in
   // lower case, as the write guard and a case-insensitive disk compare them.
+  // A shared file that is the folder's shelf itself (same inode: a run that stopped
+  // between link and unlink) is not a clash; the move counts it as linked.
   const seen = new Map<string, number>();
-  const names2 = allShelves(own).map((s) => sharedName(s, project));
+  const shelves = allShelves(own);
+  const names2 = shelves.map((s) => sharedName(s, project));
   for (const n of names2) seen.set(n.toLowerCase(), (seen.get(n.toLowerCase()) ?? 0) + 1);
-  const clashes = names2.filter((s) => existsSync(join(shared, `${s}.md`)) || (seen.get(s.toLowerCase()) ?? 0) > 1);
+  const clashes = names2.filter(
+    (s, i) => (present(join(shared, `${s}.md`)) && !sameFile(join(shared, `${s}.md`), join(own, `${shelves[i]}.md`))) || (seen.get(s.toLowerCase()) ?? 0) > 1,
+  );
   return { foreign: foreign.sort(), clashes };
 }
 
+/** What `nb place shared` did: a move, or why it did nothing. */
+export type PlaceSharedResult = PlaceMove & {
+  removed: boolean;
+  renamed: { from: string; to: string }[];
+  /** Set when the folder holds something that stops the move; nothing changed. */
+  blocked?: { foreign: string[]; clashes: string[] };
+  /** Set when the folder was already gone once the locks were held; nothing to move. */
+  gone?: true;
+};
+
 /**
  * `nb place shared`: move every shelf of `projects/<project>/` back into the
- * shared notebook and remove the folder. Returns `removed: false` when a write
- * re-created a file in the folder meanwhile, so the folder stays.
+ * shared notebook and remove the folder. Runs under both locks (issue #551): the
+ * check of what stops it is made there, before anything moves, so a refusal always
+ * means nothing changed. Returns `removed: false` when a write re-created a file in
+ * the folder meanwhile, so the folder stays.
  */
-export async function placeShared(shared: string, own: string, project: string): Promise<PlaceMove & { removed: boolean; renamed: { from: string; to: string }[] }> {
+export async function placeShared(shared: string, own: string, project: string, hooks: PlaceHooks = {}): Promise<PlaceSharedResult> {
   mkdirSync(shared, { recursive: true });
-  const r = await withLock(own, () => {
+  const r = await withPlaceLocks(shared, own, 'shared', (l): Omit<PlaceSharedResult, 'removed'> => {
+    const none = { dir: shared, created: false, moved: [], kept: [], renamed: [], lessons: 0 };
+    if (l.own === null) return { ...none, gone: true };
+    hooks.onLocked?.();
+    const blocked = sharedBlockers(shared, own, project);
+    if (blocked.foreign.length > 0 || blocked.clashes.length > 0) return { ...none, blocked };
     const kept: PlaceMove['kept'] = [];
     const shelves = allShelves(own);
     const lessons = new Map(shelves.map((s) => [s, lessonsIn(own, s)]));
     // Every shelf lands as `<x>@<project>`, so the write guard keeps every other call
     // off it in the shared notebook until the folder is gone, and a shelf written in
     // the project does not merge into a general shelf of the same name.
+    hooks.beforeLink?.();
     const linked = linkAll(own, shared, shelves, kept, (x) => sharedName(x, project));
-    const moved = unlinkSame(own, linked, kept, (x) => join(shared, `${sharedName(x, project)}.md`));
+    const moved = unlinkUnlessTakenOver(l, own, linked, kept, (x) => join(shared, `${sharedName(x, project)}.md`));
     for (const n of readdirSync(own)) {
       if (isNbOwnFile(n)) {
         try {
@@ -314,7 +458,7 @@ export async function placeShared(shared: string, own: string, project: string):
     return { dir: shared, created: false, moved, kept, renamed, lessons: moved.reduce((n, s) => n + (lessons.get(s) ?? 0), 0) };
   });
   let removed = false;
-  if (r.kept.length === 0) {
+  if (r.blocked === undefined && r.gone === undefined && r.kept.length === 0) {
     try {
       rmdirSync(own);
       removed = true;
