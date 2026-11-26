@@ -2358,8 +2358,8 @@ model's context. An `nb` older than `status` exits 2 with `unknown_subcommand`; 
 
 ### 4.22 The Claude Code plugin (issue #559)
 
-> **Status: the build, the hooks and the end-to-end test are implemented ([issue #559](https://github.com/jeanibarz/agent-notebook/issues/559),
-> second and third parts); the release and the marketplace entry follow.**
+> **Status: the build, the hooks, the end-to-end test and the release job are implemented ([issue #559](https://github.com/jeanibarz/agent-notebook/issues/559),
+> second, third and fourth part, with [NFR-REL-001](#nfr-rel-001)); the marketplace entry follows.**
 > The plugin is a second distribution of the same tool: its zip holds the package's `dist/`
 > and no dependency ([DP-7](#dp-7), [NG-003](#ng-003)).
 
@@ -2451,6 +2451,46 @@ scripts, the package files or the workflow, and nightly.
 *Proven by:* `plugin-workflows.test.ts` → `describe('the plugin end-to-end workflow (FR-PLUGIN-005, issue #559)')`
 and `describe('the old-node-entry leg (FR-PLUGIN-002, issue #559)')`, which pin the workflow's safety and
 shape; the checks themselves are run by the `plugin-e2e` workflow.
+
+<a id="nfr-rel-001"></a>
+**NFR-REL-001 (Must).** The release workflow (`.github/workflows/release.yml`) SHALL give each job only
+what it needs: the top-level `permissions` is `{}`, `verify` and `build-plugin` hold `contents: read`,
+`publish` holds `contents: read` and `id-token: write`, and `github-release` holds `contents: write` and
+nothing else; no job holds both `id-token: write` and `contents: write`. Every action is pinned by a full
+commit SHA and every checkout sets `persist-credentials: false`. The file name and the `release`
+environment of `publish` SHALL NOT change (npm Trusted Publishing keys on them).
+`build-plugin` SHALL install with `npm ci --ignore-scripts`, run `scripts/check-release.mjs` (the tag,
+both versions of `package-lock.json`, the zip's manifest, `package.json`, skill stamp, engines and the
+entry's `MIN_NODE` all agree; one `::error::` line per disagreement, exit 1), write `SHA256SUMS` and
+check that the CHANGELOG has a section for the version (none: failure), all before
+`publish`. `publish` SHALL skip itself with a notice when npm already holds the version, so a re-run
+reaches `github-release`. `github-release` SHALL run no repository code (no checkout, no Node.js setup, no
+npm), take every value through `env:` and never through `${{ }}` inside a `run:` script, and refuse a tag
+or sha256 of the wrong shape, a tag that no longer points at `$GITHUB_SHA`, and a zip that is not byte-equal
+to the npm tarball of the version (every `dist/**/*.js`, the adapter, the entry and `LICENSE`) or to `plugin/` at the
+tagged commit (`hooks.json`, `bin/nb`, `plugin.json` without `version`, `SKILL.md` with the version put back
+as `{{VERSION}}`; `bin/nb.cmd` against a sha256 pinned in the job), or whose file list is not exactly the tarball's `dist/` files plus the fixed plugin files,
+or whose `SHA256SUMS` is not byte-equal to the file rebuilt from the unpacked zip with the command `build-plugin` uses.
+The artifact SHALL hold exactly the zip, its `.sha256` and `SHA256SUMS`. `github-release` SHALL write the release
+notes itself, after those checks, from values it verified: the zip's sha256, the sha256 of `hooks/hooks.json`,
+`nb-hook-entry.cjs` and `nb-claude-hook.mjs` in the unpacked zip, and the CHANGELOG section of the version read
+from the tagged commit (none: failure); no notes file travels in the artifact.
+It SHALL then create the release in one `gh release create --verify-tag` call with those notes, the zip, its `.sha256`
+and `SHA256SUMS` (`--prerelease` when the version has a hyphen), replace a draft by deleting it without
+`--cleanup-tag` and creating it again, leave a published release that already holds this exact zip alone,
+and otherwise fail: a released archive is never replaced or added to (no `--clobber`, no upload).
+**Rationale:** the job that can write to the repository must be unable to ship anything that was not
+published and reviewed; `docs/releasing.md` says what a compromised step could still do.
+*Proven by:* `release-job.test.ts` → `describe('release.yml holds the least permissions each job needs (NFR-REL-001, issue #559)')`,
+`describe('the github-release job creates the release or confirms it (NFR-REL-001, issue #559)')`,
+`describe('the github-release job proves the zip equals the npm package and the tagged commit (NFR-REL-001, issue #559)')`,
+`describe('the github-release job validates its inputs and the tag (NFR-REL-001, issue #559)')`,
+`describe('the build-plugin job writes the checksums and checks the CHANGELOG (NFR-REL-001, issue #559)')`,
+`describe('the github-release job writes the release notes from values it verified (NFR-REL-001, issue #559)')` and
+`describe('the publish job skips a version that npm already holds (NFR-REL-001, issue #559)')`;
+`release-guard.test.ts` → `describe('check-release.mjs lets a consistent release through (issue #559)')`,
+`describe('check-release.mjs refuses each disagreement with its own marker (issue #559)')` and
+`describe('check-release.mjs: a crash or a usage error is never a refusal (issue #559)')`.
 
 ## 5. Non-functional requirements
 

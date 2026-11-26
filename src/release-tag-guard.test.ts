@@ -19,7 +19,14 @@ const release = readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'
 
 // The publish job's own text. The `verify` job (issue #301) precedes it and has
 // its own `npm ci`/`npm test`, so ordering checks must be scoped to this job.
-const publishJob = release.slice(release.indexOf('\n  publish:'));
+// It ends at the next top-level job key (issue #559 adds `github-release` after it), so a
+// later job's `npm` or `npm ci` text cannot satisfy or break an ordering check here.
+const publishJob = (() => {
+  const from = release.indexOf('\n  publish:');
+  const rest = release.slice(from + 1);
+  const next = rest.slice(1).search(/\n {2}[A-Za-z][\w-]*:[ \t]*\n/);
+  return next === -1 ? rest : rest.slice(0, next + 1);
+})();
 
 const STEP_NAME = 'Verify tag matches package.json version';
 // Distinct stderr markers emitted by each of the two rejections in the guard.

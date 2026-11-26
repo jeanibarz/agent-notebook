@@ -6,8 +6,8 @@ on:
       - 'v*.*.*'
   workflow_dispatch: {}
 
-permissions:
-  contents: read
+# No job inherits a token: each one below names what it holds (issue #559).
+permissions: {}
 
 jobs:
   # Re-run CI's full matrix against the release commit. ci.yml does not trigger
@@ -16,6 +16,8 @@ jobs:
   # breaks only the declared minimum engine (>=18) would ship green (issue #301).
   # Keep the per-leg steps in sync with ci.yml's build-and-test job.
   verify:
+    permissions:
+      contents: read
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -24,6 +26,8 @@ jobs:
         node-version: [18, 20, 22, 24]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -39,8 +43,69 @@ jobs:
       - run: node scripts/smoke-node18.mjs
         if: matrix.node-version == 18
 
+  # Issue #559: build the Claude Code plugin's zip and check every version in it
+  # BEFORE the irreversible npm publish. This job reads the repository and holds a
+  # read-only token; the zip it builds is handed to `github-release` as an artifact.
+  build-plugin:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      sha256: ${{ steps.build.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # --ignore-scripts: no dependency may run code at install time in a job that
+      # builds a file people install on their machines.
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+
+      - name: Build the plugin zip and check its versions
+        id: build
+        run: |
+          set -eu
+          version="$(node -p "require('./package.json').version")"
+          zip="agent-notebook-plugin-${version}.zip"
+          node scripts/build-plugin.mjs --out release-out
+          node scripts/check-release.mjs --tag "$GITHUB_REF_NAME" --zip "release-out/$zip"
+          sha="$(sha256sum "release-out/$zip" | cut -d' ' -f1)"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+          # The checksum of every file inside the zip, for people who unpack it.
+          rm -rf unpacked
+          mkdir unpacked
+          unzip -q "release-out/$zip" -d unpacked
+          (cd unpacked && find . -type f | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r f; do sha256sum "$f"; done) > release-out/SHA256SUMS
+
+          # No CHANGELOG section for this version: no release, and the failure comes
+          # before anything is published. The notes themselves are written by
+          # `github-release`, from values it verified (it reads the CHANGELOG at the tag).
+          if ! awk -v v="$version" '
+            /^## / { if (index($0, "## [" v "]") == 1 || $0 == "## " v || index($0, "## " v " ") == 1) { found = 1 } }
+            END { exit found ? 0 : 1 }
+          ' CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section for version ${version}; the release notes need one." >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plugin-zip
+          path: |
+            release-out/*.zip
+            release-out/*.zip.sha256
+            release-out/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
-    needs: verify
+    needs: [verify, build-plugin]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -48,6 +113,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -80,6 +147,22 @@ jobs:
           fi
           echo "Verified: tag '${GITHUB_REF_NAME}' matches package.json version '${pkg_version}'."
 
+      # A re-run of the workflow (to reach `github-release` after a failure there)
+      # must not try to publish a version that npm already holds: that would fail.
+      # The build is reproducible, so the zip of a re-run is the same zip.
+      - name: Check whether npm already has this version
+        id: npm-has
+        run: |
+          set -eu
+          version="$(node -p "require('./package.json').version")"
+          found="$(npm view "agent-notebook@${version}" version 2>/dev/null || true)"
+          if [ "$found" = "$version" ]; then
+            echo "::notice::agent-notebook@${version} is already on npm; skipping the publish."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Trusted Publishing needs npm >= 11.5.0; pin to a specific recent npm
       # (not npm@latest) so the publish job is reproducible and a moving npm
       # release cannot silently change it, regardless of the Node bundled by
@@ -94,6 +177,7 @@ jobs:
       # under its identifier (`beta`), never under `latest`, so a plain
       # `npm install agent-notebook` keeps giving the last stable release.
       - name: Publish to npm
+        if: steps.npm-has.outputs.published != 'true'
         run: |
           set -eu
           version="$(node -p "require('./package.json').version")"
@@ -111,3 +195,254 @@ jobs:
           esac
           echo "Publishing ${version} under the npm dist-tag '${dist_tag}'."
           npm publish --access public --provenance --tag "$dist_tag"
+
+  # Issue #559: attach the plugin zip to a GitHub release. This is the only job that can
+  # write to the repository, so it holds NO repository code: no checkout, no setup-node,
+  # no npm install. It runs `gh`, `curl`, `tar`, `unzip` and `jq` from the runner image
+  # on the zip that `build-plugin` made, after proving the zip matches what was just
+  # published to npm and what is at the tagged commit. Every step takes its values
+  # through `env:`, never through `${{ }}` inside `run:`, so no value is parsed as shell.
+  github-release:
+    needs: [publish, build-plugin]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: plugin-zip
+          path: release-in
+
+      - name: Check the tag, the checksum and what the artifact holds
+        working-directory: release-in
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA256: ${{ needs.build-plugin.outputs.sha256 }}
+        run: |
+          set -eu
+          export LC_ALL=C
+          tag_re='^v[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$'
+          sha_re='^[0-9a-f]{64}$'
+          if ! [[ "$TAG" =~ $tag_re ]]; then
+            echo "::error::tag '${TAG}' is not vX.Y.Z or vX.Y.Z-name.N; refusing to release it." >&2
+            exit 1
+          fi
+          if ! [[ "$SHA256" =~ $sha_re ]]; then
+            echo "::error::the build job's sha256 '${SHA256}' is not 64 lowercase hex characters." >&2
+            exit 1
+          fi
+          zip="agent-notebook-plugin-${TAG#v}.zip"
+          echo "${SHA256}  ${zip}" | sha256sum -c -
+          if [ "$(cat "${zip}.sha256")" != "${SHA256}  ${zip}" ]; then
+            echo "::error::${zip}.sha256 does not say '${SHA256}  ${zip}'." >&2
+            exit 1
+          fi
+          # Nothing else may travel in the artifact: it is uploaded as release assets.
+          expected="$(printf '%s\n' "$zip" "${zip}.sha256" SHA256SUMS | LC_ALL=C sort)"
+          actual="$(find . -type f | sed 's|^\./||' | LC_ALL=C sort)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::the plugin-zip artifact holds unexpected files: ${actual}" >&2
+            exit 1
+          fi
+
+      - name: The tag still points at the commit this run started from
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          type="$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq .object.type)"
+          sha="$(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq .object.sha)"
+          # An annotated tag is an object that points at the commit; follow it.
+          depth=0
+          while [ "$type" = tag ] && [ "$depth" -lt 5 ]; do
+            type="$(gh api "repos/$GH_REPO/git/tags/$sha" --jq .object.type)"
+            sha="$(gh api "repos/$GH_REPO/git/tags/$sha" --jq .object.sha)"
+            depth=$((depth + 1))
+          done
+          if [ "$type" != commit ] || [ "$sha" != "$GITHUB_SHA" ]; then
+            echo "::error::tag ${TAG} points at ${type} ${sha}, not at commit ${GITHUB_SHA} this run started from; the tag was moved." >&2
+            exit 1
+          fi
+          echo "tag ${TAG} -> ${sha}"
+
+      # The zip must be the package npm just published, plus the plugin's own files as
+      # they are at the tagged commit. A compromised build job cannot slip a different
+      # file into the zip without this step seeing it.
+      - name: The zip equals the npm package and the tagged commit
+        working-directory: release-in
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          version="${TAG#v}"
+          zip="agent-notebook-plugin-${version}.zip"
+          fail() { echo "::error::$*" >&2; exit 1; }
+
+          rm -rf ../check
+          mkdir ../check ../check/npm ../check/zip ../check/src
+          curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o ../check/npm.tgz "https://registry.npmjs.org/agent-notebook/-/agent-notebook-${version}.tgz"
+          tar -xzf ../check/npm.tgz -C ../check/npm
+          npmdir=../check/npm/package
+
+          # The file list first: the zip holds the tarball's dist/**/*.js, the fixed
+          # plugin files, and nothing else.
+          expected="$( { (cd "$npmdir" && find dist -type f -name '*.js'); printf '%s\n' \
+            .claude-plugin/plugin.json package.json LICENSE bin/nb bin/nb.cmd hooks/hooks.json \
+            skills/agent-notebook/SKILL.md \
+            examples/hooks/claude-code/nb-claude-hook.mjs examples/hooks/claude-code/nb-hook-entry.cjs; } | LC_ALL=C sort)"
+          actual="$(unzip -Z1 "$zip" | LC_ALL=C sort)"
+          if [ "$actual" != "$expected" ]; then
+            diff <(echo "$expected") <(echo "$actual") >&2 || true
+            fail "the zip's file list differs from the npm package's dist files plus the fixed plugin files."
+          fi
+          unzip -q "$zip" -d ../check/zip
+          zipdir=../check/zip
+          # A link inside the zip could make a later comparison read another file.
+          if [ -n "$(find "$zipdir" ! -type f ! -type d)" ]; then
+            fail "the zip holds an entry that is not a plain file."
+          fi
+          # bin/nb.cmd is generated by the build, in neither the npm package nor plugin/:
+          # its sha256 is pinned here, and a test pins it to what the build writes.
+          nb_cmd_sha256=791df2785681cc5b6a8fe17a7c47846dbc7d929b2539d3aa4a339c1b945a91ca
+          if [ "$(sha256sum "$zipdir/bin/nb.cmd" | cut -d' ' -f1)" != "$nb_cmd_sha256" ]; then
+            fail "bin/nb.cmd in the zip is not the launcher this workflow pins (sha256 ${nb_cmd_sha256})."
+          fi
+
+          # Byte for byte with what npm published.
+          while IFS= read -r f; do
+            cmp -s "$zipdir/$f" "$npmdir/$f" || fail "$f in the zip differs from the npm package."
+          done < <(cd "$npmdir" && find dist -type f -name '*.js'; printf '%s\n' LICENSE \
+            examples/hooks/claude-code/nb-claude-hook.mjs examples/hooks/claude-code/nb-hook-entry.cjs)
+          jq -S -c '{name, version, type: "module", engines, license}' "$npmdir/package.json" > ../check/pkg.npm
+          jq -S -c . "$zipdir/package.json" > ../check/pkg.zip
+          cmp -s ../check/pkg.npm ../check/pkg.zip || fail "package.json in the zip differs from the npm package's name, version, engines or license."
+
+          # The plugin's own files, as they are at the tagged commit.
+          src() { gh api "repos/$GH_REPO/contents/$1?ref=$GITHUB_SHA" --jq .content | base64 -d > "../check/src/$2"; }
+          src plugin/hooks/hooks.json hooks.json
+          cmp -s "$zipdir/hooks/hooks.json" ../check/src/hooks.json || fail "hooks/hooks.json in the zip differs from plugin/hooks/hooks.json at ${GITHUB_SHA}."
+          src plugin/bin/nb nb
+          cmp -s "$zipdir/bin/nb" ../check/src/nb || fail "bin/nb in the zip differs from plugin/bin/nb at ${GITHUB_SHA}."
+          src plugin/.claude-plugin/plugin.json plugin.json
+          jq -S -c 'del(.version)' "$zipdir/.claude-plugin/plugin.json" > ../check/plugin.zip
+          jq -S -c 'del(.version)' ../check/src/plugin.json > ../check/plugin.src
+          cmp -s ../check/plugin.zip ../check/plugin.src || fail ".claude-plugin/plugin.json in the zip differs from plugin/.claude-plugin/plugin.json at ${GITHUB_SHA} (apart from version)."
+          if [ "$(jq -r .version "$zipdir/.claude-plugin/plugin.json")" != "$version" ]; then
+            fail ".claude-plugin/plugin.json in the zip does not say version ${version}."
+          fi
+          src plugin/skills/agent-notebook/SKILL.md SKILL.md
+          sed "s/${version//./\\.}/{{VERSION}}/g" "$zipdir/skills/agent-notebook/SKILL.md" > ../check/skill.zip
+          cmp -s ../check/skill.zip ../check/src/SKILL.md || fail "skills/agent-notebook/SKILL.md in the zip differs from the source at ${GITHUB_SHA} (with the version put back as {{VERSION}})."
+
+          # SHA256SUMS is rebuilt here from the unpacked zip with the command build-plugin
+          # uses (same sort, same format, same relative paths) and must match byte for byte.
+          (cd "$zipdir" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r f; do sha256sum "$f"; done) > ../check/SHA256SUMS
+          cmp -s ../check/SHA256SUMS SHA256SUMS || fail "SHA256SUMS does not match the files inside the zip."
+          echo "ok: the zip equals the npm package and the commit ${GITHUB_SHA}"
+
+      # The notes are written here, from values this job verified: the zip's sha256 (checked
+      # above), the sha256 of the session-start files in the unpacked zip, and the CHANGELOG
+      # section read from the tagged commit. Nothing in notes.md comes from the artifact.
+      - name: Write the release notes
+        working-directory: release-in
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA256: ${{ needs.build-plugin.outputs.sha256 }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          version="${TAG#v}"
+          zip="agent-notebook-plugin-${version}.zip"
+          rm -rf ../notes-src
+          mkdir ../notes-src
+          unzip -q "$zip" -d ../notes-src/zip
+          gh api "repos/$GH_REPO/contents/CHANGELOG.md?ref=$GITHUB_SHA" --jq .content | base64 -d > ../notes-src/CHANGELOG.md
+          section="$(awk -v v="$version" '
+            /^## / { if (on) exit; if (index($0, "## [" v "]") == 1 || $0 == "## " v || index($0, "## " v " ") == 1) { on = 1 } }
+            on { print }
+          ' ../notes-src/CHANGELOG.md)"
+          if [ -z "$section" ]; then
+            echo "::error::CHANGELOG.md at ${GITHUB_SHA} has no section for version ${version}; the release notes need one." >&2
+            exit 1
+          fi
+          {
+            echo "Claude Code plugin: ${zip} sha256 ${SHA256}"
+            echo
+            echo "Checksums of the files that run at session start (inside the zip):"
+            echo
+            for f in hooks/hooks.json examples/hooks/claude-code/nb-hook-entry.cjs examples/hooks/claude-code/nb-claude-hook.mjs; do
+              echo "- \`${f}\` sha256 $(sha256sum "../notes-src/zip/$f" | cut -d' ' -f1)"
+            done
+            echo
+            echo "$section"
+          } > ../notes.md
+
+      - name: Create the release, or confirm it already holds this zip
+        working-directory: release-in
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          zip="agent-notebook-plugin-${TAG#v}.zip"
+          create() {
+            pre=""
+            case "$TAG" in *-*) pre="--prerelease" ;; esac
+            # One call, with the assets: an immutable release cannot take one later.
+            # shellcheck disable=SC2086
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file ../notes.md $pre "$zip" "${zip}.sha256" SHA256SUMS
+          }
+          if ! draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            create
+          elif [ "$draft" = true ]; then
+            # An earlier run left a draft (never published); replace it. The tag is kept.
+            gh release delete "$TAG" --yes
+            create
+          else
+            rm -rf ../existing
+            mkdir ../existing
+            if gh release download "$TAG" --pattern "$zip" --dir ../existing 2>/dev/null \
+              && [ -f "../existing/$zip" ] \
+              && [ "$(sha256sum "../existing/$zip" | cut -d' ' -f1)" = "$(sha256sum "$zip" | cut -d' ' -f1)" ]; then
+              echo "release ${TAG} already holds this exact zip; nothing to do."
+            else
+              echo "::error::release ${TAG} exists without this exact zip; a released archive is never replaced or added later; cut a new version." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Write the download address and checksum to the summary
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA256: ${{ needs.build-plugin.outputs.sha256 }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          zip="agent-notebook-plugin-${TAG#v}.zip"
+          {
+            echo "### Claude Code plugin ${TAG}"
+            echo
+            echo "- zip: https://github.com/${GH_REPO}/releases/download/${TAG}/${zip}"
+            echo "- sha256: \`${SHA256}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The release job holds contents: write, so a rule on main matters. This warns; it
+      # does not refuse, so that a repository without the rule can still release. The job
+      # token cannot read classic branch protection, so only rulesets are detected.
+      - name: Warn when no ruleset applies to main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          rules="$(gh api "repos/$GH_REPO/rules/branches/main" --jq 'length' 2>/dev/null || echo 0)"
+          if [ "$rules" = 0 ]; then
+            echo "::warning::no ruleset applies to main (classic branch protection cannot be read with the job token, so it is not checked). The release job holds contents: write, so a compromised step could push to main. Add a ruleset that requires a pull request and has no bypass for GitHub Actions (docs/releasing.md)."
+          fi
