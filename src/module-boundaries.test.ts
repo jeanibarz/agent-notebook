@@ -165,7 +165,7 @@ describe('module boundaries (issue #478)', () => {
   // Issue #539: the user's message files. The module reads a folder and takes plain values (the home
   // folder, a project name): it never runs git, never writes, and knows no project or place module,
   // so the rules about who selects a file stay in the commands that call it.
-  test('the message-file module imports only the standard library and the mechanism, and only loop and config-report import it (issue #539)', () => {
+  test('the message-file module imports only the standard library and the mechanism, and only loop, config-report and status-facts import it (issue #539)', () => {
     const graph = importGraph();
     expect(graph.get('messages')).toEqual(['notebook']);
     const text = readFileSync(join(srcDir, 'messages.ts'), 'utf-8');
@@ -174,9 +174,34 @@ describe('module boundaries (issue #478)', () => {
     expect(/from 'node:child_process'|\bimport\(/.test(text)).toBe(false);
     expect(/\b(writeFileSync|appendFileSync|mkdirSync|renameSync|unlinkSync|rmSync|copyFileSync|openSync\([^)]*['"]w)/.test(text.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''))).toBe(false);
     for (const [mod, deps] of graph) {
-      if (mod !== 'loop' && mod !== 'config-report') expect(deps, `${mod}.ts imports messages`).not.toContain('messages');
+      if (mod !== 'loop' && mod !== 'config-report' && mod !== 'status-facts') expect(deps, `${mod}.ts imports messages`).not.toContain('messages');
     }
     expect(graph.get('cli')).not.toContain('messages');
+  });
+
+  // Issue #558: `nb status` is two modules. The decisions and the text are pure: no import at all, so no
+  // read, no process and no clock. The reads sit in one module, on the mechanism and the helpers it needs,
+  // and only the CLI reaches either.
+  test('the status decisions import nothing and the status reads import a fixed list, below cli.ts (issue #558, NFR-MAINT-001)', () => {
+    const graph = importGraph();
+    expect(graph.get('status')).toEqual([]);
+    const pure = readFileSync(join(srcDir, 'status.ts'), 'utf-8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    expect(/^import\b/m.test(pure)).toBe(false);
+    expect(/\bimport\(|\brequire\(|Date\.now|new Date\(\)|process\./.test(pure)).toBe(false);
+    expect(graph.get('status-facts')?.slice().sort()).toEqual(['enabled', 'messages', 'notebook', 'project', 'status', 'usage']);
+    const facts = readFileSync(join(srcDir, 'status-facts.ts'), 'utf-8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    const external = [...facts.matchAll(/^import\b[^;]*?\bfrom '([^']+)'/gm)].map((m) => m[1]).filter((m) => !m!.startsWith('./'));
+    expect(new Set(external)).toEqual(new Set(['node:fs', 'node:os', 'node:url']));
+    expect(/from 'node:child_process'|\bimport\(/.test(facts)).toBe(false);
+    expect(/\b(writeFileSync|appendFileSync|mkdirSync|renameSync|unlinkSync|rmSync|copyFileSync|writeSync)\b/.test(facts)).toBe(false);
+    // An open is allowed only read-only and non-blocking (the bounded release-date read).
+    const opens = [...facts.matchAll(/\bopenSync\(([^;]*)\);/g)].map((m) => m[1]!);
+    for (const o of opens) expect(o, 'openSync in status-facts.ts').toMatch(/O_RDONLY \| \(fsConstants\.O_NONBLOCK \?\? 0\)\)?$/);
+    expect(graph.get('cli')).toEqual(expect.arrayContaining(['status', 'status-facts']));
+    for (const [mod, deps] of graph) {
+      if (mod !== 'cli' && mod !== 'status-facts') expect(deps, `${mod}.ts imports status`).not.toContain('status');
+      if (mod !== 'cli') expect(deps, `${mod}.ts imports status-facts`).not.toContain('status-facts');
+    }
   });
 
   test('no source module speaks a harness hook format (issue #538)', () => {

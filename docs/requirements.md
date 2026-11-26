@@ -138,6 +138,9 @@ Operations SHALL report honestly rather than pretend success:
   without a warning line where that placeholder has no value (no project name is found, or `--session ""`
   gave no session id). That is "not applicable here", not a broken file; `nb config` shows it
   ([FR-CONFIG-004](#fr-config-004)). A block without a placeholder is always added.
+- The verdict `running` of `nb status` SHALL claim only that the start step ran: that `nb brief` or `nb retro`
+  ran with a hook label for this project at that time. It SHALL NOT claim that the assistant received the
+  text, read the list or used a lesson, and its output says so ([FR-STATUS-002](#fr-status-002), issue #558).
 **Rationale:** The notebook is an agent's memory of its own past; a silent
 truncation or a mis-landed vote poisons future runs. A loud refusal is cheap to
 recover from; a silent corruption is not.
@@ -159,7 +162,7 @@ times, [FR-MSG-001](#fr-msg-001)), the locale, the files
 under `NB_DIR` (or the project folder in use), and the clock: `stats` and `doctor` report against the current time
 (their `--since` window, a lock's age). For `brief` and `retro` the clock SHALL decide
 side effects only (timestamps, removing an expired retrospective sentinel), never what
-they print; §4.17 lists their inputs. *Status: proposed — not yet implemented (issue #558):* the inputs of
+they print; §4.17 lists their inputs. The inputs of
 `nb status` ([FR-STATUS-001](#fr-status-001)) are its arguments; `NB_DIR`, `NB_ENABLED`, `NB_PROJECT_SLUG`
 and the home folder; the tail of the usage log(s), the names of shelf files and the entries of
 `~/.agent-notebook/projects/`; the message files; `package.json` and `CHANGELOG.md` beside `cli.js`; git's
@@ -248,8 +251,7 @@ dropped or rewritten.
 **Rationale:** A git-versioned notebook (the documented `nb-git-wrapper`/`nb-backup.sh` flow) that hits a
 merge conflict would otherwise parse the markers as score-0 lessons and the next mutation would persist
 them as real lessons, silently "resolving" the conflict and evicting real lessons ([DP-5](#dp-5)).
-*Acceptance:* a shelf with `<<<<<<< HEAD`, `+2<TAB>mine`, `=======`, `+3<TAB>theirs`, `>>>>>>> branch`
-makes `nb add|vote|merge|split|rm|move|describe` exit `1` with `errorClass` `corrupt` and leaves the file
+*Acceptance:* a shelf with `makes `nb add|vote|merge|split|rm|move|describe` exit `1` with `errorClass` `corrupt` and leaves the file
 byte-identical, while `nb show|list|search|stale` exit `0` with the same stdout plus one stderr warning.
 *Proven by:* `notebook.test.ts` → `describe('git merge-conflict markers are detected, never rewritten (issue #333)')`; `cli.test.ts` → `describe('a git merge-conflicted shelf warns on reads and refuses mutations (issue #333)')`.
 
@@ -701,6 +703,7 @@ shelves; `--json` emits a lone object for one shelf, an array for several),
 `place [own|shared] [--json]` ([FR-PLACE-002](#fr-place-002), [FR-PLACE-003](#fr-place-003)),
 `brief [--max-chars N] [--session <id>] [--hook <label>] [--json]` ([FR-BRIEF-001](#fr-brief-001)),
 `retro --session <id> [--work-dir <dir>] [--hook <label>] [--json]` ([FR-RETRO-001](#fr-retro-001)),
+`status [--json]` ([FR-STATUS-001](#fr-status-001)),
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`),
 `completion <bash|zsh>` ([FR-CLI-010](#fr-cli-010)), `--help`, `--version`. Every command
 dispatched by `src/cli.ts` SHALL be named in this paragraph (guarded by `cli.test.ts` →
@@ -1094,10 +1097,11 @@ claimed (outcome `already`) SHALL append no row. A stop hook calls it on every s
 session, and those rows would carry no information while shortening the history the
 ring keeps. For a `retro` row the `session` column holds the cleaned `--session` value
 (not `NB_SESSION`), and the `note` column holds the adapter's `--hook` label, cleaned to
-`[a-z0-9._-]`, when one is given; a `brief` row records them the same way. **A second named exception (issue #558) — *Status: proposed — not yet implemented (issue #558)*:** `nb status`
+`[a-z0-9._-]`, when one is given; a `brief` row records them the same way. **A second named exception (issue #558):** `nb status`
 ([FR-STATUS-001](#fr-status-001)) SHALL append no row in any case, successful or not, so that an adapter may call it
 at every session start without filling the ring.
-*Proven by* (the exception): `retro.test.ts` →
+*Proven by* (the second exception): `status-cli.test.ts` → `describe('read-only and never blocked')`.
+*Proven by* (the first exception): `retro.test.ts` →
 "an already call adds no usage row" and "a nudge logs one retro row with outcome nudge, the cleaned session and the hook label".
 *Proven by:* `notebook.test.ts` → `describe('usage log + stats')`; the `--help`/`--version`
 rows by `cli.test.ts` → `describe('runNbCli')` → the two `issue #250` usage-row tests; the
@@ -1742,7 +1746,7 @@ still complete in an off repository.
 > implemented by the second pull request of [issue #558](https://github.com/jeanibarz/agent-notebook/issues/558):
 > the record that a hook ran is the usage row `brief` and `retro` write, with two trailing columns
 > (`version` and `project`), and nothing is written outside `NB_DIR`. Its reader, `nb status`
-> ([§4.21](#fr-status-001)), is proposed, not yet implemented.** The hooks pass
+> ([§4.21](#fr-status-001)), is implemented by the third.** The hooks pass
 > `--hook <label>` already; it is recorded in the usage log ([FR-USAGE-001](#fr-usage-001)).
 > These requirements landed before the code, as the issue asks. Where this section departs from a requirement still in force, the code pull
 > request that makes it true amends that requirement in the same change: NFR-SAFE-001
@@ -2247,18 +2251,16 @@ text reaches neither the model nor the user. A file that vanishes between the li
 
 ### 4.21 Is the notebook running here: `nb status` (issue #558)
 
-> **Status: proposed — not yet implemented (issue #558).** FR-STATUS-001, FR-STATUS-002 and FR-STATUS-003 land
-> as text with the second pull request of [issue #558](https://github.com/jeanibarz/agent-notebook/issues/558),
-> before the code that makes them true, as the issue asks; the third pull request builds `nb status`. What is
-> built already is the record it reads, [FR-HEARTBEAT-001](#fr-heartbeat-001). The converged design, with what
-> was measured and the alternatives rejected, is the design comment on #558.
+> **Status: implemented ([issue #558](https://github.com/jeanibarz/agent-notebook/issues/558), third pull
+> request).** The record it reads is [FR-HEARTBEAT-001](#fr-heartbeat-001). The converged design, with what was
+> measured and the alternatives rejected, is the design comment on #558.
 
 A person who installed the notebook asks one question: is it running here? `nb status` answers it in two plain
 lines, from the record of [FR-HEARTBEAT-001](#fr-heartbeat-001) and from a few live checks, without writing
 anything.
 
 <a id="fr-status-001"></a>
-**FR-STATUS-001 (Should).** *Status: proposed — not yet implemented (issue #558).* `nb status [--json]` SHALL print
+**FR-STATUS-001 (Should).** `nb status [--json]` SHALL print
 two fixed lines: line 1 says the verdict, line 2 says what to do next. Both are fixed sentences picked by a code
 and filled only with ages, counts, versions and file names, never a path or a reason string read from disk or
 git, and neither uses the words hook, shelf or PATH, or a variable name. After a blank line it SHALL print a
@@ -2282,13 +2284,20 @@ cap); one `readdir` of the notebook folder; `~/.agent-notebook/projects/` as eve
 `nb config`; and `package.json` and `CHANGELOG.md` beside `cli.js`, bounded. It starts only `git config --get nb.enabled`
 and the project-name reads of [FR-PROJECT-001](#fr-project-001), read-only, with fixed argument lists and no shell.
 No network is used and no `doctor` is run.
+*Proven by:* `status-cli.test.ts` → `describe('the verdicts, as text and as JSON (golden)')` and
+`describe('read-only and never blocked')`; `status.test.ts` → `describe('the detail block (design section 5, golden)')`,
+`describe('every value shown is capped, escaped, and the home folder is ~ (design section 5)')` and
+`describe('the facts are read from two logs, merged by timestamp, and never throw (FR-STATUS-001, FR-STATUS-002)')`;
+`module-boundaries.test.ts` → "the status decisions import nothing and the status reads import a fixed list, below cli.ts (issue #558, NFR-MAINT-001)".
 
 <a id="fr-status-002"></a>
-**FR-STATUS-002 (Should).** *Status: proposed — not yet implemented (issue #558).* The verdict SHALL follow these
+**FR-STATUS-002 (Should).** The verdict SHALL follow these
 rules, in this order.
 - **Logs read.** An own place reads its own log and the shared log; a shared or `env` place reads the shared log.
   Within one log, "newest" means last in file order. Across the two logs, rows are merged by timestamp, with ties
-  going to the own log. Ages are `max(0, now − time)`, and a row dated in the future never outranks a later row.
+  going to the own log. Ages are `max(0, now − time)`. A row dated more than five minutes after the clock is
+  forged and is ignored at read time (a little skew between two machines that share a notebook is kept); a row
+  within that slack never outranks a later row.
 - **Read-time validation.** A row is used only if every column passes: an ISO timestamp, a known command, an
   outcome from that command's list, a label matching `[a-z0-9._-]{1,40}`, and `version` and `project` in their
   alphabets. Rows are cleaned when written, and checked again when read.
@@ -2344,9 +2353,12 @@ rules, in this order.
   is the git-config wording; `scope` is `notebook` only for a `broken` that rests on a `?`-key row; a `?`-key row with
   a good outcome never counts as a start for any project.
 The verdict `running` claims only that the start step ran ([FR-HEARTBEAT-001](#fr-heartbeat-001), [DP-5](#dp-5)).
+*Proven by:* `status.test.ts` → `describe('every verdict and every line variant, as text (golden, FR-STATUS-002)')` and
+`describe('a row is validated again at read time, and a forged one is dropped whole (FR-STATUS-002)')`;
+`status-cli.test.ts` → `describe('rows that are not trusted')` and `describe('the verdicts, as text and as JSON (golden)')`.
 
 <a id="fr-status-003"></a>
-**FR-STATUS-003 (Should).** *Status: proposed — not yet implemented (issue #558).* `nb status --json` SHALL print one
+**FR-STATUS-003 (Should).** `nb status --json` SHALL print one
 object:
 `{"schemaVersion":1,"verdict":"off|place_unknown|broken|running|not_seen","scope":"project|notebook","headline":"<line 1>","next":"<line 2>","announce":false,"problem":"message_ignored|null","now":"<iso>","evidence":{"lastStart":{"at":"<iso>","ageSeconds":0,"label":"<untrusted>","outcome":"index","version":"0.13.0|null"},"lastEnd":null,"olderProgram":null,"rowsRead":0,"since":"<iso>|null"},"switch":{"enabled":true,"source":"env|git|default"},"place":{"kind":"env|own|shared|unknown"},"project":{"name":"<untrusted>|null","source":"env|remote|folder|none","key":"name|folder-hash|undetermined|none"},"notebook":{"shelves":0,"lastAddAt":"<iso>|null"},"program":{"version":"…","released":"YYYY-MM-DD|null","nodeVersion":"v…","platform":"linux"}}`.
 **Stability:** fields and enum values MAY be added and SHALL never be removed, renamed or retyped; `headline` and
@@ -2355,6 +2367,9 @@ object:
 `broken`, so a caller that keeps no memory does not nag every session. The JSON SHALL hold no path. `label` and
 `project.name` are untrusted data: callers repeat only `headline` and `next`, and never put `evidence` into the
 model's context. An `nb` older than `status` exits 2 with `unknown_subcommand`; callers read that as "nb is too old".
+*Proven by:* `status.test.ts` → `describe('announce, scope and problem (FR-STATUS-003)')` and
+`describe('the JSON is the contract of design section 4 (FR-STATUS-003, golden)')`; `status-cli.test.ts` →
+`describe('the verdicts, as text and as JSON (golden)')`.
 
 ### 4.22 The Claude Code plugin (issue #559)
 
@@ -2518,7 +2533,7 @@ the Node-18 leg runs a dependency-free runtime smoke of the built CLI
 minimum engine is actually executed and not merely compiled. A Windows leg (Node 22)
 runs the tests of the agent-facing loop added by issue #538 (`src/brief.test.ts`, `src/retro.test.ts`,
 `src/loop-stats.test.ts`, `src/module-boundaries.test.ts`) and of the project name added by issue #540
-(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`) and of the message files added by issue #539 (`src/messages.test.ts`) and of the usage record added by issue #558 (`src/usage-record.test.ts`) and of the plugin's hook entry added by issue #559 (`src/nb-hook-entry.test.ts`) and of the plugin's build and hooks (`src/plugin-workflows.test.ts` with them); the rest of the suite is not
+(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`) and of the message files added by issue #539 (`src/messages.test.ts`) and of the usage record added by issue #558 (`src/usage-record.test.ts`) and of `nb status` (`src/status.test.ts`, `src/status-cli.test.ts`) and of the plugin's hook entry added by issue #559 (`src/nb-hook-entry.test.ts`) and of the plugin's build and hooks (`src/plugin-workflows.test.ts` with them); the rest of the suite is not
 yet run on Windows. The `plugin-e2e` workflow installs, updates, rolls back and uninstalls the plugin on Linux, macOS and Windows ([FR-PLUGIN-005](#fr-plugin-005)). An `old-node-entry` leg runs that entry on Node 12 and 16, the versions it exists for. *(Proven by
 `src/smoke-node18.test.ts`.)*
 
@@ -2537,8 +2552,7 @@ when the home folder is not an absolute path (an empty or relative `HOME`, which
 under the working directory, possibly a clone), and its files SHALL NOT be read when the folder, after
 `realpath`, lies inside `NB_DIR` (the shipped scripts sync that folder). Nothing in it is ever created or
 written ([NG-008](#ng-008)). Both refusals are proven on Windows by `src/messages.test.ts`. The record that a hook ran
-([FR-HEARTBEAT-001](#fr-heartbeat-001)) writes nothing outside `NB_DIR`: it is a usage row. *Status: proposed — not
-yet implemented (issue #558):* `nb status` SHALL write nothing at all, and reads only the tail of the usage log(s)
+([FR-HEARTBEAT-001](#fr-heartbeat-001)) writes nothing outside `NB_DIR`: it is a usage row. `nb status` (issue #558) SHALL write nothing at all, and reads only the tail of the usage log(s)
 (at most 8 MiB, through the bounded reader of [NFR-BOUND-001](#nfr-bound-001)), the names of the shelf files, the
 entries of `~/.agent-notebook/projects/`, the message files as `nb config` does, and `package.json` and
 `CHANGELOG.md` beside `cli.js`; it starts only the read-only `git` runs of `src/git.ts`.
@@ -2555,11 +2569,11 @@ shell completion, stdin reading and process guards). The read-side report render
 `nb config` report (`src/config-report.ts`), the did-you-mean helpers (`src/suggest.ts`),
 `nb doctor` (`src/doctor.ts`), the `nb enabled` resolver (`src/enabled.ts`), the agent-facing loop
 (`src/loop.ts`, with its text in `src/agent-text.ts`, issue #538), the project name and the project record key (`src/project.ts`,
-issue #540 and, for `projectRecordKey`, issue #558: it adds `node:crypto` and no module dependency), the user's message files (`src/messages.ts`, issue #539: it imports only `node:fs`, `node:path` and `src/notebook.ts`, takes the project name and the home folder as plain values, runs no process and writes nothing; only `src/loop.ts` and `src/config-report.ts` import it), the place resolver and its moves (`src/place.ts`, `src/place-ops.ts`, issue #548) SHALL live in modules that `src/cli.ts`
+issue #540 and, for `projectRecordKey`, issue #558: it adds `node:crypto` and no module dependency), the user's message files (`src/messages.ts`, issue #539: it imports only `node:fs`, `node:path` and `src/notebook.ts`, takes the project name and the home folder as plain values, runs no process and writes nothing; only `src/loop.ts`, `src/config-report.ts` and `src/status-facts.ts` import it), `nb status` (issue #558: `src/status.ts` is pure, with no import at all, so it cannot read a file, start a process or look at the clock, and `src/status-facts.ts` holds every read, imports only `node:fs`, `node:os`, `node:url` and `src/enabled.ts`, `src/messages.ts`, `src/notebook.ts`, `src/project.ts`, `src/usage.ts`, `src/status.ts`, starts no process and writes nothing; only `src/cli.ts` imports either), the place resolver and its moves (`src/place.ts`, `src/place-ops.ts`, issue #548) SHALL live in modules that `src/cli.ts`
 imports and that never import it; `src/notebook.ts` SHALL NOT import the loop modules. Only
 `src/git.ts` SHALL start a process (`git`, read-only, a fixed argument list, no shell). Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
 
-*Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)" and "only git.ts starts a process, and the project name depends on nothing but it (issue #540)" and "the place resolver sits on the project name and the mechanism, below cli.ts (issue #548)" and "the message-file module imports only the standard library and the mechanism, and only loop and config-report import it (issue #539)".
+*Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)" and "only git.ts starts a process, and the project name depends on nothing but it (issue #540)" and "the place resolver sits on the project name and the mechanism, below cli.ts (issue #548)" and "the message-file module imports only the standard library and the mechanism, and only loop, config-report and status-facts import it (issue #539)" and "the status decisions import nothing and the status reads import a fixed list, below cli.ts (issue #558, NFR-MAINT-001)".
 
 <a id="nfr-obs-001"></a>
 **NFR-OBS-001 (Could).** Operational state SHALL be observable without extra tooling

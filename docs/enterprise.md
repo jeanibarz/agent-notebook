@@ -128,6 +128,24 @@ The files in `~/.agent-notebook/messages/` are shown to the assistant as the use
 - **A project file must never grant permissions or hold secrets.** The project name is not tied to a host, so a clone whose `origin` claims the same `owner/repo` on another host gets that project's text.
 - A project's own `.claude/settings.json` can declare hooks, so trusting a project already means trusting it; message files add no new way in.
 
+### What `nb status` reads, writes and runs
+
+`nb status` ([FR-STATUS-001](requirements.md#fr-status-001)) says whether chats in a project start the notebook. It is read-only.
+
+| | `nb status` |
+|---|---|
+| Reads | The tail of the usage log(s), at most 8 MiB, through a bounded reader (a regular file after `lstat`, a non-blocking open, a size cap, so a FIFO or a link to a device is refused at once). The names of the shelf files (one directory listing, no shelf is opened). `~/.agent-notebook/projects/`, as every command does. The message files, as `nb config` does. `package.json` and `CHANGELOG.md` beside `cli.js` (bounded). |
+| Writes | Nothing. It appends no usage row, creates no folder, takes no lock. |
+| Processes | `git config --get nb.enabled` and the read-only git calls that find the project name, with fixed argument lists and no shell. `git` is found on `PATH`, and git follows `include.path`, so a repository can set the switch from a file it names. |
+| Network | None. |
+| Cost | About one `nb` start plus up to three short `git` runs. It runs no `nb doctor` and reads no shelf. |
+| Output | Two fixed sentences, then facts. It never prints lesson text, shelf names or the remote URL. The last group holds names and paths (your home folder shown as `~`), so remove it before posting publicly if the names are private. `--json` holds no path. |
+
+What it proves, and what it does not: a start row exists for this project, with this version, at this time. That
+shows `nb brief --hook` ran, not that the assistant received or used the text. A managed policy that blocks
+hooks leaves no row, so `nb status` reads "not seen" there, not "blocked"
+([the causes](harness-setup.md#when-nb-status-has-not-seen-a-chat)).
+
 ### Hardening checklist
 
 ```text
