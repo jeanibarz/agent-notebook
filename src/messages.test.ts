@@ -20,7 +20,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { BRIEF_OFF_LINE, FRAMING_LINE, USER_INSTRUCTIONS } from './agent-text.js';
+import { BRIEF_OFF_LINE, FRAMING_LINE, RETRO_LESSONS, USER_INSTRUCTIONS } from './agent-text.js';
 import { brief, messageProjectName, projectOfCall, readExtraPrompt } from './loop.js';
 import type { ProjectState } from './project.js';
 import {
@@ -658,16 +658,19 @@ describe('nb config describes the message files only when there is something to 
     put('acme-app.brief.txt', 'z'.repeat(1001));
     put('old-name.brief.txt', 'x');
     put('old-name.retro.txt', 'x');
-    put('retro.txt', 'x');
+    utimesSync(put('retro.txt', 'x'), when, when);
     put('xbrief.txt', 'x');
     put('brief.txt.txt', 'x');
     const r = nb(['config'], { NB_PROJECT_SLUG: 'acme-app' });
     expect(r.code).toBe(0);
     expect(block(r.out)).toBe(
       [
-        'messages=~/.agent-notebook/messages  (read by nb brief; hooks copied from 0.12 ignore it)',
+        'messages=~/.agent-notebook/messages  (read by nb brief and nb retro; hooks copied from 0.12 ignore it)',
         `brief.global=brief.txt  (in force, 20 characters, changed ${stamp(when)})`,
         'brief.project=acme-app.brief.txt  (not used: larger than 1000 characters)',
+        'retro.global=retro.txt  (in force, 1 character, changed ' + stamp(when) + ')',
+        'retro.project=acme-app.retro.txt  (none: no such file; project name from NB_PROJECT_SLUG)',
+        'retro.env=-  (NB_RETRO_EXTRA_PROMPT is not set)',
         'ignored: brief.txt.txt, xbrief.txt  (not a message file name)',
         'other projects: old-name.brief.txt, old-name.retro.txt',
         '',
@@ -696,6 +699,14 @@ describe('nb config describes the message files only when there is something to 
         project: { file: 'acme-app.brief.txt', status: 'absent' },
         projectName: 'acme-app',
         projectNote: 'project name from NB_PROJECT_SLUG',
+      },
+      retro: {
+        global: { file: 'retro.txt', status: 'absent' },
+        project: { file: 'acme-app.retro.txt', status: 'absent' },
+        projectName: 'acme-app',
+        projectNote: 'project name from NB_PROJECT_SLUG',
+        fillsProject: 'acme-app',
+        extra: { status: 'unset' },
       },
       ignored: [],
       ignoredTotal: 0,
@@ -751,6 +762,336 @@ describe('byte parity without a messages folder (FR-MSG-001, FR-CONFIG-004, acce
     const out = config({ NB_PROJECT_SLUG: 'acme' }).out;
     expect(out).toContain('brief.global=brief.txt  (none: no such file)');
     expect(nb(['brief'], { NB_ENABLED: '1' }).out).toBe([...HEAD_LINES, '', EMPTY_INDEX, ''].join('\n'));
+  });
+});
+
+describe('nb retro adds the message files after the nudge and before the extra prompt (FR-MSG-001, FR-RETRO-001)', () => {
+  let n = 0;
+  const retroRun = (env: Record<string, string | undefined> = {}, cwd = plain, extraArgs: string[] = [], session = `s${++n}`): Run =>
+    nb(['retro', '--session', session, ...extraArgs], env, cwd);
+  const gLabel = USER_INSTRUCTIONS.globalLabel('retro.txt');
+  const pLabel = (name: string): string => USER_INSTRUCTIONS.projectLabel(name, `${name}.retro.txt`);
+  const extraFile = (text: string): string => {
+    const f = join(tmp, 'extra.txt');
+    writeFileSync(f, text);
+    return f;
+  };
+
+  test('golden: the nudge, the global block, the project block, then the NB_RETRO_EXTRA_PROMPT text with no label', () => {
+    put('retro.txt', 'Écris le bilan en français.\r\nSois bref.\r\n');
+    put('acme-app.retro.txt', 'Mention {project} and {session}.');
+    const r = retroRun({ NB_PROJECT_SLUG: 'acme-app', NB_RETRO_EXTRA_PROMPT: extraFile('ideas for {project}') }, plain, [], 'sess-1');
+    expect(r.code).toBe(0);
+    expect(r.err).toBe('');
+    expect(r.out).toBe(
+      [
+        RETRO_LESSONS,
+        '',
+        gLabel,
+        'Écris le bilan en français.',
+        'Sois bref.',
+        END,
+        pLabel('acme-app'),
+        'Mention acme-app and sess-1.',
+        END,
+        '',
+        'ideas for acme-app',
+        '',
+      ].join('\n'),
+    );
+    expect(r.out).not.toContain(home);
+  });
+
+  test('the global block alone, the project block alone, and --json carries the same text', () => {
+    put('retro.txt', 'global only');
+    expect(retroRun().out).toBe(`${RETRO_LESSONS}\n\n${gLabel}\nglobal only\n${END}\n`);
+    unlinkSync(join(msgDir, 'retro.txt'));
+    put('acme-app.retro.txt', 'project only');
+    expect(retroRun({ NB_PROJECT_SLUG: 'acme-app' }).out).toBe(`${RETRO_LESSONS}\n\n${pLabel('acme-app')}\nproject only\n${END}\n`);
+    const j = JSON.parse(retroRun({ NB_PROJECT_SLUG: 'acme-app' }, plain, ['--json']).out) as { outcome: string; text: string };
+    expect(j.outcome).toBe('nudge');
+    expect(j.text).toBe(`${RETRO_LESSONS}\n\n${pLabel('acme-app')}\nproject only\n${END}`);
+  });
+
+  test('the brief files are not read by nb retro, and the retro files not by nb brief', () => {
+    put('brief.txt', 'BRIEF TEXT');
+    put('retro.txt', 'RETRO TEXT');
+    const r = retroRun().out;
+    expect(r).toContain('RETRO TEXT');
+    expect(r).not.toContain('BRIEF TEXT');
+    const b = nb(['brief'], { NB_ENABLED: '1' }).out;
+    expect(b).toContain('BRIEF TEXT');
+    expect(b).not.toContain('RETRO TEXT');
+  });
+
+  test('a file that cannot be used gives one warning line, in the nudge and not on stderr (golden)', () => {
+    put('retro.txt', 'z'.repeat(4001));
+    put('acme-app.retro.txt', Buffer.from([0xff, 0xfe, 0x61, 0x00]));
+    const r = retroRun({ NB_PROJECT_SLUG: 'acme-app' });
+    expect(r.err).toBe('');
+    expect(r.out).toBe(
+      [
+        RETRO_LESSONS,
+        '',
+        "agent-notebook: the user's instructions file ~/.agent-notebook/messages/retro.txt was not used (larger than 4000 characters); tell the user once.",
+        "agent-notebook: the user's instructions file ~/.agent-notebook/messages/acme-app.retro.txt was not used (not UTF-8 (saved as UTF-16 or ANSI?); save it as UTF-8); tell the user once.",
+        '',
+      ].join('\n'),
+    );
+  });
+
+  test('the retro cap is 4,000 characters: 4,000 are added whole, 4,001 are refused', () => {
+    put('retro.txt', 'é'.repeat(4000));
+    expect(retroRun().out).toContain('é'.repeat(4000) + '\n' + END);
+    put('retro.txt', 'é'.repeat(4001));
+    expect(retroRun().out).toContain('was not used (larger than 4000 characters)');
+  });
+
+  test('the switch off adds nothing, and a repeated stop prints nothing', () => {
+    put('retro.txt', 'global');
+    expect(retroRun({ NB_ENABLED: '0' }).out).toBe('');
+    expect(retroRun({}, plain, [], 'same').out).toContain('global');
+    expect(retroRun({}, plain, [], 'same').out).toBe('');
+  });
+
+  test.skipIf(isWin)('a broken link in the folder is reported by the first call and costs a repeated stop nothing', () => {
+    mkdirSync(msgDir, { recursive: true });
+    symlinkSync(join(tmp, 'nowhere'), join(msgDir, 'retro.txt'));
+    expect(retroRun({}, plain, [], 'dang').out).toContain('was not used (a broken link)');
+    const again = retroRun({}, plain, [], 'dang');
+    expect(again.out).toBe('');
+    expect(again.err).toBe('');
+  });
+
+  describe('placeholders (retro files only)', () => {
+    test('{project} and {session} are filled; every occurrence; a token written another way is left alone', () => {
+      put('retro.txt', '{project}/{session}/{project} {Project} {{session}} { session}');
+      const r = retroRun({ NB_PROJECT_SLUG: 'Acme.App' }, plain, [], 'sid-9').out;
+      expect(r).toContain('\nacme.app/sid-9/acme.app {Project} {sid-9} { session}\n');
+    });
+
+    test('a token in a brief file is not filled', () => {
+      put('brief.txt', 'keep {project}');
+      expect(nb(['brief'], { NB_PROJECT_SLUG: 'acme' }).out).toContain('\nkeep {project}\n');
+    });
+
+    test('a block that uses {project} is left out without a warning where no project name is found; one without a token stays', () => {
+      put('retro.txt', 'needs {project}');
+      put('acme-app.retro.txt', 'no token at all');
+      const r = retroRun({}, plain);
+      expect(r.out).toBe(`${RETRO_LESSONS}\n`);
+      expect(r.err).toBe('');
+      expect(retroRun({ NB_PROJECT_SLUG: 'acme-app' }).out).toContain('needs acme-app');
+      unlinkSync(join(msgDir, 'retro.txt'));
+      put('retro.txt', 'no token either');
+      expect(retroRun({}, plain).out).toBe(`${RETRO_LESSONS}\n\n${gLabel}\nno token either\n${END}\n`);
+    });
+
+    test('a block that uses {session} is left out, silently, when --session is empty; the others stay', () => {
+      put('retro.txt', 'id {session}');
+      put('acme-app.retro.txt', 'project {project}');
+      const r = retroRun({ NB_PROJECT_SLUG: 'acme-app' }, plain, [], '');
+      expect(r.out).toBe(`${RETRO_LESSONS}\n\n${pLabel('acme-app')}\nproject acme-app\n${END}\n`);
+      expect(r.err).toBe('');
+    });
+
+    test('{project} is the name nb project prints, the folder fallback included, but a folder name selects no file', () => {
+      put('retro.txt', 'in {project}');
+      put('app.retro.txt', 'folder file');
+      const out = retroRun({}, repo('app')).out;
+      expect(out).toContain('\nin app\n');
+      expect(out).not.toContain('folder file');
+    });
+
+    test('a refused file still warns although it has a token', () => {
+      put('retro.txt', Buffer.concat([Buffer.from('{project} '), Buffer.from([0xff, 0x61])]));
+      expect(retroRun({ NB_PROJECT_SLUG: 'acme' }).out).toContain('retro.txt was not used (not UTF-8');
+    });
+  });
+
+  describe('where the project comes from', () => {
+    test('--work-dir is asked before the working directory, for the project file and for {project}', () => {
+      put('retro.txt', 'in {project}');
+      put('acme-app.retro.txt', 'acme file');
+      put('other-thing.retro.txt', 'other file');
+      const a = repo('wd-a', 'git@github.com:acme/app.git');
+      const o = repo('wd-o', 'git@github.com:other/thing.git');
+      const viaWorkDir = retroRun({}, o, ['--work-dir', a]).out;
+      expect(viaWorkDir).toContain('in acme-app');
+      expect(viaWorkDir).toContain('acme file');
+      expect(viaWorkDir).not.toContain('other file');
+      const viaCwd = retroRun({}, o).out;
+      expect(viaCwd).toContain('in other-thing');
+      expect(viaCwd).toContain('other file');
+      expect(viaCwd).not.toContain('acme file');
+      // a relative --work-dir is ignored, as ever
+      expect(retroRun({}, o, ['--work-dir', 'wd-a']).out).toContain('in other-thing');
+    });
+
+    test('a working directory that is gone: only NB_PROJECT_SLUG names the project', () => {
+      put('retro.txt', 'in {project}');
+      put('acme.retro.txt', 'slug file');
+      const gone = join(tmp, 'gone');
+      mkdirSync(gone);
+      const r1 = nb(['retro', '--session', 'g1'], { NB_PROJECT_SLUG: 'acme' }, gone);
+      expect(r1.out).toContain('in acme');
+    });
+  });
+
+  test('NB_RETRO_EXTRA_PROMPT keeps its own checks: a broken file warns on stderr, the message files still go in', () => {
+    put('retro.txt', 'global');
+    const r = retroRun({ NB_RETRO_EXTRA_PROMPT: 'relative/path.txt', NB_PROJECT_SLUG: 'acme' });
+    expect(r.err).toBe('nb retro: ignoring NB_RETRO_EXTRA_PROMPT (path must be absolute); sending the lessons retrospective alone\n');
+    expect(r.out).toBe(`${RETRO_LESSONS}\n\n${gLabel}\nglobal\n${END}\n`);
+  });
+
+  test('the extra prompt is added after the message files even when it holds the same text (the duplicate is shown by nb config, not removed)', () => {
+    put('retro.txt', 'same words');
+    const r = retroRun({ NB_PROJECT_SLUG: 'acme', NB_RETRO_EXTRA_PROMPT: extraFile('same words') }).out;
+    expect(r).toBe(`${RETRO_LESSONS}\n\n${gLabel}\nsame words\n${END}\n\nsame words\n`);
+  });
+
+  test('inside the notebooks folder an existing retro file is refused with a warning line, never read', () => {
+    const inner = join(store, 'x');
+    mkdirSync(inner);
+    mkdirSync(join(inner, '.agent-notebook', 'messages'), { recursive: true });
+    writeFileSync(join(inner, '.agent-notebook', 'messages', 'retro.txt'), 'PLANTED');
+    const r = nb(['retro', '--session', 'in1'], { HOME: inner, USERPROFILE: inner, NB_DIR: inner });
+    expect(r.out).not.toContain('PLANTED');
+    expect(r.out).toContain(`retro.txt was not used (${'the folder is inside the notebooks folder, which the shipped scripts sync'})`);
+  });
+
+  test('HOME= and a relative HOME read nothing, though a retro file is planted under the working directory', () => {
+    const planted = join(plain, '.agent-notebook', 'messages');
+    mkdirSync(planted, { recursive: true });
+    writeFileSync(join(planted, 'retro.txt'), 'PLANTED');
+    for (const h of ['', '.']) expect(retroRun({ HOME: h, USERPROFILE: h }).out).toBe(`${RETRO_LESSONS}\n`);
+  });
+});
+
+describe('byte parity of nb retro without message files (FR-RETRO-001, FR-RETRO-002, acceptance criterion 1)', () => {
+  const extra = (): string => {
+    const f = join(tmp, 'extra.txt');
+    writeFileSync(f, '\n  Project {project}, session {session}.\n');
+    return f;
+  };
+
+  test('text and --json are those of before: no folder, an empty folder, or a folder of other things', () => {
+    const expectedText = RETRO_LESSONS + '\n';
+    expect(nb(['retro', '--session', 'p1']).out).toBe(expectedText);
+    expect(nb(['retro', '--session', 'p2', '--json']).out).toBe(JSON.stringify({ outcome: 'nudge', text: RETRO_LESSONS, session: 'p2' }) + '\n');
+    mkdirSync(msgDir, { recursive: true });
+    expect(nb(['retro', '--session', 'p3']).out).toBe(expectedText);
+    put('brief.txt', 'only a brief file');
+    put('Retro.TXT.bak', 'x');
+    expect(nb(['retro', '--session', 'p4']).out).toBe(expectedText);
+    expect(nb(['retro', '--session', 'p5']).err).toBe('');
+  });
+
+  test('NB_RETRO_EXTRA_PROMPT alone: the same bytes with and without an empty messages folder', () => {
+    const env = { NB_PROJECT_SLUG: 'My Slug', NB_RETRO_EXTRA_PROMPT: extra() };
+    const want = `${RETRO_LESSONS}\n\nProject my-slug, session q1.\n`;
+    expect(nb(['retro', '--session', 'q1'], env).out).toBe(want);
+    mkdirSync(msgDir, { recursive: true });
+    expect(nb(['retro', '--session', 'q2'], env).out).toBe(want.replace('q1', 'q2'));
+    expect(nb(['retro', '--session', 'q3', '--json'], env).out).toBe(
+      JSON.stringify({ outcome: 'nudge', text: want.replace('q1', 'q3').trimEnd(), session: 'q3' }) + '\n',
+    );
+  });
+});
+
+describe('nb config describes the retro files and the extra prompt (FR-CONFIG-004)', () => {
+  const block = (out: string): string[] => out.slice(out.indexOf('messages=')).split('\n');
+  const rows = (out: string): string[] => block(out).filter((l) => /^(retro\.|messages=)/.test(l));
+  const extraFile = (text: string, name = 'extra.txt'): string => {
+    const f = join(tmp, name);
+    writeFileSync(f, text);
+    return f;
+  };
+
+  test('golden rows: global in force with a {session} note, project from a slug, the variable in force', () => {
+    const when = new Date(2026, 10, 26, 8, 12, 0);
+    utimesSync(put('retro.txt', 'id {session}'), when, when);
+    utimesSync(put('acme-app.retro.txt', 'p {project}'), when, when);
+    const x = extraFile('ideas');
+    const p = (n: number): string => String(n).padStart(2, '0');
+    const t = `${when.getFullYear()}-${p(when.getMonth() + 1)}-${p(when.getDate())} ${p(when.getHours())}:${p(when.getMinutes())}`;
+    expect(rows(nb(['config'], { NB_PROJECT_SLUG: 'acme-app', NB_RETRO_EXTRA_PROMPT: x }).out)).toEqual([
+      'messages=~/.agent-notebook/messages  (read by nb brief and nb retro; hooks copied from 0.12 ignore it)',
+      `retro.global=retro.txt  (in force, 12 characters, changed ${t}; {session} is filled by nb retro, and the block is left out without a session id)`,
+      `retro.project=acme-app.retro.txt  (in force, 11 characters, changed ${t})`,
+      `retro.env=${x}  (env NB_RETRO_EXTRA_PROMPT, in force, 5 characters; added after the message files)`,
+    ]);
+  });
+
+  test('a used file with {project} says it is not added where there is no project name', () => {
+    put('retro.txt', 'in {project}');
+    const line = rows(nb(['config']).out).find((l) => l.startsWith('retro.global='))!;
+    expect(line).toMatch(/^retro\.global=retro\.txt {2}\(needs \{project\}: not added here, no project name found; 12 characters, changed \d{4}-/);
+    expect(rows(nb(['config'], { NB_PROJECT_SLUG: 'a' }).out).find((l) => l.startsWith('retro.global='))).toMatch(/\(in force, 12 characters/);
+  });
+
+  test('the project row says a folder name still fills {project}; no name says only why', () => {
+    put('retro.txt', 'x');
+    expect(rows(nb(['config'], {}, repo('app')).out)).toContain(
+      'retro.project=-  (the project name comes from the folder: set NB_PROJECT_SLUG or an origin remote for a project file; it still fills {project})',
+    );
+    expect(rows(nb(['config'], {}, plain).out).find((l) => l.startsWith('retro.project='))).toMatch(/^retro\.project=- {2}\(no project name \([^)]*\)\)$/);
+    put('con.retro.txt', 'x');
+    expect(rows(nb(['config'], { NB_PROJECT_SLUG: 'CON' }).out)).toContain(
+      'retro.project=-  ("con" is a Windows device name, which never selects a file; it still fills {project})',
+    );
+  });
+
+  test('retro.env: unset, not used with its reason, and in force', () => {
+    put('retro.txt', 'x');
+    const env = (v: string | undefined): string => rows(nb(['config'], { NB_RETRO_EXTRA_PROMPT: v }).out).find((l) => l.startsWith('retro.env='))!;
+    expect(env(undefined)).toBe('retro.env=-  (NB_RETRO_EXTRA_PROMPT is not set)');
+    expect(env('relative.txt')).toBe('retro.env=relative.txt  (env NB_RETRO_EXTRA_PROMPT, not used: path must be absolute)');
+    expect(env(join(tmp, 'missing.txt'))).toBe(`retro.env=${join(tmp, 'missing.txt')}  (env NB_RETRO_EXTRA_PROMPT, not used: ENOENT)`);
+    expect(env(tmp)).toBe(`retro.env=${tmp}  (env NB_RETRO_EXTRA_PROMPT, not used: not a regular file)`);
+    expect(env(extraFile('é\n'))).toBe(`retro.env=${join(tmp, 'extra.txt')}  (env NB_RETRO_EXTRA_PROMPT, in force, 1 character; added after the message files)`);
+  });
+
+  test('the nudge carries it twice: the same trimmed text, or the same file', () => {
+    put('retro.txt', 'same words\n');
+    const dupe = '; the nudge carries it twice)';
+    const line = (x: string): string => rows(nb(['config'], { NB_RETRO_EXTRA_PROMPT: x }).out).find((l) => l.startsWith('retro.env='))!;
+    expect(line(extraFile('\n same words \n'))).toMatch(/added after the message files; the nudge carries it twice\)$/);
+    expect(line(extraFile('other words'))).not.toContain(dupe.slice(2, -1));
+    if (!isWin) {
+      // the same file under another path, with text that would not match once a token is read the same way
+      put('retro.txt', 'a {project}');
+      const link = join(tmp, 'link.txt');
+      symlinkSync(join(msgDir, 'retro.txt'), link);
+      expect(line(link)).toMatch(/the nudge carries it twice\)$/);
+    }
+    // not in force: no claim
+    expect(rows(nb(['config'], { NB_RETRO_EXTRA_PROMPT: 'relative.txt' }).out).join('\n')).not.toContain('twice');
+  });
+
+  test('--json: retro states, the placeholders a file uses, and the variable', () => {
+    put('retro.txt', 'a {project} {session}');
+    const x = extraFile('abc');
+    const j = JSON.parse(nb(['config', '--json'], { NB_PROJECT_SLUG: 'acme', NB_RETRO_EXTRA_PROMPT: x }).out) as Record<string, any>;
+    const when = j.messages.retro.global.changed as string;
+    expect(j.messages.retro).toEqual({
+      global: { file: 'retro.txt', status: 'used', chars: 21, changed: when, needs: ['project', 'session'] },
+      project: { file: 'acme.retro.txt', status: 'absent' },
+      projectName: 'acme',
+      projectNote: 'project name from NB_PROJECT_SLUG',
+      fillsProject: 'acme',
+      extra: { status: 'used', path: x, chars: 3, duplicate: false },
+    });
+    expect(j.messages.brief.global).toEqual({ file: 'brief.txt', status: 'absent' });
+  });
+
+  test('without messages/, the variable alone changes nothing in nb config (text and --json)', () => {
+    const x = extraFile('abc');
+    const withVar = nb(['config'], { NB_RETRO_EXTRA_PROMPT: x });
+    expect(withVar.out).not.toContain('retro.');
+    expect(withVar.out).not.toContain('messages');
+    expect(Object.keys(JSON.parse(nb(['config', '--json'], { NB_RETRO_EXTRA_PROMPT: x }).out) as object)).not.toContain('messages');
   });
 });
 

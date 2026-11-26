@@ -45,6 +45,8 @@ import {
   type MessageFile,
 } from './messages.js';
 import { closestMatch } from './suggest.js';
+import { realpathSync } from 'node:fs';
+import { join } from 'node:path';
 import { describeSource, stateWord, type EnabledState } from './enabled.js';
 
 /** Where a tunable's effective value came from: a set env var, the built-in default, or a derived value with no own env var. */
@@ -392,7 +394,9 @@ export interface MessagesReportInput {
    * `loop.ts`). Called only when the block is shown, so a user without a `messages/`
    * folder starts no process for it.
    */
-  project: () => { name: string | null; why: string };
+  project: () => { name: string | null; why: string; /** What `{project}` is filled with (the name `nb project` prints, the folder fallback included); `''` when none. */ fills: string };
+  /** What `NB_RETRO_EXTRA_PROMPT` names (`extraPromptStatus` in `loop.ts`), and the real path of that file when it can be found. */
+  extra: () => { set: boolean; path: string; text: string; why: string | null; real: string | null };
 }
 
 /** `2026-11-26 08:12`, in the local time zone, as `ls -l` shows a file's time. */
@@ -414,6 +418,14 @@ function fileJson(f: MessageFile): Record<string, unknown> {
   return { file: f.file, status: 'absent' };
 }
 
+/** `fileJson` plus the placeholders the text uses, for a retro file. */
+function retroJson(f: MessageFile): Record<string, unknown> {
+  const j = fileJson(f);
+  if (f.status !== 'used') return j;
+  const needs = [...new Set([...f.text.matchAll(/\{(project|session)\}/g)].map((m) => m[1]))].sort();
+  return needs.length > 0 ? { ...j, needs } : j;
+}
+
 /** A list of names for one line, escaped, with a count of what was left out. */
 function nameList(names: string[], total: number): string {
   const shown = names.slice(0, MESSAGE_NAMES_SHOWN).map(escapeDiskName).join(', ');
@@ -429,7 +441,6 @@ function nameList(names: string[], total: number): string {
 export function messagesReport(input: MessagesReportInput): MessagesReport | null {
   const listing = listMessages(input.home, input.nbDir);
   if (!listing.exists && listing.state !== 'home-not-absolute') return null;
-  // The readers named after `messages=`; the end-of-task part of issue #539 adds `nb retro` here.
   const head = `messages=${MESSAGES_DIR_DISPLAY}`;
   if (listing.state !== 'present') {
     const why =
@@ -445,13 +456,44 @@ export function messagesReport(input: MessagesReportInput): MessagesReport | nul
   }
   const proj = input.project();
   const set = readMessages(listing, 'brief', proj.name);
+  const rset = readMessages(listing, 'retro', proj.name);
+  const extra = input.extra();
+  const extraText = extra.text;
+  const retroTag = (f: MessageFile, noteIfAbsent: string): string => {
+    const tag = fileTag(f, noteIfAbsent);
+    if (f.status !== 'used') return tag;
+    const needs = new Set([...f.text.matchAll(/\{(project|session)\}/g)].map((m) => m[1]));
+    if (needs.has('project') && proj.fills === '') return `needs {project}: not added here, no project name found; ${tag.replace(/^in force, /, '')}`;
+    return needs.has('session') ? `${tag}; {session} is filled by nb retro, and the block is left out without a session id` : tag;
+  };
+  // Where the extra prompt's text is the text of a used retro file, the nudge carries it twice.
+  const dup = (f: MessageFile | null): boolean => {
+    if (f === null || f.status !== 'used' || !extra.set || extra.why !== null) return false;
+    if (extraText === f.text) return true;
+    if (extra.real === null) return false;
+    try {
+      return realpathSync(join(listing.dir, f.file)) === extra.real;
+    } catch {
+      return false;
+    }
+  };
+  const duplicate = dup(rset.global) || dup(rset.project);
+  const extraRow = !extra.set
+    ? 'retro.env=-  (NB_RETRO_EXTRA_PROMPT is not set)'
+    : extra.why !== null
+      ? `retro.env=${escapeDiskName(extra.path)}  (env NB_RETRO_EXTRA_PROMPT, not used: ${extra.why})`
+      : `retro.env=${escapeDiskName(extra.path)}  (env NB_RETRO_EXTRA_PROMPT, in force, ${[...extraText].length} character${[...extraText].length === 1 ? '' : 's'}; added after the message files${duplicate ? '; the nudge carries it twice' : ''})`;
+  const noProjectFile = (kind: 'brief' | 'retro', f: MessageFile | null, tag: (f: MessageFile, n: string) => string): string =>
+    f === null
+      ? `${kind}.project=-  (${proj.why}${kind === 'retro' && proj.fills !== '' ? '; it still fills {project}' : ''})`
+      : `${kind}.project=${f.file}  (${tag(f, `; ${proj.why}`)})`;
   const lines = [
-    `${head}  (read by nb brief; hooks copied from 0.12 ignore it)`,
+    `${head}  (read by nb brief and nb retro; hooks copied from 0.12 ignore it)`,
     `brief.global=${set.global.file}  (${fileTag(set.global, '')})`,
-    set.project === null
-      ? `brief.project=-  (${proj.why})`
-      : `brief.project=${set.project.file}  (${fileTag(set.project, `; ${proj.why}`)})`,
-    // The end-of-task part of issue #539 adds the retro.global, retro.project and retro.env rows here.
+    noProjectFile('brief', set.project, fileTag),
+    `retro.global=${rset.global.file}  (${retroTag(rset.global, '')})`,
+    noProjectFile('retro', rset.project, retroTag),
+    extraRow,
   ];
   if (listing.ignoredTotal > 0) lines.push(`ignored: ${nameList(listing.ignored, listing.ignoredTotal)}  (not a message file name)`);
   const others = otherProjectFiles(listing, proj.name);
@@ -466,6 +508,18 @@ export function messagesReport(input: MessagesReportInput): MessagesReport | nul
         project: set.project === null ? null : fileJson(set.project),
         projectName: proj.name,
         projectNote: proj.why,
+      },
+      retro: {
+        global: retroJson(rset.global),
+        project: rset.project === null ? null : retroJson(rset.project),
+        projectName: proj.name,
+        projectNote: proj.why,
+        fillsProject: proj.fills,
+        extra: !extra.set
+          ? { status: 'unset' }
+          : extra.why !== null
+            ? { status: 'refused', path: extra.path, reason: extra.why }
+            : { status: 'used', path: extra.path, chars: [...extraText].length, duplicate },
       },
       ignored: listing.ignored,
       ignoredTotal: listing.ignoredTotal,

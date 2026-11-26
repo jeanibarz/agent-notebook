@@ -134,6 +134,10 @@ Operations SHALL report honestly rather than pretend success:
   silently: `nb brief` SHALL print one line where its block would have gone, and `nb config` SHALL say
   why ([FR-MSG-002](#fr-msg-002)). A folder that cannot be read, and a home folder that is not an
   absolute path, are said by `nb config` ([FR-CONFIG-004](#fr-config-004)).
+- One exception, on purpose: a used retro message file that holds `{project}` or `{session}` is left out
+  without a warning line where that placeholder has no value (no project name is found, or `--session ""`
+  gave no session id). That is "not applicable here", not a broken file; `nb config` shows it
+  ([FR-CONFIG-004](#fr-config-004)). A block without a placeholder is always added.
 **Rationale:** The notebook is an agent's memory of its own past; a silent
 truncation or a mis-landed vote poisons future runs. A loud refusal is cheap to
 recover from; a silent corruption is not.
@@ -927,24 +931,37 @@ the git wrapper's Nb-Session trailer, equal to the usage log's session column".
 <a id="fr-config-004"></a>
 **FR-CONFIG-004 (Should).** Only when `~/.agent-notebook/messages/` exists, or the home folder is not an
 absolute path, `nb config` SHALL print after the `enabled=` line a blank line and this block, for the working
-directory (rows for `nb retro` come with its own pull request):
+directory:
 ```
-messages=~/.agent-notebook/messages  (read by nb brief; hooks copied from 0.12 ignore it)
+messages=~/.agent-notebook/messages  (read by nb brief and nb retro; hooks copied from 0.12 ignore it)
 brief.global=brief.txt  (in force, 412 characters, changed 2026-11-26 08:12)
 brief.project=acme-app.brief.txt  (none: no such file; project name from the git remote)
+retro.global=retro.txt  (in force, 120 characters, changed 2026-11-26 08:12; {session} is filled by nb retro, and the block is left out without a session id)
+retro.project=-  (the project name comes from the folder: set NB_PROJECT_SLUG or an origin remote for a project file; it still fills {project})
+retro.env=/home/u/ideas.txt  (env NB_RETRO_EXTRA_PROMPT, in force, 623 characters; added after the message files)
 ignored: brief.txt.txt, Brief.txt  (not a message file name)
 other projects: old-name.brief.txt
 ```
 A file row says `in force` with its length in characters and its modification time (local time; the only
 use of that time), `none: no such file`, or `not used:` and the reason of [FR-MSG-002](#fr-msg-002). The
 project row shows `-` and why when no project name selects a file (from the folder, none, a bare repository,
-a Windows device name). `ignored:` lists, escaped and at most 20, the names in the folder that are not a
+a Windows device name); for `retro.project` it adds `it still fills {project}` when a name exists that cannot
+select a file. A used retro file whose text holds `{project}` says `needs {project}: not added here, no project
+name found` where no name is found, and one that holds `{session}` says `{session} is filled by nb retro` (a
+session id cannot be known here). The `retro.env` row, shown only inside this block, gives the path
+`NB_RETRO_EXTRA_PROMPT` names and either `in force, <n> characters; added after the message files` or
+`not used: <reason>` (the reasons of [FR-RETRO-002](#fr-retro-002)), or `-` when it is unset; it adds `the nudge
+carries it twice` when the variable's trimmed text equals a used retro file's cleaned text, or both name the same
+real file. `ignored:` lists, escaped and at most 20, the names in the folder that are not a
 message file name (names starting with `.` are left out); `other projects:` lists the project files of other
 names, so a file left behind by a renamed remote can be found. A folder that is not read says why on the
 `messages=` row alone: a home folder that is not an absolute path, a folder inside `NB_DIR`
 ([NFR-SAFE-001](#nfr-safe-001)), or one that cannot be read. `--json` SHALL gain one top-level key,
-`messages`, only when the block is shown. `nb config` SHALL NOT create the folder or any file in it.
-*Proven by:* `messages.test.ts` → `describe('nb config describes the message files only when there is something to say (FR-CONFIG-004)')` and
+`messages`, only when the block is shown, with a `retro` object beside `brief` (the two files, `needs` listing the
+placeholders a used file holds, the project name and note, `fillsProject`, and `extra`). `nb config` SHALL NOT
+create the folder or any file in it, and the variable alone, without the folder, SHALL change nothing in it.
+*Proven by:* `messages.test.ts` → `describe('nb config describes the message files only when there is something to say (FR-CONFIG-004)')`,
+`describe('nb config describes the retro files and the extra prompt (FR-CONFIG-004)')` and
 `describe('byte parity without a messages folder (FR-MSG-001, FR-CONFIG-004, acceptance criterion 1)')`.
 
 ### 4.11 Durability & concurrency
@@ -1693,8 +1710,8 @@ still complete in an off repository.
 > rejected, is [the design comment on #538](https://github.com/jeanibarz/agent-notebook/issues/538#issuecomment-7179106955).
 >
 > Issue [#539](https://github.com/jeanibarz/agent-notebook/issues/539) adds the user's own message
-> files ([§4.20](#fr-msg-001)). `nb brief` reads them since its first pull request; `nb retro` does
-> not yet, so FR-RETRO-001 and FR-RETRO-002 are unchanged for now. That change amends DP-5, DP-6,
+> files ([§4.20](#fr-msg-001)). `nb brief` reads them since its first pull request and `nb retro` since the
+> second, which amends FR-RETRO-001 and FR-RETRO-002 below. The issue amends DP-5, DP-6,
 > FR-BRIEF-001 and FR-BRIEF-002, FR-CONFIG-001 and FR-CONFIG-002, NFR-SAFE-001 and NFR-PORT-001.
 
 What an assistant is told at the start and at the end of a task lives today in three
@@ -1796,14 +1813,33 @@ release the claim, so a later call from an on directory still nudges once (issue
 SHALL NOT read standard input or a hook payload, SHALL exit `0` in every runtime state and
 `1` only on bad usage, and SHALL never exit `2`. `--json` SHALL print
 `{ outcome, text, session }` with `outcome` one of `nudge`, `already`, `off`,
-`off-work-dir`.
+`off-work-dir`. On a `nudge` the text SHALL be, each part separated by one blank line: the built-in
+text; the blocks of the user's `retro.txt` and then `<project>.retro.txt` ([FR-MSG-001](#fr-msg-001)); the
+`NB_RETRO_EXTRA_PROMPT` text ([FR-RETRO-002](#fr-retro-002)). The message files SHALL be read only after
+the claim and only on `nudge`: a call whose outcome is `off`, `off-work-dir` or `already` reads none.
+`--work-dir` is an input of the text: the project name is asked in it, else in the working directory.
+The project SHALL be resolved at most once per call, after the claim and only when needed (a
+`<project>.retro.txt` exists, a used message block holds `{project}`, or the extra prompt is to be added);
+that one result serves the file lookup (by the rule of [FR-MSG-001](#fr-msg-001): `NB_PROJECT_SLUG` or the git
+remote only) and every `{project}`. When the working directory no longer exists and no `--work-dir` is
+given, only `NB_PROJECT_SLUG` names the project and git is not run. Without a `messages/` folder the
+output is byte for byte that of before.
 *Proven by:* `retro.test.ts` → `describe('nb retro sends what the 0.12 Stop hook sent (FR-RETRO-001, FR-RETRO-002)')`,
 `describe('nb retro speaks once per session and shares the 0.12 sentinel (FR-RETRO-001)')`,
 `describe('nb retro cleans the session id before it becomes a file name (FR-RETRO-001)')`,
 `describe('nb retro respects the per-repository switch (FR-RETRO-001)')`,
 `describe('nb retro fails open (FR-RETRO-001)')`,
 `describe('nb retro exit codes and the usage log (FR-RETRO-001, FR-USAGE-001)')` and
-`describe('nb retro under concurrency (FR-RETRO-001)')`.
+`describe('nb retro under concurrency (FR-RETRO-001)')`; the message blocks by
+`messages.test.ts` → `describe('nb retro adds the message files after the nudge and before the extra prompt (FR-MSG-001, FR-RETRO-001)')`
+and `describe('byte parity of nb retro without message files (FR-RETRO-001, FR-RETRO-002, acceptance criterion 1)')`;
+the reads and the single resolution by `retro-messages.test.ts` →
+`describe('nb retro reads a message file only after the claim, and only for a nudge (FR-RETRO-001, FR-MSG-001)')` and
+`describe('nb retro resolves the project once, after the claim, and only when needed (FR-RETRO-002, FR-MSG-001)')`;
+one nudge with a `retro.txt` and the 0.12 hook by `retro.test.ts` →
+"50 parallel nb retro processes for one session with a retro.txt yield exactly one nudge, and it holds the block",
+and, for the 0.12 Stop hook (which ignores a `retro.txt` but shares the claim, so one nudge in total), the two
+`retro.txt` cases of `describe('nb retro under concurrency (FR-RETRO-001)')`.
 
 <a id="fr-retro-002"></a>
 **FR-RETRO-002 (Should).** When `NB_RETRO_EXTRA_PROMPT` names an absolute path (a leading
@@ -1815,8 +1851,13 @@ asked in `--work-dir`, else the working directory: `NB_PROJECT_SLUG` when set, e
 remote as `owner-repo`, else the repository's folder name. Before issue #540 it was the folder
 holding the git common directory; `nb project --why` names that old value when it differs. Any other non-empty value SHALL print one warning
 on stderr and send the retrospective text alone. The file SHALL be checked before it is
-opened, so a FIFO or a device can never stall the call.
-*Proven by:* `retro.test.ts` → `describe('nb retro and a broken NB_RETRO_EXTRA_PROMPT (FR-RETRO-002)')` and
+opened, so a FIFO or a device can never stall the call. The text, its checks, its stderr warning and its
+place (after the message blocks, no label) SHALL be the same whether or not message files exist; it is still
+read before the session is claimed, and still needs both a session id and a project name. It never gets the
+user-instructions label, because a project's settings can set the variable.
+*Proven by:* `retro.test.ts` → `describe('nb retro and a broken NB_RETRO_EXTRA_PROMPT (FR-RETRO-002)')`,
+`messages.test.ts` → "NB_RETRO_EXTRA_PROMPT keeps its own checks: a broken file warns on stderr, the message files still go in" and
+"NB_RETRO_EXTRA_PROMPT alone: the same bytes with and without an empty messages folder", and
 "a leading ~/ in NB_RETRO_EXTRA_PROMPT expands to the home directory".
 
 <a id="fr-retro-003"></a>
@@ -2000,10 +2041,9 @@ unchanged.
 
 > **Status:** the brief part is implemented by the first pull request of
 > [issue #539](https://github.com/jeanibarz/agent-notebook/issues/539): `nb brief` reads `brief.txt` and
-> `<project>.brief.txt`, and `nb config` describes them ([FR-CONFIG-004](#fr-config-004)). The names
-> `retro.txt` and `<project>.retro.txt` are recognised as message files (so `nb config` does not list them as
-> ignored) but no command reads them yet: the `nb retro` part comes with the next pull request, which adds
-> its requirements here.
+> `<project>.brief.txt`, and `nb config` describes them ([FR-CONFIG-004](#fr-config-004)). The second pull
+> request adds the `nb retro` part: `retro.txt` and `<project>.retro.txt`, with the placeholders `{project}`
+> and `{session}`, and the `retro.global`, `retro.project` and `retro.env` rows of `nb config`.
 
 A person can add their own words to what the assistant is told by putting plain UTF-8 text files in one folder
 beside the notebooks, never inside one: a notebooks folder is synced, and text from synced data could be
@@ -2013,8 +2053,9 @@ is added after it. Copied 0.12 hooks never call `nb brief`, so they ignore these
 <a id="fr-msg-001"></a>
 **FR-MSG-001 (Should).** The folder SHALL be `<home>/.agent-notebook/messages/`, `<home>` being the home folder
 of the process (injectable in tests). Its files are exactly `brief.txt`, `retro.txt`, `<project>.brief.txt` and
-`<project>.retro.txt`, matched exactly as the directory listing returns them, on every system. In this change
-only the two `brief` files are read, by `nb brief` ([FR-BRIEF-001](#fr-brief-001)); the `retro` names are reserved.
+`<project>.retro.txt`, matched exactly as the directory listing returns them, on every system. The two `brief`
+files are read by `nb brief` ([FR-BRIEF-001](#fr-brief-001)) and the two `retro` files by `nb retro`
+([FR-RETRO-001](#fr-retro-001)); each command reads only its own pair.
 `<project>` SHALL be the cleaned name of [FR-PROJECT-001](#fr-project-001), never the raw `NB_PROJECT_SLUG`, so a slug
 such as `../x` cannot leave the folder, and SHALL select a file only when it comes from `NB_PROJECT_SLUG` or the git
 remote (the rule that lets a name select an own notebook, [FR-PLACE-001](#fr-place-001): a name taken from the
@@ -2028,12 +2069,24 @@ the project block. Each used file is printed between two framing lines:
 `The user's own instructions for project <name> (from ~/.agent-notebook/messages/<name>.brief.txt); where they differ from the ones above, these win:`.
 The path is always in that `~/` form. A lesson cannot forge these lines: every index row starts with white space.
 The blocks are printed under an unknown place ([FR-PLACE-004](#fr-place-004)), after the place line and with no
-index, and not when the switch is off ([FR-ENABLED-001](#fr-enabled-001)). The folder SHALL be refused, as
+index, and not when the switch is off ([FR-ENABLED-001](#fr-enabled-001)). `nb retro` prints the same blocks, with the
+same framing lines and warning line, after its built-in text and before the `NB_RETRO_EXTRA_PROMPT` text, only on
+a `nudge`. Its project is the one of [FR-RETRO-001](#fr-retro-001): asked in `--work-dir`, else the working
+directory. **Placeholders**, in retro files only (a brief file is printed as written): the exact tokens
+`{project}` and `{session}`, filled after cleaning. `{project}` is the name `nb project` prints
+([FR-PROJECT-001](#fr-project-001)), the folder-name fallback included, as for `NB_RETRO_EXTRA_PROMPT`; the lookup
+of a project file and the placeholder follow two different rules on purpose (the file: `NB_PROJECT_SLUG` or the
+remote only; the placeholder: any name). `{session}` is the cleaned session id, and only when a session id was
+given (`--session ""` means none). A used block that holds a placeholder with no value SHALL be left out without
+a warning ([DP-5](#dp-5)); a block without a placeholder is always added; a file that cannot be used still gives
+its warning line. The folder SHALL be refused, as
 [NFR-SAFE-001](#nfr-safe-001) says, when the home folder is not an absolute path or when it lies inside `NB_DIR`.
 *Proven by:* `messages.test.ts` → `describe('the messages folder is found, listed and refused as the design says (FR-MSG-001, NFR-SAFE-001)')`,
 `describe('nb brief adds the message files after the place line and before the index (FR-MSG-001, FR-BRIEF-001)')`,
 `describe('where the project name comes from for a project file (FR-MSG-001)')` and
-`describe('byte parity without a messages folder (FR-MSG-001, FR-CONFIG-004, acceptance criterion 1)')`.
+`describe('byte parity without a messages folder (FR-MSG-001, FR-CONFIG-004, acceptance criterion 1)')`; for retro
+`describe('nb retro adds the message files after the nudge and before the extra prompt (FR-MSG-001, FR-RETRO-001)')`
+(its sub-groups "placeholders (retro files only)" and "where the project comes from").
 
 <a id="fr-msg-002"></a>
 **FR-MSG-002 (Should).** A message file SHALL be read by the checks `NB_RETRO_EXTRA_PROMPT` has had since issue #538
@@ -2048,7 +2101,7 @@ escapes; the joiners U+200C and U+200D and the plain direction marks stay); trai
 lines at both ends are dropped. After cleaning, a brief file SHALL hold at most 1,000 characters (a retro file 4,000),
 counted in Unicode code points; a longer file is refused whole, never cut, and a file over 4 bytes per allowed
 character plus 1,024 is refused before it is decoded. A file that exists and cannot be used SHALL give, in `nb brief`
-in place of its block, the line
+or `nb retro` in place of its block, the line
 `agent-notebook: the user's instructions file ~/.agent-notebook/messages/<file> was not used (<reason>); tell the user once.`
 ([DP-5](#dp-5)); the same reason SHALL appear in `nb config`. The warning is never written to stderr, where a hook's
 text reaches neither the model nor the user. A file that vanishes between the listing and the open counts as missing.
@@ -2091,7 +2144,7 @@ on every shelf-to-path conversion. Named read-only exceptions: the commands that
 per-repository switch read git configuration ([FR-ENABLED-001](#fr-enabled-001)), `nb project`
 reads it for the project name ([FR-PROJECT-001](#fr-project-001)), and
 `nb retro` reads the one file `NB_RETRO_EXTRA_PROMPT` names, after checking it is a regular
-file of at most 64 KiB ([FR-RETRO-002](#fr-retro-002)), and `nb brief` and `nb config` read the
+file of at most 64 KiB ([FR-RETRO-002](#fr-retro-002)), and `nb brief`, `nb retro` and `nb config` read the
 folder `~/.agent-notebook/messages/` of the home folder and the message files in it
 ([FR-MSG-001](#fr-msg-001)), a second read-only location outside `NB_DIR`. That folder SHALL NOT be read
 when the home folder is not an absolute path (an empty or relative `HOME`, which would read files

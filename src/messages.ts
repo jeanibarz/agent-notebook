@@ -146,7 +146,7 @@ export function readCheckedFile(path: string, maxBytes: number, opts: CheckedRea
  * space; each line goes through the cleaner `nb brief` applies to lesson text
  * (`escapeDiskName`: control characters, line and paragraph separators, bidi overrides,
  * zero-width space and soft hyphen become visible `\uXXXX` escapes); trailing ASCII spaces
- * is trimmed; blank lines at both ends are dropped. Blank lines inside stay.
+ * are trimmed; blank lines at both ends are dropped. Blank lines inside stay.
  */
 export function cleanMessage(text: string): string {
   const lines = text.split(/\r\n|\r|\n/).map((l) => escapeDiskName(l.replace(/\t/g, ' ')).replace(/ +$/, ''));
