@@ -1784,7 +1784,7 @@ export async function runNbCli(
             const where = escapeDiskName(r.left ?? own);
             // A name already taken in the shared notebook needs the user: say how to free it.
             const taken = r.kept.filter((k) => k.why === 'a shelf of that name is already there').map((k) => sharedName(k.shelf, st!.name));
-            const free = taken.length === 0 ? '' : ` First free ${taken.join(', ')} in the shared notebook (for example \`nb move ${taken[0]} <new name>\`).`;
+            const free = taken.length === 0 ? '' : ` First free ${taken.join(', ')} in the shared notebook: move its lessons to another shelf (\`nb move ${taken[0]} <other shelf> <id>\`, one lesson at a time) or remove the file.`;
             throw new Error(
               r.kept.length > 0
                 ? `${r.kept.length} shelf(s) could not be moved (listed above) and stay in ${where}; nothing is lost. Do not delete that folder; run \`nb place shared\` again to finish.${free}`
