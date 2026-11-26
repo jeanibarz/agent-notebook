@@ -21,7 +21,8 @@ interface Hook {
 }
 type HooksFile = { hooks: Record<string, Array<{ hooks: Hook[] }>> };
 const hooksJson = JSON.parse(readFileSync(join(PLUGIN, 'hooks', 'hooks.json'), 'utf-8')) as HooksFile;
-const entrySource = readFileSync(join(root, HOOK_DIR, 'nb-hook-entry.cjs'), 'utf-8');
+// A Windows checkout gives CRLF; the line-anchored patterns below read LF.
+const entrySource = readFileSync(join(root, HOOK_DIR, 'nb-hook-entry.cjs'), 'utf-8').replace(/\r\n/g, '\n');
 const NOTICE = /^var NOTICE = '([^']*)';$/m.exec(entrySource)![1]!;
 const eventHooks = (event: string): Hook[] => hooksJson.hooks[event]!.flatMap((g) => g.hooks);
 const entryHook = (event: string): Hook | undefined => eventHooks(event).find((h) => h.command === 'node');
@@ -121,7 +122,7 @@ describe('hooks.json and print-settings start the same program (FR-PLUGIN-002, i
 });
 
 describe('the skill and the manifest (FR-PLUGIN-003, issue #559)', () => {
-  const skill = readFileSync(join(PLUGIN, 'skills', 'agent-notebook', 'SKILL.md'), 'utf-8');
+  const skill = readFileSync(join(PLUGIN, 'skills', 'agent-notebook', 'SKILL.md'), 'utf-8').replace(/\r\n/g, '\n');
   const front = /^---\n([\s\S]*?)\n---\n/.exec(skill)![1]!;
 
   test('SKILL.md has a name and a description that carries the cue for when the start-up step is off', () => {

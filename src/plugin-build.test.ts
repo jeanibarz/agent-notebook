@@ -12,6 +12,8 @@ import * as zlib from 'node:zlib';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 const SCRIPT = join(root, 'scripts', 'build-plugin.mjs');
+/** A text file as the build packs it: a Windows checkout (and tsc there) writes CRLF, the build writes LF. */
+const lf = (p: string): Buffer => Buffer.from(readFileSync(p, 'utf-8').replace(/\r\n/g, '\n'));
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8')) as { version: string; engines: unknown; license: string; name: string };
 
 interface ZipEntry {
@@ -200,12 +202,12 @@ describe('the build is reproducible (FR-PLUGIN-001, issue #559)', () => {
 
 describe('what the zip contains matches the sources (FR-PLUGIN-001, issue #559)', () => {
   test('dist/*.js is byte-equal to the repo\'s dist/*.js', () => {
-    for (const n of distJs()) expect(byName(n).data.equals(readFileSync(join(root, n))), n).toBe(true);
+    for (const n of distJs()) expect(byName(n).data.equals(lf(join(root, n))), n).toBe(true);
   });
 
   test('the two hook files are byte-equal to examples/hooks/claude-code', () => {
     for (const f of ['nb-claude-hook.mjs', 'nb-hook-entry.cjs']) {
-      expect(byName(`examples/hooks/claude-code/${f}`).data.equals(readFileSync(join(root, 'examples', 'hooks', 'claude-code', f)))).toBe(true);
+      expect(byName(`examples/hooks/claude-code/${f}`).data.equals(lf(join(root, 'examples', 'hooks', 'claude-code', f)))).toBe(true);
     }
   });
 
