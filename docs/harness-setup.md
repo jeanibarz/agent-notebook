@@ -240,9 +240,8 @@ saying the notebook is off, and the session ends with `hook: Stop` then
 for automation that already vets hook sources.
 
 Two things to know:
-- The usage log records these runs under the Claude Code hook names
-  (`claude-code.session-start`, `claude-code.stop`), because the adapter was written
-  for Claude Code.
+- The usage log records these runs as `codex.session-start` and `codex.stop`
+  (from `--harness codex`); hooks pasted without the flag are recorded as `hook.*`.
 - Keep the `AGENTS.md` snippet when you add the hooks: it carries the instruction
   for a session where the hooks do not run.
 
