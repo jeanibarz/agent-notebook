@@ -17,8 +17,9 @@
  * what is left (shelves written to the shared notebook by calls that resolved
  * before the rename) and removes staging folders of dead processes.
  *
- * `shared` holds the project folder's lock: it links the shelves back (a name
- * already in the shared notebook was refused before), unlinks them, removes
+ * `shared` holds the project folder's lock: it links the shelves back, each as
+ * `<x>@<project>` (a name already in the shared notebook was refused before),
+ * unlinks them, removes
  * nb's own files, and then, the lock released, removes the folder without
  * recursing. A file it does not know (`.git`, `.nb.json`) was refused before.
  */
@@ -35,7 +36,12 @@ export interface PlaceMove {
   lessons: number;
 }
 
-/** The shelves of a folder whose name ends in `@<project>`, regular files only. */
+/** The name a shelf of a project's own folder takes in the shared notebook: `<x>@<project>` (kept when it already ends so). */
+export function sharedName(shelf: string, project: string): string {
+  return shelf.toLowerCase().endsWith(`@${project}`) ? shelf : `${shelf}@${project}`;
+}
+
+/** The shelves of a folder whose name ends in `@<project>` (in any letter case, as the write guard reads it), regular files only. */
 function projectShelves(dir: string, project: string): string[] {
   let names: string[];
   try {
@@ -45,7 +51,7 @@ function projectShelves(dir: string, project: string): string[] {
   }
   const suffix = `@${project}.md`;
   return names
-    .filter((n) => n.endsWith(suffix) && !n.startsWith('.') && isFile(join(dir, n)))
+    .filter((n) => n.toLowerCase().endsWith(suffix) && !n.startsWith('.') && isFile(join(dir, n)))
     .map((n) => n.slice(0, -3))
     .sort();
 }
@@ -122,10 +128,17 @@ function removeFlat(dir: string): void {
 }
 
 /** Link each shelf of `from` into `to`; return the inodes linked and the ones kept. Exported for its test. */
-export function linkAll(from: string, to: string, shelves: string[], kept: PlaceMove['kept']): Map<string, Stats> {
+export function linkAll(
+  from: string,
+  to: string,
+  shelves: string[],
+  kept: PlaceMove['kept'],
+  rename: (shelf: string) => string = (x) => x,
+): Map<string, Stats> {
   const linked = new Map<string, Stats>();
   for (const s of shelves) {
     const src = join(from, `${s}.md`);
+    const dst = join(to, `${rename(s)}.md`);
     let st: Stats;
     try {
       st = lstatSync(src);
@@ -133,12 +146,21 @@ export function linkAll(from: string, to: string, shelves: string[], kept: Place
       continue; // removed meanwhile: nothing to move
     }
     try {
-      linkSync(src, join(to, `${s}.md`));
+      linkSync(src, dst);
       linked.set(s, st);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') kept.push({ shelf: s, why: 'a shelf of that name is already there' });
-      else throw e;
+      if (code !== 'EEXIST') throw e;
+      // The same file already there: an earlier run linked it and stopped before the
+      // unlink (a crash). It counts as linked, so this run finishes the move.
+      let there: Stats | null = null;
+      try {
+        there = lstatSync(dst);
+      } catch {
+        // gone again: keep the source
+      }
+      if (there !== null && there.ino === st.ino && there.dev === st.dev) linked.set(s, st);
+      else kept.push({ shelf: s, why: 'a shelf of that name is already there' });
     }
   }
   return linked;
@@ -157,8 +179,11 @@ export function unlinkSame(from: string, linked: Map<string, Stats>, kept: Place
       }
       unlinkSync(src);
       moved.push(s);
-    } catch {
-      moved.push(s); // already gone: the linked copy is the shelf
+    } catch (e) {
+      // Only "already gone" means the linked copy is the shelf; any other error (a
+      // file held open on Windows) leaves the source in place, and says so.
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') moved.push(s);
+      else kept.push({ shelf: s, why: `it could not be removed from its old place (${(e as NodeJS.ErrnoException).code ?? 'error'}); run the command again` });
     }
   }
   return moved;
@@ -173,7 +198,12 @@ export async function placeOwn(shared: string, projectsDir: string, project: str
   mkdirSync(projectsDir, { recursive: true, mode: 0o700 });
   sweepStaging(projectsDir, project);
   mkdirSync(shared, { recursive: true });
-  return withLock(shared, () => {
+  // A new folder is filled while it is still a staging folder, under the shared
+  // notebook's lock, then renamed into place. An existing folder is written by its
+  // own project's calls, so it is filled under its own lock; the shared copies of its
+  // shelves are frozen meanwhile, because the write guard refuses `<x>@<project>` in
+  // the shared notebook while the folder exists (FR-PLACE-001).
+  return withLock(existsSync(target) ? target : shared, () => {
     const kept: PlaceMove['kept'] = [];
     const created = !existsSync(target);
     const into = created ? join(projectsDir, `.new-${project}-${process.pid}`) : target;
@@ -212,7 +242,7 @@ export function isNbOwnFile(name: string): boolean {
  * shelves nor nb's own (a `.git`, a `.nb.json`, a subfolder), and shelves whose
  * name the shared notebook already has. Empty lists mean it may go ahead.
  */
-export function sharedBlockers(shared: string, own: string): { foreign: string[]; clashes: string[] } {
+export function sharedBlockers(shared: string, own: string, project: string): { foreign: string[]; clashes: string[] } {
   const foreign: string[] = [];
   let names: string[] = [];
   try {
@@ -226,7 +256,9 @@ export function sharedBlockers(shared: string, own: string): { foreign: string[]
     if (n.endsWith('.md') && !n.startsWith('.') && isFile(join(own, n))) continue;
     foreign.push(n);
   }
-  const clashes = allShelves(own).filter((s) => existsSync(join(shared, `${s}.md`)));
+  const clashes = allShelves(own)
+    .map((s) => sharedName(s, project))
+    .filter((s) => existsSync(join(shared, `${s}.md`)));
   return { foreign: foreign.sort(), clashes };
 }
 
@@ -235,13 +267,16 @@ export function sharedBlockers(shared: string, own: string): { foreign: string[]
  * shared notebook and remove the folder. Returns `removed: false` when a write
  * re-created a file in the folder meanwhile, so the folder stays.
  */
-export async function placeShared(shared: string, own: string): Promise<PlaceMove & { removed: boolean }> {
+export async function placeShared(shared: string, own: string, project: string): Promise<PlaceMove & { removed: boolean; renamed: { from: string; to: string }[] }> {
   mkdirSync(shared, { recursive: true });
   const r = await withLock(own, () => {
     const kept: PlaceMove['kept'] = [];
     const shelves = allShelves(own);
     const lessons = new Map(shelves.map((s) => [s, lessonsIn(own, s)]));
-    const linked = linkAll(own, shared, shelves, kept);
+    // Every shelf lands as `<x>@<project>`, so the write guard keeps every other call
+    // off it in the shared notebook until the folder is gone, and a shelf written in
+    // the project does not merge into a general shelf of the same name.
+    const linked = linkAll(own, shared, shelves, kept, (x) => sharedName(x, project));
     const moved = unlinkSame(own, linked, kept);
     for (const n of readdirSync(own)) {
       if (isNbOwnFile(n)) {
@@ -252,7 +287,8 @@ export async function placeShared(shared: string, own: string): Promise<PlaceMov
         }
       }
     }
-    return { dir: shared, created: false, moved, kept, lessons: moved.reduce((n, s) => n + (lessons.get(s) ?? 0), 0) };
+    const renamed = moved.filter((x) => sharedName(x, project) !== x).map((x) => ({ from: x, to: sharedName(x, project) }));
+    return { dir: shared, created: false, moved, kept, renamed, lessons: moved.reduce((n, s) => n + (lessons.get(s) ?? 0), 0) };
   });
   let removed = false;
   if (r.kept.length === 0) {

@@ -1904,8 +1904,10 @@ order and ids kept, nothing deduplicated or evicted). Holding the shared noteboo
 link the shelves into a staging folder, rename it to the project folder, and only then unlink the
 shared copies, each only if it is still the file that was linked; any failure before the rename
 SHALL leave nothing changed. A link SHALL never overwrite: a shelf already in the folder stays in
-the shared notebook and is reported. Run again, it SHALL move what is left and remove staging
-folders of dead processes. It SHALL refuse (exit `1`, `bad_args`, nothing changed) when `NB_DIR` is
+the shared notebook and is reported, unless it is the same file (a run that stopped after the rename),
+which counts as moved. When the folder already exists, the move SHALL run under the folder's own lock.
+A source that cannot be removed SHALL be kept and reported, never counted as moved. Run again, it
+SHALL move what is left and remove staging folders of dead processes. It SHALL refuse (exit `1`, `bad_args`, nothing changed) when `NB_DIR` is
 set, the place is unknown, there is no project name, the name comes from the repository's folder,
 the working directory is in a bare repository, the name is a Windows device name or longer than 64
 characters, or an entry of `projects/` differs from it only in letter case. It SHALL warn when the
@@ -1913,13 +1915,15 @@ shared notebook is a git repository and the new folder is not. A write to the sh
 ask the write guard of [FR-PLACE-001](#fr-place-001) again once it holds the shared notebook's lock,
 so a write that resolved the shared notebook before the folder existed refuses rather than land
 there. `nb place shared [--json]` SHALL move every shelf of the project's folder back into the shared
-notebook the same way, under the folder's lock, remove `nb`'s own files there (the usage log and its
+notebook the same way, under the folder's lock, each as `<x>@<project>` (a shelf without that suffix
+is renamed, so it stays the project's and the write guard keeps other calls off it until the folder
+is gone), remove `nb`'s own files there (the usage log and its
 count file, retrospective markers, `nb`'s temporary files), and remove the folder without recursing;
 it SHALL refuse (nothing changed) when a shelf name is already in the shared notebook or the folder
 holds anything else (`.git`, `.nb.json`, a subfolder), and SHALL exit `1` and keep the folder when a
 write landed in it meanwhile. Run where no own notebook is in use, it SHALL say so and exit `0`.
 `--json` SHALL print `{ kind: "own", dir, created, moved, kept, lessons, unversioned }` and
-`{ kind: "shared", dir, moved, kept, lessons, removed }`.
+`{ kind: "shared", dir, moved, renamed, kept, lessons, removed }`.
 **Rationale:** whole-file moves keep every vote; `nb move` works within one folder and could
 deduplicate or evict on the way. The issue's "through the existing `nb move` code" is departed from
 for that reason (design comment on issue #548).

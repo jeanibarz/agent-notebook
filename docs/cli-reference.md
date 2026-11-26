@@ -260,7 +260,8 @@ project folders (1): acme-app
   class `place_unknown` and reads and writes nothing. A missing git is not such a case.
 - **`nb place own`** makes the folder (mode 0700) and moves the project's `<x>@<project>` shelves
   into it, whole files with their scores. Run it again to move anything written to the shared
-  notebook meanwhile. **`nb place shared`** moves every shelf back and removes the folder; it refuses
+  notebook meanwhile. **`nb place shared`** moves every shelf back and removes the folder (a shelf without the
+  `@<project>` suffix comes back as `<x>@<project>`); it refuses
   while a shelf of the same name is in the shared notebook, or the folder holds something that is
   not a lesson (a `.git`, a `.nb.json`). Neither rewrites history: earlier copies stay in the shared
   notebook's git history and backups.

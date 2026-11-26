@@ -1717,11 +1717,11 @@ export async function runNbCli(
         } else if (p.kind !== 'own') {
           // Nothing to move back: this directory does not use an own notebook.
           meta.outcome = 'shared';
-          if (json) process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: [], kept: [], lessons: 0, removed: false }) + '\n');
+          if (json) process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: [], renamed: [], kept: [], lessons: 0, removed: false }) + '\n');
           else process.stdout.write(`shared: ${stripControlChars(p.shared)}\n  this directory does not use an own notebook (${stripControlChars(p.reason)}); nothing to move.\n`);
         } else {
           const own = p.dir!;
-          const b = sharedBlockers(p.shared, own);
+          const b = sharedBlockers(p.shared, own, st!.name);
           if (b.foreign.length > 0) {
             throw new NbError(
               'bad_args',
@@ -1734,13 +1734,14 @@ export async function runNbCli(
               `the shared notebook already has shelves named ${b.clashes.join(', ')}; rename one side first (\`nb move\` within one notebook). Nothing changed.`,
             );
           }
-          const r = await placeShared(p.shared, own);
+          const r = await placeShared(p.shared, own, st!.name);
           meta.outcome = r.removed ? 'shared' : 'shared-partial';
           meta.entries = r.moved.slice(0, 20);
           if (json) {
-            process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: r.moved, kept: r.kept, lessons: r.lessons, removed: r.removed }) + '\n');
+            process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: r.moved, renamed: r.renamed, kept: r.kept, lessons: r.lessons, removed: r.removed }) + '\n');
           } else {
             process.stdout.write(renderMove('shared', r, st!.name, false, 0, ''));
+            for (const x of r.renamed) process.stdout.write(`  renamed ${x.from} to ${x.to}, so it stays this project's\n`);
           }
           if (!r.removed) {
             throw new Error(

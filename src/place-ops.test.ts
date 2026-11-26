@@ -1,10 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, renameSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, renameSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { isNbOwnFile, linkAll, placeOwn, placeShared, sharedBlockers, unlinkSame } from './place-ops.js';
+import { isNbOwnFile, linkAll, placeOwn, placeShared, sharedBlockers, sharedName, unlinkSame } from './place-ops.js';
 
 // Issue #548, FR-PLACE-003: `nb place own` and `nb place shared` move whole shelf
 // files between the shared notebook and ~/.agent-notebook/projects/<project>/.
@@ -12,6 +12,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const CLI = join(here, '..', 'dist', 'cli.js');
 const WRAPPER = join(here, '..', 'examples', 'nb-git-wrapper.mjs');
 const isWin = process.platform === 'win32';
+const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 
 let tmp: string;
 let home: string;
@@ -66,22 +67,58 @@ describe('placeOwn and placeShared (FR-PLACE-003)', () => {
     expect(readdirSync(projects).sort()).toEqual([`.new-acme-app-${process.ppid}`, 'acme-app']);
   });
 
-  test('shared moves every shelf back, removes nb files and the folder; refuses clashes and foreign files', async () => {
+  test('shared moves every shelf back (an unscoped one as <x>@<project>), removes nb files and the folder; refuses clashes and foreign files', async () => {
     mkdirSync(own, { recursive: true });
     writeFileSync(join(own, 'build@acme-app.md'), SHELF);
     writeFileSync(join(own, 'testing.md'), '+1 unscoped, written in the project\n');
+    writeFileSync(join(shared, 'testing.md'), '+1 the general shelf of the same name\n');
     writeFileSync(join(own, '.nb-usage.log'), 'x\n');
     writeFileSync(join(own, '.nb-usage.log.count'), '1');
-    expect(sharedBlockers(shared, own)).toEqual({ foreign: [], clashes: [] });
-    const r = await placeShared(shared, own);
-    expect(r).toMatchObject({ moved: ['build@acme-app', 'testing'], kept: [], removed: true, lessons: 3 });
+    expect(sharedBlockers(shared, own, 'acme-app')).toEqual({ foreign: [], clashes: [] });
+    const r = await placeShared(shared, own, 'acme-app');
+    expect(r).toMatchObject({ moved: ['build@acme-app', 'testing'], renamed: [{ from: 'testing', to: 'testing@acme-app' }], kept: [], removed: true, lessons: 3 });
     expect(existsSync(own)).toBe(false);
     expect(readFileSync(join(shared, 'build@acme-app.md'), 'utf-8')).toBe(SHELF);
+    expect(readFileSync(join(shared, 'testing@acme-app.md'), 'utf-8')).toBe('+1 unscoped, written in the project\n');
+    expect(readFileSync(join(shared, 'testing.md'), 'utf-8')).toBe('+1 the general shelf of the same name\n');
     mkdirSync(own, { recursive: true });
     writeFileSync(join(own, 'testing.md'), '+1 clash\n');
     mkdirSync(join(own, '.git'));
     writeFileSync(join(own, '.nb.json'), '{}');
-    expect(sharedBlockers(shared, own)).toEqual({ foreign: ['.git', '.nb.json'], clashes: ['testing'] });
+    expect(sharedBlockers(shared, own, 'acme-app')).toEqual({ foreign: ['.git', '.nb.json'], clashes: ['testing@acme-app'] });
+  });
+
+  test('sharedName', () => {
+    expect([sharedName('testing', 'acme-app'), sharedName('x@acme-app', 'acme-app'), sharedName('x@Acme-App', 'acme-app'), sharedName('x@beta', 'acme-app')]).toEqual([
+      'testing@acme-app',
+      'x@acme-app',
+      'x@Acme-App',
+      'x@beta@acme-app',
+    ]);
+  });
+
+  test('a re-run after a crash between the rename and the unlinks finishes the move (the same file on both sides counts as linked)', async () => {
+    mkdirSync(own, { recursive: true });
+    writeFileSync(join(shared, 'x@acme-app.md'), '+1 left by a crash\n');
+    linkSync(join(shared, 'x@acme-app.md'), join(own, 'x@acme-app.md'));
+    const r = await placeOwn(shared, projects, 'acme-app');
+    expect(r).toMatchObject({ created: false, moved: ['x@acme-app'], kept: [] });
+    expect(existsSync(join(shared, 'x@acme-app.md'))).toBe(false);
+    expect(readFileSync(join(own, 'x@acme-app.md'), 'utf-8')).toBe('+1 left by a crash\n');
+  });
+
+  test.skipIf(isWin || isRoot)('a source that cannot be removed is kept and reported, never counted as moved', () => {
+    mkdirSync(own, { recursive: true });
+    writeFileSync(join(shared, 'x@acme-app.md'), '+1 a lesson\n');
+    const kept: { shelf: string; why: string }[] = [];
+    const linked = linkAll(shared, own, ['x@acme-app'], kept);
+    chmodSync(shared, 0o500);
+    try {
+      expect(unlinkSame(shared, linked, kept)).toEqual([]);
+    } finally {
+      chmodSync(shared, 0o755);
+    }
+    expect(kept).toEqual([{ shelf: 'x@acme-app', why: 'it could not be removed from its old place (EACCES); run the command again' }]);
   });
 
   test('a source replaced after it was linked (a write under a stolen lock) is not unlinked: its lesson stays, reported', () => {
@@ -163,7 +200,7 @@ describe('nb place own / shared through the built CLI (FR-PLACE-003)', { timeout
     );
     const back = nb(['place', 'shared', '--json']);
     expect(back.code).toBe(0);
-    expect(JSON.parse(back.out)).toEqual({ kind: 'shared', dir: shared, moved: ['build@acme-app'], kept: [], lessons: 2, removed: true });
+    expect(JSON.parse(back.out)).toEqual({ kind: 'shared', dir: shared, moved: ['build@acme-app'], renamed: [], kept: [], lessons: 2, removed: true });
     expect(existsSync(own)).toBe(false);
     expect(readFileSync(join(shared, 'build@acme-app.md'), 'utf-8')).toBe(before);
     expect(nb(['place', 'shared'])).toEqual({
@@ -228,12 +265,32 @@ describe('nb place own / shared through the built CLI (FR-PLACE-003)', { timeout
   test('shared refuses a clash and a foreign file, and keeps the folder', () => {
     mkdirSync(own, { recursive: true });
     nb(['add', 'testing', 'own copy']);
-    writeFileSync(join(shared, 'testing.md'), '+1 shared copy\n');
-    expect(nb(['place', 'shared']).err).toContain('the shared notebook already has shelves named testing');
-    rmSync(join(shared, 'testing.md'));
+    writeFileSync(join(shared, 'testing@acme-app.md'), '+1 shared copy\n');
+    expect(nb(['place', 'shared']).err).toContain('the shared notebook already has shelves named testing@acme-app');
+    rmSync(join(shared, 'testing@acme-app.md'));
     mkdirSync(join(own, '.git'));
     expect(nb(['place', 'shared']).err).toContain('holds files that are not lessons (.git)');
     expect(existsSync(join(own, 'testing.md'))).toBe(true);
+  });
+
+  test.skipIf(isWin)('a write that waited on the shared lock while the project got its folder refuses, and writes nothing (the guard asked again under the lock) [timing]', async () => {
+    // Hold the shared notebook's lock the way nb does: a fresh `.nb.lock` folder.
+    mkdirSync(join(shared, '.nb.lock'));
+    writeFileSync(join(shared, '.nb.lock', 'owner'), '1.test');
+    const p = spawn(process.execPath, [CLI, 'add', 'x@acme-app', 'a lesson that must not land', '--json'], { cwd: repo, env: childEnv() });
+    let out = '';
+    p.stdout.on('data', (d) => (out += d));
+    const done = new Promise<number | null>((res) => p.on('close', res));
+    // The add resolved the shared notebook (no folder yet) and now waits on the lock.
+    await new Promise((r) => setTimeout(r, 1500));
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    rmSync(join(shared, '.nb.lock'), { recursive: true, force: true });
+    const code = await done;
+    // Never in the shared notebook. Normally the add was waiting and refuses; on a very
+    // slow runner it may start after the folder exists and write to it, which is right too.
+    expect(existsSync(join(shared, 'x@acme-app.md'))).toBe(false);
+    if (code === 0) expect(readFileSync(join(own, 'x@acme-app.md'), 'utf-8')).toContain('must not land');
+    else expect(JSON.parse(out).error.class).toBe('bad_args');
   });
 
   test('a bad action is refused', () => {
