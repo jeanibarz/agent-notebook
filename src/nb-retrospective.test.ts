@@ -51,9 +51,10 @@ function seedSentinel(name: string, daysAgo: number): string {
 // only an explicit `env` override here is seen. Returns the block decision JSON
 // written to stdout (or '').
 function runHook(input: Record<string, unknown>, env: Record<string, string> = {}): string {
-  // NB_BIN points at a missing binary so the hook's `nb enabled` check (issue #514)
-  // fails open without running whatever `nb` the host has on PATH.
-  const base = { ...process.env, NB_DIR: dir, NB_BIN: join(dir, 'no-nb') } as Record<string, string>;
+  // The hook runs this checkout's built `nb` (NB_BIN unset), never whatever `nb`
+  // the host has on PATH; NB_ENABLED=1 keeps a host's `nb.enabled` out of it.
+  const base = { ...process.env, NB_DIR: dir, NB_ENABLED: '1' } as Record<string, string>;
+  delete base.NB_BIN;
   delete base.NB_RETRO_TTL_DAYS;
   return execFileSync('bash', [hook], {
     input: JSON.stringify(input),
@@ -74,9 +75,10 @@ function raceHooks(
   input: Record<string, unknown>,
   env: Record<string, string> = {},
 ): Promise<Array<{ out: string; code: number | null }>> {
-  // NB_BIN points at a missing binary so the hook's `nb enabled` check (issue #514)
-  // fails open without running whatever `nb` the host has on PATH.
-  const base = { ...process.env, NB_DIR: dir, NB_BIN: join(dir, 'no-nb') } as Record<string, string>;
+  // The hook runs this checkout's built `nb` (NB_BIN unset), never whatever `nb`
+  // the host has on PATH; NB_ENABLED=1 keeps a host's `nb.enabled` out of it.
+  const base = { ...process.env, NB_DIR: dir, NB_ENABLED: '1' } as Record<string, string>;
+  delete base.NB_BIN;
   delete base.NB_RETRO_TTL_DAYS;
   const payload = JSON.stringify(input);
 
@@ -296,7 +298,7 @@ describe('nb-retrospective.sh session_id sanitizing (issue #460)', () => {
     const out = runHook({ session_id: 'x/../../escaped-file' }, { NB_DIR: store });
     expect(JSON.parse(out).decision).toBe('block');
     expect(existsSync(join(dir, 'escaped-file'))).toBe(false);
-    expect(readdirSync(store)).toEqual(['.retro-x_.._.._escaped-file']);
+    expect(readdirSync(store).filter((n) => !n.startsWith('.nb-usage.log'))).toEqual(['.retro-x_.._.._escaped-file']);
   });
 
   test('a slash-containing id is nudged once, then later stops pass', () => {
@@ -313,7 +315,7 @@ describe('nb-retrospective.sh session_id sanitizing (issue #460)', () => {
 
   test('an over-long id is capped to 128 chars', () => {
     runHook({ session_id: 'a'.repeat(300) });
-    expect(readdirSync(dir)).toEqual([`.retro-${'a'.repeat(128)}`]);
+    expect(readdirSync(dir).filter((n) => !n.startsWith('.nb-usage.log'))).toEqual([`.retro-${'a'.repeat(128)}`]);
   });
 });
 
@@ -473,8 +475,8 @@ describe('nb-retrospective.sh NB_RETRO_EXTRA_PROMPT', () => {
 
   // Like runHook, but returns stderr too (execFileSync only hands back stdout).
   function runFull(input: Record<string, unknown>, env: Record<string, string> = {}) {
-    const base = { ...process.env, NB_DIR: dir, NB_BIN: join(dir, 'no-nb') } as Record<string, string>;
-    for (const k of ['NB_RETRO_TTL_DAYS', 'NB_PROJECT_SLUG', 'NB_RETRO_EXTRA_PROMPT', 'CLAUDE_PROJECT_DIR']) delete base[k];
+    const base = { ...process.env, NB_DIR: dir, NB_ENABLED: '1' } as Record<string, string>;
+    for (const k of ['NB_BIN', 'NB_RETRO_TTL_DAYS', 'NB_PROJECT_SLUG', 'NB_RETRO_EXTRA_PROMPT', 'CLAUDE_PROJECT_DIR']) delete base[k];
     const r = spawnSync('bash', [hook], {
       input: JSON.stringify(input),
       env: { ...base, ...env },

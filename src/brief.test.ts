@@ -12,7 +12,7 @@ import { parseUsage } from './usage.js';
 // script against the same store and compare.
 const here = dirname(fileURLToPath(import.meta.url));
 const CLI = join(here, '..', 'dist', 'cli.js');
-const OLD_HOOK = join(here, '..', 'examples', 'hooks', 'claude-code', 'nb-session-start.sh');
+const OLD_HOOK = join(here, '..', 'test', 'fixtures', 'hooks-0.12', 'nb-session-start.sh');
 const isWin = process.platform === 'win32';
 // The 0.12 hook is a bash script; the Windows CI leg has no POSIX shell it can rely on.
 const testOld = isWin ? test.skip : test;

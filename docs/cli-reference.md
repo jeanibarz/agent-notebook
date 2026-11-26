@@ -248,7 +248,7 @@ nb retro --session "$SESSION_ID" --work-dir "$PWD_OF_THE_AGENT"   # also ask the
 - **`--hook <label>`** is for adapters: it is recorded in the usage log's note column and
   never changes the output. A call that finds the session already claimed logs no row.
 
-The example Claude Code hooks do not call `nb brief` or `nb retro` yet (issue #538).
+The example Claude Code hooks ([`examples/hooks/claude-code/`](../examples/hooks/claude-code/README.md)) are a thin adapter around these two commands: they read the hook payload, skip the stops that must not nudge, and wrap the text in Claude Code's reply format (issue #538).
 
 ## Shell completion
 

@@ -1597,25 +1597,19 @@ it is never listed as not read by `nb` ([FR-CONFIG-001](#fr-config-001)).
 *Proven by:* `enabled.test.ts` → `describe('nb config reports the on/off state (issue #514)')`.
 
 <a id="fr-enabled-003"></a>
-**FR-ENABLED-003 (Should).** The shipped Claude Code hooks SHALL ask `nb enabled` from
-`CLAUDE_PROJECT_DIR` when it is set, else from their working directory, and act only on the literal
-output `off`, so a missing `nb`, an older `nb` without the subcommand (no stdout, exit 2) or any error
-keeps today's behavior. When off, `nb-session-start.sh` SHALL print one line telling the agent to skip
-the notebook steps instead of the index (silence would leave a machine-wide contract in force), and
-`nb-retrospective.sh` SHALL let the stop through without a nudge, asking `nb enabled` only on the stop
-that claims the sentinel. `nb-retrospective.sh` SHALL also ask from the `cwd` in its hook payload when
-that names another directory, and an `off` from either directory SHALL let the stop through: the
-agent's own `nb list` ran there and may have told it to skip the retrospective (issue #517). An `off`
-from the payload `cwd` alone SHALL release the session's sentinel, so a later stop from an on
-directory still nudges once. The session-start hook SHALL run its own `nb list` calls with `NB_ENABLED=1`, so its index never
-disagrees with the check it made from
-`CLAUDE_PROJECT_DIR` ([FR-ENABLED-004](#fr-enabled-004)). `nb-subagent-start.sh` SHALL hand a
-subagent exactly what `nb-session-start.sh` prints, so a subagent in an off repository receives that
-same one line and not the index.
+**FR-ENABLED-003 (Should).** The shipped Claude Code hooks SHALL run `nb brief` and `nb retro`
+in `CLAUDE_PROJECT_DIR` when it is set, else in their working directory, and pass the hook
+payload's `cwd` to `nb retro --work-dir`; those commands read the switch
+([FR-BRIEF-001](#fr-brief-001), [FR-RETRO-001](#fr-retro-001)), and a switch that cannot be read
+counts as on. When off, the start hooks SHALL inject the one line `nb brief` prints instead of the
+index (silence would leave a machine-wide contract in force), and the Stop hook SHALL let the stop
+through without a nudge. An `off` from the payload `cwd` alone SHALL release the session's
+sentinel, so a later stop from an on directory still nudges once (issue #517).
+`nb-subagent-start.sh` SHALL hand a subagent exactly what `nb brief` prints, so a subagent in an off
+repository receives that same one line and not the index.
 *Proven by:* `enabled.test.ts` → `describe('the example hooks honour nb enabled (issue #514)')`,
 `describe('the Stop hook: off in the project directory or in the payload cwd wins (issue #517)')` and
-`describe('the README recipe: off everywhere except one repository (issue #514)')`;
-`nb-subagent-start.test.ts` → `describe('nb-subagent-start.sh')`.
+`describe('the README recipe: off everywhere except one repository (issue #514)')`.
 
 <a id="fr-enabled-004"></a>
 **FR-ENABLED-004 (Should).** The text form of `nb list` (and its aliases `ls`, `shelves`, `roles`,
@@ -1632,12 +1626,13 @@ still complete in an off repository.
 
 ### 4.17 Start and end of a task: `nb brief`, `nb retro` (issue #538)
 
-> **Status: FR-BRIEF-001..003 and FR-RETRO-001..003 are implemented; the others are proposed — not yet
-> implemented ([issue #538](https://github.com/jeanibarz/agent-notebook/issues/538)).**
-> These requirements landed before the code, as the issue asks. Each one gains its
-> *Proven by* line and loses this status in the pull request that implements it.
-> Until then, the three example hooks behave as [FR-ENABLED-003](#fr-enabled-003)
-> describes. Where this section departs from a requirement still in force, the code pull
+> **Status: FR-BRIEF-001..003, FR-RETRO-001..003 and FR-HOOKS-001 are implemented
+> ([issue #538](https://github.com/jeanibarz/agent-notebook/issues/538)). FR-HEARTBEAT-001 is
+> proposed — not yet implemented: its only reader is `nb status`, and the write outside `NB_DIR`
+> it needs waits for the owner's approval, so it moves to the `nb status` issue of
+> [epic #537](https://github.com/jeanibarz/agent-notebook/issues/537).** The hooks pass
+> `--hook <label>` already; it is recorded in the usage log ([FR-USAGE-001](#fr-usage-001)).
+> These requirements landed before the code, as the issue asks. Where this section departs from a requirement still in force, the code pull
 > request that makes it true amends that requirement in the same change: NFR-SAFE-001
 > (`retro` reads the `NB_RETRO_EXTRA_PROMPT` file; the heartbeat writes outside `NB_DIR`,
 > an exception the owner is asked to approve), FR-ENABLED-001 and the §4.16 introduction
@@ -1756,6 +1751,10 @@ or fails, a start hook SHALL inject one diagnostic line naming the fix (skipped 
 `NB_ENABLED` is off in the environment) and a Stop hook SHALL send nothing. The three
 existing `.sh` file names SHALL keep working, so existing `settings.json` files need no
 change.
+*Proven by:* `nb-claude-hook.test.ts` → `describe('the hooks send what the 0.12 scripts sent (FR-HOOKS-001, acceptance criterion 1)')`,
+`describe('the adapter (FR-HOOKS-001)')` and
+`describe('the trampolines keep the 0.12 file names working (FR-HOOKS-001)')`; the stop rules by
+`nb-retrospective.test.ts` → `describe('nb-retrospective.sh nudge timing (issue #520)')`.
 
 <a id="fr-heartbeat-001"></a>
 **FR-HEARTBEAT-001 (Should).** When an adapter passes `--hook <label>`, `nb brief` and
