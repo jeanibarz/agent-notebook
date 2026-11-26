@@ -40,6 +40,14 @@ Nothing in this layer runs *inside* an `nb` call; all of it reads or wraps the
 plain files. The one thing that matters is the instruction; adopt the rest piece
 by piece, or not at all.
 
+**Planned change ([issue #538](https://github.com/jeanibarz/agent-notebook/issues/538)).**
+The package MAY hold the default words an agent is told at the start and at the end of a
+task, and the rule that the end-of-task text is said once per session (`nb brief`,
+`nb retro`, [requirements §4.17](requirements.md#fr-brief-001)). It stays harness-blind:
+it never reads a hook payload or prints a vendor's reply format. What knows a harness
+(which event fires, its payload, its reply format) stays in an adapter: `examples/` today,
+a plugin later. Until those commands ship, the hooks below work as described.
+
 ---
 
 ## Install
