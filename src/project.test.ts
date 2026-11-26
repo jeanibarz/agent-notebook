@@ -177,7 +177,7 @@ describe('resolveProject: the order of the rules and every git failure (FR-PROJE
 
   test('the origin remote, with exactly two git runs, in order', () => {
     const g = fakeGit({ remote: { stdout: 'git@github.com:Acme/App.git\n' } });
-    expect(resolveProject({}, work, g)).toEqual({ name: 'acme-app', source: 'remote', reason: 'git remote origin', oldName: 'my-app', bare: false, undetermined: false, repoFolder: work });
+    expect(resolveProject({}, work, g)).toEqual({ name: 'acme-app', source: 'remote', reason: 'git remote origin', oldName: 'my-app', bare: false, undetermined: false, repoFolder: realpathSync.native(work) });
     expect(g.calls).toEqual([
       ['rev-parse', '--git-common-dir', '--is-bare-repository'],
       ['config', '--get', 'remote.origin.url'],
