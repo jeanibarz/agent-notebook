@@ -57,7 +57,7 @@ the retrospective text they inject come from `nb brief` and `nb retro`.
 | Need | How |
 |---|---|
 | **Node.js ≥ 18** | <https://nodejs.org> (`node --version`). The only hard dependency. |
-| **`nb` on your PATH** | `npm install -g agent-notebook`, then `nb --help`. |
+| **`nb` on your PATH** | `npm install -g agent-notebook`, then `nb --help`. The hook adapter `nb-claude-hook.mjs` (the optional Claude Code and Codex hooks below) ships in 0.13.0-beta.1 and later: `npm install -g agent-notebook@beta`. |
 | **git** (optional) | Only for versioning + backup ([Git-versioning](#git-versioning)). |
 | **bash** (optional) | For the example shell scripts. Built-in on Linux/macOS; on Windows use WSL or Git Bash ([Windows](#windows)). |
 
@@ -116,6 +116,9 @@ working dir, merged), so the instruction goes there. Append the snippet once:
 grep -qs '^## Memory: agent-notebook' ~/.codex/AGENTS.md || sed '/^<!--/,/^-->/d' "$(npm root -g)/agent-notebook/examples/hooks/codex-cli/AGENTS.snippet.md" >> ~/.codex/AGENTS.md
 ```
 
+If you set `CODEX_HOME`, Codex reads `$CODEX_HOME/AGENTS.md` instead of `~/.codex/AGENTS.md`:
+use that path in the command.
+
 Now every Codex session starts with the list-and-open contract in context. That is
 enough on its own: it is the route that needs no hooks, and it works with any version
 of `agent-notebook`. Add the [git wrapper](#git-versioning) if you want per-change
@@ -160,6 +163,10 @@ EOF
 fi
 ```
 
+If the file already exists, add the `SessionStart` and `Stop` entries above to the
+`hooks` object it holds, with the adapter's real path in place of `$HOOK`
+(`npm root -g` prints the folder that holds `agent-notebook`).
+
 Each `command` is **one string**, the program and its arguments together. Codex
 ignores the `args` field that Claude Code accepts, so the `print-settings` block of
 the Claude Code adapter (`"command": "node"` plus `args`) does not work in Codex: the
@@ -179,26 +186,52 @@ Hooks can run outside the sandbox after you trust them.
 ```
 
 Choose **2** (or **1** to read each hook first). If you skipped that screen, type
-`/hooks` in the session and press `t` to trust all. Codex keeps the trust in
-`config.toml` (`[hooks.state]`, one `trusted_hash` per hook).
+`/hooks` in the session and press `t` to trust all. Codex saves the trust at once,
+in `config.toml` (`[hooks.state]`, one `trusted_hash` per hook): you can quit the
+session without sending a prompt.
 
-**3. Check that they run.** `codex exec` prints a line per hook it runs:
+**3. Check that they run.** Put a word you will recognise in a lesson's text, so it
+shows in the index (`nb add testing "The codeword is PELICAN."`), then, in a git
+repository:
+
+```sh
+codex exec "Without running any command: if your context holds a notebook index, answer only with the codeword in it, else NONE." </dev/null
+```
+
+(The `</dev/null` matters: `codex exec` otherwise waits for more input on stdin.)
+With the hooks on, the output shows:
 
 ```text
 hook: SessionStart
 hook: SessionStart Completed
+codex
+PELICAN
+hook: Stop
+hook: Stop Blocked
+codex
+...
+hook: Stop
+hook: Stop Completed
 ```
 
-and at the end, once per session, `hook: Stop` then `hook: Stop Blocked`: that is the
-retrospective request.
+`Stop Blocked` is the retrospective request: Codex hands its text to the model, which
+answers again. The second `Stop` lets the session end, because `nb retro` asks once
+per session.
 
 **How to see that the hooks are off.** `codex exec` never asks for trust: **it skips
-a hook you have not trusted and says nothing**. So there are no `hook:` lines in its
-output, and the session runs on the `AGENTS.md` instruction alone. In an interactive
-session, `/hooks` shows the counts per event: a hook that is installed but not trusted
-shows under *Review*, not *Active*, with a line such as `⚠ 2 hooks need review before
-they can run`. Editing a hook's entry in `hooks.json` withdraws its trust in the same
-silent way, so trust it again after any edit. Codex also has a
+a hook you have not trusted and says nothing**. So there is no `hook:` line for it in
+the output, the answer above is `NONE`, and the session runs on the `AGENTS.md`
+instruction alone. Silence looks the same as a `hooks.json` Codex never read, so
+confirm in an interactive session: `/hooks` lists the hooks per event (scroll down for
+`Stop`) with *Installed* and *Active* counts. When a hook needs trust, the list also
+shows a *Review* column and a line such as `⚠ 2 hooks need review before they can run`.
+Changing a hook's entry in `hooks.json` withdraws its trust in the same silent way,
+until you trust it again (or put the entry back as it was).
+
+This is not the same as a repository switched off with `git config nb.enabled false`.
+There the hooks still run (`hook: SessionStart Completed`), but the model gets one line
+saying the notebook is off, and the session ends with `hook: Stop` then
+`hook: Stop Completed`, with no `Blocked`. Codex also has a
 `--dangerously-bypass-hook-trust` flag for `codex exec`, which its own help reserves
 for automation that already vets hook sources.
 
