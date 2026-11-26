@@ -335,8 +335,31 @@ export function logUsage(
   ms: number,
   meta: UsageMeta = {},
 ): void {
+  appendUsage(dir, shelf, command, ok, ms, meta);
+}
+
+/**
+ * `logUsage`, plus a no-create mode for the CLI (issue #551): with `noCreate` the
+ * folder is never created, so a row for a project's own notebook cannot re-create
+ * the folder that `nb place shared` removed. Returns `false` only when the row was
+ * not written because, in that mode, the folder is missing; the caller then logs
+ * it elsewhere. Every other failure is swallowed, as in `logUsage`. Internal: not
+ * on the package root.
+ */
+export function appendUsage(
+  dir: string,
+  shelf: string,
+  command: string,
+  ok: boolean,
+  ms: number,
+  meta: UsageMeta = {},
+  opts: { noCreate?: boolean } = {},
+): boolean {
+  // Checked before the row is built, so the crash-recovery tally below is not
+  // drained into a row that cannot be written.
+  if (opts.noCreate === true && !existsSync(dir)) return false;
   try {
-    mkdirSync(dir, { recursive: true });
+    if (opts.noCreate !== true) mkdirSync(dir, { recursive: true });
     const file = usageFile(dir);
     // `shelf`, `command`, and every meta field are caller-supplied (and
     // `session` comes from an env var a hook sets); sanitize each so a tab/CR/LF
@@ -406,7 +429,7 @@ export function logUsage(
       const buf = `${line}\n`;
       appendFileSync(file, buf, 'utf-8');
       writeUsageState(dir, state.rows + 1, state.bytes + Buffer.byteLength(buf));
-      return;
+      return true;
     }
 
     // Exact path: the sidecar was missing, stale, says we have reached the
@@ -428,7 +451,7 @@ export function logUsage(
       const buf = `${sep}${line}\n`;
       appendFileSync(file, buf, 'utf-8');
       writeUsageState(dir, lines.length + 1, Buffer.byteLength(existing) + Buffer.byteLength(buf));
-      return;
+      return true;
     }
 
     // At/over cap: compact. Slice to the newest `ring` rows (oldest dropped) and
@@ -447,8 +470,12 @@ export function logUsage(
     preserveMode(file, tmp);
     renameSync(tmp, file);
     writeUsageState(dir, kept.length, Buffer.byteLength(body));
-  } catch {
+    return true;
+  } catch (e) {
+    // The folder went away between the check above and the write: the caller logs elsewhere.
+    if (opts.noCreate === true && (e as NodeJS.ErrnoException)?.code === 'ENOENT' && !existsSync(dir)) return false;
     /* monitoring is best-effort; never fail a real operation because the log write failed */
+    return true;
   }
 }
 

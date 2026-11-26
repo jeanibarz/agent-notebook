@@ -8,7 +8,9 @@
  *   exports two internals for the other modules (`preserveMode`,
  *   `skipUnreadable`) that are not part of the public API.
  * - `usage.ts` (the usage log) and `stats.ts` (`nb stats`) are the
- *   self-monitoring layer. Everything they export is public.
+ *   self-monitoring layer. Everything `stats.ts` exports is public; `usage.ts` is
+ *   re-exported by an explicit list because `appendUsage` (the CLI's no-create log
+ *   write, issue #551) is internal.
  *
  * Adding a public name to notebook.ts? Add it below as well, and to the golden
  * list in src/package-exports.test.ts.
@@ -130,5 +132,6 @@ export type {
   VoteManyItem,
   VoteResult,
 } from './notebook.js';
-export * from './usage.js';
+export { REASON_ENUMS, formatEvictedUsage, logUsage, normalizeReason, parseUsage } from './usage.js';
+export type { UsageMeta, UsageRow } from './usage.js';
 export * from './stats.js';
