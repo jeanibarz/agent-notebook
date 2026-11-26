@@ -329,6 +329,11 @@ notebook a directory uses and why, and `nb place shared` moves the shelves back.
   node nb-janitor.mjs                                         # the shared notebook
   NB_DIR=~/.agent-notebook/projects/<project> node nb-janitor.mjs
   ```
+  The `projects/*/` loop skips a hidden `.old-<project>-…` folder: one is left only when an
+  `nb place shared` stopped halfway, `nb place` then names it, and running `nb place shared`
+  again finishes it. `nb place own` and `nb place shared` hold the shared notebook's lock for
+  the whole move (about 0.2 s per 1,000 shelves on ext4, about 5 s per 100 on NTFS through WSL),
+  so other projects' writes wait meanwhile; run them when few sessions are writing.
   The git wrapper commits into whichever folder `nb` wrote. A copy of the wrapper from nb 0.12
   sets `NB_DIR` itself, which keeps every call on the shared notebook: copy it again.
   With a project folder present, a call through the wrapper runs `git` four times to learn the

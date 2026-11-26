@@ -35,7 +35,7 @@
 // the usage ring so `nb stats` can surface loop / went-silent / high-error-rate
 // anomalies (and so a harness that only ever runs `--help` is still visible).
 
-import { lstatSync, realpathSync } from 'node:fs';
+import { lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -96,9 +96,9 @@ import {
   type ConfigStatus,
 } from './config-report.js';
 import { describeSource, resolveEnabled, stateWord } from './enabled.js';
-import { describeProject, resolveProject } from './project.js';
+import { describeProject, resolveProject, type ProjectState } from './project.js';
 import { isWindowsDeviceName, placeRefusal, resolvePlace, scanProjects, sharedWriteRefusal, type Place } from './place.js';
-import { allShelves, isGitRepo, placeOwn, placeShared, type PlaceMove } from './place-ops.js';
+import { allShelves, isGitRepo, placeOwn, placeShared, unfinishedMoves, type PlaceMove } from './place-ops.js';
 import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, extraPromptStatus, messageProjectName, placeLine, projectOfCall, retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import {
@@ -1737,13 +1737,15 @@ export async function runNbCli(
           } else {
             process.stdout.write(renderMove('own', r, st!.name, unversioned, old.length, st!.oldName));
           }
-        } else if (p.kind !== 'own') {
+        } else if (p.kind !== 'own' && !hasUnfinished(p, st)) {
           // Nothing to move back: this directory does not use an own notebook.
           meta.outcome = 'shared';
           if (json) process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: [], renamed: [], kept: [], lessons: 0, removed: false }) + '\n');
           else process.stdout.write(`shared: ${stripControlChars(p.shared)}\n  this directory does not use an own notebook (${stripControlChars(p.reason)}); nothing to move.\n`);
         } else {
-          const own = p.dir!;
+          // In an own notebook, or where an earlier `nb place shared` stopped halfway (its
+          // folder renamed away, so the project already resolves to the shared notebook).
+          const own = p.kind === 'own' ? p.dir! : join(p.projectsDir, st!.name);
           // What stops the move is decided under both locks, before anything moves
           // (issue #551), so each refusal below means nothing changed.
           const r = await placeShared(p.shared, own, st!.name);
@@ -1760,25 +1762,30 @@ export async function runNbCli(
               `${[...new Set(b.clashes)].join(', ')} would clash in the shared notebook (a shelf there already has the name, or two shelves of this project would arrive under it: a shelf without @<project> comes back as <x>@<project>); rename one first (\`nb move\` within one notebook). Nothing changed.`,
             );
           }
-          if (r.gone === true) {
+          if (r.gone === true && r.moved.length === 0 && r.resumed.length === 0 && r.left === undefined) {
             meta.outcome = 'shared';
             if (json) process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: [], renamed: [], kept: [], lessons: 0, removed: false }) + '\n');
             else process.stdout.write(`shared: ${stripControlChars(p.shared)}\n  nothing to move: this project already uses the shared notebook.\n`);
             break;
           }
-          meta.outcome = r.removed ? 'shared' : 'shared-partial';
+          // Done when this run's folder is removed, or (the folder already gone) when every
+          // unfinished move it found is finished.
+          const done = r.left === undefined && (r.removed || r.gone === true);
+          meta.outcome = done ? 'shared' : 'shared-partial';
           meta.entries = r.moved.slice(0, 20);
           if (json) {
-            process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: r.moved, renamed: r.renamed, kept: r.kept, lessons: r.lessons, removed: r.removed }) + '\n');
+            process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: r.moved, renamed: r.renamed, kept: r.kept, lessons: r.lessons, removed: done }) + '\n');
           } else {
             process.stdout.write(renderMove('shared', r, st!.name, false, 0, ''));
             for (const x of r.renamed) process.stdout.write(`  renamed ${x.from} to ${x.to}, so it stays this project's\n`);
+            for (const d of r.resumed) process.stdout.write(`  finished a move an earlier \`nb place shared\` left halfway (${escapeDiskName(d)})\n`);
           }
-          if (!r.removed) {
+          if (!done) {
+            const where = escapeDiskName(r.left ?? own);
             throw new Error(
               r.kept.length > 0
-                ? `${own} was kept: ${r.kept.length} shelf(s) could not be moved (listed above); run \`nb place shared\` again.`
-                : `a lesson was written to ${own} while it was being emptied, so the folder was kept; run \`nb place shared\` again.`,
+                ? `${r.kept.length} shelf(s) could not be moved (listed above) and stay in ${where}; nothing is lost. Do not delete that folder; run \`nb place shared\` again to finish.`
+                : `${where} could not be removed; nothing is lost. Do not delete that folder; run \`nb place shared\` again to finish.`,
             );
           }
         }
@@ -2086,7 +2093,42 @@ function renderPlace(p: Place): string {
   if (p.kind !== 'env') {
     lines.push(p.folders.length === 0 ? `project folders: none (in ${clean(p.projectsDir)})` : `project folders (${p.folders.length}): ${p.folders.join(', ')}`);
   }
+  for (const u of unfinishedOf(p)) {
+    lines.push(
+      u.inProgress
+        ? `  a move of this project is in progress: ${escapeDiskName(u.dir)}`
+        : `  an earlier \`nb place shared\` stopped halfway and left ${shelfCount(u.shelves.length)} in ${escapeDiskName(u.dir)}; nothing is lost. Do not delete that folder; run \`nb place shared\` to finish.`,
+    );
+  }
   return lines.join('\n') + '\n';
+}
+
+/**
+ * The moves an earlier `nb place shared` of this directory's project left unfinished
+ * (issue #551). Costs nothing unless `projects/` holds a `.old-` entry; only then is
+ * the project name asked, when the place did not already ask it.
+ */
+function unfinishedOf(p: Place): ReturnType<typeof unfinishedMoves> {
+  if (p.kind === 'env' || p.kind === 'unknown') return [];
+  let names: string[];
+  try {
+    names = readdirSync(p.projectsDir);
+  } catch {
+    return [];
+  }
+  if (!names.some((n) => n.startsWith('.old-'))) return [];
+  let name = p.project?.name ?? '';
+  if (p.project === null) {
+    const cwd = currentDir();
+    if (cwd !== null || process.env.NB_PROJECT_SLUG) name = resolveProject(process.env, cwd ?? '.').name;
+  }
+  return name === '' ? [] : unfinishedMoves(p.projectsDir, name).filter((u) => u.inProgress || u.shelves.length > 0);
+}
+
+/** Whether `nb place shared` has an unfinished move of this project to finish, outside an own notebook. */
+function hasUnfinished(p: Place, st: ProjectState | null): boolean {
+  if (st === null || st.name === '' || (st.source !== 'env' && st.source !== 'remote')) return false;
+  return unfinishedMoves(p.projectsDir, st.name).length > 0;
 }
 
 const shelfCount = (n: number): string => `${n} ${n === 1 ? 'shelf' : 'shelves'}`;
