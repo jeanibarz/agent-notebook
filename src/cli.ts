@@ -896,7 +896,9 @@ export async function runNbCli(
   let noteArg: string | undefined;
   // The folder's `.nb.json` `maxChars` (RFC 0530): read once per call, held as a
   // call-scoped override (never `process.env`) and cleared in the `finally` below.
-  const nbJson = readNbJson(dir);
+  // `nb status` never uses it, and it must stay bounded and non-blocking (FR-STATUS-001):
+  // a `.nb.json` that is a FIFO would block a plain read, so status does not read it.
+  const nbJson = cmd === 'status' ? {} : readNbJson(dir);
   if (nbJson.warning !== undefined) process.stderr.write(nbJson.warning + '\n');
   setCallMaxChars(nbJson.maxChars);
   setCallNoCreateDir(place?.kind === 'own' ? dir : undefined);

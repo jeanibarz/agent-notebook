@@ -363,6 +363,17 @@ describe('nb status, the built CLI (FR-STATUS-001..003)', { timeout: 120_000 }, 
       expect(j.project.name).not.toBe('acme-app'); // no git: the remote cannot have been read
     });
 
+    test.skipIf(isWin)('a FIFO as the folder\'s .nb.json does not hang either', () => {
+      const r = repo('app', 'git@github.com:Acme/App.git');
+      const fifoStore = join(tmp, 'fifo-json-store');
+      mkdirSync(fifoStore);
+      execFileSync('mkfifo', [join(fifoStore, '.nb.json')]);
+      const a = nb(['status', '--json'], r, { NB_DIR: fifoStore });
+      expect(a.code).not.toBeNull();
+      expect(a.ms).toBeLessThan(10_000);
+      expect((JSON.parse(a.out) as StatusJson).schemaVersion).toBe(1);
+    });
+
     test.skipIf(isWin)('a FIFO as the usage log does not hang, and a link to /dev/zero does not either', () => {
       const r = repo('app', 'git@github.com:Acme/App.git');
       const fifoStore = join(tmp, 'fifo-store');
