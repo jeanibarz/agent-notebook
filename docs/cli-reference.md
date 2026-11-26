@@ -297,6 +297,11 @@ nb brief --json               # {"outcome":"index|layered|empty|broken|off","tex
   lessons are dropped, whatever their layer, and the last line says how many and gives
   the `nb list --limit` command that shows them. Claude Code shows hook output whole
   only up to 10,000 characters.
+- **Your own text**: `~/.agent-notebook/messages/brief.txt`, then `<project>.brief.txt`, are
+  printed after the framing line and before the index, each framed as the user's own
+  instructions (at most 1,000 characters each; a file that cannot be used gives one warning
+  line instead). They are part of the head, which is never cut: the index gets the rest of
+  `--max-chars`. See [the hooks README](../examples/hooks/claude-code/README.md#your-own-start-and-end-text).
 - **Safe to show a model**: control characters and line separators in a name, a
   description, the folder path or the slug are shown as `\uXXXX`, so no value can
   start a line of its own.
@@ -326,6 +331,10 @@ nb retro --session "$SESSION_ID" --work-dir "$PWD_OF_THE_AGENT"   # also ask the
   UTF-8 file of at most 64 KiB, is appended after a blank line, with `{project}` and
   `{session}` filled in. `{project}` is the name `nb project` prints in `--work-dir` (else the
   working directory). Anything else prints a warning on stderr and the text goes alone.
+- **Your own text**: `~/.agent-notebook/messages/retro.txt`, then `<project>.retro.txt`
+  (at most 4,000 characters each), are added after the built-in text and before the
+  `NB_RETRO_EXTRA_PROMPT` text, with `{project}` and `{session}` filled in. They are read only when
+  the text is printed, never for a repeated stop.
 - **`--hook <label>`** is for adapters: it is recorded in the usage log's note column and
   never changes the output. A call that finds the session already claimed logs no row.
 

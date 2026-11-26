@@ -4,7 +4,7 @@
 - Supersedes: PR [#529](https://github.com/jeanibarz/agent-notebook/pull/529) (the `nb-ideas` wrapper)
 - Status: accepted (v3.1 — after three rounds of critic review, empirical checks and a consensus attack)
 - Evidence: [0530-notebook-kinds-evidence.md](0530-notebook-kinds-evidence.md)
-- Amended by [#538](https://github.com/jeanibarz/agent-notebook/issues/538) (2026-11-26): `nb brief` and `nb retro` hold one built-in start and end text, the same for every kind of notebook. The non-goal below stands: per-kind text still comes only from outside the notebooks folder (`NB_RETRO_EXTRA_PROMPT`, then [#539](https://github.com/jeanibarz/agent-notebook/issues/539)).
+- Amended by [#538](https://github.com/jeanibarz/agent-notebook/issues/538) (2026-11-26): `nb brief` and `nb retro` hold one built-in start and end text, the same for every kind of notebook. The non-goal below stands: per-kind text still comes only from outside the notebooks folder (`NB_RETRO_EXTRA_PROMPT`). [#539](https://github.com/jeanibarz/agent-notebook/issues/539) added user text from `~/.agent-notebook/messages/`, which is outside every notebooks folder, so line 97 ("prompt text never comes from synced data") holds. The non-goal "no per-kind prompt text inside `nb`" stands too: those files are per user and per project, not per kind of notebook.
 
 ## Problem
 
