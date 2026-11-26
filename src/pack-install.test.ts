@@ -220,6 +220,14 @@ describe('install from the packed tarball [slow]', () => {
     expect(packedFiles).toContain('dist/cli.js');
   });
 
+  // Issue #559: the plugin is a second distribution, built from plugin/ and scripts/ by
+  // scripts/build-plugin.mjs. Neither folder is part of the package; the hook entry the
+  // plugin starts from is, so an npm user can run it too.
+  test('the tarball holds no plugin/ or scripts/ file and does hold the hook entry', () => {
+    expect(packedFiles.filter((p) => p.startsWith('plugin/') || p.startsWith('scripts/'))).toEqual([]);
+    expect(packedFiles).toContain('examples/hooks/claude-code/nb-hook-entry.cjs');
+  });
+
   test('every shipped sourcemap has its sources inside the tarball', () => {
     const shipped = new Set(packedFiles);
     const dangling: string[] = [];

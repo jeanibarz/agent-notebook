@@ -225,9 +225,13 @@ npm test           # vitest run — needs Node 20.12+ (see CONTRIBUTING.md)
   the diff, or strike it with a one-line reason (`- [ ] ~~<marker> row~~ — reason`).
   Write the body to a file and pass `gh pr create --body-file` — inline `--body` skips the template.
 - The docs added for harness integration — [getting-started](docs/getting-started.md),
-  [harness-setup](docs/harness-setup.md), [enterprise](docs/enterprise.md), and the
-  [`examples/`](examples/) scripts — describe a layer that lives *around* the
-  package (hooks, git-versioning, backup, a janitor), never inside the hot `nb`
-  path, per [DP-6](docs/requirements.md#dp-6).
+  [harness-setup](docs/harness-setup.md), [enterprise](docs/enterprise.md) — describe a
+  layer that lives *around* the package, never inside the hot `nb` path, per
+  [DP-6](docs/requirements.md#dp-6). Where that layer's code lives is fixed file by file:
+  `src/` and `dist/` are harness-blind (no hook format, no `CLAUDE_PLUGIN_ROOT`); the
+  supported harness files are `plugin/**`, `examples/hooks/claude-code/nb-claude-hook.mjs`
+  and `examples/hooks/claude-code/nb-hook-entry.cjs` (listed in `src/module-boundaries.test.ts`);
+  the rest of [`examples/`](examples/) is optional, copied or registered by hand. None of
+  them runs inside an `nb` call.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor workflow.

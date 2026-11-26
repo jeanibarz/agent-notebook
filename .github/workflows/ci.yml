@@ -128,4 +128,4 @@ jobs:
       - run: npm ci
       - run: npm config set script-shell "C:\\Program Files\\Git\\bin\\bash.exe"
       - run: npm run build
-      - run: npx vitest run src/brief.test.ts src/retro.test.ts src/loop-stats.test.ts src/module-boundaries.test.ts src/nb-claude-hook.test.ts src/project.test.ts src/usage-record.test.ts src/place.test.ts src/place-ops.test.ts src/messages.test.ts src/retro-messages.test.ts src/nb-hook-entry.test.ts
+      - run: npx vitest run src/brief.test.ts src/retro.test.ts src/loop-stats.test.ts src/module-boundaries.test.ts src/nb-claude-hook.test.ts src/project.test.ts src/usage-record.test.ts src/place.test.ts src/place-ops.test.ts src/messages.test.ts src/retro-messages.test.ts src/nb-hook-entry.test.ts src/plugin-build.test.ts src/plugin-hooks.test.ts src/plugin-launchers.test.ts

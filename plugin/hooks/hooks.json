@@ -1,0 +1,64 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/examples/hooks/claude-code/nb-hook-entry.cjs",
+              "session-start"
+            ]
+          },
+          {
+            "type": "command",
+            "command": "sh",
+            "args": [
+              "-c",
+              "case \"$(uname -s 2>/dev/null)\" in MINGW*|MSYS*|CYGWIN*) exit 0;; esac; command -v node >/dev/null 2>&1 || echo 'agent-notebook: the notebook needs Node.js 18 or later, which this computer does not have yet. Tell the user, in plain words: Node.js is a free program, download the LTS version from https://nodejs.org and install it, then quit Claude Code completely, with Cmd+Q on a Mac or by closing every terminal window on Windows, and open it again. Until then the notebook is off.'"
+            ]
+          },
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": [
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              "if (-not $env:CLAUDE_PLUGIN_ROOT) { exit 0 }; if (-not (Get-Command node -CommandType Application -ErrorAction SilentlyContinue)) { Write-Output 'agent-notebook: the notebook needs Node.js 18 or later, which this computer does not have yet. Tell the user, in plain words: Node.js is a free program, download the LTS version from https://nodejs.org and install it, then quit Claude Code completely, with Cmd+Q on a Mac or by closing every terminal window on Windows, and open it again. Until then the notebook is off.' }"
+            ]
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/examples/hooks/claude-code/nb-hook-entry.cjs",
+              "subagent-start"
+            ]
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/examples/hooks/claude-code/nb-hook-entry.cjs",
+              "stop"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

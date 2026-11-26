@@ -1,0 +1,17 @@
+#!/bin/sh
+# The plugin's own copy of nb. Keep only absolute PATH entries first, so that a program
+# named node planted in the current folder (an empty or relative PATH entry) is never run.
+# set -f stops a * in PATH from being expanded into file names.
+set -f
+p=
+IFS=:
+for d in $PATH; do
+  case $d in
+    /*) p=${p:+$p:}$d ;;
+  esac
+done
+unset IFS
+PATH=$p
+set +f
+export PATH
+exec node "${0%/*}/../dist/cli.js" "$@"

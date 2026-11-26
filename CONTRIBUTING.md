@@ -104,7 +104,7 @@ genuinely no alternative.
 - [docs/self-observing-notebook.md](docs/self-observing-notebook.md) — why the tool instruments itself.
 - [AGENTS.md](AGENTS.md) (= `CLAUDE.md`) — the agent operating contract.
 - [docs/getting-started.md](docs/getting-started.md) · [docs/harness-setup.md](docs/harness-setup.md) · [docs/enterprise.md](docs/enterprise.md) — the user-facing guides.
-- [examples/](examples/) — the optional harness layer (git wrapper, backup, janitor, hooks). These describe a layer *around* the package; per **DP-6** nothing clever runs inside an `nb` call, so changes here never touch the hot path.
+- [examples/](examples/) — the optional harness layer (git wrapper, backup, janitor, hooks). `src/` and `dist/` are harness-blind; the supported harness files are `plugin/**` (the Claude Code plugin, built into a zip by `node scripts/build-plugin.mjs`), `examples/hooks/claude-code/nb-claude-hook.mjs` and `examples/hooks/claude-code/nb-hook-entry.cjs`, and the rest of `examples/` is optional, copied or registered by hand. Per **DP-6** none of it runs inside an `nb` call, so changes here never touch the hot path.
 
 ## Changelog
 

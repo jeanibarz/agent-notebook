@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+build/
 junit.xml
 *.log
 .DS_Store
