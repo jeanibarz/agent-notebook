@@ -18,6 +18,7 @@
 // relative NB_BIN is ignored for the same reason; an absolute one is still used.
 'use strict';
 
+var fs = require('fs');
 var path = require('path');
 
 // Keep in step with "engines" in package.json; a test checks both.
@@ -34,11 +35,19 @@ function isStart(e) {
   return e === 'session-start' || e === 'subagent-start';
 }
 
+// Node gives a main file's __dirname with symlinks resolved, so the root is resolved too
+// (a symlinked ~/.claude must not make the check fail). A root that is set but cannot be
+// resolved counts as "inside": being strict there only ignores a relative NB_BIN.
 function insidePlugin() {
   var root = process.env.CLAUDE_PLUGIN_ROOT;
   if (!root) return false;
-  var rel = path.relative(path.resolve(root), __dirname);
-  return rel === '' || (rel.split(path.sep)[0] !== '..' && !path.isAbsolute(rel));
+  try {
+    root = fs.realpathSync(path.resolve(root));
+  } catch (e) {
+    return true;
+  }
+  var rel = path.relative(root, fs.realpathSync(__dirname));
+  return rel.split(path.sep)[0] !== '..' && !path.isAbsolute(rel);
 }
 
 var major = parseInt(String(process.versions.node).split('.')[0], 10);

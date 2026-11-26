@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,8 @@ const ENTRY = join(HOOKS, 'nb-hook-entry.cjs');
 const ADAPTER = join(HOOKS, 'nb-claude-hook.mjs');
 const SOURCE = readFileSync(ENTRY, 'utf-8');
 const NOTICE = /^var NOTICE = '([^']*)';$/m.exec(SOURCE)![1]!;
+// Making a directory symlink needs a privilege Windows runners may not grant.
+const testLink = process.platform === 'win32' ? test.skip : test;
 const BROKEN = "agent-notebook: the notebook's hook could not start. Tell the user: reinstall the agent-notebook plugin.";
 
 let tmp: string; // contains a space on purpose
@@ -157,6 +159,39 @@ describe('which nb the entry lets the adapter run (issue #559)', () => {
     expect(run(ENTRY, ['session-start', '--max-chars', '9000', '--managed'], { env: { NB_BIN: fake } }).out).toContain('build');
   });
 
+  test('the adapter gets the event and its arguments in order, without --managed', () => {
+    const copy = join(tmp, 'copy');
+    mkdirSync(copy);
+    copyFileSync(ENTRY, join(copy, 'nb-hook-entry.cjs'));
+    writeFileSync(join(copy, 'nb-claude-hook.mjs'), 'process.stdout.write(JSON.stringify(process.argv.slice(2)));\n');
+    const argv = (args: string[]) => JSON.parse(run(join(copy, 'nb-hook-entry.cjs'), args).out);
+    expect(argv(['session-start', '--max-chars', '9000'])).toEqual(['session-start', '--max-chars', '9000']);
+    expect(argv(['session-start', '--managed', '--max-chars', '9000'])).toEqual(['session-start', '--max-chars', '9000']);
+    expect(argv(['stop', '--max-chars', '9000', '--managed'])).toEqual(['stop', '--max-chars', '9000']);
+    // Only the first --managed after the event is the entry's; a value equal to it is not looked at before the event.
+    expect(argv(['--managed'])).toEqual(['--managed']);
+  });
+
+  testLink('a CLAUDE_PLUGIN_ROOT reached through a symlink still counts as the plugin', () => {
+    const proj = join(tmp, 'project');
+    fakeNb(join(proj, 'tools'), 'PROJECT-NB');
+    const real = join(tmp, 'real-plugin');
+    mkdirSync(join(real, 'examples', 'hooks', 'claude-code'), { recursive: true });
+    copyFileSync(ENTRY, join(real, 'examples', 'hooks', 'claude-code', 'nb-hook-entry.cjs'));
+    writeFileSync(join(real, 'examples', 'hooks', 'claude-code', 'nb-claude-hook.mjs'), "process.stdout.write(String(process.env.NB_BIN));\n");
+    const link = join(tmp, 'link');
+    symlinkSync(real, link, 'dir');
+    const entry = join(link, 'examples', 'hooks', 'claude-code', 'nb-hook-entry.cjs');
+    const rel = join('tools', 'fake-nb.mjs');
+    for (const pluginRoot of [link, real]) {
+      expect(run(entry, ['session-start'], { cwd: proj, env: { NB_BIN: rel, CLAUDE_PLUGIN_ROOT: pluginRoot } }).out, pluginRoot).toBe('undefined');
+    }
+    // A root that is set but does not exist fails closed: the relative NB_BIN is still ignored.
+    expect(run(entry, ['session-start'], { cwd: proj, env: { NB_BIN: rel, CLAUDE_PLUGIN_ROOT: join(tmp, 'gone') } }).out).toBe('undefined');
+    // Outside the plugin the value reaches the adapter untouched.
+    expect(run(entry, ['session-start'], { cwd: proj, env: { NB_BIN: rel, CLAUDE_PLUGIN_ROOT: proj } }).out).toBe(rel);
+  });
+
   test('inside an installed plugin, a relative NB_BIN is ignored and an absolute one is used', () => {
     const proj = join(tmp, 'project');
     fakeNb(join(proj, 'tools'), 'PROJECT-NB');
@@ -167,8 +202,8 @@ describe('which nb the entry lets the adapter run (issue #559)', () => {
     const plugin = run(ENTRY, ['session-start'], { cwd: proj, env: { NB_BIN: rel, CLAUDE_PLUGIN_ROOT: root } });
     expect(plugin.out).not.toContain('PROJECT-NB');
     expect(plugin.out).toContain('build');
-    // A CLAUDE_PLUGIN_ROOT that does not contain the entry is not "the plugin".
-    expect(run(ENTRY, ['session-start'], { cwd: proj, env: { NB_BIN: rel, CLAUDE_PLUGIN_ROOT: join(tmp, 'elsewhere') } }).out).toBe('PROJECT-NB\n');
+    // An existing CLAUDE_PLUGIN_ROOT that does not contain the entry is not "the plugin".
+    expect(run(ENTRY, ['session-start'], { cwd: proj, env: { NB_BIN: rel, CLAUDE_PLUGIN_ROOT: tmp } }).out).toBe('PROJECT-NB\n');
     const abs = fakeNb(join(tmp, 'abs'), 'ABSOLUTE-NB');
     expect(run(ENTRY, ['session-start'], { cwd: proj, env: { NB_BIN: abs, CLAUDE_PLUGIN_ROOT: root } }).out).toBe('ABSOLUTE-NB\n');
   });
@@ -215,7 +250,7 @@ describe('the entry stays readable by an old Node.js (issue #559)', () => {
 });
 
 describe('the entry under parallel stops (issue #559)', () => {
-  test('12 stops of one session at once block exactly once [timing]', async () => {
+  test('20 stops of one session at once block exactly once [timing]', async () => {
     const one = (): Promise<string> =>
       new Promise((resolve) => {
         const c = spawn(process.execPath, [ENTRY, 'stop'], { cwd: tmp, env: childEnv() });
@@ -224,7 +259,7 @@ describe('the entry under parallel stops (issue #559)', () => {
         c.on('close', () => resolve(out));
         c.stdin.end(JSON.stringify({ session_id: 'race' }));
       });
-    const outs = await Promise.all(Array.from({ length: 12 }, one));
+    const outs = await Promise.all(Array.from({ length: 20 }, one));
     expect(outs.filter((o) => o.includes('"decision":"block"')).length).toBe(1);
     expect(outs.filter((o) => o !== '' && !o.includes('"decision":"block"'))).toEqual([]);
   }, 60_000);

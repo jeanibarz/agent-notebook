@@ -1935,7 +1935,7 @@ change.
 
 <a id="fr-hooks-002"></a>
 **FR-HOOKS-002 (Should).** `examples/hooks/claude-code/nb-hook-entry.cjs` SHALL be readable by
-every Node.js from 10 on (old syntax only, the adapter loaded with `import()` behind
+an old Node.js (old syntax only, checked by a lint for Node 10 and run on the real Node 12 and 16, the adapter loaded with `import()` behind
 `new Function`), so that a Node.js too old for the adapter still gets a message. With a Node.js
 older than its `MIN_NODE`, which SHALL equal the major of `engines.node`, it SHALL print one notice
 naming that version and https://nodejs.org for `session-start` (none when `NB_ENABLED` is off) and
@@ -1944,7 +1944,8 @@ arguments to `nb-claude-hook.mjs` in the same folder, whose output it SHALL leav
 file cannot be loaded, a start event SHALL get one fixed line saying to reinstall the plugin and a
 Stop hook nothing, with the detail on stderr. `--managed` (anywhere after the event) SHALL be removed
 from the arguments and SHALL make the adapter ignore `NB_BIN`; when `CLAUDE_PLUGIN_ROOT` contains the
-file, a relative `NB_BIN` SHALL be ignored. The notice SHALL be printable ASCII without
+file (both paths with symlinks resolved; a root that cannot be resolved counts as containing it), a
+relative `NB_BIN` SHALL be ignored. The notice SHALL be printable ASCII without
 `' " $ ` % & | ^ < > ( ) ! ;`, so the same text can be copied into a shell or PowerShell command.
 The Claude Code plugin's hooks start from this file ([issue #559](https://github.com/jeanibarz/agent-notebook/issues/559));
 `print-settings` and the three `.sh` files still run the adapter directly, for people who installed
