@@ -1,0 +1,82 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/examples/hooks/claude-code/nb-claude-hook.mjs",
+              "session-start"
+            ]
+          },
+          {
+            "type": "command",
+            "command": "echo \"SPIKE559-SH v=$(cat \"$CLAUDE_PLUGIN_ROOT/SPIKE_VERSION\") node=$(command -v node || echo ABSENT) git=$(command -v git || echo ABSENT) sh=$0 envfile=${CLAUDE_ENV_FILE:-UNSET}\"; if [ -n \"$CLAUDE_ENV_FILE\" ]; then echo 'export NB_SPIKE_ENV=reached' >> \"$CLAUDE_ENV_FILE\"; fi"
+          },
+          {
+            "type": "command",
+            "command": "command -v node >/dev/null 2>&1 || echo 'agent-notebook: Node.js is not installed, so the notebook is off. Tell the user: install Node.js LTS from https://nodejs.org, then quit and reopen the app.'"
+          },
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "Write-Output ('SPIKE559-PS ps=' + $PSVersionTable.PSVersion + ' edition=' + $PSVersionTable.PSEdition + ' node=' + [string](Get-Command node -ErrorAction SilentlyContinue).Source + ' git=' + [string](Get-Command git -ErrorAction SilentlyContinue).Source + ' envfile=' + [string]$env:CLAUDE_ENV_FILE + ' root=' + $env:CLAUDE_PLUGIN_ROOT)"
+          },
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Output 'agent-notebook: Node.js is not installed, so the notebook is off. Tell the user: install Node.js LTS from https://nodejs.org, then quit and reopen the app.' }"
+          },
+          {
+            "type": "command",
+            "command": "sh",
+            "args": [
+              "-c",
+              "case \"$(uname -s 2>/dev/null)\" in MINGW*|MSYS*|CYGWIN*) exit 0;; esac; node -e \"process.exit(+process.versions.node.split('.')[0]<18?1:0)\" 2>/dev/null || echo 'EXEC-SH agent-notebook: Node.js 18 or later is needed; it is missing or too old here, so the notebook is off. Tell the user: install Node.js LTS from https://nodejs.org, then quit and reopen the app.'"
+            ]
+          },
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": [
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              "if (-not $env:CLAUDE_PLUGIN_ROOT) { exit 0 }; if (-not (Get-Command node -ErrorAction SilentlyContinue)) { $ok = $false } else { node -e \"process.exit(+process.versions.node.split('.')[0]<18?1:0)\"; $ok = ($LASTEXITCODE -eq 0) }; if (-not $ok) { Write-Output 'EXEC-PS agent-notebook: Node.js 18 or later is needed; it is missing or too old here, so the notebook is off. Tell the user: install Node.js LTS from https://nodejs.org, then quit and reopen the app.' }"
+            ]
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/examples/hooks/claude-code/nb-claude-hook.mjs",
+              "subagent-start"
+            ]
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/examples/hooks/claude-code/nb-claude-hook.mjs",
+              "stop"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

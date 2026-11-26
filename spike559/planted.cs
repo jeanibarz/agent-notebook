@@ -1,0 +1,1 @@
+class P { static void Main(string[] a) { System.Console.WriteLine("PLANTED-EXE " + System.IO.Path.GetFileName(System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName) + " args=" + string.Join(" ", a)); } }
