@@ -154,6 +154,14 @@ describe('nb retro sends what the 0.12 Stop hook sent (FR-RETRO-001, FR-RETRO-00
     expect(r.out).toBe(old + '\n');
   });
 
+  test('the project name for {project} is asked in --work-dir before the working directory', () => {
+    const workDir = repo('Proj.B');
+    const extra = join(tmp, 'extra.txt');
+    writeFileSync(extra, 'project={project}');
+    const r = nb(['retro', '--session', 'wd', '--work-dir', workDir], { env: { NB_RETRO_EXTRA_PROMPT: extra } });
+    expect(r.out).toBe(`${RETRO_LESSONS}\n\nproject=proj.b\n`);
+  });
+
   testOld('with NB_PROJECT_SLUG set nb retro matches the 0.12 Stop hook outside a git repository', () => {
     const extra = join(tmp, 'extra.txt');
     writeFileSync(extra, 'slug={project} id={session}');
@@ -455,6 +463,20 @@ describe('nb retro fails open (FR-RETRO-001)', () => {
     expect(r.code).toBe(0);
     expect(r.out).toBe(RETRO_LESSONS + '\n');
     expect(existsSync(join(deep, '.retro-mk'))).toBe(true);
+  });
+
+  test('a working directory that no longer exists still nudges and exits 0', () => {
+    if (isWin) return; // a process cannot sit in a removed directory there
+    const gone = join(tmp, 'gone');
+    mkdirSync(gone);
+    const r = spawnSync('sh', ['-c', 'cd "$1" && rmdir "$1" && exec "$2" "$3" retro --session gone', 'sh', gone, process.execPath, CLI], {
+      env: childEnv(),
+      encoding: 'utf-8',
+      timeout: 20_000,
+    });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe(RETRO_LESSONS + '\n');
+    expect(sentinels()).toEqual(['.retro-gone']);
   });
 });
 

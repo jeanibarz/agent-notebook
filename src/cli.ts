@@ -1606,7 +1606,7 @@ export async function runNbCli(
         const extraOperand = rest.slice(1).concat(operands)[0];
         if (extraOperand !== undefined) throw new NbError('bad_args', `unexpected extra argument "${extraOperand}" for \`nb retro\``);
         if (sessionRaw === undefined) throw new NbError('bad_args', 'missing --session <id> (the harness session id; pass --session "" when there is none)');
-        const r = retro({ session: sessionRaw, workDir, dir, cwd: process.cwd() });
+        const r = retro({ session: sessionRaw, workDir, dir, cwd: currentDir() });
         if (r.err) process.stderr.write(r.err);
         meta.outcome = r.outcome;
         meta.session = r.session;
@@ -1760,6 +1760,15 @@ export async function runNbCli(
     } finally {
       setCallMaxChars(undefined);
     }
+  }
+}
+
+/** The working directory, or `null` when it no longer exists (`process.cwd()` then throws). */
+function currentDir(): string | null {
+  try {
+    return process.cwd();
+  } catch {
+    return null;
   }
 }
 

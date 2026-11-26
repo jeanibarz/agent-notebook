@@ -1008,7 +1008,7 @@ rows by `cli.test.ts` → `describe('runNbCli')` → the two `issue #250` usage-
 base columns, five entry-level/outcome columns:
 `"\t<session>\t<entry-ids>\t<outcome>\t<collided-id>\t<evicted-id:score>"`, where
 `session` is the value of `NB_SESSION` at call time (blank when unset — co-access is
-then not computed), `entry-ids` is the comma-joined stable id(s) the call touched,
+then not computed; a `retro` row holds its cleaned `--session` instead, see [FR-USAGE-001](#fr-usage-001)), `entry-ids` is the comma-joined stable id(s) the call touched,
 `outcome` is `accepted`/`dedup-blocked`/`empty`/`too-long` for `add` (plus
 `rejected-full` in logs predating the always-admit policy; `add` no longer emits it),
 `up`/`down` for `vote`, `removed` for `rm`, `merged` for `merge`, `split` for `split`,
@@ -1728,7 +1728,7 @@ opened, so a FIFO or a device can never stall the call.
 "a leading ~/ in NB_RETRO_EXTRA_PROMPT expands to the home directory".
 
 <a id="fr-retro-003"></a>
-**FR-RETRO-003 (Should).** After a successful claim, `nb retro` SHALL remove `.retro-*`
+**FR-RETRO-003 (Should).** After its claim attempt, unless the session was already claimed, `nb retro` SHALL remove `.retro-*`
 files in `NB_DIR` older than `NB_RETRO_TTL_DAYS` days (default 7), best-effort: a failure
 SHALL never change what it prints. A sentinel holds no lesson, so this does not age an
 entry ([NG-005](#ng-005)).

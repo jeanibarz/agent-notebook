@@ -202,6 +202,9 @@ function recognizedEnvVars(): string[] {
   return [...TUNABLE_REGISTRY.map((t) => t.env), ...environmentRows().map((r) => r.name), 'NB_ENABLED', ...RETRO_ENV_VARS];
 }
 
+/** The variables `nb retro` reads (issue #538, FR-RETRO-002/003). */
+const RETRO_ENV_VARS: readonly string[] = ['NB_RETRO_EXTRA_PROMPT', 'NB_RETRO_TTL_DAYS', 'NB_PROJECT_SLUG'];
+
 /**
  * `NB_*` variables read by the tooling this repo SHIPS (the harness hooks, the
  * git-wrapper, the backup/janitor scripts under `examples/`) rather than by
@@ -211,9 +214,6 @@ function recognizedEnvVars(): string[] {
  * exactly what the issue's Risk section forbids. Reported as "not read by
  * `nb`" (not "unrecognized"), and never used as a suggestion candidate.
  */
-/** The variables `nb retro` reads (issue #538, FR-RETRO-002/003). */
-const RETRO_ENV_VARS: readonly string[] = ['NB_RETRO_EXTRA_PROMPT', 'NB_RETRO_TTL_DAYS', 'NB_PROJECT_SLUG'];
-
 const SHIPPED_TOOL_ENV_VARS: readonly string[] = [
   'NB_BIN',
   'NB_GIT_AUTOCOMMIT',

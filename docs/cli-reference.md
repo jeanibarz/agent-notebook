@@ -213,7 +213,7 @@ nb retro --session "$SESSION_ID" --work-dir "$PWD_OF_THE_AGENT"   # also ask the
   the 0.12 example Stop hook creates, so an old copied hook and this command nudge once
   between them. The id keeps only `A-Za-z0-9._-` (others become `_`), at most 128
   characters, and a leading `-` becomes `_`. `.retro-*` files older than
-  `NB_RETRO_TTL_DAYS` (7) are removed after a nudge.
+  `NB_RETRO_TTL_DAYS` (7) are removed after the claim attempt (unless the session was already claimed).
 - **Off** (see `nb enabled`) in the working directory prints nothing and keeps the claim;
   off only in `--work-dir` prints nothing and releases it, so a later stop from an on
   directory still nudges.

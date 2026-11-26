@@ -58,8 +58,8 @@ export interface RetroOptions {
   workDir?: string;
   /** The notebooks directory (holds the sentinels). */
   dir: string;
-  /** The project directory: the working directory the command runs in. */
-  cwd: string;
+  /** The project directory: the working directory the command runs in; `null` when it no longer exists. */
+  cwd: string | null;
   env?: NodeJS.ProcessEnv;
   /** Injectable for tests; the CLI uses the real resolver. */
   enabled?: (env: NodeJS.ProcessEnv, cwd: string) => EnabledState;
@@ -244,8 +244,10 @@ export function retro(opts: RetroOptions): RetroResult {
 
   // 4-5. The per-repository switch, in the project directory, then in the
   //      directory the assistant last worked in.
-  const projectDir = resolve(opts.cwd);
-  if (!enabled(env, projectDir).enabled) return { outcome: 'off', text: '', session, err };
+  //      A working directory that no longer exists (a removed worktree) cannot be
+  //      asked: the switch then fails open, as it does for any git error.
+  const projectDir = opts.cwd === null ? null : resolve(opts.cwd);
+  if (projectDir !== null && !enabled(env, projectDir).enabled) return { outcome: 'off', text: '', session, err };
   const workDir = existingAbsoluteDir(opts.workDir);
   if (workDir !== null && workDir !== projectDir && !enabled(env, workDir).enabled) {
     try {
@@ -260,7 +262,8 @@ export function retro(opts: RetroOptions): RetroResult {
   //    filled: a session id was given and a project name is found.
   let text = RETRO_LESSONS;
   if (extra.text !== '' && opts.session !== '') {
-    const project = projectName(env, workDir ?? projectDir);
+    const asked = workDir ?? projectDir;
+    const project = asked === null ? (env.NB_PROJECT_SLUG ? cleanProjectName(env.NB_PROJECT_SLUG) : '') : projectName(env, asked);
     if (project !== '') {
       const values: Record<string, string> = { project, session };
       text = `${RETRO_LESSONS}\n\n${extra.text.replace(/\{(project|session)\}/g, (_, k: string) => values[k]!)}`;
