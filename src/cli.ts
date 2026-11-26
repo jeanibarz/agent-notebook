@@ -98,7 +98,7 @@ import {
 import { describeSource, resolveEnabled, stateWord } from './enabled.js';
 import { describeProject, resolveProject, type ProjectState } from './project.js';
 import { isWindowsDeviceName, placeRefusal, resolvePlace, scanProjects, sharedWriteRefusal, type Place } from './place.js';
-import { allShelves, isGitRepo, placeOwn, placeShared, unfinishedMoves, type PlaceMove } from './place-ops.js';
+import { allShelves, isGitRepo, placeOwn, placeShared, sharedName, unfinishedMoves, type PlaceMove } from './place-ops.js';
 import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, extraPromptStatus, messageProjectName, placeLine, projectOfCall, retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import {
@@ -1782,9 +1782,12 @@ export async function runNbCli(
           }
           if (!done) {
             const where = escapeDiskName(r.left ?? own);
+            // A name already taken in the shared notebook needs the user: say how to free it.
+            const taken = r.kept.filter((k) => k.why === 'a shelf of that name is already there').map((k) => sharedName(k.shelf, st!.name));
+            const free = taken.length === 0 ? '' : ` First free ${taken.join(', ')} in the shared notebook (for example \`nb move ${taken[0]} <new name>\`).`;
             throw new Error(
               r.kept.length > 0
-                ? `${r.kept.length} shelf(s) could not be moved (listed above) and stay in ${where}; nothing is lost. Do not delete that folder; run \`nb place shared\` again to finish.`
+                ? `${r.kept.length} shelf(s) could not be moved (listed above) and stay in ${where}; nothing is lost. Do not delete that folder; run \`nb place shared\` again to finish.${free}`
                 : `${where} could not be removed; nothing is lost. Do not delete that folder; run \`nb place shared\` again to finish.`,
             );
           }
@@ -2117,12 +2120,14 @@ function unfinishedOf(p: Place): ReturnType<typeof unfinishedMoves> {
     return [];
   }
   if (!names.some((n) => n.startsWith('.old-'))) return [];
-  let name = p.project?.name ?? '';
-  if (p.project === null) {
+  let st: ProjectState | null = p.project;
+  if (st === null) {
     const cwd = currentDir();
-    if (cwd !== null || process.env.NB_PROJECT_SLUG) name = resolveProject(process.env, cwd ?? '.').name;
+    if (cwd !== null || process.env.NB_PROJECT_SLUG) st = resolveProject(process.env, cwd ?? '.');
   }
-  return name === '' ? [] : unfinishedMoves(p.projectsDir, name).filter((u) => u.inProgress || u.shelves.length > 0);
+  // The same rule as `hasUnfinished`, so a folder listed here is one `nb place shared` finishes.
+  if (st === null || st.name === '' || (st.source !== 'env' && st.source !== 'remote')) return [];
+  return unfinishedMoves(p.projectsDir, st.name).filter((u) => u.inProgress || u.shelves.length > 0);
 }
 
 /** Whether `nb place shared` has an unfinished move of this project to finish, outside an own notebook. */

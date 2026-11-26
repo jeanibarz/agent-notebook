@@ -431,6 +431,48 @@ describe('removing the project folder: renamed away first, then emptied (issue #
     expect(readFileSync(join(shared, 'build@acme-app.md'), 'utf-8')).toBe(SHELF);
   });
 
+  test('a link that fails after the rename takes back what it linked and puts the folder back: nothing changed', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    let calls = 0;
+    const fail = (): void => {
+      calls++;
+      throw Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM' });
+    };
+    await expect(placeShared(shared, own, 'acme-app', { beforeLink: fail })).rejects.toThrow(
+      /could not move the shelves to the shared notebook \(EPERM\); nothing changed, the project keeps its own notebook/,
+    );
+    expect(calls).toBe(1);
+    expect(shelves(own)).toEqual(['build.md']);
+    expect(readdirSync(projects)).toEqual(['acme-app']);
+    expect(existsSync(join(own, '.nb.lock'))).toBe(false);
+    expect(shelves(shared)).toEqual([]);
+    expect(await placeShared(shared, own, 'acme-app')).toMatchObject({ moved: ['build'], removed: true });
+  });
+
+  test.skipIf(isWin)('a shelf whose shared name is too long for the file system: the links made are taken back, nothing changed', async () => {
+    mkdirSync(own, { recursive: true, mode: 0o700 });
+    writeFileSync(join(own, 'build.md'), SHELF);
+    // A valid file whose name plus `@acme-app` passes the 255-byte limit of a name.
+    writeFileSync(join(own, `${'x'.repeat(250)}.md`), '+1 a long one\n');
+    await expect(placeShared(shared, own, 'acme-app')).rejects.toThrow(/could not move the shelves to the shared notebook \(ENAMETOOLONG\); nothing changed/);
+    expect(shelves(own)).toEqual(['build.md', `${'x'.repeat(250)}.md`]);
+    expect(readdirSync(projects)).toEqual(['acme-app']);
+    expect(shelves(shared)).toEqual([]);
+  });
+
+  test.skipIf(isWin)('a resumed move whose link fails puts the folder back as the own notebook, nothing lost', async () => {
+    const d = leftover(DEAD, { stale: true });
+    writeFileSync(join(d, `${'x'.repeat(250)}.md`), '+1 a long one\n');
+    await expect(placeShared(shared, own, 'acme-app')).rejects.toThrow(
+      /could not move the shelves to the shared notebook \(ENAMETOOLONG\); nothing changed, the project keeps its own notebook/,
+    );
+    expect(existsSync(d)).toBe(false);
+    expect(shelves(own)).toEqual(['build.md', `${'x'.repeat(250)}.md`]);
+    expect(existsSync(join(own, '.nb.lock'))).toBe(false);
+    expect(shelves(shared)).toEqual([]);
+  });
+
   test.skipIf(isWin)('the sweep never follows a link named like a staging or renamed-away folder', async () => {
     const victim = join(tmp, 'victim');
     mkdirSync(victim);

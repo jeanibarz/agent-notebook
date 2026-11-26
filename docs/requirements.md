@@ -2044,7 +2044,8 @@ Holding both locks, it SHALL first rename the folder away to `.old-<project>-<pi
 from then on the project uses the shared notebook and no `nb` call can write into the folder, so a
 writer that waited on its lock refuses instead of re-filling it. It SHALL then move the shelves out of
 the renamed folder and remove it once it holds no shelf. A refused rename (on Windows, a file held
-open) SHALL change nothing. A shelf that cannot move SHALL stay in the renamed folder, reported, with
+open) SHALL change nothing, and so SHALL a link that fails after it (a name too long, a file system
+without hard links): the links made are taken back and the folder is renamed back. A shelf that cannot move SHALL stay in the renamed folder, reported, with
 exit `1`; `nb` SHALL never remove a folder that holds a shelf, and the next `nb place shared` of the
 project SHALL finish a move whose process is dead or whose lock is stale (one still in progress is
 reported, nothing changed), while `nb place own` refuses until then. Staging and renamed-away folders

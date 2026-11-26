@@ -310,14 +310,15 @@ function removeNbOwnFiles(dir: string): void {
 
 /** `rmdir` a renamed-away folder once it holds no shelf; `true` when it is gone. */
 function finishOld(dir: string): boolean {
+  if (!present(dir)) return true; // another place command finished it first
   if (allShelves(dir).length > 0) return false;
   removeNbOwnFiles(dir);
   removeDeadLock(dir);
   try {
     rmdirSync(dir);
     return true;
-  } catch {
-    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ENOENT';
   }
 }
 
@@ -332,8 +333,9 @@ export function linkAll(
   shelves: string[],
   kept: PlaceMove['kept'],
   rename: (shelf: string) => string = (x) => x,
+  linked: Map<string, BigIntStats> = new Map(),
 ): Map<string, BigIntStats> {
-  const linked = new Map<string, BigIntStats>();
+  // `linked` may be the caller's: if a link throws, it still holds the links made so far.
   for (const s of shelves) {
     const src = join(from, `${s}.md`);
     const dst = join(to, `${rename(s)}.md`);
@@ -567,10 +569,51 @@ function moveOut(
 ): { moved: string[]; lessons: number } {
   const shelves = allShelves(from);
   const lessons = new Map(shelves.map((s) => [s, lessonsIn(from, s)]));
-  hooks.beforeLink?.();
-  const linked = linkAll(from, shared, shelves, kept, (x) => sharedName(x, project));
-  const moved = unlinkUnlessTakenOver(l, from, linked, kept, (x) => join(shared, `${sharedName(x, project)}.md`));
+  const linked = new Map<string, BigIntStats>();
+  const dest = (x: string): string => join(shared, `${sharedName(x, project)}.md`);
+  try {
+    hooks.beforeLink?.();
+    linkAll(from, shared, shelves, kept, (x) => sharedName(x, project), linked);
+  } catch (e) {
+    // A link failed for a reason a re-run would meet again (a name too long, a file
+    // system without hard links, another device): take back the links made so far,
+    // so every shelf is again only in `from`, and let the caller restore the folder.
+    for (const [s, st] of linked) {
+      try {
+        const there = lstatSync(dest(s), { bigint: true });
+        if (there.ino === st.ino && there.dev === st.dev) unlinkSync(dest(s));
+      } catch {
+        // gone: nothing to take back
+      }
+    }
+    throw e;
+  }
+  const moved = unlinkUnlessTakenOver(l, from, linked, kept, dest);
   return { moved, lessons: moved.reduce((n, s) => n + (lessons.get(s) ?? 0), 0) };
+}
+
+/**
+ * Put a renamed-away folder back as `projects/<project>` after its shelves could not
+ * be linked (nothing moved), unless that name was taken meanwhile; returns the error
+ * the command throws.
+ */
+function restore(away: string, own: string, ownLock: LockHandle | null, e: unknown): Error {
+  const code = (e as NodeJS.ErrnoException).code ?? 'error';
+  let back = false;
+  if (!present(own)) {
+    try {
+      renameSync(away, own);
+      ownLock?.rebase(own);
+      back = true;
+    } catch {
+      // stays renamed away: the next run tries again
+    }
+  }
+  return new Error(
+    back
+      ? `could not move the shelves to the shared notebook (${code}); nothing changed, the project keeps its own notebook (${own}). Run \`nb place shared\` again once the cause is fixed.`
+      : `could not move the shelves to the shared notebook (${code}); nothing is lost, they are all in ${away}. Do not delete that folder; run \`nb place shared\` again once the cause is fixed.`,
+  );
 }
 
 /**
@@ -598,8 +641,13 @@ export async function placeShared(shared: string, own: string, project: string, 
       if (u.inProgress) {
         throw new Error(`a move of this project is in progress (${u.dir}); nothing changed. Wait a few seconds, then run \`nb place shared\` again.`);
       }
-      const m = moveOut(l, u.dir, shared, project, kept, {});
       removeDeadLock(u.dir);
+      let m: { moved: string[]; lessons: number };
+      try {
+        m = moveOut(l, u.dir, shared, project, kept, {});
+      } catch (e) {
+        throw restore(u.dir, own, null, e);
+      }
       moved = moved.concat(m.moved);
       lessons += m.lessons;
       if (finishOld(u.dir)) resumed.push(u.dir);
@@ -623,15 +671,24 @@ export async function placeShared(shared: string, own: string, project: string, 
       );
     }
     l.own.rebase(away);
-    const m = moveOut(l, away, shared, project, kept, hooks);
+    const keptBefore = kept.length;
+    let m: { moved: string[]; lessons: number };
+    try {
+      m = moveOut(l, away, shared, project, kept, hooks);
+    } catch (e) {
+      throw restore(away, own, l.own, e);
+    }
     if (stillHeld(l)) removeNbOwnFiles(away);
     moved = moved.concat(m.moved);
-    return { ...base, moved, renamed: renamedOf(moved), lessons: lessons + m.lessons, left: away };
+    const r = { ...base, moved, renamed: renamedOf(moved), lessons: lessons + m.lessons, away, keptHere: kept.length - keptBefore };
+    return { ...r, ...(left === undefined ? {} : { left }) };
   });
-  // The locks are released (ours inside the renamed folder with them): remove it if it holds no shelf.
-  if (r.blocked !== undefined || r.gone === true || r.left === undefined) return r;
-  if (r.kept.length === 0 && finishOld(r.left)) return { ...r, removed: true, left: undefined };
-  return r;
+  // The locks are released (ours inside the renamed folder with them): remove this run's
+  // folder if it holds no shelf. A folder of an earlier run that it could not finish stays `left`.
+  const { away, keptHere, ...rest } = r as PlaceSharedResult & { away?: string; keptHere?: number };
+  if (rest.blocked !== undefined || rest.gone === true || away === undefined) return rest;
+  if (keptHere === 0 && finishOld(away)) return { ...rest, removed: rest.left === undefined };
+  return { ...rest, left: rest.left ?? away };
 }
 
 /** Whether a folder is a git repository (a `.git` entry), for the "unversioned" warning. */
