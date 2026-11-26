@@ -178,7 +178,10 @@ export function sharedWriteRefusal(place: Place, args: readonly string[]): strin
   const shelf = args[at] ?? '';
   const i = shelf.lastIndexOf('@');
   if (i < 0) return null;
-  const owner = shelf.slice(i + 1);
+  // Lower-cased: nb accepts upper case in shelf names, `nb brief` groups suffixes
+  // ignoring case, and on macOS and Windows `x@Acme-App.md` is the file `x@acme-app.md`.
+  // Folder names are already lower case (they are cleaned project names).
+  const owner = shelf.slice(i + 1).toLowerCase();
   if (!place.folders.includes(owner)) return null;
   if (place.kind === 'own' && place.project?.name === owner) return null;
   const here = place.kind === 'own' ? `the own notebook of ${place.project!.name}` : 'the shared notebook';

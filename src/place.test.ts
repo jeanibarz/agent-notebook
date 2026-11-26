@@ -228,6 +228,8 @@ describe('sharedWriteRefusal: the write guard (FR-PLACE-001)', () => {
     ['a project with no folder', base, ['add', 'x@beta', 'l'], false],
     ['the suffix is the last @', base, ['add', 'x@acme-app@beta', 'l'], false],
     ['own of the same project', own, ['add', 'x@acme-app', 'l'], false],
+    ['the suffix in another letter case, from shared', base, ['add', 'x@Acme-App', 'l'], true],
+    ['the suffix in another letter case, from own of that project', own, ['add', 'x@ACME-APP', 'l'], false],
     ['own of another project', { ...own, folders: ['acme-app', 'beta'] }, ['add', 'x@beta', 'l'], true],
     ['NB_DIR set', { ...base, kind: 'env', folders: [] }, ['add', 'x@acme-app', 'l'], false],
   ])('%s', (_label, p, args, refused) => {
@@ -257,7 +259,9 @@ describe('the no-re-create switch (issue #548)', () => {
 
 // ---- The built CLI on real repositories -------------------------------------
 
-describe('nb with project folders, through the built CLI (FR-PLACE-001, -002, -004)', () => {
+// Each test spawns git and nb many times: slow on a loaded macOS or Windows runner, so the
+// time limit is raised (not a timing assertion).
+describe('nb with project folders, through the built CLI (FR-PLACE-001, -002, -004)', { timeout: 60_000 }, () => {
   let globalCfg: string;
   beforeEach(() => {
     globalCfg = join(tmp, 'global.gitconfig');
