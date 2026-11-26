@@ -1933,6 +1933,32 @@ change.
 `describe('the trampolines keep the 0.12 file names working (FR-HOOKS-001)')`; the stop rules by
 `nb-retrospective.test.ts` → `describe('nb-retrospective.sh nudge timing (issue #520)')`.
 
+<a id="fr-hooks-002"></a>
+**FR-HOOKS-002 (Should).** `examples/hooks/claude-code/nb-hook-entry.cjs` SHALL be readable by
+an old Node.js (old syntax only, checked by a lint for Node 10 and run on the real Node 12 and 16, the adapter loaded with `import()` behind
+`new Function`), so that a Node.js too old for the adapter still gets a message. With a Node.js
+older than its `MIN_NODE`, which SHALL equal the major of `engines.node`, it SHALL print one notice
+naming that version and https://nodejs.org for `session-start` (none when `NB_ENABLED` is off) and
+nothing for any other event, and exit `0`. With a newer Node.js it SHALL hand the event and its
+arguments to `nb-claude-hook.mjs` in the same folder, whose output it SHALL leave unchanged; if that
+file cannot be loaded, a start event SHALL get one fixed line saying to reinstall the plugin and a
+Stop hook nothing, with the detail on stderr. `--managed` (anywhere after the event) SHALL be removed
+from the arguments and SHALL make the adapter ignore `NB_BIN`; when `CLAUDE_PLUGIN_ROOT` contains the
+file (both paths with symlinks resolved; a root that cannot be resolved counts as containing it), a
+relative `NB_BIN` SHALL be ignored. The notice SHALL be printable ASCII without
+`' " $ ` % & | ^ < > ( ) ! ;`, so the same text can be copied into a shell or PowerShell command.
+The Claude Code plugin's hooks start from this file ([issue #559](https://github.com/jeanibarz/agent-notebook/issues/559));
+`print-settings` and the three `.sh` files still run the adapter directly, for people who installed
+`nb` with npm and so already run a Node.js that `npm` accepted.
+**Rationale:** measured on GitHub runners (#559): the adapter is a `SyntaxError` on Node 10 and 12, so
+the model was told nothing, and Node 14 and 16 ran it although the package declares 18.
+*Proven by:* `nb-hook-entry.test.ts` → `describe('the entry hands over to the adapter on a Node.js new enough (FR-HOOKS-002, issue #559)')`,
+`describe('the entry on a Node.js older than 18 (FR-HOOKS-002, issue #559)')`,
+`describe('the entry when the adapter cannot load (issue #559)')`,
+`describe('which nb the entry lets the adapter run (issue #559)')` and
+`describe('the entry stays readable by an old Node.js (issue #559)')`; on the real Node 12 and 16 by the
+`old-node-entry` leg of `.github/workflows/ci.yml`, and on Node 18 by `scripts/smoke-node18.mjs`.
+
 <a id="fr-heartbeat-001"></a>
 **FR-HEARTBEAT-001 (Should).** *Implemented by the second pull request of issue #558.* The record that a
 hook ran SHALL be the usage row that `nb brief` and `nb retro` already write ([FR-USAGE-001](#fr-usage-001)),
@@ -2343,8 +2369,8 @@ the Node-18 leg runs a dependency-free runtime smoke of the built CLI
 minimum engine is actually executed and not merely compiled. A Windows leg (Node 22)
 runs the tests of the agent-facing loop added by issue #538 (`src/brief.test.ts`, `src/retro.test.ts`,
 `src/loop-stats.test.ts`, `src/module-boundaries.test.ts`) and of the project name added by issue #540
-(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`) and of the message files added by issue #539 (`src/messages.test.ts`) and of the usage record added by issue #558 (`src/usage-record.test.ts`); the rest of the suite is not
-yet run on Windows. *(Proven by
+(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`) and of the message files added by issue #539 (`src/messages.test.ts`) and of the usage record added by issue #558 (`src/usage-record.test.ts`) and of the plugin's hook entry added by issue #559 (`src/nb-hook-entry.test.ts`); the rest of the suite is not
+yet run on Windows. An `old-node-entry` leg runs that entry on Node 12 and 16, the versions it exists for. *(Proven by
 `src/smoke-node18.test.ts`.)*
 
 <a id="nfr-safe-001"></a>

@@ -88,6 +88,17 @@ try {
   } else {
     check('vote raises the score to +2', false, 'no id recovered from `show --json`');
   }
+
+  // Issue #559: the plugin's hooks start from nb-hook-entry.cjs. On the minimum engine it
+  // must hand over to the adapter (the index), never print its "too old" notice.
+  const ENTRY = join(dirname(CLI), '..', 'examples', 'hooks', 'claude-code', 'nb-hook-entry.cjs');
+  let hook = '';
+  try {
+    hook = execFileSync(process.execPath, [ENTRY, 'session-start'], { env: { ...process.env, NB_DIR }, input: '{}', encoding: 'utf8' });
+  } catch (err) {
+    hook = `exit ${err.status}: ${err.stdout ?? ''}${err.stderr ?? ''}`;
+  }
+  check('the hook entry hands over to the adapter (no "too old" notice)', hook.includes('smoke') && !hook.includes('needs Node.js'), hook);
 } finally {
   rmSync(NB_DIR, { recursive: true, force: true });
 }
