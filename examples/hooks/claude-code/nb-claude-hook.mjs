@@ -105,7 +105,6 @@ function main() {
   // The session id becomes one argument: clean it as `nb` does, and never let it
   // start with `-`, so it cannot be read as a flag (`--json`, `--`).
   const session = (typeof data.session_id === 'string' ? data.session_id : '').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128).replace(/^-/, '_');
-  const projectDir = dirOrNull(process.env.CLAUDE_PROJECT_DIR) ?? process.cwd();
   const env = { ...process.env };
   // A relative NB_DIR names a folder under this hook's working directory, as it did
   // for the 0.12 scripts; `nb` runs in the project directory, so make it absolute.
@@ -120,6 +119,13 @@ function main() {
   const sid = process.env.CLAUDE_CODE_SESSION_ID;
   const inferred = typeof sid === 'string' && sid !== '' && typeof data.session_id === 'string' && sid === data.session_id ? 'claude-code' : 'hook';
   const label = `${harness ?? inferred}.${event}`;
+  // The project folder. CLAUDE_PROJECT_DIR is Claude Code's, and a Codex session started
+  // from a Claude Code shell inherits it, so only an explicit other `--harness` looks at
+  // the payload's `cwd` instead. The inferred label never moves the folder.
+  const projectDir =
+    harness !== null && harness !== 'claude-code'
+      ? (dirOrNull(data.cwd) ?? process.cwd())
+      : (dirOrNull(process.env.CLAUDE_PROJECT_DIR) ?? process.cwd());
   const maxChars = flag('--max-chars');
   const args =
     event === 'stop'

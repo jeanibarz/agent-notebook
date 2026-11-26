@@ -373,6 +373,19 @@ describe('the harness label and the project folder (FR-HOOKS-001, issue #558)', 
     expect(probe('session-start', ['--harness', 'codex'], { session_id: 'abc' }, { CLAUDE_CODE_SESSION_ID: 'abc' }).label).toBe('codex.session-start');
   });
 
+  test('with --harness codex nb runs in the payload cwd, not the inherited CLAUDE_PROJECT_DIR', () => {
+    const parent = join(tmp, 'parent project');
+    const work = join(tmp, 'work dir');
+    mkdirSync(parent);
+    mkdirSync(work);
+    expect(probe('session-start', ['--harness', 'codex'], { cwd: work }, { CLAUDE_PROJECT_DIR: parent }).cwd).toBe(work);
+    expect(probe('stop', ['--harness', 'codex'], { session_id: 's', cwd: work }, { CLAUDE_PROJECT_DIR: parent }).cwd).toBe(work);
+    // An unusable payload cwd falls back to the process folder, never to the inherited project.
+    for (const cwd of [join(tmp, 'missing'), 'relative/dir', 7, undefined]) {
+      expect(probe('session-start', ['--harness', 'codex'], { cwd }, { CLAUDE_PROJECT_DIR: parent }).cwd, String(cwd)).toBe(tmp);
+    }
+  });
+
   test('--harness claude-code keeps CLAUDE_PROJECT_DIR; so does the inferred label, even with mismatched ids', () => {
     const proj = join(tmp, 'proj');
     const work = join(tmp, 'work dir');
