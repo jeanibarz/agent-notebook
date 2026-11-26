@@ -2358,8 +2358,8 @@ model's context. An `nb` older than `status` exits 2 with `unknown_subcommand`; 
 
 ### 4.22 The Claude Code plugin (issue #559)
 
-> **Status: the build and the hooks are implemented ([issue #559](https://github.com/jeanibarz/agent-notebook/issues/559),
-> second part); the release, the end-to-end tests and the marketplace entry follow.**
+> **Status: the build, the hooks and the end-to-end test are implemented ([issue #559](https://github.com/jeanibarz/agent-notebook/issues/559),
+> second and third parts); the release and the marketplace entry follow.**
 > The plugin is a second distribution of the same tool: its zip holds the package's `dist/`
 > and no dependency ([DP-7](#dp-7), [NG-003](#ng-003)).
 
@@ -2427,6 +2427,31 @@ placed in the working directory.
 and `describe('bin/nb.cmd never runs a program from the working directory (FR-PLUGIN-004, issue #559)')`;
 the bytes of `nb.cmd` by `plugin-build.test.ts` → "bin/nb.cmd is exactly these CRLF lines, and no other entry holds a carriage return".
 
+<a id="fr-plugin-005"></a>
+**FR-PLUGIN-005 (Should).** The `plugin-e2e` workflow SHALL, on Linux, macOS and Windows, install the plugin
+from a real marketplace and take it through its life, with a pinned Claude Code (the nightly run takes the
+latest) and with no secret and no login. The two fixture zips (`0.0.1-e2e.1` and `0.0.1-e2e.2`, built by
+`scripts/build-plugin.mjs`) are served over https from the runner's own network address with a self-signed
+certificate, because Claude Code refuses an archive over http or on a loopback address. Claude Code's PATH
+has no node, git, unzip or tar (and, on Windows, Git, MSYS2 and PowerShell 7 are renamed away), and the home
+folder has a space, quotes and a non-ASCII letter in its name. The run SHALL fail, with a message, unless:
+`claude plugin validate` passes on the built folder and on the marketplace file; `claude plugin install`
+succeeds, the installed files equal the built ones, `bin/nb` and `dist/cli.js` have mode 0755 (POSIX) and no
+file has a `Zone.Identifier` stream (Windows); a session with no node shows exactly one notice, a session with
+Node.js 16 exactly one notice, and a session with a current Node.js the notebook index and no notice; no
+program planted in the project folder (`node`, `sh`, `uname`, `dirname`; on Windows `node.exe`, `node.cmd`,
+`powershell.exe`, `where.exe`, `cmd.exe`) runs, from the hooks or from `bin/nb` and `bin\nb.cmd`; on Windows a
+lesson with `% & | ^ ' $` and an accented letter, added through the skill's stdin form, is read back byte for
+byte; an entry with a wrong sha256 is refused; `marketplace update` then `plugin update` moves from
+`0.0.1-e2e.1` to `0.0.1-e2e.2` and the next session loads the new folder; the same two commands roll back;
+`plugin uninstall` leaves a session with no plugin hook; and the settings files differ, before the install
+and after the uninstall, only by the keys Claude Code adds itself (`extraKnownMarketplaces.<name>` and an
+empty `enabledPlugins`). It runs on pull requests and pushes that touch the plugin, its hook files, the
+scripts, the package files or the workflow, and nightly.
+*Proven by:* `plugin-workflows.test.ts` → `describe('the plugin end-to-end workflow (FR-PLUGIN-005, issue #559)')`
+and `describe('the old-node-entry leg (FR-PLUGIN-002, issue #559)')`, which pin the workflow's safety and
+shape; the checks themselves are run by the `plugin-e2e` workflow.
+
 ## 5. Non-functional requirements
 
 <a id="nfr-perf-001"></a>
@@ -2453,8 +2478,8 @@ the Node-18 leg runs a dependency-free runtime smoke of the built CLI
 minimum engine is actually executed and not merely compiled. A Windows leg (Node 22)
 runs the tests of the agent-facing loop added by issue #538 (`src/brief.test.ts`, `src/retro.test.ts`,
 `src/loop-stats.test.ts`, `src/module-boundaries.test.ts`) and of the project name added by issue #540
-(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`) and of the message files added by issue #539 (`src/messages.test.ts`) and of the usage record added by issue #558 (`src/usage-record.test.ts`) and of the plugin's hook entry added by issue #559 (`src/nb-hook-entry.test.ts`); the rest of the suite is not
-yet run on Windows. An `old-node-entry` leg runs that entry on Node 12 and 16, the versions it exists for. *(Proven by
+(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`) and of the message files added by issue #539 (`src/messages.test.ts`) and of the usage record added by issue #558 (`src/usage-record.test.ts`) and of the plugin's hook entry added by issue #559 (`src/nb-hook-entry.test.ts`) and of the plugin's build and hooks (`src/plugin-workflows.test.ts` with them); the rest of the suite is not
+yet run on Windows. The `plugin-e2e` workflow installs, updates, rolls back and uninstalls the plugin on Linux, macOS and Windows ([FR-PLUGIN-005](#fr-plugin-005)). An `old-node-entry` leg runs that entry on Node 12 and 16, the versions it exists for. *(Proven by
 `src/smoke-node18.test.ts`.)*
 
 <a id="nfr-safe-001"></a>

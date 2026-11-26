@@ -1,0 +1,143 @@
+name: plugin-e2e
+
+# Issue #559: the Claude Code plugin is installed, updated, rolled back and uninstalled from a real
+# (https) marketplace, on Linux, macOS and Windows, with the Claude Code that a user has. The zips are the
+# ones scripts/build-plugin.mjs writes; two fixture versions stand in for two releases. No secret, no login:
+# a session never reaches a model, and the hooks under test run before that.
+#
+# It runs on pull requests and pushes that touch the plugin, its two hook files, the scripts, the
+# package files or this workflow, and every night on the latest Claude Code. A nightly run only reports:
+# nothing depends on it.
+
+on:
+  pull_request:
+    paths:
+      - 'plugin/**'
+      - 'examples/hooks/claude-code/**'
+      - 'scripts/build-plugin.mjs'
+      - 'scripts/plugin-e2e/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.claude-plugin/**'
+      - '.github/workflows/plugin-e2e.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'plugin/**'
+      - 'examples/hooks/claude-code/**'
+      - 'scripts/build-plugin.mjs'
+      - 'scripts/plugin-e2e/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.claude-plugin/**'
+      - '.github/workflows/plugin-e2e.yml'
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DISABLE_AUTOUPDATER: '1'
+  # Pinned, so that a Claude Code release cannot turn a pull request red. The nightly run takes the
+  # latest one instead, which is how a change in Claude Code is noticed.
+  CLAUDE_VERSION: ${{ github.event_name == 'schedule' && 'latest' || '2.1.332' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      # Two fixture versions of the real plugin: the e2e moves from the first to the second and back.
+      - run: |
+          node scripts/build-plugin.mjs --out e2e --version 0.0.1-e2e.1
+          node scripts/build-plugin.mjs --out e2e --version 0.0.1-e2e.2
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plugin-e2e-build
+          path: e2e
+          # the staged plugin folders hold .claude-plugin/, which an upload leaves out by default
+          include-hidden-files: true
+          retention-days: 7
+
+  e2e:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Node.js 16 is only a folder to put on PATH for the "too old" session.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 16
+      - name: Remember the Node.js 16 folder
+        if: runner.os != 'Windows'
+        run: echo "NODE_OLD_DIR=$(dirname "$(command -v node)")" >> "$GITHUB_ENV"
+      - name: Remember the Node.js 16 folder
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Add-Content -Path $env:GITHUB_ENV -Value ("NODE_OLD_DIR=" + (Split-Path (Get-Command node -CommandType Application | Select-Object -First 1).Source))
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: plugin-e2e-build
+          path: e2e
+
+      # The native installer; the download is tried twice. `latest` (the nightly run) is the installer's
+      # default, so it gets no version argument.
+      - name: Install Claude Code
+        if: runner.os != 'Windows'
+        run: |
+          v=""; [ "$CLAUDE_VERSION" = latest ] || v="$CLAUDE_VERSION"
+          curl -fsSL https://claude.ai/install.sh | bash -s -- $v || { echo "install failed, trying once more"; sleep 15; curl -fsSL https://claude.ai/install.sh | bash -s -- $v; }
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install Claude Code
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $v = @(); if ($env:CLAUDE_VERSION -ne 'latest') { $v = @($env:CLAUDE_VERSION) }
+          try { & ([scriptblock]::Create((irm https://claude.ai/install.ps1))) @v }
+          catch { Write-Host "install failed, trying once more: $_"; Start-Sleep -Seconds 15; & ([scriptblock]::Create((irm https://claude.ai/install.ps1))) @v }
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.local\bin"
+
+      - name: Install, update, roll back and uninstall (Linux and macOS)
+        if: runner.os != 'Windows'
+        run: |
+          claude --version
+          bash scripts/plugin-e2e/run.sh e2e
+      - name: Install, update, roll back and uninstall (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          claude --version
+          .\scripts\plugin-e2e\run.ps1 -BuildDir e2e
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
