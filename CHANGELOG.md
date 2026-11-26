@@ -38,6 +38,8 @@ versions are listed plainly.
 
 ### Documentation
 
+- **One notebook per project (issue #548).** `docs/harness-setup.md` gains a section on `nb place own`: what it does and does not guarantee, how `NB_DIR` interacts with it, and how to version, back up and scan an own notebook (one `git init`, the backup loop over `~/.agent-notebook/projects/*/`, the janitor with `NB_DIR` set to the folder). `docs/getting-started.md` links to it.
+
 - **Requirements for `nb brief` and `nb retro` (issue #538), before the code.** `docs/requirements.md` gains section 4.17, marked "proposed — not yet implemented": the two harness-blind commands that will print the start-of-session text and the once-per-session retrospective, a Node adapter for the Claude Code hooks, and a record that the hooks ran. DP-6 now lists the inputs a call may depend on, and NG-005 says it governs lessons, not runtime markers such as the retrospective sentinel. `docs/harness-setup.md`, `examples/README.md`, `docs/memory-layers.md` and RFC 0530 note the planned change. No behaviour changes yet.
 
 ## [0.12.0] - 2026-11-23
