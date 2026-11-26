@@ -183,8 +183,8 @@ To set up lessons, ideas or both, follow the [setup guide](examples/SETUP.md). T
 - **What it changes:** no file you edit; Claude Code records the plugin in its own settings.
 - **Update:** `claude plugin marketplace update agent-notebook`, then `claude plugin update agent-notebook@agent-notebook`. If it says "already at the latest version", wait a few minutes and run both again.
 - **Remove:** `claude plugin uninstall agent-notebook@agent-notebook`. Your notes in `~/.agent-notebook` (`%USERPROFILE%\.agent-notebook` on Windows) stay.
-- **On a company computer** where the install is refused, ask your administrator to read [the company-machines guide](docs/enterprise.md#claude-code-plugin).
-- **Hooks copied by hand before:** see [moving to the plugin](docs/harness-setup.md#moving-to-the-plugin).
+- **On a company computer** where the install is refused, ask your administrator to read [the company-machines guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/enterprise.md#claude-code-plugin).
+- **Hooks copied by hand before:** see [moving to the plugin](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#moving-to-the-plugin).
 
 ### The `nb` command alone, or another agent
 
