@@ -17,10 +17,13 @@ The requirement is [NFR-REL-001](requirements.md#nfr-rel-001).
 3. **The jobs**, in this order:
    1. `verify`: the full test matrix (Node 18 to 24, Linux and macOS) on the tagged commit.
    2. `build-plugin`: builds `dist/`, the plugin zip and its checksums, and runs
-      `scripts/check-release.mjs` on the zip. Nothing is public yet: a failure here costs nothing.
+      `scripts/check-release.mjs` on the zip, and checks that the CHANGELOG has a section for the version.
+      Nothing is public yet: a failure here costs nothing.
    3. `publish`: the tag guard, then `npm publish` with provenance, through npm Trusted Publishing.
    4. `github-release`: checks the zip against what npm now holds and against the tagged commit,
-      then creates the GitHub release with the zip, `<zip>.sha256` and `SHA256SUMS`.
+      rebuilds `SHA256SUMS` from the unpacked zip and compares it byte for byte, writes the release
+      notes itself (the sha256 values it verified, then the CHANGELOG section read at the tagged
+      commit), then creates the GitHub release with the zip, `<zip>.sha256` and `SHA256SUMS`.
 4. **The marketplace pull request.** The release does not touch the marketplace entry. Someone
    opens a pull request that points `marketplace.json` at the new zip and its sha256, and **a
    person merges it**. Until then no plugin user receives the version.
@@ -64,7 +67,8 @@ A bad plugin version is not deleted; the marketplace is pointed at an older one.
 ## The owner's checklist (once, in the repository settings)
 
 The `github-release` job can write to the repository, so these settings decide how much damage a
-compromised step could do. The job prints a warning when `main` has no rule; it does not refuse.
+compromised step could do. The job prints a warning when no ruleset applies to `main` (the job token cannot read classic
+branch protection, so only rulesets are detected); it does not refuse.
 
 - [ ] **A ruleset on `main`**: a pull request is required, and the list of actors who may bypass it is
   empty, in particular **not GitHub Actions** and not the repository admin role.
@@ -81,6 +85,11 @@ action, the `gh` command or the runner image, runs with `contents: write`. It co
 
 - push to `main` if `main` has no ruleset (it has none today), including a `marketplace.json` that
   names an attacker's zip and its sha256, which would reach every plugin user at their next update;
+- push any file outside `.github/workflows/` to `main` (scripts, `src/`, the `scripts` of
+  `package.json`, test configuration); `marketplace.json` above is one example. The next tag's
+  `publish` job runs that code with `id-token: write`, so it could lead to a malicious npm release
+  with provenance. This is the largest effect, and only a ruleset on `main` stops it;
+- send a `repository_dispatch` event (no workflow listens for one today);
 - create, move or delete tags;
 - create, edit or delete releases and their assets.
 

@@ -83,28 +83,16 @@ jobs:
           unzip -q "release-out/$zip" -d unpacked
           (cd unpacked && find . -type f | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r f; do sha256sum "$f"; done) > release-out/SHA256SUMS
 
-          # The release notes open with the checksums of the files that run when a
-          # session starts, so a security team sees when they change; then the
-          # CHANGELOG section of this version (no section: no release).
-          section="$(awk -v v="$version" '
-            /^## / { if (on) exit; if (index($0, "## [" v "]") == 1 || $0 == "## " v || index($0, "## " v " ") == 1) { on = 1 } }
-            on { print }
-          ' CHANGELOG.md)"
-          if [ -z "$section" ]; then
+          # No CHANGELOG section for this version: no release, and the failure comes
+          # before anything is published. The notes themselves are written by
+          # `github-release`, from values it verified (it reads the CHANGELOG at the tag).
+          if ! awk -v v="$version" '
+            /^## / { if (index($0, "## [" v "]") == 1 || $0 == "## " v || index($0, "## " v " ") == 1) { found = 1 } }
+            END { exit found ? 0 : 1 }
+          ' CHANGELOG.md; then
             echo "::error::CHANGELOG.md has no section for version ${version}; the release notes need one." >&2
             exit 1
           fi
-          {
-            echo "Claude Code plugin: ${zip} sha256 ${sha}"
-            echo
-            echo "Checksums of the files that run at session start (inside the zip):"
-            echo
-            for f in hooks/hooks.json examples/hooks/claude-code/nb-hook-entry.cjs examples/hooks/claude-code/nb-claude-hook.mjs; do
-              echo "- \`${f}\` sha256 $(sha256sum "unpacked/$f" | cut -d' ' -f1)"
-            done
-            echo
-            echo "$section"
-          } > release-out/notes.md
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -113,7 +101,6 @@ jobs:
             release-out/*.zip
             release-out/*.zip.sha256
             release-out/SHA256SUMS
-            release-out/notes.md
           if-no-files-found: error
           retention-days: 30
 
@@ -252,7 +239,7 @@ jobs:
             exit 1
           fi
           # Nothing else may travel in the artifact: it is uploaded as release assets.
-          expected="$(printf '%s\n' "$zip" "${zip}.sha256" SHA256SUMS notes.md | LC_ALL=C sort)"
+          expected="$(printf '%s\n' "$zip" "${zip}.sha256" SHA256SUMS | LC_ALL=C sort)"
           actual="$(find . -type f | sed 's|^\./||' | LC_ALL=C sort)"
           if [ "$actual" != "$expected" ]; then
             echo "::error::the plugin-zip artifact holds unexpected files: ${actual}" >&2
@@ -298,7 +285,7 @@ jobs:
 
           rm -rf ../check
           mkdir ../check ../check/npm ../check/zip ../check/src
-          curl -fsSL -o ../check/npm.tgz "https://registry.npmjs.org/agent-notebook/-/agent-notebook-${version}.tgz"
+          curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o ../check/npm.tgz "https://registry.npmjs.org/agent-notebook/-/agent-notebook-${version}.tgz"
           tar -xzf ../check/npm.tgz -C ../check/npm
           npmdir=../check/npm/package
 
@@ -352,9 +339,49 @@ jobs:
           sed "s/${version//./\\.}/{{VERSION}}/g" "$zipdir/skills/agent-notebook/SKILL.md" > ../check/skill.zip
           cmp -s ../check/skill.zip ../check/src/SKILL.md || fail "skills/agent-notebook/SKILL.md in the zip differs from the source at ${GITHUB_SHA} (with the version put back as {{VERSION}})."
 
-          # SHA256SUMS describes the files this zip really holds.
-          (cd "$zipdir" && sha256sum -c --quiet ../../release-in/SHA256SUMS) || fail "SHA256SUMS does not match the files inside the zip."
+          # SHA256SUMS is rebuilt here from the unpacked zip with the command build-plugin
+          # uses (same sort, same format, same relative paths) and must match byte for byte.
+          (cd "$zipdir" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r f; do sha256sum "$f"; done) > ../check/SHA256SUMS
+          cmp -s ../check/SHA256SUMS SHA256SUMS || fail "SHA256SUMS does not match the files inside the zip."
           echo "ok: the zip equals the npm package and the commit ${GITHUB_SHA}"
+
+      # The notes are written here, from values this job verified: the zip's sha256 (checked
+      # above), the sha256 of the session-start files in the unpacked zip, and the CHANGELOG
+      # section read from the tagged commit. Nothing in notes.md comes from the artifact.
+      - name: Write the release notes
+        working-directory: release-in
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA256: ${{ needs.build-plugin.outputs.sha256 }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          version="${TAG#v}"
+          zip="agent-notebook-plugin-${version}.zip"
+          rm -rf ../notes-src
+          mkdir ../notes-src
+          unzip -q "$zip" -d ../notes-src/zip
+          gh api "repos/$GH_REPO/contents/CHANGELOG.md?ref=$GITHUB_SHA" --jq .content | base64 -d > ../notes-src/CHANGELOG.md
+          section="$(awk -v v="$version" '
+            /^## / { if (on) exit; if (index($0, "## [" v "]") == 1 || $0 == "## " v || index($0, "## " v " ") == 1) { on = 1 } }
+            on { print }
+          ' ../notes-src/CHANGELOG.md)"
+          if [ -z "$section" ]; then
+            echo "::error::CHANGELOG.md at ${GITHUB_SHA} has no section for version ${version}; the release notes need one." >&2
+            exit 1
+          fi
+          {
+            echo "Claude Code plugin: ${zip} sha256 ${SHA256}"
+            echo
+            echo "Checksums of the files that run at session start (inside the zip):"
+            echo
+            for f in hooks/hooks.json examples/hooks/claude-code/nb-hook-entry.cjs examples/hooks/claude-code/nb-claude-hook.mjs; do
+              echo "- \`${f}\` sha256 $(sha256sum "../notes-src/zip/$f" | cut -d' ' -f1)"
+            done
+            echo
+            echo "$section"
+          } > ../notes.md
 
       - name: Create the release, or confirm it already holds this zip
         working-directory: release-in
@@ -370,7 +397,7 @@ jobs:
             case "$TAG" in *-*) pre="--prerelease" ;; esac
             # One call, with the assets: an immutable release cannot take one later.
             # shellcheck disable=SC2086
-            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md $pre "$zip" "${zip}.sha256" SHA256SUMS
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file ../notes.md $pre "$zip" "${zip}.sha256" SHA256SUMS
           }
           if ! draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
             create
@@ -407,14 +434,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # The release job holds contents: write, so a rule on main matters. This warns; it
-      # does not refuse, so that a repository without the rule can still release.
-      - name: Warn when main is not protected
+      # does not refuse, so that a repository without the rule can still release. The job
+      # token cannot read classic branch protection, so only rulesets are detected.
+      - name: Warn when no ruleset applies to main
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -eu
           rules="$(gh api "repos/$GH_REPO/rules/branches/main" --jq 'length' 2>/dev/null || echo 0)"
-          if [ "$rules" = 0 ] && ! gh api "repos/$GH_REPO/branches/main/protection" >/dev/null 2>&1; then
-            echo "::warning::main is not protected: no ruleset applies to it and no branch protection was found. The release job holds contents: write, so a compromised step could push to main. Add a ruleset that requires a pull request and has no bypass for GitHub Actions (docs/releasing.md)."
+          if [ "$rules" = 0 ]; then
+            echo "::warning::no ruleset applies to main (classic branch protection cannot be read with the job token, so it is not checked). The release job holds contents: write, so a compromised step could push to main. Add a ruleset that requires a pull request and has no bypass for GitHub Actions (docs/releasing.md)."
           fi

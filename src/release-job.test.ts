@@ -128,6 +128,19 @@ describe('release.yml holds the least permissions each job needs (NFR-REL-001, i
     expect(job).toMatch(/sha256: \$\{\{ steps\.build\.outputs\.sha256 \}\}/);
     expect(jobBlock('publish')).toMatch(/\n {4}needs: \[verify, build-plugin\]\n/);
   });
+
+  test('the artifact is exactly the zip, its checksum and SHA256SUMS: build-plugin writes and uploads no notes.md', () => {
+    const job = jobBlock('build-plugin');
+    expect(stripComments(job)).not.toContain('notes.md');
+    const upload = job.slice(job.indexOf('actions/upload-artifact'));
+    expect([...upload.matchAll(/^ {12}(release-out\/\S+)$/gm)].map((m) => m[1])).toEqual(['release-out/*.zip', 'release-out/*.zip.sha256', 'release-out/SHA256SUMS']);
+  });
+
+  test('the release is created with the notes the github-release job wrote, after the byte-compare step', () => {
+    const names = stepsOf(release_).map((x) => /name: (.*)/.exec(x)?.[1]);
+    expect(names.indexOf('Write the release notes')).toBeGreaterThan(names.indexOf('The zip equals the npm package and the tagged commit'));
+    expect(names.indexOf('Write the release notes')).toBeLessThan(names.indexOf('Create the release, or confirm it already holds this zip'));
+  });
 });
 
 // ---- running the job's scripts -----------------------------------------------------------------
@@ -247,6 +260,9 @@ interface World {
   run: (script: string, env?: Record<string, string>) => { code: number | null; out: string };
 }
 
+/** A CHANGELOG as the tagged commit holds it: an Unreleased stub, this version, an older one. */
+const changelogFor = (v: string): string => `# Changelog\n\n## [Unreleased]\n\n- not yet\n\n## [${v}] - 2026-01-01\n\nFixture section for ${v}.\n\n- an item\n\n## [0.0.1] - 2020-01-01\n\nOld section.\n`;
+
 /** A fresh workspace for version `v`: the downloaded artifact, the "npm tarball", and a "tagged commit". */
 function world(v: string = GOOD, change: { zip?: (f: Map<string, Buffer>) => void; tarball?: (f: Map<string, Buffer>) => void; src?: (dir: string) => void } = {}): World {
   const ws = join(tmp, `ws${n++}`);
@@ -260,7 +276,6 @@ function world(v: string = GOOD, change: { zip?: (f: Map<string, Buffer>) => voi
   writeFileSync(join(rin, `${zipName}.sha256`), `${sha(zipBytes)}  ${zipName}\n`);
   const sums = [...zips[v].files].sort(([x], [y]) => Buffer.compare(Buffer.from(x), Buffer.from(y))).map(([name, d]) => `${sha(d)}  ${name}`);
   writeFileSync(join(rin, 'SHA256SUMS'), sums.join('\n') + '\n');
-  writeFileSync(join(rin, 'notes.md'), 'notes\n');
 
   // The npm package: the zip's dist/ and hook files, the real LICENSE, a package.json with its fields.
   const tgzFiles = new Map<string, Buffer>();
@@ -279,6 +294,7 @@ function world(v: string = GOOD, change: { zip?: (f: Map<string, Buffer>) => voi
     mkdirSync(dirname(join(srcRoot, 'plugin', f)), { recursive: true });
     cpSync(join(root, 'plugin', f), join(srcRoot, 'plugin', f));
   }
+  writeFileSync(join(srcRoot, 'CHANGELOG.md'), changelogFor(v));
   change.src?.(srcRoot);
 
   const statePath = join(ws, 'state.json');
@@ -348,7 +364,7 @@ describe('the github-release job creates the release or confirms it (NFR-REL-001
     expect(r.code, r.out).toBe(0);
     const calls = writeCalls(w);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual(['gh', 'release', 'create', `v${GOOD}`, '--verify-tag', '--title', `v${GOOD}`, '--notes-file', 'notes.md', `agent-notebook-plugin-${GOOD}.zip`, `agent-notebook-plugin-${GOOD}.zip.sha256`, 'SHA256SUMS']);
+    expect(calls[0]).toEqual(['gh', 'release', 'create', `v${GOOD}`, '--verify-tag', '--title', `v${GOOD}`, '--notes-file', '../notes.md', `agent-notebook-plugin-${GOOD}.zip`, `agent-notebook-plugin-${GOOD}.zip.sha256`, 'SHA256SUMS']);
   });
 
   test('a version with a hyphen is created as a prerelease', () => {
@@ -513,6 +529,34 @@ describe('the github-release job proves the zip equals the npm package and the t
     expect(r.out).toContain('::error::SHA256SUMS does not match the files inside the zip.');
     expect(r.code).toBe(1);
   });
+
+  test('a SHA256SUMS with a junk line, a missing entry, a ../ entry or a reordered line is refused; the exact file passes', () => {
+    const good = readFileSync(join(world(GOOD).ws, 'release-in', 'SHA256SUMS'), 'utf-8');
+    const lines = good.trimEnd().split('\n');
+    const variants: Record<string, string> = {
+      junk: good + 'this is not a checksum line\n',
+      'missing entry': lines.slice(1).join('\n') + '\n',
+      'dotdot entry': good + `${'0'.repeat(64)}  ../notes.md\n`,
+      reordered: [lines[1], lines[0], ...lines.slice(2)].join('\n') + '\n',
+      'no final newline': good.trimEnd(),
+    };
+    for (const [what, text] of Object.entries(variants)) {
+      const w = world(GOOD);
+      writeFileSync(join(w.ws, 'release-in', 'SHA256SUMS'), text);
+      const r = w.run(step);
+      expect(r.out, what).toContain('::error::SHA256SUMS does not match the files inside the zip.');
+      expect(r.code, what).toBe(1);
+    }
+    const ok = world(GOOD).run(step);
+    expect(ok.code, ok.out).toBe(0);
+  });
+
+  test('the registry download retries transient errors', () => {
+    const curl = world(GOOD);
+    expect(curl.run(step).code).toBe(0);
+    const args = curl.log().find((c) => c[0] === 'curl')!;
+    expect(args).toEqual(expect.arrayContaining(['--retry', '5', '--retry-delay', '10', '--retry-all-errors']));
+  });
 });
 
 describe('the github-release job validates its inputs and the tag (NFR-REL-001, issue #559)', onLinux, () => {
@@ -551,6 +595,19 @@ describe('the github-release job validates its inputs and the tag (NFR-REL-001, 
     expect(r.code).toBe(1);
   });
 
+  test('the artifact must hold exactly the zip, its checksum and SHA256SUMS: a notes.md or a missing file is refused', () => {
+    const extra = world(GOOD);
+    writeFileSync(join(extra.ws, 'release-in', 'notes.md'), 'tampered\n');
+    const r1 = extra.run(inputs);
+    expect(r1.out).toContain('::error::the plugin-zip artifact holds unexpected files');
+    expect(r1.code).toBe(1);
+    const missing = world(GOOD);
+    rmSync(join(missing.ws, 'release-in', 'SHA256SUMS'));
+    const r2 = missing.run(inputs);
+    expect(r2.out).toContain('::error::the plugin-zip artifact holds unexpected files');
+    expect(r2.code).toBe(1);
+  });
+
   test('a tag that still points at the run commit passes, also through an annotated tag object', () => {
     expect(world(GOOD).run(tagStep).code).toBe(0);
     const w = world(GOOD);
@@ -569,7 +626,7 @@ describe('the github-release job validates its inputs and the tag (NFR-REL-001, 
   });
 });
 
-describe('the build-plugin job writes the checksums and the release notes (NFR-REL-001, issue #559)', onLinux, () => {
+describe('the build-plugin job writes the checksums and checks the CHANGELOG (NFR-REL-001, issue #559)', onLinux, () => {
   const step = runOf(stepsOf(jobBlock('build-plugin')).find((s) => s.includes('name: Build the plugin zip and check its versions'))!);
   const realPkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8')) as { version: string };
   const V = realPkg.version;
@@ -588,23 +645,15 @@ describe('the build-plugin job writes the checksums and the release notes (NFR-R
     return { code: r.status, out: String(r.stdout) + String(r.stderr) };
   };
 
-  test('the notes open with the zip checksum and the session-start files, then the CHANGELOG section; SHA256SUMS lists every file', () => {
+  test('SHA256SUMS lists every file of the zip, and no notes.md is written', () => {
     const d = repoCopy();
     const r = runStep(d);
     expect(r.code, r.out).toBe(0);
-    const zipName = `agent-notebook-plugin-${V}.zip`;
-    const zipBytes = readFileSync(join(d, 'release-out', zipName));
-    const notes = readFileSync(join(d, 'release-out', 'notes.md'), 'utf-8');
-    expect(notes.split('\n')[0]).toBe(`Claude Code plugin: ${zipName} sha256 ${sha(zipBytes)}`);
+    const zipBytes = readFileSync(join(d, 'release-out', `agent-notebook-plugin-${V}.zip`));
     const files = readZip(zipBytes);
-    for (const f of ['hooks/hooks.json', 'examples/hooks/claude-code/nb-hook-entry.cjs', 'examples/hooks/claude-code/nb-claude-hook.mjs']) {
-      expect(notes).toContain(`\`${f}\` sha256 ${sha(files.get(f)!)}`);
-    }
-    expect(notes).toContain(`## [${V}]`);
-    expect(notes.indexOf('hooks/hooks.json')).toBeLessThan(notes.indexOf(`## [${V}]`));
-    expect(notes).not.toContain('## [0.12.0]');
     const sums = readFileSync(join(d, 'release-out', 'SHA256SUMS'), 'utf-8').trimEnd().split('\n');
     expect(sums).toEqual([...files].sort(([x], [y]) => Buffer.compare(Buffer.from(x), Buffer.from(y))).map(([name, b]) => `${sha(b)}  ${name}`));
+    expect(existsSync(join(d, 'release-out', 'notes.md'))).toBe(false);
     expect(readFileSync(join(d, 'out.txt'), 'utf-8')).toBe(`sha256=${sha(zipBytes)}\n`);
   }, 120_000);
 
@@ -620,8 +669,71 @@ describe('the build-plugin job writes the checksums and the release notes (NFR-R
     const r = runStep(d, 'v9.9.9');
     expect(r.out).toContain('::error::tag (GITHUB_REF_NAME)');
     expect(r.code).toBe(1);
-    expect(existsSync(join(d, 'release-out', 'notes.md'))).toBe(false);
+    expect(existsSync(join(d, 'release-out', 'SHA256SUMS'))).toBe(false);
   }, 120_000);
+});
+
+describe('the github-release job writes the release notes from values it verified (NFR-REL-001, issue #559)', onLinux, () => {
+  const notesStep = runOf(stepByName('Write the release notes'));
+  const createStep = runOf(stepByName('Create the release, or confirm it already holds this zip'));
+  const session = ['hooks/hooks.json', 'examples/hooks/claude-code/nb-hook-entry.cjs', 'examples/hooks/claude-code/nb-claude-hook.mjs'];
+
+  test('the notes carry the verified sha256 values and the CHANGELOG section; a tampered notes.md in the artifact is not what is published', () => {
+    const w = world(GOOD);
+    // A compromised build job leaves its own notes.md, with false values, in the artifact.
+    writeFileSync(join(w.ws, 'release-in', 'notes.md'), 'Claude Code plugin: x sha256 deadbeef\nTAMPERED\n');
+    const r = w.run(notesStep);
+    expect(r.code, r.out).toBe(0);
+    const notes = readFileSync(join(w.ws, 'notes.md'), 'utf-8');
+    const zipName = `agent-notebook-plugin-${GOOD}.zip`;
+    const zipSha = sha(readFileSync(join(w.ws, 'release-in', zipName)));
+    const lines = notes.split('\n');
+    expect(lines[0]).toBe(`Claude Code plugin: ${zipName} sha256 ${zipSha}`);
+    for (const f of session) expect(lines).toContain(`- \`${f}\` sha256 ${sha(zips[GOOD].files.get(f)!)}`);
+    expect(notes).toContain(`## [${GOOD}] - 2026-01-01\n\nFixture section for ${GOOD}.\n\n- an item`);
+    expect(notes).not.toContain('Old section.');
+    expect(notes).not.toContain('not yet');
+    expect(notes).not.toContain('TAMPERED');
+    expect(notes).not.toContain('deadbeef');
+
+    // The create call is handed the file the job built, not the artifact's.
+    const c = w.run(createStep);
+    expect(c.code, c.out).toBe(0);
+    const call = writeCalls(w)[0];
+    expect(call[call.indexOf('--notes-file') + 1]).toBe('../notes.md');
+    expect(readFileSync(join(w.ws, 'release-in', '../notes.md'), 'utf-8')).toBe(notes);
+  });
+
+  test('the session-start hashes are those of the zip the job holds, not the build job\'s claim', () => {
+    const w = world(GOOD, { zip: (f) => f.set('hooks/hooks.json', Buffer.from('{"hooks":{}}\n')) });
+    expect(w.run(notesStep).code).toBe(0);
+    expect(readFileSync(join(w.ws, 'notes.md'), 'utf-8')).toContain(`\`hooks/hooks.json\` sha256 ${sha(Buffer.from('{"hooks":{}}\n'))}`);
+  });
+
+  test('a prerelease and the plain `## <version>` heading both find their section', () => {
+    const w = world(BETA);
+    expect(w.run(notesStep).code).toBe(0);
+    expect(readFileSync(join(w.ws, 'notes.md'), 'utf-8')).toContain(`Fixture section for ${BETA}.`);
+    const plain = world(GOOD, { src: (d) => writeFileSync(join(d, 'CHANGELOG.md'), `# Changelog\n\n## ${GOOD}\n\nPlain heading body.\n\n## 0.0.1\n\nold\n`) });
+    expect(plain.run(notesStep).code).toBe(0);
+    const notes = readFileSync(join(plain.ws, 'notes.md'), 'utf-8');
+    expect(notes).toContain('Plain heading body.');
+    expect(notes).not.toContain('old\n');
+  });
+
+  test('a CHANGELOG at the tagged commit with no section for the version is refused and no notes are written', () => {
+    const w = world(GOOD, { src: (d) => writeFileSync(join(d, 'CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n\n- x\n\n## [9.9.9] - 2026-01-01\n\nother\n') });
+    const r = w.run(notesStep);
+    expect(r.out).toContain(`::error::CHANGELOG.md at ${COMMIT} has no section for version ${GOOD}`);
+    expect(r.code).toBe(1);
+    expect(existsSync(join(w.ws, 'notes.md'))).toBe(false);
+  });
+
+  test('the CHANGELOG is read through the API at the run commit', () => {
+    const w = world(GOOD);
+    w.run(notesStep);
+    expect(w.log().some((c) => c[0] === 'gh' && c[1] === 'api' && c[2] === `repos/o/r/contents/CHANGELOG.md?ref=${COMMIT}`)).toBe(true);
+  });
 });
 
 describe('the publish job skips a version that npm already holds (NFR-REL-001, issue #559)', onLinux, () => {
