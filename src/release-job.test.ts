@@ -551,11 +551,11 @@ describe('the github-release job proves the zip equals the npm package and the t
     expect(ok.code, ok.out).toBe(0);
 }, 120_000);
 
-  test('the registry download retries transient errors', () => {
+  test('the registry download waits up to 20 minutes for npm to serve a new tarball', () => {
     const curl = world(GOOD);
     expect(curl.run(step).code).toBe(0);
     const args = curl.log().find((c) => c[0] === 'curl')!;
-    expect(args).toEqual(expect.arrayContaining(['--retry', '5', '--retry-delay', '10', '--retry-all-errors']));
+    expect(args).toEqual(expect.arrayContaining(['--retry', '40', '--retry-delay', '30', '--retry-max-time', '1200', '--retry-all-errors']));
   });
 });
 
