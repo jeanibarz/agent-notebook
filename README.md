@@ -168,6 +168,26 @@ To set up lessons, ideas or both, follow the [setup guide](examples/SETUP.md). T
 
 ## Install
 
+### Claude Code: one command (beta)
+
+1. Install Node.js 18 or later: the LTS version from [nodejs.org](https://nodejs.org). Check it with `node --version`.
+2. Open a terminal (Terminal on macOS, PowerShell on Windows) and paste:
+
+   ```
+   claude plugin install agent-notebook --marketplace https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/.claude-plugin/marketplace.json
+   ```
+
+   You need neither git nor Node.js for this step. It was tested with Claude Code 2.1.332 (check yours with `claude --version`).
+3. Start a new chat, and ask "is agent-notebook working?". If Node.js is missing, the assistant says so in its first reply.
+
+- **What it changes:** no file you edit; Claude Code records the plugin in its own settings.
+- **Update:** `claude plugin marketplace update agent-notebook`, then `claude plugin update agent-notebook@agent-notebook`. If it says "already at the latest version", wait a few minutes and run both again.
+- **Remove:** `claude plugin uninstall agent-notebook@agent-notebook`. Your notes in `~/.agent-notebook` (`%USERPROFILE%\.agent-notebook` on Windows) stay.
+- **On a company computer** where the install is refused, ask your administrator to read [the company-machines guide](docs/enterprise.md#claude-code-plugin).
+- **Hooks copied by hand before:** see [moving to the plugin](docs/harness-setup.md#moving-to-the-plugin).
+
+### The `nb` command alone, or another agent
+
 ```
 npm install -g agent-notebook
 ```
