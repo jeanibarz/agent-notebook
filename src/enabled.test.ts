@@ -316,7 +316,9 @@ describe('the README recipe: off everywhere except one repository (issue #514)',
     expect(nb(pilot, ['enabled'], { NB_ENABLED: '0' }).out).toBe('off\n');
     // Only the retro sentinels landed in the store; the switch wrote no notebook.
     expect(readdirSync(join(tmp, 'store')).filter((f) => !f.startsWith('.'))).toEqual([]);
-  });
+    // About ten real processes (git, the hooks, nb): give it room on a loaded runner, as
+    // CONTRIBUTING asks for a spawn-heavy test. It took 5.3 s on macOS CI after #573.
+  }, 30_000);
 });
 
 describe('the Stop hook: off in the project directory or in the payload cwd wins (issue #517)', () => {
