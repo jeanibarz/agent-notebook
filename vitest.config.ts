@@ -144,6 +144,7 @@ export default defineConfig({
             'src/nb-git-wrapper-lock.test.ts',
             'src/place.test.ts',
             'src/place-ops.test.ts',
+            'src/messages.test.ts',
           ],
           // @ts-expect-error — same: accepted per project at runtime, missing from the types
           testNamePattern: TIMING_TAG,

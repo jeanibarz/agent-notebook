@@ -37,7 +37,8 @@ function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(env)) if (k.startsWith('NB_')) delete env[k];
   delete env.CLAUDE_PROJECT_DIR;
-  return { ...env, GIT_CONFIG_GLOBAL: globalCfg, GIT_CONFIG_NOSYSTEM: '1', GIT_CEILING_DIRECTORIES: tmp, NB_DIR: store, ...extra };
+  // HOME: never the developer's real ~/.agent-notebook/messages, which `nb brief` reads (issue #539).
+  return { ...env, HOME: join(tmp, 'home'), USERPROFILE: join(tmp, 'home'), GIT_CONFIG_GLOBAL: globalCfg, GIT_CONFIG_NOSYSTEM: '1', GIT_CEILING_DIRECTORIES: tmp, NB_DIR: store, ...extra };
 }
 
 interface Run {

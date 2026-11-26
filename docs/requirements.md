@@ -129,6 +129,11 @@ Operations SHALL report honestly rather than pretend success:
   working directory. It SHALL refuse, rather than fall back to the shared notebook, when it
   cannot tell which notebook that is, or when a write would put a shelf `<x>@<project>` of a
   project that has its own notebook anywhere but in that notebook (issue #548).
+- A message file that exists but cannot be used (not a regular file, unreadable, empty, too large,
+  holding NUL bytes, not UTF-8, a broken link, or in a folder inside `NB_DIR`) SHALL NOT be dropped
+  silently: `nb brief` SHALL print one line where its block would have gone, and `nb config` SHALL say
+  why ([FR-MSG-002](#fr-msg-002)). A folder that cannot be read, and a home folder that is not an
+  absolute path, are said by `nb config` ([FR-CONFIG-004](#fr-config-004)).
 **Rationale:** The notebook is an agent's memory of its own past; a silent
 truncation or a mis-landed vote poisons future runs. A loud refusal is cheap to
 recover from; a silent corruption is not.
@@ -143,7 +148,9 @@ there (by the commands that read it: `enabled`, `config`, the text form of `list
 project folder exists, [§4.19](#fr-place-001)), the entries of `~/.agent-notebook/projects/` when `NB_DIR`
 is unset ([FR-PLACE-001](#fr-place-001)), the `GIT_*` variables git
 itself reads,
-`PATH` (to find `git`), the home folder (the default `NB_DIR` and `projects/`), the locale, the files
+`PATH` (to find `git`), the home folder (the default `NB_DIR` and `projects/`, and the `messages/` folder
+read by `brief` and described by `config`: its entries, its files and, for `config` only, their modification
+times, [FR-MSG-001](#fr-msg-001)), the locale, the files
 under `NB_DIR` (or the project folder in use), and the clock: `stats` and `doctor` report against the current time
 (their `--since` window, a lock's age). For `brief` and `retro` the clock SHALL decide
 side effects only (timestamps, removing an expired retrospective sentinel), never what
@@ -852,7 +859,10 @@ one is close) — in the human output as a trailing block and in `--json` as an 
 `NB_BACKUP_GIT_LOCK_WAIT`) SHALL NOT be flagged — they belong to those tools, not to `nb`. The
 variables `nb retro` reads (`NB_RETRO_EXTRA_PROMPT`, `NB_RETRO_TTL_DAYS`, `NB_PROJECT_SLUG`,
 [FR-RETRO-002](#fr-retro-002), [FR-RETRO-003](#fr-retro-003)) SHALL count as read by `nb`; they get
-no line of their own. `nb config` SHALL be read-only (it mutates no notebook) and is scoped
+no line of their own. When `~/.agent-notebook/messages/` exists, or the home folder is not an absolute
+path, `nb config` SHALL add the block of [FR-CONFIG-004](#fr-config-004) after the `enabled=` line, and
+`--json` the `messages` key; otherwise the output is byte-identical to before.
+`nb config` SHALL be read-only (it mutates no notebook) and is scoped
 to *configuration*, distinct from `nb stats` (usage, anomalies, engagement). To surface the
 `nb stats` thresholds without duplicating their clamp logic, `stats()` reads them through those
 exported getters rather than inline — a behavior-preserving extraction (same defaults, same
@@ -875,7 +885,9 @@ dir; an `NB_ASCII` left unset but forced on by a non-UTF-8 locale reads `on (def
 each value `{ value, source }`, leaving the numeric rows' keys and `{ value, source, env }` shape
 unchanged so the `--json` contract stays backward-compatible (a new section, not a changed row
 type). The `NB_DIR` row is the shared notebook; where the lessons of the working directory go,
-a project folder included, is what `nb place` prints ([FR-PLACE-002](#fr-place-002)).
+a project folder included, is what `nb place` prints ([FR-PLACE-002](#fr-place-002)). The folder of the
+user's message files is not an environment variable and has no row here: it is the block of
+[FR-CONFIG-004](#fr-config-004), shown only when it has something to say.
 *Proven by:* `cli.test.ts` → `describe('string env section — NB_DIR / NB_SESSION / NB_ASCII (issue #312)')`.
 
 <a id="fr-config-003"></a>
@@ -912,7 +924,31 @@ printable non-ASCII text and replaces CR, C1 and bidi controls", "nb.json is not
 NB_DIR is a file: no settings warning, only the command's own error" and "nb.json maxChars also caps
 the git wrapper's Nb-Session trailer, equal to the usage log's session column".
 
+<a id="fr-config-004"></a>
+**FR-CONFIG-004 (Should).** Only when `~/.agent-notebook/messages/` exists, or the home folder is not an
+absolute path, `nb config` SHALL print after the `enabled=` line a blank line and this block, for the working
+directory (rows for `nb retro` come with its own pull request):
+```
+messages=~/.agent-notebook/messages  (read by nb brief; hooks copied from 0.12 ignore it)
+brief.global=brief.txt  (in force, 412 characters, changed 2026-11-26 08:12)
+brief.project=acme-app.brief.txt  (none: no such file; project name from the git remote)
+ignored: brief.txt.txt, Brief.txt  (not a message file name)
+other projects: old-name.brief.txt
+```
+A file row says `in force` with its length in characters and its modification time (local time; the only
+use of that time), `none: no such file`, or `not used:` and the reason of [FR-MSG-002](#fr-msg-002). The
+project row shows `-` and why when no project name selects a file (from the folder, none, a bare repository,
+a Windows device name). `ignored:` lists, escaped and at most 20, the names in the folder that are not a
+message file name (names starting with `.` are left out); `other projects:` lists the project files of other
+names, so a file left behind by a renamed remote can be found. A folder that is not read says why on the
+`messages=` row alone: a home folder that is not an absolute path, a folder inside `NB_DIR`
+([NFR-SAFE-001](#nfr-safe-001)), or one that cannot be read. `--json` SHALL gain one top-level key,
+`messages`, only when the block is shown. `nb config` SHALL NOT create the folder or any file in it.
+*Proven by:* `messages.test.ts` → `describe('nb config describes the message files only when there is something to say (FR-CONFIG-004)')` and
+`describe('byte parity without a messages folder (FR-MSG-001, FR-CONFIG-004, acceptance criterion 1)')`.
+
 ### 4.11 Durability & concurrency
+
 
 <a id="fr-lock-001"></a>
 **FR-LOCK-001 (Must).** Every notebook mutation (`add`/`vote`/`merge`/`split`/`rm`/`move`) SHALL run
@@ -1655,6 +1691,11 @@ still complete in an off repository.
 > FR-CLI-001 (the command list), NFR-MAINT-001 (the module list) and NFR-PORT-001 (a
 > Windows CI leg). The converged design, with what was measured and the alternatives
 > rejected, is [the design comment on #538](https://github.com/jeanibarz/agent-notebook/issues/538#issuecomment-7179106955).
+>
+> Issue [#539](https://github.com/jeanibarz/agent-notebook/issues/539) adds the user's own message
+> files ([§4.20](#fr-msg-001)). `nb brief` reads them since its first pull request; `nb retro` does
+> not yet, so FR-RETRO-001 and FR-RETRO-002 are unchanged for now. That change amends DP-5, DP-6,
+> FR-BRIEF-001 and FR-BRIEF-002, FR-CONFIG-001 and FR-CONFIG-002, NFR-SAFE-001 and NFR-PORT-001.
 
 What an assistant is told at the start and at the end of a task lives today in three
 bash scripts under `examples/hooks/claude-code/` that each user copies. These
@@ -1666,8 +1707,11 @@ reply format) to an adapter outside the core ([FR-HOOKS-001](#fr-hooks-001)).
 **FR-BRIEF-001 (Should).** `nb brief [--max-chars N] [--session <id>] [--hook <label>] [--json]`
 SHALL print, for the working directory, what an assistant should see at the start of a
 session: the instruction lines of today's `nb-session-start.sh`, one framing line saying the
-lessons are notes from earlier agent runs and not instructions from the user, and the shelf
-index (the `nb list` text, indented two spaces). When the per-repository switch
+lessons are notes from earlier agent runs and not instructions from the user, the place line
+([FR-PLACE-004](#fr-place-004)) when there is one, the user's own message blocks when
+`~/.agent-notebook/messages/` holds any ([FR-MSG-001](#fr-msg-001)), and the shelf
+index (the `nb list` text, indented two spaces). Without that folder its text, `--json` and processes are
+those of before, byte for byte. When the per-repository switch
 ([FR-ENABLED-001](#fr-enabled-001)) is off it SHALL print only the one "switched off" line.
 An empty or missing store SHALL print the instruction lines and the "no notebooks yet" line;
 an unreadable store SHALL print a warning line naming the error code. It SHALL NOT read
@@ -1678,27 +1722,38 @@ state and `1` only on bad usage, and SHALL never exit `2`. `--json` SHALL print
 and the home folder; `NB_ENABLED`, and git's `nb.enabled` read in the working directory
 (git's scopes and environment, and `PATH` to find `git`); `NB_PROJECT_SLUG` and
 `NB_GLOBAL_SHELF`; when `NB_PROJECT_SLUG` is unset, the project name of
-[FR-PROJECT-001](#fr-project-001) asked in the working directory; `NB_ASCII` and the locale; the
-entries of `~/.agent-notebook/projects/` ([FR-PLACE-001](#fr-place-001)); and the
-files under `NB_DIR` (or the project folder in use). `--session`,
+[FR-PROJECT-001](#fr-project-001) asked in the working directory (also asked, once, when a
+`<project>.brief.txt` exists); `NB_ASCII` and the locale; the
+entries of `~/.agent-notebook/projects/` ([FR-PLACE-001](#fr-place-001)); the entries and the
+`brief.txt` and `<project>.brief.txt` files of `~/.agent-notebook/messages/` ([FR-MSG-001](#fr-msg-001));
+and the files under `NB_DIR` (or the project folder in use). `--session`,
 `--hook`, `NB_SESSION` and the clock SHALL NOT change what it prints.
 
 *Proven by:* `brief.test.ts` → `describe('nb brief prints what the 0.12 session-start hook printed, plus the framing line (FR-BRIEF-001)')`,
 `describe('nb brief respects the per-repository switch (FR-BRIEF-001)')` and
-`describe('nb brief exit codes and the usage log (FR-BRIEF-001)')`.
+`describe('nb brief exit codes and the usage log (FR-BRIEF-001)')`; the message blocks by
+`messages.test.ts` → `describe('nb brief adds the message files after the place line and before the index (FR-MSG-001, FR-BRIEF-001)')`,
+and the unchanged text without a messages folder by
+`describe('byte parity without a messages folder (FR-MSG-001, FR-CONFIG-004, acceptance criterion 1)')`.
 
 <a id="fr-brief-002"></a>
 **FR-BRIEF-002 (Should).** `nb brief` SHALL keep its whole output within `--max-chars`
 characters (default 9000; `0` disables the budget). Over budget, it SHALL drop index rows
 in the existing `nb list` rank, fewest lessons first, whatever their layer, and SHALL never
-drop the instruction, framing, heading or note lines. The last line SHALL then say how many
+drop the instruction, framing, place, heading or note lines, or the user's message blocks and
+warning lines ([FR-MSG-001](#fr-msg-001)), all of which count in the head that is never cut. The last line SHALL then say how many
 shelves were not shown, that the index is capped at that many characters, and give the
-`nb list --limit <total>` command that shows them all.
+`nb list --limit <total>` command that shows them all. When message blocks are present and the head
+alone is over `--max-chars` (above 0), `nb brief` SHALL print one line saying the user's instructions
+leave no room for the index, in place of the index.
 **Rationale:** Claude Code shows a hook's output whole only up to 10,000 characters and
 replaces anything longer with a 2,000-character preview and a file path (epic #537, M9);
 a cut index then shows more than today, never less.
 
-*Proven by:* `brief.test.ts` → `describe('nb brief keeps its text within --max-chars (FR-BRIEF-002)')`.
+*Proven by:* `brief.test.ts` → `describe('nb brief keeps its text within --max-chars (FR-BRIEF-002)')`;
+`messages.test.ts` → "the blocks are part of the never-cut head: the index gets what is left of --max-chars",
+"over the budget by the head alone, one line says so in place of the index" and
+"1,000 shelves with --max-chars 1500 and a block: within budget, block kept, the cut line says how many".
 
 <a id="fr-brief-003"></a>
 **FR-BRIEF-003 (Should).** Every value `nb brief` places into its text (shelf names,
@@ -1941,6 +1996,68 @@ unchanged.
 *Proven by:* `place.test.ts` → "own: the project writes and reads only its folder; other directories see the shared notebook and a count" and
 "git refusing the folder (safe.directory) with a project folder: every notebook command refuses, brief and place say why".
 
+### 4.20 The user's own message files (issue #539)
+
+> **Status:** the brief part is implemented by the first pull request of
+> [issue #539](https://github.com/jeanibarz/agent-notebook/issues/539): `nb brief` reads `brief.txt` and
+> `<project>.brief.txt`, and `nb config` describes them ([FR-CONFIG-004](#fr-config-004)). The names
+> `retro.txt` and `<project>.retro.txt` are recognised as message files (so `nb config` does not list them as
+> ignored) but no command reads them yet: the `nb retro` part comes with the next pull request, which adds
+> its requirements here.
+
+A person can add their own words to what the assistant is told by putting plain UTF-8 text files in one folder
+beside the notebooks, never inside one: a notebooks folder is synced, and text from synced data could be
+planted by anyone who can push ([NFR-SAFE-001](#nfr-safe-001)). The built-in text always stays; the user's text
+is added after it. Copied 0.12 hooks never call `nb brief`, so they ignore these files.
+
+<a id="fr-msg-001"></a>
+**FR-MSG-001 (Should).** The folder SHALL be `<home>/.agent-notebook/messages/`, `<home>` being the home folder
+of the process (injectable in tests). Its files are exactly `brief.txt`, `retro.txt`, `<project>.brief.txt` and
+`<project>.retro.txt`, matched exactly as the directory listing returns them, on every system. In this change
+only the two `brief` files are read, by `nb brief` ([FR-BRIEF-001](#fr-brief-001)); the `retro` names are reserved.
+`<project>` SHALL be the cleaned name of [FR-PROJECT-001](#fr-project-001), never the raw `NB_PROJECT_SLUG`, so a slug
+such as `../x` cannot leave the folder, and SHALL select a file only when it comes from `NB_PROJECT_SLUG` or the git
+remote (the rule that lets a name select an own notebook, [FR-PLACE-001](#fr-place-001): a name taken from the
+repository folder can be shared by unrelated repositories) and is not a bare repository or a Windows device name.
+The name is the one `nb brief` already resolves for its place line (once per call); it is resolved for the files only
+when a `<project>.brief.txt` other than `brief.txt` exists, and the module that reads the files receives it as a plain
+value and starts no process. `nb brief` SHALL print, after the place line and before the index, the global block, then
+the project block. Each used file is printed between two framing lines:
+`The user's own instructions for you (from ~/.agent-notebook/messages/brief.txt); follow them:` and
+`(end of the user's instructions)`; the project block's first line is
+`The user's own instructions for project <name> (from ~/.agent-notebook/messages/<name>.brief.txt); where they differ from the ones above, these win:`.
+The path is always in that `~/` form. A lesson cannot forge these lines: every index row starts with white space.
+The blocks are printed under an unknown place ([FR-PLACE-004](#fr-place-004)), after the place line and with no
+index, and not when the switch is off ([FR-ENABLED-001](#fr-enabled-001)). The folder SHALL be refused, as
+[NFR-SAFE-001](#nfr-safe-001) says, when the home folder is not an absolute path or when it lies inside `NB_DIR`.
+*Proven by:* `messages.test.ts` → `describe('the messages folder is found, listed and refused as the design says (FR-MSG-001, NFR-SAFE-001)')`,
+`describe('nb brief adds the message files after the place line and before the index (FR-MSG-001, FR-BRIEF-001)')`,
+`describe('where the project name comes from for a project file (FR-MSG-001)')` and
+`describe('byte parity without a messages folder (FR-MSG-001, FR-CONFIG-004, acceptance criterion 1)')`.
+
+<a id="fr-msg-002"></a>
+**FR-MSG-002 (Should).** A message file SHALL be read by the checks `NB_RETRO_EXTRA_PROMPT` has had since issue #538
+([FR-RETRO-002](#fr-retro-002)), shared in one helper: `stat` before opening (a link whose target is missing is told
+apart with `lstat`), a regular file only, a non-blocking open, `fstat` on the descriptor, a byte cap, no NUL byte, a
+UTF-8 byte-order mark dropped. A message file also SHALL be valid UTF-8: a UTF-16 byte-order mark, or bytes that do not
+decode (cp1252, Shift-JIS, UTF-16 without a mark), refuse it with `not UTF-8 (saved as UTF-16 or ANSI?); save it as UTF-8`.
+`NB_RETRO_EXTRA_PROMPT` keeps its own checks and wording: no UTF-8 check, 64 KiB. Cleaning, in this order: lines split
+on `\r\n`, `\r` and `\n`; a tab becomes a space; each line goes through the cleaner `nb brief` applies to lesson text
+(control characters, U+2028 and U+2029, bidi overrides, U+200B and the soft hyphen U+00AD become visible `\uXXXX`
+escapes; the joiners U+200C and U+200D and the plain direction marks stay); trailing white space is trimmed; blank
+lines at both ends are dropped. After cleaning, a brief file SHALL hold at most 1,000 characters (a retro file 4,000),
+counted in Unicode code points; a longer file is refused whole, never cut, and a file over 4 bytes per allowed
+character plus 1,024 is refused before it is decoded. A file that exists and cannot be used SHALL give, in `nb brief`
+in place of its block, the line
+`agent-notebook: the user's instructions file ~/.agent-notebook/messages/<file> was not used (<reason>); tell the user once.`
+([DP-5](#dp-5)); the same reason SHALL appear in `nb config`. The warning is never written to stderr, where a hook's
+text reaches neither the model nor the user. A file that vanishes between the listing and the open counts as missing.
+*Proven by:* `messages.test.ts` → `describe('the message files are read by one cleaner and one reader (FR-MSG-002)')`,
+"a file that cannot be used gives one warning line where its block would have gone (golden)",
+"every refusal reason reaches the model as one line" and
+"hostile contents reach the model only as escaped text on lines of their own"; `retro.test.ts` →
+`describe('nb retro and a broken NB_RETRO_EXTRA_PROMPT (FR-RETRO-002)')`.
+
 ## 5. Non-functional requirements
 
 <a id="nfr-perf-001"></a>
@@ -1962,7 +2079,7 @@ the Node-18 leg runs a dependency-free runtime smoke of the built CLI
 minimum engine is actually executed and not merely compiled. A Windows leg (Node 22)
 runs the tests of the agent-facing loop added by issue #538 (`src/brief.test.ts`, `src/retro.test.ts`,
 `src/loop-stats.test.ts`, `src/module-boundaries.test.ts`) and of the project name added by issue #540
-(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`); the rest of the suite is not
+(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`) and of the message files added by issue #539 (`src/messages.test.ts`); the rest of the suite is not
 yet run on Windows. *(Proven by
 `src/smoke-node18.test.ts`.)*
 
@@ -1974,7 +2091,17 @@ on every shelf-to-path conversion. Named read-only exceptions: the commands that
 per-repository switch read git configuration ([FR-ENABLED-001](#fr-enabled-001)), `nb project`
 reads it for the project name ([FR-PROJECT-001](#fr-project-001)), and
 `nb retro` reads the one file `NB_RETRO_EXTRA_PROMPT` names, after checking it is a regular
-file of at most 64 KiB ([FR-RETRO-002](#fr-retro-002)).
+file of at most 64 KiB ([FR-RETRO-002](#fr-retro-002)), and `nb brief` and `nb config` read the
+folder `~/.agent-notebook/messages/` of the home folder and the message files in it
+([FR-MSG-001](#fr-msg-001)), a second read-only location outside `NB_DIR`. That folder SHALL NOT be read
+when the home folder is not an absolute path (an empty or relative `HOME`, which would read files
+under the working directory, possibly a clone), and its files SHALL NOT be read when the folder, after
+`realpath`, lies inside `NB_DIR` (the shipped scripts sync that folder). Nothing in it is ever created or
+written ([NG-008](#ng-008)). Both refusals are proven on Windows by `src/messages.test.ts`.
+
+*Proven by:* `messages.test.ts` → `describe('a home folder or a notebooks folder that would plant text is refused (NFR-SAFE-001, acceptance criterion 5)')`,
+`describe('the messages folder is found, listed and refused as the design says (FR-MSG-001, NFR-SAFE-001)')` and
+`describe('nb never writes in the messages folder (NG-008, NFR-SAFE-001)')`.
 
 <a id="nfr-maint-001"></a>
 **NFR-MAINT-001 (Should).** The whole mechanism SHALL stay in `src/notebook.ts` (the
@@ -1984,11 +2111,11 @@ shell completion, stdin reading and process guards). The read-side report render
 `nb config` report (`src/config-report.ts`), the did-you-mean helpers (`src/suggest.ts`),
 `nb doctor` (`src/doctor.ts`), the `nb enabled` resolver (`src/enabled.ts`), the agent-facing loop
 (`src/loop.ts`, with its text in `src/agent-text.ts`, issue #538), the project name (`src/project.ts`,
-issue #540), the place resolver and its moves (`src/place.ts`, `src/place-ops.ts`, issue #548) SHALL live in modules that `src/cli.ts`
+issue #540), the user's message files (`src/messages.ts`, issue #539: it imports only `node:fs`, `node:path` and `src/notebook.ts`, takes the project name and the home folder as plain values, runs no process and writes nothing; only `src/loop.ts` and `src/config-report.ts` import it), the place resolver and its moves (`src/place.ts`, `src/place-ops.ts`, issue #548) SHALL live in modules that `src/cli.ts`
 imports and that never import it; `src/notebook.ts` SHALL NOT import the loop modules. Only
 `src/git.ts` SHALL start a process (`git`, read-only, a fixed argument list, no shell). Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
 
-*Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)" and "only git.ts starts a process, and the project name depends on nothing but it (issue #540)" and "the place resolver sits on the project name and the mechanism, below cli.ts (issue #548)".
+*Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)" and "only git.ts starts a process, and the project name depends on nothing but it (issue #540)" and "the place resolver sits on the project name and the mechanism, below cli.ts (issue #548)" and "the message-file module imports only the standard library and the mechanism, and only loop and config-report import it (issue #539)".
 
 <a id="nfr-obs-001"></a>
 **NFR-OBS-001 (Could).** Operational state SHALL be observable without extra tooling
@@ -2039,6 +2166,13 @@ of [FR-RETRO-003](#fr-retro-003), MAY be removed by age.
 **NG-007.** The tool SHALL NOT require an agent to query in order to retrieve its own
 memory. Search, if ever offered, is a secondary convenience; the primary path is
 presentation ([DP-8](#dp-8)).
+
+<a id="ng-008"></a>
+**NG-008.** `nb` SHALL NOT create, write, delete or sync the user's message folder
+`~/.agent-notebook/messages/` or any file in it, and the scripts shipped under `examples/` SHALL NOT
+either. A person or another tool writes those files; `nb` only reads them ([FR-MSG-001](#fr-msg-001)).
+They are not backed up by `nb`'s scripts.
+*Proven by:* `messages.test.ts` → `describe('nb never writes in the messages folder (NG-008, NFR-SAFE-001)')`.
 
 ---
 

@@ -47,6 +47,9 @@ function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   delete env.CLAUDE_PROJECT_DIR;
   return {
     ...env,
+    // Never the developer's real home: `nb brief` reads ~/.agent-notebook/messages (issue #539).
+    HOME: join(tmp, 'home'),
+    USERPROFILE: join(tmp, 'home'),
     GIT_CONFIG_GLOBAL: globalCfg,
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CEILING_DIRECTORIES: tmp,

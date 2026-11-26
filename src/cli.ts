@@ -89,6 +89,7 @@ import {
   configSource,
   effectiveConfig,
   environmentRows,
+  messagesReport,
   renderConfig,
   unknownEnvVars,
   type ConfigSource,
@@ -96,9 +97,9 @@ import {
 } from './config-report.js';
 import { describeSource, resolveEnabled, stateWord } from './enabled.js';
 import { describeProject, resolveProject } from './project.js';
-import { placeRefusal, resolvePlace, scanProjects, sharedWriteRefusal, type Place } from './place.js';
+import { isWindowsDeviceName, placeRefusal, resolvePlace, scanProjects, sharedWriteRefusal, type Place } from './place.js';
 import { allShelves, isGitRepo, placeOwn, placeShared, sharedBlockers, type PlaceMove } from './place-ops.js';
-import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, placeLine, retro } from './loop.js';
+import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, messageProjectName, placeLine, projectOfCall, retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import {
   fmt,
@@ -1607,6 +1608,13 @@ export async function runNbCli(
         const unknown = unknownEnvVars();
         // Per-repository on/off state (issue #514), resolved for the working directory.
         const enabledState = resolveEnabled();
+        // The user's message files (issue #539): described only when `messages/` exists or the
+        // home folder is not absolute; the project name is asked only then.
+        const messages = messagesReport({
+          home: homedir(),
+          nbDir: sharedDir,
+          project: () => messageProjectName(place?.project ?? projectOfCall(process.env, currentDir(), resolveProject), isWindowsDeviceName),
+        });
         if (json) {
           // One object keyed by tunable name; each carries the effective value,
           // its source (env/default/derived), and the env var that overrides it,
@@ -1636,9 +1644,9 @@ export async function runNbCli(
             origin: enabledState.origin,
             warning: enabledState.warning,
           };
-          process.stdout.write(JSON.stringify({ ...obj, environment, enabled, unrecognized }) + '\n');
+          process.stdout.write(JSON.stringify({ ...obj, environment, enabled, unrecognized, ...(messages ? { messages: messages.json } : {}) }) + '\n');
         } else {
-          const { out } = renderConfig(rows, envRows, unknown, enabledState);
+          const { out } = renderConfig(rows, envRows, unknown, enabledState, messages);
           process.stdout.write(out);
         }
         break;
@@ -1778,7 +1786,7 @@ export async function runNbCli(
               { command: cmd, flag: '--max-chars', value: maxRaw, usedDefault: BRIEF_MAX_CHARS_DEFAULT },
             );
         }
-        const r = brief({ dir, cwd: currentDir(), maxChars, ...briefPlace(place) });
+        const r = brief({ dir, cwd: currentDir(), maxChars, nbDir: sharedDir, isDeviceName: isWindowsDeviceName, ...briefPlace(place) });
         if (r.err) process.stderr.write(r.err);
         meta.outcome = r.outcome;
         if (sessionRaw !== undefined) meta.session = cleanSessionId(sessionRaw);

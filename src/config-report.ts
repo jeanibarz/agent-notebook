@@ -26,6 +26,7 @@ import {
   notebooksDir,
   RECALL_MISS_HI,
   resolveIntTunableStatus,
+  escapeDiskName,
   resolveRateEnv,
   SILENT_H,
   STALE_LOCK_MS,
@@ -35,6 +36,14 @@ import {
   type RateTunable,
 } from './notebook.js';
 import { asciiMode } from './stats.js';
+import {
+  MESSAGES_DIR_DISPLAY,
+  MESSAGE_NAMES_SHOWN,
+  listMessages,
+  otherProjectFiles,
+  readMessages,
+  type MessageFile,
+} from './messages.js';
 import { closestMatch } from './suggest.js';
 import { describeSource, stateWord, type EnabledState } from './enabled.js';
 
@@ -323,6 +332,7 @@ export function renderConfig(
   envRows: EnvRow[],
   unknown: UnknownEnv[],
   enabled?: EnabledState,
+  messages?: MessagesReport | null,
 ): { out: string } {
   const pairW = rows.reduce((w, r) => Math.max(w, `${r.name}=${r.value}`.length), 0);
   const lines = rows.map((r) => {
@@ -350,6 +360,7 @@ export function renderConfig(
     // Issue #514: whether the agent-facing loop is on in this directory, and why.
     out += `\nenabled=${stateWord(enabled)}  (${describeSource(enabled)})\n`;
   }
+  if (messages) out += '\n' + messages.lines.join('\n') + '\n';
   if (unknown.length > 0) {
     // Keep the tag the same width as the historical `(unrecognized by nb)` so a
     // pure typo re-renders identically. A var with NO close match is still shown
@@ -363,4 +374,102 @@ export function renderConfig(
     out += '\n' + unknownLines.join('\n') + '\n';
   }
   return { out };
+}
+
+/** The `messages` block of `nb config` (issue #539): its human lines and its `--json` value. */
+export interface MessagesReport {
+  lines: string[];
+  json: Record<string, unknown>;
+}
+
+export interface MessagesReportInput {
+  /** The home folder whose `.agent-notebook/messages/` is described. */
+  home: string;
+  /** The shared notebooks folder, for the containment check. */
+  nbDir: string;
+  /**
+   * The project name that may select a message file and why (`messageProjectName` in
+   * `loop.ts`). Called only when the block is shown, so a user without a `messages/`
+   * folder starts no process for it.
+   */
+  project: () => { name: string | null; why: string };
+}
+
+/** `2026-11-26 08:12`, in the local time zone, as `ls -l` shows a file's time. */
+function changedAt(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function fileTag(f: MessageFile, noteIfAbsent: string): string {
+  if (f.status === 'used') return `in force, ${f.chars} character${f.chars === 1 ? '' : 's'}, changed ${changedAt(f.mtimeMs)}`;
+  if (f.status === 'refused') return `not used: ${f.reason}`;
+  return `none: no such file${noteIfAbsent}`;
+}
+
+function fileJson(f: MessageFile): Record<string, unknown> {
+  if (f.status === 'used') return { file: f.file, status: 'used', chars: f.chars, changed: new Date(f.mtimeMs).toISOString() };
+  if (f.status === 'refused') return { file: f.file, status: 'refused', reason: f.reason };
+  return { file: f.file, status: 'absent' };
+}
+
+/** A list of names for one line, escaped, with a count of what was left out. */
+function nameList(names: string[], total: number): string {
+  const shown = names.slice(0, MESSAGE_NAMES_SHOWN).map(escapeDiskName).join(', ');
+  return total > MESSAGE_NAMES_SHOWN ? `${shown}, and ${total - MESSAGE_NAMES_SHOWN} more` : shown;
+}
+
+/**
+ * Describe the message files in force (issue #539, FR-CONFIG-004), or `null` when there
+ * is nothing to say: shown only when the `messages/` folder exists or the home folder is
+ * not an absolute path, so a user without one sees the output of before, byte for byte.
+ * Read-only: it lists the folder and reads the files, and never creates anything.
+ */
+export function messagesReport(input: MessagesReportInput): MessagesReport | null {
+  const listing = listMessages(input.home, input.nbDir);
+  if (!listing.exists && listing.state !== 'home-not-absolute') return null;
+  // The readers named after `messages=`; the end-of-task part of issue #539 adds `nb retro` here.
+  const head = `messages=${MESSAGES_DIR_DISPLAY}`;
+  if (listing.state !== 'present') {
+    const why =
+      listing.state === 'home-not-absolute'
+        ? 'the home folder is not an absolute path (HOME is empty or relative), so no message file is read'
+        : listing.state === 'inside-nb-dir'
+          ? `it lies inside the notebooks folder ${escapeDiskName(listing.nbDir)}, which the shipped scripts sync; move NB_DIR or the notebooks out of the way`
+          : `the folder cannot be read (${listing.code})`;
+    return {
+      lines: [`${head}  (not read: ${why})`],
+      json: { path: MESSAGES_DIR_DISPLAY, state: listing.state, reason: why },
+    };
+  }
+  const proj = input.project();
+  const set = readMessages(listing, 'brief', proj.name);
+  const lines = [
+    `${head}  (read by nb brief; hooks copied from 0.12 ignore it)`,
+    `brief.global=${set.global.file}  (${fileTag(set.global, '')})`,
+    set.project === null
+      ? `brief.project=-  (${proj.why})`
+      : `brief.project=${set.project.file}  (${fileTag(set.project, `; ${proj.why}`)})`,
+    // The end-of-task part of issue #539 adds the retro.global, retro.project and retro.env rows here.
+  ];
+  if (listing.ignoredTotal > 0) lines.push(`ignored: ${nameList(listing.ignored, listing.ignoredTotal)}  (not a message file name)`);
+  const others = otherProjectFiles(listing, proj.name);
+  if (others.length > 0) lines.push(`other projects: ${nameList(others, others.length)}`);
+  return {
+    lines,
+    json: {
+      path: MESSAGES_DIR_DISPLAY,
+      state: 'present',
+      brief: {
+        global: fileJson(set.global),
+        project: set.project === null ? null : fileJson(set.project),
+        projectName: proj.name,
+        projectNote: proj.why,
+      },
+      ignored: listing.ignored,
+      ignoredTotal: listing.ignoredTotal,
+      otherProjects: others.slice(0, MESSAGE_NAMES_SHOWN),
+    },
+  };
 }
