@@ -36,8 +36,12 @@ export interface ProjectState {
   source: ProjectSource;
   /** One sentence written by nb saying why. Never a URL, never git's own words. */
   reason: string;
-  /** The name the folder rule gives, when `source` is `remote` and it differs from `name`; `''` otherwise. */
-  folderName: string;
+  /**
+   * The name `{project}` had before issue #540 (the folder holding the git common
+   * dir), when git answered and it differs from `name`; `''` otherwise. Shown by
+   * `nb project --why` so a user can find shelves written under the old name.
+   */
+  oldName: string;
 }
 
 /** How long each of the (at most two) git runs may take. */
@@ -114,7 +118,7 @@ export function groupsIndex(state: ProjectState): boolean {
   return state.source === 'env' || state.source === 'remote';
 }
 
-const none = (reason: string): ProjectState => ({ name: '', source: 'none', reason, folderName: '' });
+const none = (reason: string): ProjectState => ({ name: '', source: 'none', reason, oldName: '' });
 
 /** Why a failed git run gave no name, in nb's words. */
 function failure(r: GitRun): string {
@@ -132,7 +136,7 @@ export function resolveProject(env: NodeJS.ProcessEnv, cwd: string, git: Project
   const slug = env.NB_PROJECT_SLUG;
   if (slug) {
     const name = cleanProjectName(slug);
-    return { name, source: 'env', reason: name === '' ? 'env NB_PROJECT_SLUG has no usable character' : 'env NB_PROJECT_SLUG', folderName: '' };
+    return { name, source: 'env', reason: name === '' ? 'env NB_PROJECT_SLUG has no usable character' : 'env NB_PROJECT_SLUG', oldName: '' };
   }
 
   const top = git(['rev-parse', '--git-common-dir'], cwd);
@@ -141,26 +145,31 @@ export function resolveProject(env: NodeJS.ProcessEnv, cwd: string, git: Project
   const out = top.stdout.trim();
   if (out === '') return none('git gave no repository folder');
   let folder: string;
+  let old: string;
   try {
-    folder = folderOf(realpathSync(resolve(cwd, out)));
+    const common = realpathSync(resolve(cwd, out));
+    folder = folderOf(common);
+    old = cleanProjectName(basename(dirname(common)));
   } catch {
     return none('the repository folder could not be read');
   }
+  const oldName = (name: string): string => (old !== name ? old : '');
 
   const remote = git(['config', '--get', 'remote.origin.url'], cwd);
   if (remote.error !== undefined) return none(failure(remote));
   const fromFolder = (reason: string): ProjectState =>
-    folder === '' ? none(`${reason}, and the folder name has no usable character`) : { name: folder, source: 'folder', reason, folderName: '' };
+    folder === '' ? none(`${reason}, and the folder name has no usable character`) : { name: folder, source: 'folder', reason, oldName: oldName(folder) };
   if (remote.status === 1) return fromFolder('folder of the git repository (no origin remote)');
   if (remote.status !== 0) return none(failure(remote));
   // The whole value, never its first line: a URL holding a newline fails the safety check.
   const name = ownerRepo(remote.stdout.replace(/\r?\n$/, ''));
   if (name === '') return fromFolder('folder of the git repository (the origin remote is a local path or not usable as a name)');
-  return { name, source: 'remote', reason: 'git remote origin', folderName: folder !== name ? folder : '' };
+  return { name, source: 'remote', reason: 'git remote origin', oldName: oldName(name) };
 }
 
 /** The one-line explanation `nb project --why` prints after the name. */
 export function describeProject(s: ProjectState): string {
   if (s.name === '') return `(none: ${s.reason})`;
-  return `${s.name} (${s.reason})`;
+  const was = s.oldName !== '' ? `; nb 0.12 filled the retrospective's {project} with "${s.oldName}"` : '';
+  return `${s.name} (${s.reason}${was})`;
 }

@@ -55,6 +55,21 @@ switch to `print-settings`); your `settings.json` can stay as it is. Until you d
 old copies keep working with this `nb`. An old Stop script and the new hook share the
 same `.retro-<session>` file, so a session is still nudged once between them.
 
+**The project name changes with the new hooks (issue #540).** Without `NB_PROJECT_SLUG`,
+the new hooks name a repository with an `origin` remote after the remote (`owner-repo`,
+as `nb project` prints it), where the 0.12 scripts used its folder name. This starts at the
+first session after you upgrade `nb`, for hooks that run `nb brief` and `nb retro` (the
+adapter, or `print-settings`); old copied scripts keep the folder name until you copy them
+again, so two machines on different setups can write to two names. Two things follow:
+
+- The `{project}` of `NB_RETRO_EXTRA_PROMPT` changes (`my-app` becomes `acme-my-app`), so
+  ideas written from now on go to new shelves while the old ones stay under the old name.
+  `nb project --why` shows both names. To keep the old one, set `NB_PROJECT_SLUG` to it in
+  that project's `.claude/settings.local.json` `env` block; to fold the old shelves into the
+  new name, move their lessons with `nb move` (the janitor's slug-drift section lists the pairs).
+- Once a shelf name in your store contains `@`, the session-start index is grouped by
+  project under that name (see below). A store without one keeps the flat index.
+
 If a new `.sh` file is copied without `nb-claude-hook.mjs` beside it, or `node` or `nb`
 cannot be found, or `nb` is too old to have `nb brief`, the session-start hook prints
 one line naming the problem, which the agent can relay to you; the Stop hook stays
@@ -71,8 +86,8 @@ per-project `.claude/settings.json`.
 | `NB_RETRO_TTL_DAYS` | `7` | how many days a `.retro-<session>` sentinel survives before `nb retro` prunes it (see [below](#how-the-retrospective-nudge-avoids-looping)) |
 | `NB_SESSION` | — | set it (e.g. to Claude Code's session id) to unlock the per-session [surfacing metrics](https://github.com/jeanibarz/agent-notebook/blob/main/docs/operating.md#surfacing-metrics) in `nb stats` |
 | `NB_BIN` | `nb` | the `nb` the hooks run: a bare name is looked up on `PATH`, a path is used as is (a `.js`/`.mjs` file is run with `node`). Unset, the adapter runs the package it ships in, else `nb` on `PATH`. Point it at the [git-versioning wrapper](../../nb-git-wrapper.mjs) to commit each change |
-| `NB_PROJECT_SLUG` | unset | opt in to the [layered index](#optional-layered-index-project--domain--global): the repo's slug, e.g. `acme-app`. Unset keeps the flat index. Read by `nb brief` for the index, and by `nb retro` for `{project}` |
-| `NB_GLOBAL_SHELF` | `global` | with `NB_PROJECT_SLUG`: the one bare shelf shown as the global layer |
+| `NB_PROJECT_SLUG` | unset | the project name, e.g. `acme-app`, for the [layered index](#optional-layered-index-project--domain--global) and for `{project}`. Unset, `nb project` derives it from the git `origin` remote (`owner-repo`), else the repository's folder |
+| `NB_GLOBAL_SHELF` | `global` | with a layered index: the one bare shelf shown as the global layer |
 | `NB_ENABLED` | unset | `0`/`false`/`no`/`off` switches the hooks (and the text `nb list` index) off for this process, over `git config nb.enabled`; see [per-repository on/off](https://github.com/jeanibarz/agent-notebook/blob/main/docs/harness-setup.md#per-repository-onoff) |
 | `NB_RETRO_EXTRA_PROMPT` | unset | absolute path (a leading `~/` is expanded) of a text file that `nb retro` appends to its nudge, with `{project}` and `{session}` filled in; see [below](#optional-extra-prompt-for-the-retrospective-nudge) |
 
@@ -95,9 +110,11 @@ the agent chooses — nothing has to guess which notebook this project uses.)
 ## Optional: layered index (project > domain > global)
 
 If your harness runs agents across several repos, the flat index shows every
-repo's `shelf@project` notebooks to every agent. Setting `NB_PROJECT_SLUG` in the
-environment that launches Claude Code switches `nb brief` to a grouped
-index: this project's shelves first (names ending in `@<slug>`, where the slug
+repo's `shelf@project` notebooks to every agent. `nb brief` then shows a grouped
+index when `NB_PROJECT_SLUG` is set in the environment that launches Claude Code, or,
+when it is unset, once a shelf name in your store contains `@` and the repository has
+an `origin` remote (the name is then the one `nb project` prints): this project's shelves
+first (names ending in `@<slug>`, where the slug
 is a short repo id such as `acme-app`), then the bare domain shelves, then the
 one global shelf (`global`, or the name in `NB_GLOBAL_SHELF`), plus a line saying how many other
 projects' shelves it left out. The hook still never opens a shelf for the agent,
@@ -107,7 +124,7 @@ This is a **naming convention**, not an `nb` feature: `nb` treats `@` as part of
 an opaque shelf name, and nothing about a layer is stored in a shelf file. The
 convention, its placement rule and its limits are in
 [docs/memory-layers.md](https://github.com/jeanibarz/agent-notebook/blob/main/docs/memory-layers.md). It does nothing
-unless the variable is set, and falls back to the flat index (with a warning) when
+for a store without a `@` shelf (unless the variable is set), and falls back to the flat index (with a warning) when
 the notebooks folder cannot be read.
 
 ## The moment the hooks don't drive — and why that's fine
@@ -160,12 +177,13 @@ records at most one improvement idea with `nb-ideas add`). Put the variable in t
 The file may use two placeholders:
 
 - `{session}`: the payload `session_id`, cleaned like the sentinel name.
-- `{project}`: `NB_PROJECT_SLUG` when set; otherwise the name of the folder that holds
-  the repository's `.git` (from `git rev-parse --git-common-dir`, run in the payload
-  `cwd`), so a main checkout and its worktrees give the same name. It is lower-cased,
-  characters outside `a-z0-9._-` become `-`, and the ends are trimmed to a letter or
-  digit. Two repositories with the same folder name share a name: set
-  `NB_PROJECT_SLUG` per project (not in user-level settings) to tell them apart.
+- `{project}`: the name `nb project` prints in the payload `cwd`: `NB_PROJECT_SLUG` when
+  set; otherwise the git `origin` remote as `owner-repo` (`git@github.com:acme/app.git`
+  gives `acme-app`); otherwise the name of the repository's folder. A main checkout and its
+  worktrees give the same name. It is lower-cased, characters outside `a-z0-9._-` become
+  `-`, and the ends are trimmed to a letter or digit. Two repositories without a remote
+  and with the same folder name share a name: set `NB_PROJECT_SLUG` per project (not in
+  user-level settings) to tell them apart.
 
 The file must be a regular UTF-8 text file of at most 64 KiB. It is read before the
 sentinel is claimed. A missing, unreadable or relative path, or any other file,

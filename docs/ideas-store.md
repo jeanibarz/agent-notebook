@@ -72,7 +72,9 @@ The category is the first part of the shelf name. The list lives in the prompt t
 
 A shelf is `<category>@<project>`, for example `dead@my-app`. Each gets its own 50-line window, so a busy category such as `guidance` cannot push out a rare one such as `fragile`. A shelf is created by the first add. `nb-ideas describe` can label it, and nothing needs creating by hand.
 
-The Stop hook fills in the project name, so it is the same in every worktree of a repository. It uses `NB_PROJECT_SLUG` when that is set. Otherwise it uses the name of the folder that holds the repository's `.git`, lower-cased, with characters outside `a-z0-9._-` replaced by `-`. Two repositories whose folders have the same name would share shelves. Set `NB_PROJECT_SLUG` for each project, never in user-level settings, to tell them apart.
+The Stop hook fills in the project name that `nb project` prints, so it is the same in every worktree of a repository. It uses `NB_PROJECT_SLUG` when that is set. Otherwise it uses the git `origin` remote as `owner-repo` (`git@github.com:acme/my-app.git` gives `acme-my-app`), and without a remote the name of the repository's folder, lower-cased, with characters outside `a-z0-9._-` replaced by `-`. Two repositories without a remote whose folders have the same name would share shelves; set `NB_PROJECT_SLUG` for each project, never in user-level settings, to tell them apart.
+
+Before issue #540 the hook used the folder name even when there was a remote. Ideas written then are under the old name (`dead@my-app`); `nb project --why` shows it, the janitor's slug-drift section lists the pair, and `nb move` folds one into the other. To keep writing under the old name, set `NB_PROJECT_SLUG` to it in that project's settings.
 
 ### Line format
 

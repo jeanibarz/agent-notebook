@@ -162,6 +162,27 @@ describe('nb retro sends what the 0.12 Stop hook sent (FR-RETRO-001, FR-RETRO-00
     expect(r.out).toBe(`${RETRO_LESSONS}\n\nproject=proj.b\n`);
   });
 
+  // Issue #540: {project} is the name `nb project` prints in the same directory, so a
+  // repository with an origin remote gets owner-repo instead of its folder name.
+  test('{project} comes from the origin remote as owner-repo, the same name nb project prints there', () => {
+    const proj = repo('my-app');
+    execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:Acme/My-App.git'], { cwd: proj, env: childEnv() });
+    const extra = join(tmp, 'extra.txt');
+    writeFileSync(extra, 'project={project}');
+    const r = nb(['retro', '--session', 'rem', '--work-dir', proj], { env: { NB_RETRO_EXTRA_PROMPT: extra } });
+    expect(r.out).toBe(`${RETRO_LESSONS}\n\nproject=acme-my-app\n`);
+    expect(nb(['project'], { cwd: proj }).out).toBe('acme-my-app\n');
+    // The old name stays findable.
+    expect(nb(['project', '--why'], { cwd: proj }).out).toBe(
+      'acme-my-app (git remote origin; nb 0.12 filled the retrospective\'s {project} with "my-app")\n',
+    );
+    // A token in the remote never reaches the nudge.
+    execFileSync('git', ['remote', 'set-url', 'origin', 'https://x:S3CR3T@github.com/acme/my-app.git'], { cwd: proj, env: childEnv() });
+    const t = nb(['retro', '--session', 'rem2', '--work-dir', proj], { env: { NB_RETRO_EXTRA_PROMPT: extra } });
+    expect(t.out).toBe(`${RETRO_LESSONS}\n\nproject=acme-my-app\n`);
+    expect(t.out + t.err).not.toContain('S3CR3T');
+  });
+
   testOld('with NB_PROJECT_SLUG set nb retro matches the 0.12 Stop hook outside a git repository', () => {
     const extra = join(tmp, 'extra.txt');
     writeFileSync(extra, 'slug={project} id={session}');

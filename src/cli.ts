@@ -334,11 +334,12 @@ notes:
     when git is missing, slow or refuses the folder, nothing (an empty line). Every name is lower case
     \`[a-z0-9._-]\`, at most 100 characters. A remote URL is never printed, and one holding anything but
     \`[A-Za-z0-9._~/-]\` in its path (a token, \`%\`, a space) gives the folder name instead. \`--why\` adds which
-    rule decided; \`--json\` prints \`{name, source, reason}\` with \`source\` one of \`env\`/\`remote\`/\`folder\`/\`none\`.
+    rule decided, and the name nb 0.12 gave the retrospective's \`{project}\` when it differs; \`--json\` prints \`{name, source, reason}\` with \`source\` one of \`env\`/\`remote\`/\`folder\`/\`none\`.
     Read-only; exit 0 in every runtime state.
   - \`nb brief\` prints what an assistant should see at the start of a session: the instruction lines,
     one line framing the lessons as notes from earlier agent runs, and the index (\`nb list\`, indented;
-    grouped into project, domain and global shelves when \`NB_PROJECT_SLUG\` is set, the global one named
+    grouped into project, domain and global shelves by \`NB_PROJECT_SLUG\` or, when it is unset and a shelf
+    name holds \`@\`, by the name \`nb project\` derives from the git remote; the global one named
     by \`NB_GLOBAL_SHELF\`, default \`global\`). Where \`nb enabled\` says off it prints one line saying so. Over
     \`--max-chars\` (default 9000; 0 = no budget) the shelves with the fewest lessons are dropped and the
     last line says how many. Every name and description is made safe to show a model (control characters
@@ -1620,7 +1621,7 @@ export async function runNbCli(
         const cwd = currentDir();
         const st =
           cwd === null && !process.env.NB_PROJECT_SLUG
-            ? { name: '', source: 'none' as const, reason: 'the working directory no longer exists', folderName: '' }
+            ? { name: '', source: 'none' as const, reason: 'the working directory no longer exists', oldName: '' }
             : resolveProject(process.env, cwd ?? '.');
         if (json) {
           process.stdout.write(JSON.stringify({ name: st.name, source: st.source, reason: st.reason }) + '\n');
