@@ -358,10 +358,29 @@ async function sessionTrailerFor(entry, dir) {
   }
 }
 
+/**
+ * The folder the CLI writes for this call, so the commit goes where the lesson went.
+ * A set `NB_DIR` wins, as in the CLI. Otherwise the package's own resolver decides
+ * (issue #548: a project with a folder under ~/.agent-notebook/projects/ has its own
+ * notebook), loaded from beside cli.js like notebook.js above. An older package
+ * without it, or a place nb cannot tell, gives the shared default, as before.
+ */
+async function placeDir(entry) {
+  if (process.env.NB_DIR && process.env.NB_DIR.trim() !== '') return process.env.NB_DIR;
+  try {
+    const place = await import(pathToFileURL(join(dirname(entry), 'place.js')).href);
+    return place.resolvePlace(process.env, process.cwd()).dir ?? notebooksDir();
+  } catch {
+    return notebooksDir();
+  }
+}
+
 async function main() {
-  // Always normalise: fills the default AND expands a leading `~` (issue #334), so the
-  // git section and the CLI child agree on one directory.
-  process.env.NB_DIR = notebooksDir();
+  // Normalise a set NB_DIR only (expands a leading `~`, issue #334), so the git
+  // section and the CLI agree on one directory. An unset NB_DIR stays unset: setting
+  // it here would pin every call to the shared notebook and switch off project
+  // folders (issue #548); the CLI resolves the same default itself.
+  if (process.env.NB_DIR && process.env.NB_DIR.trim() !== '') process.env.NB_DIR = notebooksDir();
   let entry;
   try {
     entry = resolveNbCliEntry();
@@ -378,7 +397,7 @@ async function main() {
   mod.installPipeGuards?.();
   mod.installSignalLockRelease?.();
   const argv = process.argv.slice(2);
-  const dir = process.env.NB_DIR;
+  const dir = await placeDir(entry);
 
   // Lesson first: the CLI writes it before any lock or git call, so a git problem
   // can never delay or lose it. Only AFTER it is on disk do we commit a successful

@@ -4592,7 +4592,7 @@ describe('HELP ↔ dispatch drift guard (issue #131)', () => {
   const fnStart = cliSrc.indexOf('const cmd = (argv[0]');
   const preSwitchRegion = cliSrc.slice(
     fnStart,
-    cliSrc.indexOf('const dir = notebooksDir()', fnStart),
+    cliSrc.indexOf('const sharedDir = notebooksDir()', fnStart),
   );
   const preSwitchCmds = [...preSwitchRegion.matchAll(/cmd === '([^']+)'/g)].map((m) => m[1]);
   // The short aliases HELP deliberately omits — the long `--help`/`--version`

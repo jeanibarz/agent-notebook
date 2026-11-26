@@ -75,7 +75,7 @@ function importGraph(): Map<string, string[]> {
 }
 
 /** Internals exported by a module for the other src modules, deliberately NOT on the package root. */
-const INTERNAL = ['preserveMode', 'skipUnreadable', 'readNbJson', 'setCallMaxChars', 'resolveIntTunableStatus']; // the last three: RFC 0530's call-scoped .nb.json override
+const INTERNAL = ['preserveMode', 'skipUnreadable', 'readNbJson', 'setCallMaxChars', 'resolveIntTunableStatus', 'setCallNoCreateDir']; // readNbJson..resolveIntTunableStatus: RFC 0530's call-scoped .nb.json override; setCallNoCreateDir: issue #548
 
 describe('module boundaries (issue #478)', () => {
   test('src/*.ts has no import cycle', () => {
@@ -146,6 +146,17 @@ describe('module boundaries (issue #478)', () => {
       if (!f.endsWith('.ts') || f.endsWith('.test.ts') || f === 'git.ts') continue;
       const text = readFileSync(join(srcDir, f), 'utf-8');
       expect(/from 'node:child_process'/.test(text), `${f} imports node:child_process`).toBe(false);
+    }
+  });
+
+  // Issue #548: where a call's lessons live is decided by one module, on top of the
+  // project name and the mechanism; only the CLI reaches it, and the mechanism never does.
+  test('the place resolver sits on the project name and the mechanism, below cli.ts (issue #548)', () => {
+    const graph = importGraph();
+    expect(graph.get('place')?.slice().sort()).toEqual(['notebook', 'project']);
+    expect(graph.get('cli')).toEqual(expect.arrayContaining(['place']));
+    for (const [mod, deps] of graph) {
+      if (mod !== 'cli') expect(deps, `${mod}.ts imports place`).not.toContain('place');
     }
   });
 

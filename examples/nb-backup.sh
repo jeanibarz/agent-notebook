@@ -28,7 +28,10 @@
 #   directly — see docs/harness-setup.md#windows.
 #
 # ENV
-#   NB_DIR                   notebook repo (default ~/.agent-notebook/notebooks)
+#   NB_DIR                   notebook repo (default ~/.agent-notebook/notebooks).
+#                            A project's own notebook (~/.agent-notebook/projects/<name>/,
+#                            `nb place`) is not covered: run this once per folder with
+#                            NB_DIR set to it.
 #   NB_BACKUP_PUSH_TIMEOUT   seconds (or any `timeout` duration, e.g. 5m) to cap
 #                            the push so a hung credential/askpass prompt can't
 #                            hold the lock forever; "0" disables the cap. Needs

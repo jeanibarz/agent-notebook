@@ -125,6 +125,10 @@ Operations SHALL report honestly rather than pretend success:
 - A `vote`/`rm`/`merge` selector that is ambiguous or unmatched SHALL refuse and
   list candidate ids, rather than act on a guess ([FR-SEL-002](#fr-sel-002)).
 - A bad `nb stats --since` value SHALL warn on stderr, not silently filter.
+- A call SHALL read and write the notebook [FR-PLACE-001](#fr-place-001) resolves for its
+  working directory. It SHALL refuse, rather than fall back to the shared notebook, when it
+  cannot tell which notebook that is, or when a write would put a shelf `<x>@<project>` of a
+  project that has its own notebook anywhere but in that notebook (issue #548).
 **Rationale:** The notebook is an agent's memory of its own past; a silent
 truncation or a mis-landed vote poisons future runs. A loud refusal is cheap to
 recover from; a silent corruption is not.
@@ -135,10 +139,12 @@ Every operation SHALL complete locally with no network call and SHALL be
 deterministic given the same inputs and files. The inputs of a call are its arguments,
 the documented `NB_*` variables, the working directory and the git configuration read
 there (by the commands that read it: `enabled`, `config`, the text form of `list`, `brief` and
-`retro` of [§4.17](#fr-brief-001), and `project` of [§4.18](#fr-project-001)), the `GIT_*` variables git
+`retro` of [§4.17](#fr-brief-001), `project` of [§4.18](#fr-project-001), and every notebook command once a
+project folder exists, [§4.19](#fr-place-001)), the entries of `~/.agent-notebook/projects/` when `NB_DIR`
+is unset ([FR-PLACE-001](#fr-place-001)), the `GIT_*` variables git
 itself reads,
-`PATH` (to find `git`), the home folder (the default `NB_DIR`), the locale, the files
-under `NB_DIR`, and the clock: `stats` and `doctor` report against the current time
+`PATH` (to find `git`), the home folder (the default `NB_DIR` and `projects/`), the locale, the files
+under `NB_DIR` (or the project folder in use), and the clock: `stats` and `doctor` report against the current time
 (their `--since` window, a lock's age). For `brief` and `retro` the clock SHALL decide
 side effects only (timestamps, removing an expired retrospective sentinel), never what
 they print; §4.17 lists their inputs.
@@ -504,8 +510,9 @@ same function (`listRoles === listShelves`); `assertSafeRole` likewise aliases
 *Proven by:* `notebook.test.ts` → "excludes a README.md so it is not a notebook (issue #90)"; "excludes README.md case-insensitively".
 
 <a id="fr-path-001"></a>
-**FR-PATH-001 (Should).** `nb path` SHALL print `NB_DIR`; `nb path <shelf>` SHALL
-print `<NB_DIR>/<shelf>.md`; `nb path --usage` SHALL print the resolved usage-log
+**FR-PATH-001 (Should).** `nb path` SHALL print the notebooks folder in use (`NB_DIR`, or
+the project folder of [FR-PLACE-001](#fr-place-001)); `nb path <shelf>` SHALL
+print `<NB_DIR>/<shelf>.md` in that folder; `nb path --usage` SHALL print the resolved usage-log
 path (`<NB_DIR>/.nb-usage.log`) — each a bare path (pipe-friendly, no decoration).
 `--usage` is the only recognized flag; any other `--`-prefixed token is treated as
 a shelf name and rejected by the safe-shelf check, so `--usage` cannot collide with
@@ -668,6 +675,7 @@ shelves; `--json` emits a lone object for one shelf, an array for several),
 `stats [<shelf>] [--since <N{d,h,m}>] [--json] [--exit-code]`, `doctor [--json] [--exit-code]`, `path [<shelf>] [--usage] [--json]`, `config [--json]`,
 `enabled [--why] [--json]` ([FR-ENABLED-001](#fr-enabled-001)),
 `project [--why] [--json]` ([FR-PROJECT-001](#fr-project-001)),
+`place [--json]` ([FR-PLACE-002](#fr-place-002)),
 `brief [--max-chars N] [--session <id>] [--hook <label>] [--json]` ([FR-BRIEF-001](#fr-brief-001)),
 `retro --session <id> [--work-dir <dir>] [--hook <label>] [--json]` ([FR-RETRO-001](#fr-retro-001)),
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`),
@@ -866,7 +874,8 @@ dir; an `NB_ASCII` left unset but forced on by a non-UTF-8 locale reads `on (def
 `nb config --json` SHALL carry these under a new top-level `environment` key, keyed by var name,
 each value `{ value, source }`, leaving the numeric rows' keys and `{ value, source, env }` shape
 unchanged so the `--json` contract stays backward-compatible (a new section, not a changed row
-type).
+type). The `NB_DIR` row is the shared notebook; where the lessons of the working directory go,
+a project folder included, is what `nb place` prints ([FR-PLACE-002](#fr-place-002)).
 *Proven by:* `cli.test.ts` → `describe('string env section — NB_DIR / NB_SESSION / NB_ASCII (issue #312)')`.
 
 <a id="fr-config-003"></a>
@@ -1583,7 +1592,9 @@ with `source` one of `env`/`git`/`default`. It is read-only and writes no notebo
 `nb enabled`, `nb config`, the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)), `nb brief` and
 `nb retro` ([FR-RETRO-001](#fr-retro-001), which also runs `git rev-parse` for the project name of
 [FR-RETRO-002](#fr-retro-002)) read the switch, and only they and `nb project`
-([FR-PROJECT-001](#fr-project-001)) spawn `git`; `nb list --json` and every other command do not; reading a local git config is offline
+([FR-PROJECT-001](#fr-project-001)) spawn `git`, plus every notebook command once a valid project folder
+exists under `~/.agent-notebook/projects/` and `NB_DIR` is unset ([FR-PLACE-001](#fr-place-001)); otherwise
+`nb list --json` and every other command do not; reading a local git config is offline
 and deterministic for the same files, so [DP-6](#dp-6) holds.
 **Rationale:** git config already gives the three scopes a user asks for (one repository, every
 repository, a folder) without a new file format, and its per-repository value is never committed,
@@ -1667,8 +1678,9 @@ state and `1` only on bad usage, and SHALL never exit `2`. `--json` SHALL print
 and the home folder; `NB_ENABLED`, and git's `nb.enabled` read in the working directory
 (git's scopes and environment, and `PATH` to find `git`); `NB_PROJECT_SLUG` and
 `NB_GLOBAL_SHELF`; when `NB_PROJECT_SLUG` is unset, the project name of
-[FR-PROJECT-001](#fr-project-001) asked in the working directory; `NB_ASCII` and the locale; and the
-files under `NB_DIR`. `--session`,
+[FR-PROJECT-001](#fr-project-001) asked in the working directory; `NB_ASCII` and the locale; the
+entries of `~/.agent-notebook/projects/` ([FR-PLACE-001](#fr-place-001)); and the
+files under `NB_DIR` (or the project folder in use). `--session`,
 `--hook`, `NB_SESSION` and the clock SHALL NOT change what it prints.
 
 *Proven by:* `brief.test.ts` → `describe('nb brief prints what the 0.12 session-start hook printed, plus the framing line (FR-BRIEF-001)')`,
@@ -1707,7 +1719,8 @@ index SHALL stay flat and `nb brief` SHALL NOT ask for the name, so its text and
 those of before. With a derived name, the line counting other projects' hidden shelves SHALL say
 "project name" instead of "slug" and the NOTE for a name with no shelf SHALL point to
 `nb project --why`. It is the only command that groups shelves by layer, and every other command
-still knows nothing of layers.
+still knows nothing of layers. Inside a project's own notebook ([FR-PLACE-001](#fr-place-001)) the
+layers are those of that folder only: the shared notebook's domain and global shelves are not shown.
 
 *Proven by:* `brief.test.ts` → `describe('nb brief makes every value it shows safe for a model (FR-BRIEF-003)')` and
 `describe('nb brief groups by the derived project name (FR-BRIEF-003, issue #540)')`;
@@ -1826,6 +1839,68 @@ no name, never a different one, so a loaded machine cannot split a project's les
 `describe('resolveProject: the order of the rules and every git failure (FR-PROJECT-001)')` and
 `describe('nb project on real repositories (FR-PROJECT-001)')`.
 
+### 4.19 Where a project's lessons live: `nb place` (issue #548)
+
+<a id="fr-place-001"></a>
+**FR-PLACE-001 (Should).** A project SHALL have its own notebook when the folder
+`~/.agent-notebook/projects/<project>/` exists, `<project>` being the name of
+[FR-PROJECT-001](#fr-project-001); otherwise it SHALL use the shared notebook. There is no setting.
+Every command except `--help`, `--version`, `completion`, `enabled`, `project` and an unknown
+command SHALL resolve the folder it reads and writes by the first of these rules that applies:
+(1) `NB_DIR` set and not blank: `NB_DIR`, exactly as before; `projects/` is not read and no `git`
+runs; (2) otherwise one listing of `projects/`; missing, the shared notebook, and no process is
+started; any other error lists nothing and the place is unknown; (3) the project folders are the
+entries that are real directories (a symbolic link is not one) owned by the current user (on POSIX),
+whose name is already a cleaned project name and not a Windows device name (`con`, `prn`, `aux`,
+`nul`, `com1`-`com9`, `lpt1`-`lpt9`, with or without an extension); dot-entries and files are
+skipped; with no project folder and no entry that could be one, the shared notebook, and no
+process is started; (4) the project name is asked (with `--is-bare-repository` in the same `git`
+run): a name from `NB_PROJECT_SLUG` or the git remote, outside a bare repository, naming a project
+folder selects it; naming an entry that failed rule 3 makes the place unknown; git timing out,
+failing to start for another reason than "not found", refusing the folder for its owner (its
+message holds the literal `safe.directory`) or `git config` exiting otherwise than 0 or 1 makes the
+place unknown; anything else (no repository, git not found, a name from the folder, another name)
+gives the shared notebook. When the place is unknown every notebook command SHALL exit `1` with
+the error class `place_unknown`, read and write nothing, and log its usage row in the shared
+notebook; `nb brief` and `nb retro` exit `0` and `nb place` and `nb config` run. A write (`add`,
+`vote`, `merge`, `split`, `describe` with a text, and the destination of `move`) to a shelf
+`<x>@<n>` SHALL be refused with `bad_args` when `<n>` is a project folder and the call is not
+resolved to that folder; `rm` and the source of `move` are not refused, so a shelf left in the wrong
+notebook can be repaired. The usage log, the lock and `.nb.json` follow the resolved folder; the
+retrospective's once-per-session marker SHALL stay in the shared notebook. A command resolved to a
+project folder SHALL NOT re-create that folder if it was removed meanwhile: a write refuses with
+`place_unknown`, and the usage row goes to the shared notebook.
+**Rationale:** the folder is the setting, so "one notebook per project" needs nothing set by hand
+(epic #537). A name from the folder never selects, because a fresh clone into another folder would
+then use another notebook; a refusal is cheap to recover from, a lesson silently written to the
+notebook every other project reads is not ([DP-5](#dp-5)).
+*Proven by:* `place.test.ts` → `describe('resolvePlace: the rule, first match wins (FR-PLACE-001)')`,
+`describe('sharedWriteRefusal: the write guard (FR-PLACE-001)')`, `describe('the no-re-create switch (issue #548)')` and
+`describe('nb with project folders, through the built CLI (FR-PLACE-001, -002, -004)')`;
+`nb-git-wrapper.test.ts` → `describe('the wrapper follows the place nb resolves (issue #548)')`.
+
+<a id="fr-place-002"></a>
+**FR-PLACE-002 (Should).** `nb place [--json]` SHALL print where the lessons of the working
+directory live: a first line `own: <dir>`, `shared: <dir>`, `env: <NB_DIR>` or
+`unknown: <reason>`, an indented line saying why in `nb`'s own words, and (except for `env`) the
+list of project folders, which is the listing of rule 2 and so complete. With `NB_DIR` set it SHALL
+say how to use project folders, and, when `NB_DIR` is the default path, that a copied 0.12
+`nb-git-wrapper` may set it. `--json` SHALL print `{ kind, dir, shared, project, reason, folders }`,
+`project` being `{ name, source, reason }` or `null` and each folder `{ name, dir }`. It is read-only,
+logs its row in the shared notebook unless the place is a project folder, and exits `0` in every
+runtime state. No form SHALL print a remote URL or a message from git.
+*Proven by:* `place.test.ts` → "nb place: the four forms, plain and --json (golden)".
+
+<a id="fr-place-004"></a>
+**FR-PLACE-004 (Should).** Only when `NB_DIR` is unset and a project folder exists (or the place is
+unknown), `nb brief` SHALL add one line after its framing line: inside a project's own notebook,
+that its lessons go there and that the shared notebook's general shelves are not included; in the
+shared notebook, how many projects have their own notebook, never their names; when the place is
+unknown, that no lessons are shown and why (outcome `broken`, and no index). Otherwise its text is
+unchanged.
+*Proven by:* `place.test.ts` → "own: the project writes and reads only its folder; other directories see the shared notebook and a count" and
+"git refusing the folder (safe.directory) with a project folder: every notebook command refuses, brief and place say why".
+
 ## 5. Non-functional requirements
 
 <a id="nfr-perf-001"></a>
@@ -1847,12 +1922,13 @@ the Node-18 leg runs a dependency-free runtime smoke of the built CLI
 minimum engine is actually executed and not merely compiled. A Windows leg (Node 22)
 runs the tests of the agent-facing loop added by issue #538 (`src/brief.test.ts`, `src/retro.test.ts`,
 `src/loop-stats.test.ts`, `src/module-boundaries.test.ts`) and of the project name added by issue #540
-(`src/project.test.ts`); the rest of the suite is not
+(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`); the rest of the suite is not
 yet run on Windows. *(Proven by
 `src/smoke-node18.test.ts`.)*
 
 <a id="nfr-safe-001"></a>
-**NFR-SAFE-001 (Must).** No operation SHALL write, read, or delete outside `NB_DIR`;
+**NFR-SAFE-001 (Must).** No operation SHALL write, read, or delete outside `NB_DIR` (or the
+project folder [FR-PLACE-001](#fr-place-001) resolves; resolving it lists `~/.agent-notebook/projects/`);
 shelf validation ([FR-SAFE-001](#fr-safe-001)) is the sole guard and SHALL be applied
 on every shelf-to-path conversion. Named read-only exceptions: the commands that read the
 per-repository switch read git configuration ([FR-ENABLED-001](#fr-enabled-001)), `nb project`
@@ -1867,12 +1943,12 @@ never imported by it, and `src/cli.ts` a thin wrapper (argument parsing, dispatc
 shell completion, stdin reading and process guards). The read-side report renderers (`src/render.ts`), the
 `nb config` report (`src/config-report.ts`), the did-you-mean helpers (`src/suggest.ts`),
 `nb doctor` (`src/doctor.ts`), the `nb enabled` resolver (`src/enabled.ts`), the agent-facing loop
-(`src/loop.ts`, with its text in `src/agent-text.ts`, issue #538) and the project name (`src/project.ts`,
-issue #540) SHALL live in modules that `src/cli.ts`
+(`src/loop.ts`, with its text in `src/agent-text.ts`, issue #538), the project name (`src/project.ts`,
+issue #540) and the place resolver (`src/place.ts`, issue #548) SHALL live in modules that `src/cli.ts`
 imports and that never import it; `src/notebook.ts` SHALL NOT import the loop modules. Only
 `src/git.ts` SHALL start a process (`git`, read-only, a fixed argument list, no shell). Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
 
-*Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)" and "only git.ts starts a process, and the project name depends on nothing but it (issue #540)".
+*Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)" and "only git.ts starts a process, and the project name depends on nothing but it (issue #540)" and "the place resolver sits on the project name and the mechanism, below cli.ts (issue #548)".
 
 <a id="nfr-obs-001"></a>
 **NFR-OBS-001 (Could).** Operational state SHALL be observable without extra tooling
@@ -1933,7 +2009,7 @@ to the default (integer vars also fall back on a non-numeric string).
 
 | Variable | Default | Range | Effect |
 |---|---|---|---|
-| `NB_DIR` | `~/.agent-notebook/notebooks` | — | Notebooks directory. |
+| `NB_DIR` | `~/.agent-notebook/notebooks` | — | Notebooks directory. Set, it is used for every project and `~/.agent-notebook/projects/` is not read ([FR-PLACE-001](#fr-place-001)). |
 | `NB_SESSION` | _(unset → blank)_ | — | Session id a caller/hook sets; recorded per usage row ([FR-USAGE-002](#fr-usage-002)) to group a session's calls. |
 | `NB_MAX_LINES` | 50 | 1–5000 | `maxLines` — entries per notebook (a deliberately tight default so eviction pressure stays meaningful and a notebook keeps only what earns its place; raise it for a shelf that genuinely needs more). |
 | `NB_MAX_CHARS` | 200 | 20–2000 | `maxChars` — characters per lesson. A `maxChars` in the folder's `.nb.json` wins over it ([FR-CONFIG-003](#fr-config-003)). |

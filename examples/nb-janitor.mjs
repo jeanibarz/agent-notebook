@@ -46,7 +46,8 @@
 //
 // USAGE
 //   node nb-janitor.mjs                 # scan $NB_DIR (default ~/.agent-notebook/notebooks)
-//   NB_DIR=/path node nb-janitor.mjs    # scan a specific store
+//   NB_DIR=/path node nb-janitor.mjs    # scan a specific store (a project's own notebook,
+//                                       # ~/.agent-notebook/projects/<name>/, is scanned only this way)
 //   node nb-janitor.mjs --json          # machine-readable report
 //   node nb-janitor.mjs --days 30       # history window for section 4 (default 30)
 //   node nb-janitor.mjs --sim 0.55      # lesson-similarity threshold 0..1 (default 0.6)

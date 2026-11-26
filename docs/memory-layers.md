@@ -31,6 +31,13 @@ one-line description each).
 > file, and does not rank, filter or protect shelves by layer. Everything else here
 > is a rule you give your agents (usually in AGENTS.md or CLAUDE.md). See
 > [what `nb` deliberately does not do](#what-nb-deliberately-does-not-do).
+>
+> **A project with its own notebook** ([issue #548](https://github.com/jeanibarz/agent-notebook/issues/548)):
+> when the folder `~/.agent-notebook/projects/<project>/` exists, that project reads and
+> writes only that folder ([FR-PLACE-001](requirements.md#fr-place-001)). Its layers are
+> those of that folder: the shared notebook's domain and global shelves are not shown
+> there, and a lesson promoted with `nb move x@<project> code-review` stays in that
+> folder. `nb place` says which notebook a directory uses.
 
 ## The three layers
 

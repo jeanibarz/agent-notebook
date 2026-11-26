@@ -395,6 +395,6 @@ describe('nb brief groups by the derived project name (FR-BRIEF-003, issue #540)
     expect(g.calls().filter((c) => c.startsWith('rev-parse') || c.includes('remote.origin.url'))).toEqual([]);
     // With a project shelf and no slug, exactly the two documented runs.
     nb(['brief'], g.env, r);
-    expect(g.calls().filter((c) => !c.includes('nb.enabled'))).toEqual(['rev-parse --git-common-dir', 'config --get remote.origin.url']);
+    expect(g.calls().filter((c) => !c.includes('nb.enabled'))).toEqual(['rev-parse --git-common-dir --is-bare-repository', 'config --get remote.origin.url']);
   });
 });

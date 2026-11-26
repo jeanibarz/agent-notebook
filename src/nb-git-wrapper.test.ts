@@ -368,3 +368,56 @@ describe('nb-git-wrapper process guards (issue #401)', () => {
     }
   }, 60000);
 });
+
+// Issue #548: with NB_DIR unset the wrapper must not pin the shared notebook (it used
+// to set NB_DIR itself), and it commits the folder the CLI wrote.
+describe('the wrapper follows the place nb resolves (issue #548)', () => {
+  let tmp: string;
+  let home: string;
+  let shared: string;
+  let own: string;
+  let project: string;
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'nb wrapper place '));
+    home = join(tmp, 'home');
+    shared = join(home, '.agent-notebook', 'notebooks');
+    own = join(home, '.agent-notebook', 'projects', 'acme-app');
+    project = join(tmp, 'app');
+    mkdirSync(shared, { recursive: true });
+    mkdirSync(project);
+    execFileSync('git', ['init', '-q', project]);
+    execFileSync('git', ['-C', project, 'remote', 'add', 'origin', 'git@github.com:acme/app.git']);
+    seedRepo(shared);
+  });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  function run(args: string[]): number {
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home };
+    for (const k of Object.keys(env)) if (k.startsWith('NB_') || k.startsWith('GIT_')) delete env[k];
+    const r = spawnSync('node', [wrapper, ...args], { cwd: project, env, encoding: 'utf-8', timeout: 20000 });
+    return r.status ?? 1;
+  }
+
+  test('the package ships place.js beside cli.js, where the wrapper loads it', () => {
+    expect(existsSync(join(root, 'dist', 'place.js'))).toBe(true);
+    expect(source).toContain("join(dirname(entry), 'place.js')");
+  });
+
+  test('NB_DIR unset and no project folder: the commit goes to the shared default, as before', () => {
+    const before = commitCount(shared);
+    expect(run(['add', 'x@acme-app', 'a shared lesson'])).toBe(0);
+    expect(commitCount(shared)).toBe(before + 1);
+  });
+
+  test('NB_DIR unset and a project folder: the lesson and its commit go to the own folder, the shared repository is untouched', () => {
+    mkdirSync(own, { recursive: true });
+    seedRepo(own);
+    const sharedBefore = commitCount(shared);
+    const ownBefore = commitCount(own);
+    expect(run(['add', 'x@acme-app', 'an own lesson'])).toBe(0);
+    expect(existsSync(join(own, 'x@acme-app.md'))).toBe(true);
+    expect(existsSync(join(shared, 'x@acme-app.md'))).toBe(false);
+    expect(commitCount(own)).toBe(ownBefore + 1);
+    expect(commitCount(shared)).toBe(sharedBefore);
+  });
+});

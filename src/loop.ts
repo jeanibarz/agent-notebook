@@ -41,6 +41,7 @@ import {
   LAYERED_TEXT,
   LAYERED_TEXT_DERIVED,
   LAYERED_UNAVAILABLE_LINE,
+  PLACE_TEXT,
   RETRO_LESSONS,
   briefBrokenLine,
   briefCutLine,
@@ -48,7 +49,7 @@ import {
 } from './agent-text.js';
 import { resolveEnabled, type EnabledState } from './enabled.js';
 import { cleanProjectName, groupsIndex, resolveProject, type ProjectState } from './project.js';
-import { escapeDiskName, expandHomeDir, listNotebooks, type NotebookSummary } from './notebook.js';
+import { escapeDiskName, expandHomeDir, listNotebooks, stripControlChars, type NotebookSummary } from './notebook.js';
 import { formatListing, renderConflicts, renderSkipped } from './render.js';
 
 /** What `nb retro` decided. `already` means a sentinel for this session existed. */
@@ -268,6 +269,25 @@ export interface BriefOptions {
   enabled?: (env: NodeJS.ProcessEnv, cwd: string) => EnabledState;
   /** Injectable for tests; the CLI uses the real resolver (FR-PROJECT-001). */
   project?: (env: NodeJS.ProcessEnv, cwd: string) => ProjectState;
+  /**
+   * The line saying where this project's lessons go (issue #548), placed after the
+   * framing line; omitted when no project folder exists, so the text is unchanged.
+   */
+  placeLine?: string;
+  /** The call could not tell which notebook to use: print the header and `placeLine` only (outcome `broken`). */
+  placeUnknown?: boolean;
+}
+
+/**
+ * The line `nb brief` adds once a project folder exists (issue #548,
+ * FR-PLACE-004). Values that come from disk are cleaned of control characters.
+ */
+export function placeLine(
+  p: { kind: 'own'; name: string; dir: string } | { kind: 'shared'; folders: number } | { kind: 'unknown'; reason: string },
+): string {
+  if (p.kind === 'own') return PLACE_TEXT.own(p.name, stripControlChars(p.dir));
+  if (p.kind === 'shared') return PLACE_TEXT.shared(p.folders);
+  return PLACE_TEXT.unknown(stripControlChars(p.reason));
 }
 
 /**
@@ -413,7 +433,8 @@ export function brief(opts: BriefOptions): BriefResult {
   const enabled = opts.enabled ?? resolveEnabled;
   // A removed working directory cannot be asked: the switch fails open, as in retro().
   if (opts.cwd !== null && !enabled(env, resolve(opts.cwd)).enabled) return { outcome: 'off', text: BRIEF_OFF_LINE + '\n', err: '' };
-  const head = [...BRIEF_HEADER_LINES, FRAMING_LINE, ''];
+  const head = [...BRIEF_HEADER_LINES, FRAMING_LINE, ...(opts.placeLine !== undefined ? [opts.placeLine] : []), ''];
+  if (opts.placeUnknown) return { outcome: 'broken', text: head.join('\n') + '\n', err: '' };
   const room = opts.maxChars > 0 ? Math.max(1, opts.maxChars - size(head)) : 0;
   // The project the index is grouped by: NB_PROJECT_SLUG exactly as before (its raw
   // trimmed value; set but blank keeps the flat index, and no git runs); else, when the
