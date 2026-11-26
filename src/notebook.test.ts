@@ -177,7 +177,7 @@ function usageRow(over: Partial<UsageRow> = {}): UsageRow {
   return {
     ts: 't', role: 'r', command: 'add', ok: true, ms: 1, session: '', entries: [],
     outcome: '', collided: '', evicted: '', reason: '', note: '',
-    errorClass: '', decayed: '', recovered: '', misses: 0,
+    errorClass: '', decayed: '', recovered: '', misses: 0, version: '', project: '',
     ...over,
   };
 }
@@ -1984,6 +1984,8 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       decayed: '',
       recovered: '',
       misses: 0,
+      version: '',
+      project: '',
     });
   });
 
@@ -2046,6 +2048,8 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       decayed: 'eee:0',
       recovered: '2:1',
       misses: 5,
+      version: '',
+      project: '',
     });
   });
 
@@ -2079,6 +2083,8 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       decayed: '',
       recovered: '',
       misses: 0,
+      version: '',
+      project: '',
     });
     // Full row: every richer column is parsed into its field.
     expect(rows[1]).toEqual({
@@ -2098,6 +2104,8 @@ describe('usage-log TSV wire format (golden, issue #126)', () => {
       decayed: 'fff:2',
       recovered: '1:0',
       misses: 2,
+      version: '',
+      project: '',
     });
   });
 });
