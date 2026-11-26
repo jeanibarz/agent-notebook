@@ -455,6 +455,9 @@ describe('projectRecordKey: the key a hook row records for the project (FR-HEART
   afterEach(() => rmSync(tmp, { recursive: true, force: true }));
 
   const sha12 = (s: string): string => createHash('sha256').update(s).digest('hex').slice(0, 12);
+  /** The key of a folder as `projectRecordKey` hashes it: the native realpath, the Windows drive letter lower-cased. */
+  const folderKey = (p: string): string =>
+    `h:${sha12(process.platform === 'win32' ? realpathSync.native(p).replace(/^[A-Za-z]:/, (x) => x.toLowerCase()) : realpathSync.native(p))}`;
   const KEY = /^(\?|h:[0-9a-f]{12}|[a-z0-9][a-z0-9._-]{0,63})$/;
   function env(): NodeJS.ProcessEnv {
     const e: NodeJS.ProcessEnv = { ...process.env };
@@ -484,7 +487,7 @@ describe('projectRecordKey: the key a hook row records for the project (FR-HEART
     const sub = join(r, 'a', 'b');
     mkdirSync(sub, { recursive: true });
     const k = keyIn(r);
-    expect(k).toBe(`h:${sha12(r)}`);
+    expect(k).toBe(folderKey(r));
     expect(keyIn(sub)).toBe(k);
   });
 
@@ -525,7 +528,7 @@ describe('projectRecordKey: the key a hook row records for the project (FR-HEART
     const d = join(tmp, 'plain dir');
     const sub = join(d, 'sub');
     mkdirSync(sub, { recursive: true });
-    expect(keyIn(d)).toBe(`h:${sha12(d)}`);
+    expect(keyIn(d)).toBe(folderKey(d));
     expect(keyIn(sub)).not.toBe(keyIn(d));
   });
 
@@ -533,7 +536,11 @@ describe('projectRecordKey: the key a hook row records for the project (FR-HEART
     const d = join(tmp, 'nogit');
     mkdirSync(d);
     const missing: ProjectGit = () => ({ status: null, stdout: '', stderr: '', error: 'ENOENT' }) as GitRun;
-    expect(projectRecordKey(d, resolveProject({}, d, missing))).toBe(`h:${sha12(d)}`);
+    expect(projectRecordKey(d, resolveProject({}, d, missing))).toBe(folderKey(d));
+  });
+
+  test.skipIf(process.platform !== 'win32')('on Windows the drive letter is lower-cased before hashing, so C:\\x and c:\\x give one key', () => {
+    expect(projectRecordKey(tmp, state({ repoFolder: 'C:\\Users\\a b\\app' }))).toBe(projectRecordKey(tmp, state({ repoFolder: 'c:\\Users\\a b\\app' })));
   });
 
   test('git that could not answer gives ?', () => {

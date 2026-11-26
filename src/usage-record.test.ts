@@ -31,6 +31,9 @@ const isWin = process.platform === 'win32';
 const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 const VERSION = (createRequire(import.meta.url)('../package.json') as { version: string }).version;
 const sha12 = (s: string): string => createHash('sha256').update(s).digest('hex').slice(0, 12);
+/** The key of a folder as `projectRecordKey` hashes it: the native realpath, the Windows drive letter lower-cased. */
+const folderKey = (p: string): string =>
+  `h:${sha12(process.platform === 'win32' ? realpathSync.native(p).replace(/^[A-Za-z]:/, (x) => x.toLowerCase()) : realpathSync.native(p))}`;
 
 let tmp: string; // contains a space on purpose
 let store: string;
@@ -113,7 +116,7 @@ describe('a brief or retro row records the version and, with --hook, the project
     nb(['brief', '--hook', 'a.b'], {}, r);
     nb(['brief', '--hook', 'a.b'], {}, join(r, 'sub'));
     const keys = rawRows(store).map((c) => c[17]);
-    expect(keys).toEqual([`h:${sha12(r)}`, `h:${sha12(r)}`]);
+    expect(keys).toEqual([folderKey(r), folderKey(r)]);
   });
 
   test('brief without --hook writes the version and leaves column 18 empty', () => {

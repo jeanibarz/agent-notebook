@@ -189,7 +189,9 @@ export function resolveProject(env: NodeJS.ProcessEnv, cwd: string, git: Project
   let repoFolder: string;
   try {
     const common = realpathSync(resolve(cwd, out));
-    repoFolder = repoFolderOf(common);
+    // The native realpath, so a linked worktree (git gives an absolute path) and the main
+    // checkout (a relative `.git`) spell the folder alike on Windows (8.3 names, letter case).
+    repoFolder = repoFolderOf(nativeReal(common));
     folder = folderOf(common);
     old = cleanProjectName(basename(dirname(common)));
   } catch {
@@ -228,10 +230,19 @@ function hashedPath(p: string): string {
   return process.platform === 'win32' ? p.replace(/^[A-Za-z]:/, (d) => d.toLowerCase()) : p;
 }
 
+/** `realpathSync.native`, else the JS realpath: the spelling the key hashes. */
+function nativeReal(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return realpathSync(p);
+  }
+}
+
 /** The realpath of a folder, or its resolved path when it cannot be read (a folder that is gone). */
 function realOrResolved(p: string): string {
   try {
-    return realpathSync(resolve(p));
+    return nativeReal(resolve(p));
   } catch {
     return resolve(p);
   }
