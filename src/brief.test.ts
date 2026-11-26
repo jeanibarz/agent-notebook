@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { BRIEF_OFF_LINE, FRAMING_LINE, LAYERED_TEXT, LAYERED_UNAVAILABLE_LINE } from './agent-text.js';
+import { BRIEF_OFF_LINE, FRAMING_LINE, LAYERED_TEXT, LAYERED_TEXT_DERIVED, LAYERED_UNAVAILABLE_LINE } from './agent-text.js';
 import { parseUsage } from './usage.js';
 
 // `nb brief` (issue #538, FR-BRIEF-001..003): what an assistant sees at the start
@@ -291,5 +291,110 @@ describe('nb brief exit codes and the usage log (FR-BRIEF-001)', () => {
     expect(rows[0]!.outcome).toBe('index');
     expect(rows[0]!.session).toBe('a_b');
     expect(rows[0]!.note).toBe('claude-code.session-start');
+  });
+});
+
+// Issue #540: without NB_PROJECT_SLUG, the index is grouped by the project name
+// `nb project` derives, but only from the git remote, and only once the store
+// holds a project shelf (a name with `@`). Everyone else keeps today's text.
+describe('nb brief groups by the derived project name (FR-BRIEF-003, issue #540)', () => {
+  const git = (cwd: string, ...args: string[]): string =>
+    execFileSync('git', args, { cwd, env: childEnv(), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  function repo(name: string, origin?: string): string {
+    const d = join(tmp, name);
+    mkdirSync(d, { recursive: true });
+    git(d, 'init', '-q');
+    if (origin !== undefined) git(d, 'remote', 'add', 'origin', origin);
+    return d;
+  }
+  /** A `git` on PATH that logs its arguments, then runs the real one. */
+  function gitLogger(): { env: Record<string, string>; calls: () => string[] } {
+    const bin = join(tmp, 'logbin');
+    const log = join(tmp, 'git-calls.log');
+    mkdirSync(bin);
+    const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf-8' }).trim();
+    writeFileSync(join(bin, 'git'), `#!/bin/sh\necho "$*" >> '${log}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
+    writeFileSync(log, '');
+    return {
+      env: { PATH: `${bin}:${process.env.PATH ?? ''}` },
+      calls: () => execFileSync('cat', [log], { encoding: 'utf-8' }).split('\n').filter((l) => l !== ''),
+    };
+  }
+
+  test('a repository with an origin and a project shelf gets the layered index under owner-repo', () => {
+    const r = repo('app', 'git@github.com:Acme/App.git');
+    shelf('build@acme-app', 3, 'open when building');
+    shelf('review@other', 2);
+    shelf('testing', 2, 'any repo');
+    const derived = nb(['brief', '--json'], {}, r);
+    expect(json(derived).outcome).toBe('layered');
+    // Byte for byte the text NB_PROJECT_SLUG=acme-app gives, except the one note that says where the name comes from.
+    const set = json(nb(['brief', '--json'], { NB_PROJECT_SLUG: 'acme-app' }, plain)).text;
+    expect(json(derived).text).toBe(
+      set.replace(LAYERED_TEXT.hidden(1, 'acme-app'), LAYERED_TEXT_DERIVED.hidden(1, 'acme-app')),
+    );
+    expect(json(derived).text).toContain('  (1 shelf(s) for other projects hidden (project name: acme-app, from `nb project`); `nb list --limit 1000` shows all)');
+    expect(json(derived).text).not.toContain('slug');
+  });
+
+  test('a derived name with no shelf of its own says so and points to nb project --why', () => {
+    const r = repo('app', 'https://github.com/acme/app');
+    shelf('review@other', 2);
+    shelf('testing', 2);
+    expect(json(nb(['brief', '--json'], {}, r)).text).toContain(
+      '  (NOTE: 1 shelf(s) for other projects hidden and NONE end in @acme-app — `nb project --why` shows where this project name comes from; `nb list --limit 1000` shows them all)',
+    );
+  });
+
+  test('NB_PROJECT_SLUG users see exactly what they saw before, in or out of a repository', () => {
+    const r = repo('app', 'git@github.com:acme/app.git');
+    shelf('build@mine', 3);
+    shelf('review@acme-app', 2);
+    shelf('testing', 2);
+    for (const slug of ['mine', '  Mine ', '   ']) {
+      expect(nb(['brief'], { NB_PROJECT_SLUG: slug }, r).out, JSON.stringify(slug)).toBe(nb(['brief'], { NB_PROJECT_SLUG: slug }, plain).out);
+    }
+    expect(json(nb(['brief', '--json'], { NB_PROJECT_SLUG: '   ' }, r)).outcome).toBe('index');
+    // The slug is matched and shown as its raw trimmed value, as before: never replaced by a cleaned or derived name.
+    expect(nb(['brief'], { NB_PROJECT_SLUG: '  Mine ' }, r).out).toContain('<situation>@Mine by default');
+  });
+
+  test('a store without a project shelf, a folder-only name, or no repository keeps the flat index', () => {
+    const withRemote = repo('app', 'git@github.com:acme/app.git');
+    const noRemote = repo('lonely');
+    shelf('build', 3);
+    shelf('testing', 2);
+    const flat = nb(['brief'], {}, plain).out;
+    expect(nb(['brief'], {}, withRemote).out).toBe(flat);
+    shelf('review@lonely', 2);
+    const flat2 = nb(['brief'], {}, plain).out;
+    expect(json(nb(['brief', '--json'], {}, noRemote)).outcome).toBe('index');
+    expect(nb(['brief'], {}, noRemote).out).toBe(flat2);
+  });
+
+  test('git refusing the folder (dubious ownership) keeps the flat index', () => {
+    const r = repo('app', 'git@github.com:acme/app.git');
+    shelf('build@acme-app', 3);
+    shelf('testing', 2);
+    const out = nb(['brief', '--json'], { GIT_TEST_ASSUME_DIFFERENT_OWNER: '1' }, r);
+    expect(json(out).outcome).toBe('index');
+    expect(out.err).toBe('');
+  });
+
+  test.skipIf(isWin)('no git is asked for the name when the store has no project shelf, or the slug is set', () => {
+    const r = repo('app', 'git@github.com:acme/app.git');
+    shelf('build', 3);
+    // Hidden files and non-shelf files with an `@` do not count as project shelves.
+    writeFileSync(join(store, '.retro-x@y.md'), '');
+    writeFileSync(join(store, 'notes@x.txt'), '');
+    const g = gitLogger();
+    nb(['brief'], g.env, r);
+    nb(['brief'], { ...g.env, NB_PROJECT_SLUG: '   ' }, r);
+    shelf('build@acme-app', 1);
+    nb(['brief'], { ...g.env, NB_PROJECT_SLUG: 'acme-app' }, r);
+    expect(g.calls().filter((c) => c.startsWith('rev-parse') || c.includes('remote.origin.url'))).toEqual([]);
+    // With a project shelf and no slug, exactly the two documented runs.
+    nb(['brief'], g.env, r);
+    expect(g.calls().filter((c) => !c.includes('nb.enabled'))).toEqual(['rev-parse --git-common-dir', 'config --get remote.origin.url']);
   });
 });

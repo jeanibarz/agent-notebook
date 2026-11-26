@@ -73,7 +73,7 @@ export function briefCutLine(left: number, maxChars: number, total: number): str
   return `# ${left} more notebook${left === 1 ? '' : 's'} not shown (this index is capped at ${maxChars} characters) — nb list --limit ${total}`;
 }
 
-/** The two lines above a layered index (`NB_PROJECT_SLUG` set). */
+/** The two lines above a layered index (`NB_PROJECT_SLUG` set, or a project name derived from the git remote). */
 export function layeredPreamble(slug: string): string[] {
   return [
     'Precedence if lessons conflict: project > domain > global.',
@@ -96,4 +96,16 @@ export const LAYERED_TEXT = {
     `  (NOTE: ${hidden} shelf(s) for other projects hidden and NONE end in @${slug} — if that slug is wrong, run \`nb list --limit 1000\` to see them all)`,
   hidden: (hidden: number, slug: string): string =>
     `  (${hidden} shelf(s) for other projects hidden (slug: ${slug}); \`nb list --limit 1000\` shows all)`,
+};
+
+/**
+ * The two notes of a layered index whose project name was derived (issue #540),
+ * not set by `NB_PROJECT_SLUG`: they say "project name" and point to
+ * `nb project --why`, which shows where the name comes from.
+ */
+export const LAYERED_TEXT_DERIVED = {
+  noneForSlug: (hidden: number, name: string): string =>
+    `  (NOTE: ${hidden} shelf(s) for other projects hidden and NONE end in @${name} — \`nb project --why\` shows where this project name comes from; \`nb list --limit 1000\` shows them all)`,
+  hidden: (hidden: number, name: string): string =>
+    `  (${hidden} shelf(s) for other projects hidden (project name: ${name}, from \`nb project\`); \`nb list --limit 1000\` shows all)`,
 };

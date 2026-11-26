@@ -23,11 +23,13 @@ hook** is a script the harness runs when a session starts, whose output is added
 to the agent's context, typically the **index** (the list of shelf names with a
 one-line description each).
 
-> **This is a convention, not a feature.** `nb` does not know what a layer is. It
-> treats `@` as an ordinary character inside a shelf name, stores nothing about a
-> layer in a shelf file, and does not rank, filter or protect shelves by layer.
-> Everything here is a rule you give your agents (usually in AGENTS.md or
-> CLAUDE.md) and, optionally, a hook that sorts the index for them. See
+> **Mostly a convention, not a feature.** `nb` knows one thing about layers: the
+> name of the current project, which [`nb project`](cli-reference.md#the-project-name--nb-project)
+> shows (`NB_PROJECT_SLUG`, else the git `origin` remote as `owner-repo`), and which
+> `nb brief` uses to group the start-of-session index. Otherwise it treats `@` as an
+> ordinary character inside a shelf name, stores nothing about a layer in a shelf
+> file, and does not rank, filter or protect shelves by layer. Everything else here
+> is a rule you give your agents (usually in AGENTS.md or CLAUDE.md). See
 > [what `nb` deliberately does not do](#what-nb-deliberately-does-not-do).
 
 ## The three layers
@@ -170,10 +172,17 @@ repo. Two slugs for one repo (`code-review@app` and `code-review@acme-app`)
 split its memory in two, and a hook that shows only `@acme-app` shelves hides
 the other half from the very repo it describes.
 
-- **Let the harness choose the slug once**, not each agent. A common recipe is
-  the repo's `owner-repo` name, lowercase, derived from the git remote and
-  exported as one environment variable (for instance `NB_PROJECT_SLUG`) that
-  every hook and agent instruction reads.
+- **Let one place choose the slug**, not each agent. `nb project` derives it
+  for you: the repo's `owner-repo` name, lowercase, from the git `origin` remote
+  (`git@github.com:acme/app.git` gives `acme-app`), the same from every clone and
+  worktree. Set `NB_PROJECT_SLUG` to choose another name, for example in the
+  project's `.claude/settings.local.json` `env` block, which is not committed. The
+  name includes the remote's owner, often an employer or a client, and shelf names
+  are listed by `nb list --limit 1000` in every project's sessions.
+- **A renamed or transferred remote changes the name.** Shelves written under the
+  old name stay there; `nb brief` then counts them among other projects' hidden
+  shelves. Set `NB_PROJECT_SLUG` to the old name, or fold the shelves into the new
+  one with `nb move` (the janitor below finds such pairs).
 - **Keep slugs lowercase.** A hook can compare slugs ignoring case, but `nb`
   does not: `code-review@Acme-App` and `code-review@acme-app` are different
   shelves. Newer versions refuse to create the second one because the two files
@@ -209,16 +218,19 @@ repeated in two shelves may be correct in each.
 
 [`nb brief`](cli-reference.md#the-start-of-session-text--nb-brief), which the example
 session-start hook [`examples/hooks/claude-code/nb-session-start.sh`](../examples/hooks/claude-code/nb-session-start.sh) injects,
-has an optional layered variant, **off unless you set `NB_PROJECT_SLUG`**. Set it
-to the repo's slug and the hook prints the index in three groups (project,
-domain, global, in that order) instead of one flat list, after stating the
-precedence and placement rule. The global shelf is `global` unless you set
+has a layered variant. With `NB_PROJECT_SLUG` set, or, when it is unset, once a
+shelf name in your store contains `@` and the repository has an `origin` remote
+(the name is then the one `nb project` prints), the hook prints the index in three
+groups (project, domain, global, in that order) instead of one flat list, after
+stating the precedence and placement rule. A store with no `@` shelf, a repository
+without a remote, and a folder outside git keep the flat index. The global shelf is `global` unless you set
 `NB_GLOBAL_SHELF`. Other behavior, so it is safe to adopt:
 
 - It ends with a line such as `1 shelf(s) for other projects hidden (slug:
   acme-app); nb list --limit 1000 shows all`, so a hidden shelf never looks like a missing one.
 - If other projects' shelves are hidden and none end in `@<your-slug>`, it prints
-  a NOTE telling you to check the slug, instead of a quietly empty project section.
+  a NOTE telling you to check the slug (for a derived name: to run
+  `nb project --why`), instead of a quietly empty project section.
 - If `nb list --json` fails or is not JSON, it falls back to the flat index with
   a warning. A session start never errors.
 - It only changes what the *index* shows. It never opens a shelf for the agent,
@@ -236,7 +248,7 @@ for setup.
 | Layer metadata in a shelf file (a `layer:` header) | A lesson is a string and a score ([NG-004](requirements.md#ng-004)); the name already says the layer. |
 | An `nb promote` command | `nb move` already relocates a lesson and keeps its score. |
 | A scope filter (`nb list --project …`) | `@` stays an opaque part of the name. `nb list [prefix]` matches only the *start* of a name ([FR-LIST-002](requirements.md#fr-list-002)). Considered and deferred: the harness already owns the hook and the wrapper, so it can filter without `nb` having to define what a slug is. |
-| Ordering shelves or composing a session's context by layer | Left to the caller. [Issue #286](https://github.com/jeanibarz/agent-notebook/issues/286) (closed) added batch `nb show --json` for exactly this, so a harness can assemble context itself, and kept ordering and budgeting out of `nb`. One exception ([issue #538](https://github.com/jeanibarz/agent-notebook/issues/538), [FR-BRIEF-003](requirements.md#fr-brief-003)): `nb brief`, the start-of-session text, groups its index by layer when `NB_PROJECT_SLUG` is set, as the example hook does. Its size budget cuts by rank, not by layer, and every other command still knows nothing of layers. |
+| Ordering shelves or composing a session's context by layer | Left to the caller. [Issue #286](https://github.com/jeanibarz/agent-notebook/issues/286) (closed) added batch `nb show --json` for exactly this, so a harness can assemble context itself, and kept ordering and budgeting out of `nb`. One exception ([issue #538](https://github.com/jeanibarz/agent-notebook/issues/538), [FR-BRIEF-003](requirements.md#fr-brief-003)): `nb brief`, the start-of-session text, groups its index by layer when `NB_PROJECT_SLUG` is set, as the example hook does, or by the project name `nb project` derives from the git remote ([issue #540](https://github.com/jeanibarz/agent-notebook/issues/540)). Its size budget cuts by rank, not by layer, and every other command still knows nothing of layers. |
 | Enforcing precedence, or protecting the global shelf | Which shelf is "global" and who may write it are harness policy. |
 
 If you do need more than this page offers, filter `nb list --json` in your own

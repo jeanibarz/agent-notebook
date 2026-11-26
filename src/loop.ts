@@ -17,8 +17,8 @@
  * that the file is a regular file of at most 64 KiB before it is opened
  * (requirements FR-RETRO-001..003).
  *
- * This module asks `git` (through `enabled.ts`, and once for the project name
- * of the extra prompt), always through `git.ts`. It never writes stdout: `cli.ts` does.
+ * This module asks `git` through `enabled.ts` (the switch) and `project.ts` (the
+ * project name, issue #540), never directly. It never writes stdout: `cli.ts` does.
  */
 import {
   closeSync,
@@ -28,18 +28,18 @@ import {
   openSync,
   readdirSync,
   readFileSync,
-  realpathSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import {
   BRIEF_EMPTY_LINE,
   BRIEF_HEADER_LINES,
   BRIEF_OFF_LINE,
   FRAMING_LINE,
   LAYERED_TEXT,
+  LAYERED_TEXT_DERIVED,
   LAYERED_UNAVAILABLE_LINE,
   RETRO_LESSONS,
   briefBrokenLine,
@@ -47,8 +47,7 @@ import {
   layeredPreamble,
 } from './agent-text.js';
 import { resolveEnabled, type EnabledState } from './enabled.js';
-import { runGit } from './git.js';
-import { cleanProjectName } from './project.js';
+import { cleanProjectName, groupsIndex, resolveProject, type ProjectState } from './project.js';
 import { escapeDiskName, expandHomeDir, listNotebooks, type NotebookSummary } from './notebook.js';
 import { formatListing, renderConflicts, renderSkipped } from './render.js';
 
@@ -97,25 +96,6 @@ export const RETRO_TTL_DAYS_DEFAULT = 7;
 export function cleanSessionId(raw: string): string {
   const s = String(raw || 'nosession').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128);
   return s.startsWith('-') ? '_' + s.slice(1) : s;
-}
-
-/**
- * The project name for `{project}`: `NB_PROJECT_SLUG` when set, else the folder
- * that holds the repository's git common directory (one name for a checkout and
- * all its worktrees), asked in `cwd`. `''` when there is no usable name (not a
- * git directory, git missing or slow).
- */
-export function projectName(env: NodeJS.ProcessEnv, cwd: string): string {
-  if (env.NB_PROJECT_SLUG) return cleanProjectName(env.NB_PROJECT_SLUG);
-  try {
-    const r = runGit(['rev-parse', '--git-common-dir'], cwd, 5000);
-    const out = r.error !== undefined || r.status !== 0 ? '' : r.stdout.trim();
-    if (out === '') return '';
-    const common = realpathSync(resolve(cwd, out));
-    return cleanProjectName(basename(dirname(common)));
-  } catch {
-    return '';
-  }
 }
 
 /** `NB_RETRO_TTL_DAYS` as a number of days: a positive finite number, else the default (7). */
@@ -255,7 +235,8 @@ export function retro(opts: RetroOptions): RetroResult {
   let text = RETRO_LESSONS;
   if (extra.text !== '' && opts.session !== '') {
     const asked = workDir ?? projectDir;
-    const project = asked === null ? (env.NB_PROJECT_SLUG ? cleanProjectName(env.NB_PROJECT_SLUG) : '') : projectName(env, asked);
+    // One rule for every caller (FR-PROJECT-001): the name `nb project` prints in that directory.
+    const project = asked === null ? (env.NB_PROJECT_SLUG ? cleanProjectName(env.NB_PROJECT_SLUG) : '') : resolveProject(env, asked).name;
     if (project !== '') {
       const values: Record<string, string> = { project, session };
       text = `${RETRO_LESSONS}\n\n${extra.text.replace(/\{(project|session)\}/g, (_, k: string) => values[k]!)}`;
@@ -285,6 +266,22 @@ export interface BriefOptions {
   env?: NodeJS.ProcessEnv;
   /** Injectable for tests; the CLI uses the real resolver. */
   enabled?: (env: NodeJS.ProcessEnv, cwd: string) => EnabledState;
+  /** Injectable for tests; the CLI uses the real resolver (FR-PROJECT-001). */
+  project?: (env: NodeJS.ProcessEnv, cwd: string) => ProjectState;
+}
+
+/**
+ * Whether the notebooks folder holds a shelf whose name contains `@` (a project
+ * shelf). Only file names are read, no file is parsed; a hidden file (such as a
+ * `.retro-*` sentinel) or a file not ending in `.md` does not count. An unreadable
+ * folder counts as no.
+ */
+function hasProjectShelf(dir: string): boolean {
+  try {
+    return readdirSync(dir).some((f) => !f.startsWith('.') && f.endsWith('.md') && f.includes('@'));
+  } catch {
+    return false;
+  }
 }
 
 /** Default `--max-chars`: Claude Code shows hook output whole up to 10,000 characters (epic #537, M9). */
@@ -346,13 +343,20 @@ function size(lines: string[]): number {
 }
 
 /**
- * The layered index (`NB_PROJECT_SLUG` set), a port of the 0.12 hook's node
+ * The layered index (`NB_PROJECT_SLUG` set, or a derived project name), a port of the 0.12 hook's node
  * block: this project's shelves, the bare domain shelves, the one global shelf,
  * and how many other projects' shelves were hidden. The notes are computed on
  * the whole listing; over budget, rows are dropped fewest lessons first,
  * whatever their layer (FR-BRIEF-002). Throws when the folder cannot be read.
  */
-function layeredBody(dir: string, slug: string, globalName: string, room: number, maxChars: number): { lines: string[]; err: string } {
+function layeredBody(
+  dir: string,
+  slug: string,
+  globalName: string,
+  room: number,
+  maxChars: number,
+  derived: boolean,
+): { lines: string[]; err: string } {
   const listing = listNotebooks(dir, { limit: LAYERED_LIMIT });
   const err = renderSkipped('brief', listing.skipped) + renderConflicts('brief', listing.conflicts);
   const slugKey = slug.toLowerCase();
@@ -385,7 +389,8 @@ function layeredBody(dir: string, slug: string, globalName: string, room: number
     section(LAYERED_TEXT.globalTitle, 'global');
     out.push('');
     if (unread > 0) out.push(LAYERED_TEXT.unclassified(unread));
-    out.push(hidden > 0 && !hadProject && unread === 0 ? LAYERED_TEXT.noneForSlug(hidden, cSlug) : LAYERED_TEXT.hidden(hidden, cSlug));
+    const notes = derived ? LAYERED_TEXT_DERIVED : LAYERED_TEXT;
+    out.push(hidden > 0 && !hadProject && unread === 0 ? notes.noneForSlug(hidden, cSlug) : notes.hidden(hidden, cSlug));
     if (cut > 0) out.push(briefCutLine(cut, maxChars, listing.total));
     return out;
   };
@@ -410,7 +415,19 @@ export function brief(opts: BriefOptions): BriefResult {
   if (opts.cwd !== null && !enabled(env, resolve(opts.cwd)).enabled) return { outcome: 'off', text: BRIEF_OFF_LINE + '\n', err: '' };
   const head = [...BRIEF_HEADER_LINES, FRAMING_LINE, ''];
   const room = opts.maxChars > 0 ? Math.max(1, opts.maxChars - size(head)) : 0;
-  const slug = (env.NB_PROJECT_SLUG ?? '').trim().slice(0, 128);
+  // The project the index is grouped by: NB_PROJECT_SLUG exactly as before (its raw
+  // trimmed value; set but blank keeps the flat index, and no git runs); else, when the
+  // store already holds a project shelf, the derived name, if it came from the remote
+  // (a folder name could be shared by two unrelated repositories, FR-BRIEF-003).
+  let slug = (env.NB_PROJECT_SLUG ?? '').trim().slice(0, 128);
+  let derived = false;
+  if (!env.NB_PROJECT_SLUG && opts.cwd !== null && hasProjectShelf(opts.dir)) {
+    const st = (opts.project ?? resolveProject)(env, resolve(opts.cwd));
+    if (groupsIndex(st) && st.name !== '') {
+      slug = st.name;
+      derived = true;
+    }
+  }
   const out = (lines: string[], outcome: BriefOutcome, err: string): BriefResult => ({
     outcome,
     text: [...head, ...lines].join('\n') + '\n',
@@ -418,7 +435,7 @@ export function brief(opts: BriefOptions): BriefResult {
   });
   if (slug !== '') {
     try {
-      const layered = layeredBody(opts.dir, slug, env.NB_GLOBAL_SHELF || 'global', room, opts.maxChars);
+      const layered = layeredBody(opts.dir, slug, env.NB_GLOBAL_SHELF || 'global', room, opts.maxChars, derived);
       return out(layered.lines, 'layered', layered.err);
     } catch {
       const flat = flatBody(opts.dir, room, opts.maxChars);

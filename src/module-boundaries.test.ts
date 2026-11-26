@@ -128,7 +128,7 @@ describe('module boundaries (issue #478)', () => {
   test('the agent-facing loop modules sit below cli.ts and the mechanism never imports them (issue #538)', () => {
     const graph = importGraph();
     expect(graph.get('agent-text')).toEqual([]);
-    expect(graph.get('loop')?.slice().sort()).toEqual(['agent-text', 'enabled', 'git', 'notebook', 'project', 'render']);
+    expect(graph.get('loop')?.slice().sort()).toEqual(['agent-text', 'enabled', 'notebook', 'project', 'render']);
     expect(graph.get('cli')).toEqual(expect.arrayContaining(['loop']));
     expect(graph.get('notebook')).toEqual([]);
     for (const [mod, deps] of graph) {

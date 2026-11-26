@@ -176,7 +176,7 @@ describe('resolveProject: the order of the rules and every git failure (FR-PROJE
 
   test('the origin remote, with exactly two git runs, in order', () => {
     const g = fakeGit({ remote: { stdout: 'git@github.com:Acme/App.git\n' } });
-    expect(resolveProject({}, work, g)).toEqual({ name: 'acme-app', source: 'remote', reason: 'git remote origin', folderName: 'my-app' });
+    expect(resolveProject({}, work, g)).toEqual({ name: 'acme-app', source: 'remote', reason: 'git remote origin', oldName: 'my-app' });
     expect(g.calls).toEqual([
       ['rev-parse', '--git-common-dir'],
       ['config', '--get', 'remote.origin.url'],
@@ -205,7 +205,7 @@ describe('resolveProject: the order of the rules and every git failure (FR-PROJE
   ])('the first run failing (%s) gives no name and no second run', (_label, top, reason) => {
     const g = fakeGit({ top });
     const st = resolveProject({}, work, g);
-    expect(st).toEqual({ name: '', source: 'none', reason, folderName: '' });
+    expect(st).toEqual({ name: '', source: 'none', reason, oldName: '' });
     expect(g.calls).toHaveLength(1);
     expect(st.reason).not.toContain('fatal');
   });
@@ -215,7 +215,7 @@ describe('resolveProject: the order of the rules and every git failure (FR-PROJE
     ['a bad config file (exit 3)', { status: 3, stderr: 'fatal: bad config line 1' }, 'git failed (exit 3)'],
     ['git missing between runs', { status: null, error: 'ENOENT' }, 'git not found'],
   ])('the remote read failing (%s) gives no name, never the folder name', (_label, remote, reason) => {
-    expect(resolveProject({}, work, fakeGit({ remote }))).toEqual({ name: '', source: 'none', reason, folderName: '' });
+    expect(resolveProject({}, work, fakeGit({ remote }))).toEqual({ name: '', source: 'none', reason, oldName: '' });
   });
 
   test('a common dir that cannot be resolved gives no name', () => {
@@ -240,7 +240,7 @@ describe('resolveProject: the order of the rules and every git failure (FR-PROJE
   });
 
   test('groupsIndex: only a name the user set or the remote gives', () => {
-    const st = (source: 'env' | 'remote' | 'folder' | 'none') => ({ name: 'x', source, reason: '', folderName: '' });
+    const st = (source: 'env' | 'remote' | 'folder' | 'none') => ({ name: 'x', source, reason: '', oldName: '' });
     expect([groupsIndex(st('env')), groupsIndex(st('remote')), groupsIndex(st('folder')), groupsIndex(st('none'))]).toEqual([true, true, false, false]);
   });
 });
@@ -287,7 +287,11 @@ describe('nb project on real repositories (FR-PROJECT-001)', { timeout: 60_000 }
   test('the three output forms, goldens', () => {
     const r = repo(join(tmp, 'agent notebook'), 'git@github.com:jeanibarz/agent-notebook.git');
     expect(nb(['project'], r)).toEqual({ code: 0, out: 'jeanibarz-agent-notebook\n', err: '' });
-    expect(nb(['project', '--why'], r)).toEqual({ code: 0, out: 'jeanibarz-agent-notebook (git remote origin)\n', err: '' });
+    expect(nb(['project', '--why'], r)).toEqual({
+      code: 0,
+      out: 'jeanibarz-agent-notebook (git remote origin; nb 0.12 filled the retrospective\'s {project} with "agent-notebook")\n',
+      err: '',
+    });
     expect(nb(['project', '--json'], r)).toEqual({
       code: 0,
       out: '{"name":"jeanibarz-agent-notebook","source":"remote","reason":"git remote origin"}\n',

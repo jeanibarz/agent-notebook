@@ -223,7 +223,9 @@ and https, Bitbucket Server's `/scm/` prefix); set `NB_PROJECT_SLUG` for such a 
 example in its `.claude/settings.local.json` `env` block. The name includes the remote's owner,
 often an employer or a client; set `NB_PROJECT_SLUG` to choose another.
 
-`--why` adds the rule that decided; `--json` prints `{name, source, reason}`, with `source` one
+`--why` adds the rule that decided and, when it differs, the name nb 0.12 gave the
+retrospective's `{project}` (the folder holding the repository's `.git`), so shelves written
+under that name can be found; `--json` prints `{name, source, reason}`, with `source` one
 of `env`, `remote`, `folder`, `none` (`reason` is prose for people; scripts should read
 `source`). It exits 0 in every case.
 
@@ -241,9 +243,12 @@ nb brief --json               # {"outcome":"index|layered|empty|broken|off","tex
 ```
 
 - **Off** (see `nb enabled`) prints one line telling the agent to skip the notebook steps.
-- **Layered**: with `NB_PROJECT_SLUG` set, the index is grouped into this project's
-  shelves (`<situation>@<slug>`), the bare domain shelves and the global shelf
-  (`NB_GLOBAL_SHELF`, default `global`); see [memory layers](memory-layers.md).
+- **Layered**: the index is grouped into this project's shelves (`<situation>@<name>`),
+  the bare domain shelves and the global shelf (`NB_GLOBAL_SHELF`, default `global`); see
+  [memory layers](memory-layers.md). The name is `NB_PROJECT_SLUG` when set. Unset, it is the
+  name [`nb project`](#the-project-name--nb-project) derives from the git `origin` remote, used
+  only when a shelf name in the store already contains `@`; a store without one keeps the flat
+  index, and a name from the folder (no remote) never groups it.
 - **Budget**: over `--max-chars` (default 9000; `0` = none) the shelves with the fewest
   lessons are dropped, whatever their layer, and the last line says how many and gives
   the `nb list --limit` command that shows them. Claude Code shows hook output whole
@@ -275,7 +280,8 @@ nb retro --session "$SESSION_ID" --work-dir "$PWD_OF_THE_AGENT"   # also ask the
   directory still nudges.
 - **`NB_RETRO_EXTRA_PROMPT`**, an absolute path (a leading `~/` is expanded) to a regular
   UTF-8 file of at most 64 KiB, is appended after a blank line, with `{project}` and
-  `{session}` filled in. Anything else prints a warning on stderr and the text goes alone.
+  `{session}` filled in. `{project}` is the name `nb project` prints in `--work-dir` (else the
+  working directory). Anything else prints a warning on stderr and the text goes alone.
 - **`--hook <label>`** is for adapters: it is recorded in the usage log's note column and
   never changes the output. A call that finds the session already claimed logs no row.
 

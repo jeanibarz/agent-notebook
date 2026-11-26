@@ -269,8 +269,8 @@ Every `show` line starts with a short stable id — pass that id (or a unique pr
 | `NB_ENABLED` | unset | `0`/`false`/`no`/`off` switches the agent loop off for one process, over `git config nb.enabled` |
 | `NB_RETRO_EXTRA_PROMPT` | unset | `nb retro`: absolute path of a text file (at most 64 KiB) appended to the retrospective, with `{project}` and `{session}` filled in |
 | `NB_RETRO_TTL_DAYS` | `7` | `nb retro`: days before an old `.retro-<session>` marker is removed |
-| `NB_PROJECT_SLUG` | unset | `nb brief`: group the index into this project's, domain and global shelves; `nb retro`: the project name for `{project}` (else the repository's folder name) |
-| `NB_GLOBAL_SHELF` | `global` | `nb brief` with `NB_PROJECT_SLUG`: the bare shelf shown as the global layer |
+| `NB_PROJECT_SLUG` | unset | the project name (`nb project` shows it); unset, it comes from the git `origin` remote as `owner-repo`, else the repository's folder. `nb brief` groups the index into this project's, domain and global shelves; `nb retro` fills `{project}` |
+| `NB_GLOBAL_SHELF` | `global` | `nb brief` with a layered index: the bare shelf shown as the global layer |
 | `NB_ASCII` | unset (locale decides) | ASCII digits instead of Unicode blocks in the `nb stats` sparkline |
 | `NB_USAGE_RING` | `5000` | usage-log rows kept |
 | `NB_STALE_LOCK_MS` | `10000` | milliseconds before a crashed process's lock is taken over |

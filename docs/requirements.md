@@ -1666,7 +1666,9 @@ state and `1` only on bad usage, and SHALL never exit `2`. `--json` SHALL print
 `text` equal to the plain output. Its inputs ([DP-6](#dp-6)) are: its arguments; `NB_DIR`
 and the home folder; `NB_ENABLED`, and git's `nb.enabled` read in the working directory
 (git's scopes and environment, and `PATH` to find `git`); `NB_PROJECT_SLUG` and
-`NB_GLOBAL_SHELF`; `NB_ASCII` and the locale; and the files under `NB_DIR`. `--session`,
+`NB_GLOBAL_SHELF`; when `NB_PROJECT_SLUG` is unset, the project name of
+[FR-PROJECT-001](#fr-project-001) asked in the working directory; `NB_ASCII` and the locale; and the
+files under `NB_DIR`. `--session`,
 `--hook`, `NB_SESSION` and the clock SHALL NOT change what it prints.
 
 *Proven by:* `brief.test.ts` → `describe('nb brief prints what the 0.12 session-start hook printed, plus the framing line (FR-BRIEF-001)')`,
@@ -1694,10 +1696,21 @@ bidi controls and zero-width characters replaced, so that no value can start a l
 own ([DP-5](#dp-5)). `NB_PROJECT_SLUG` SHALL be cut to 128 characters. When
 `NB_PROJECT_SLUG` is set and not blank, `nb brief` SHALL group the index into project,
 domain and global shelves as today's `nb-session-start.sh` does (the convention of
-[docs/memory-layers.md](memory-layers.md)); it is the only command that groups shelves
-by layer, and every other command still knows nothing of layers.
+[docs/memory-layers.md](memory-layers.md)), matching its trimmed value as before; set but blank, the
+index SHALL stay flat and no `git` SHALL run. When `NB_PROJECT_SLUG` is unset, the notebooks
+folder holds a shelf whose file name contains `@` (only file names are read; hidden files and
+files not ending in `.md` do not count), and the project name of
+[FR-PROJECT-001](#fr-project-001) came from the git remote, `nb brief` SHALL group the index the
+same way by that name (issue #540). A name from the repository's folder SHALL NOT group the
+index, since two unrelated repositories can share a folder name; without a shelf holding `@`, the
+index SHALL stay flat and `nb brief` SHALL NOT ask for the name, so its text and its processes are
+those of before. With a derived name, the line counting other projects' hidden shelves SHALL say
+"project name" instead of "slug" and the NOTE for a name with no shelf SHALL point to
+`nb project --why`. It is the only command that groups shelves by layer, and every other command
+still knows nothing of layers.
 
-*Proven by:* `brief.test.ts` → `describe('nb brief makes every value it shows safe for a model (FR-BRIEF-003)')`;
+*Proven by:* `brief.test.ts` → `describe('nb brief makes every value it shows safe for a model (FR-BRIEF-003)')` and
+`describe('nb brief groups by the derived project name (FR-BRIEF-003, issue #540)')`;
 the layered index by the parity tests of FR-BRIEF-001.
 
 <a id="fr-retro-001"></a>
@@ -1729,9 +1742,10 @@ SHALL NOT read standard input or a hook payload, SHALL exit `0` in every runtime
 `~/` expanded) of a regular file of at most 64 KiB without NUL bytes, and the session id and
 a project name are both known, `nb retro` SHALL append that file's trimmed text after the
 retrospective text, separated by one blank line, with `{project}` and `{session}` filled in.
-The project name SHALL be `NB_PROJECT_SLUG` when set, else the name of the folder that
-holds the repository's git common directory (asked in `--work-dir`, else the working
-directory), cleaned as today's Stop hook cleans it. Any other non-empty value SHALL print one warning
+The project name SHALL be the one `nb project` prints ([FR-PROJECT-001](#fr-project-001)),
+asked in `--work-dir`, else the working directory: `NB_PROJECT_SLUG` when set, else the origin
+remote as `owner-repo`, else the repository's folder name. Before issue #540 it was the folder
+holding the git common directory; `nb project --why` names that old value when it differs. Any other non-empty value SHALL print one warning
 on stderr and send the retrospective text alone. The file SHALL be checked before it is
 opened, so a FIFO or a device can never stall the call.
 *Proven by:* `retro.test.ts` → `describe('nb retro and a broken NB_RETRO_EXTRA_PROMPT (FR-RETRO-002)')` and
@@ -1771,10 +1785,9 @@ commit it.
 
 ### 4.18 The project name: `nb project` (issue #540)
 
-> **Status: FR-PROJECT-001 is implemented
-> ([issue #540](https://github.com/jeanibarz/agent-notebook/issues/540)); `nb brief` and
-> `nb retro` do not use it yet: they still follow [FR-BRIEF-001](#fr-brief-001) and
-> [FR-RETRO-002](#fr-retro-002) as written.** The converged design, with what was measured and the
+> **Status: implemented ([issue #540](https://github.com/jeanibarz/agent-notebook/issues/540)).
+> `nb brief` groups its index by this name ([FR-BRIEF-003](#fr-brief-003)) and `nb retro` fills
+> `{project}` with it ([FR-RETRO-002](#fr-retro-002)).** The converged design, with what was measured and the
 > alternatives rejected, is [the design comment on #540](https://github.com/jeanibarz/agent-notebook/issues/540#issuecomment-7181443083).
 
 Grouping shelves by project (`<situation>@<project>`, see
@@ -1800,7 +1813,8 @@ exit or a timeout gives no name;
 Outside a git repository there is no name. Every name SHALL be cleaned as the 0.12 Stop hook
 cleaned `{project}` (lower case, `[a-z0-9._-]`, no `..`, a letter or digit at both ends, at most 100
 characters), so it is one path segment. The plain form SHALL print the name alone (an empty line
-when there is none); `--why` SHALL add the rule that decided, in `nb`'s own words; `--json` SHALL
+when there is none); `--why` SHALL add the rule that decided, in `nb`'s own words, and, when it
+differs, the name the folder holding the git common directory gives (the 0.12 `{project}`); `--json` SHALL
 print `{ name, source, reason }` with `source` one of `env`/`remote`/`folder`/`none`. No form SHALL
 print a remote URL or a message from git, so a token in a remote cannot reach any output
 ([DP-5](#dp-5)). It SHALL exit `0` in every runtime state, and it is read-only.
@@ -1934,8 +1948,8 @@ to the default (integer vars also fall back on a non-numeric string).
 | `NB_ENABLED` | _(unset → `git config nb.enabled`, else on)_ | — | Per-process override of the per-repository on/off state ([FR-ENABLED-001](#fr-enabled-001)): `0`, `false`, `no`, `off` = off; any other non-blank value = on; blank defers to git config. Read only by `nb enabled`, `nb config` and the text form of `nb list` ([FR-ENABLED-004](#fr-enabled-004)). |
 | `NB_RETRO_EXTRA_PROMPT` | _(unset)_ | — | `nb retro`: absolute path (a leading `~/` expanded) of a regular file of at most 64 KiB appended to the retrospective text, with `{project}` and `{session}` filled in ([FR-RETRO-002](#fr-retro-002)). |
 | `NB_RETRO_TTL_DAYS` | 7 | > 0 | `nb retro`: age in days past which a `.retro-*` sentinel is removed ([FR-RETRO-003](#fr-retro-003)); a non-positive or non-numeric value means 7. |
-| `NB_PROJECT_SLUG` | _(unset)_ | — | `nb brief`: groups the index into project, domain and global shelves ([FR-BRIEF-003](#fr-brief-003)); `nb retro`: the project name for `{project}` (else the folder holding the git common directory) ([FR-RETRO-002](#fr-retro-002)). |
-| `NB_GLOBAL_SHELF` | `global` | — | `nb brief`, with `NB_PROJECT_SLUG`: the one bare shelf shown as the global layer ([FR-BRIEF-003](#fr-brief-003)). |
+| `NB_PROJECT_SLUG` | _(unset)_ | — | The project name ([FR-PROJECT-001](#fr-project-001)); unset, `nb` derives it from the git origin remote, else the repository's folder. `nb brief`: groups the index into project, domain and global shelves ([FR-BRIEF-003](#fr-brief-003)); `nb retro`: fills `{project}` ([FR-RETRO-002](#fr-retro-002)). |
+| `NB_GLOBAL_SHELF` | `global` | — | `nb brief`, with a layered index: the one bare shelf shown as the global layer ([FR-BRIEF-003](#fr-brief-003)). |
 | `NB_ASCII` | _(unset → locale decides)_ | — | Force the activity sparkline's glyph ramp to ASCII (truthy) or Unicode (`''`, `0`, `false`, `no`, `off`); unset, the locale decides. |
 | `NB_STALE_LOCK_MS` | 10000 | 100–600000 | `.nb.lock` age (ms) past which a lock is treated as abandoned by a crashed `nb` and stolen. |
 | `NB_LOCK_GRACE_MS` | 2000 | 0–600000 | Extra wait past `NB_STALE_LOCK_MS` to notice and steal an abandoned lock before failing with `notebook is locked`. |
