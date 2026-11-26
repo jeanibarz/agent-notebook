@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -482,8 +482,9 @@ describe('nb status, the built CLI (FR-STATUS-001..003)', { timeout: 120_000 }, 
     const inHome = join(home, 'work', 'app');
     mkdirSync(inHome, { recursive: true });
     const t = nb(['status'], inHome, { NB_DIR: join(home, 'nb-store') });
-    expect(t.out).toContain('Folder asked: ~/work/app\n');
-    expect(t.out).toContain('Notebook folder: ~/nb-store (');
+    // The path keeps the platform's separator after the ~ (backslashes on Windows).
+    expect(t.out).toContain(`Folder asked: ~${sep}work${sep}app\n`);
+    expect(t.out).toContain(`Notebook folder: ~${sep}nb-store (`);
     expect(t.out).not.toContain(home);
     void r;
   });
