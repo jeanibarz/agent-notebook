@@ -3,7 +3,7 @@
 set -u
 . "$(dirname "$0")/lib.sh"
 echo "=== $(uname -sm) claude $(claude --version) node $(node -v) date $(date -u +%FT%TZ)"
-G="$W/x13"; node "$(native "$HERE/gen13.mjs")" "$(native "$G")"
+G="$W/x13plugins"; node "$(native "$HERE/gen13.mjs")" "$(native "$G")"
 fresh_home x13
 NB=$(dirname "$(command -v node)"); CB=$(dirname "$(command -v claude)")
 for v in a-lf b-crlf c-shebang-lf d-shebang-crlf e-crlf-comment f-shebang-crlf-comment; do
