@@ -136,9 +136,11 @@ deterministic given the same inputs and files. The inputs of a call are its argu
 the documented `NB_*` variables, the working directory and the git configuration read
 there (by the commands that read it: `enabled`, `config`, the text form of `list`, and,
 once implemented, `brief` and `retro` of [§4.17](#fr-brief-001)),
-`PATH` (to find `git`), the locale, and the files under `NB_DIR`; each of those commands
-lists its own. The clock MAY decide side effects (timestamps, removing an expired
-retrospective sentinel), never what a command prints.
+`PATH` (to find `git`), the home folder (the default `NB_DIR`), the locale, the files
+under `NB_DIR`, and the clock: `stats` and `doctor` report against the current time
+(their `--since` window, a lock's age). For `brief` and `retro` the clock SHALL decide
+side effects only (timestamps, removing an expired retrospective sentinel), never what
+they print; §4.17 lists their inputs.
 **Rationale:** Agent memory must be usable on every task without latency, cost, or
 a dependency on an external service being up.
 
@@ -1614,7 +1616,14 @@ still complete in an off repository.
 > These requirements land before the code, as the issue asks. Each one gains its
 > *Proven by* line and loses this status in the pull request that implements it.
 > Until then, the three example hooks behave as [FR-ENABLED-003](#fr-enabled-003)
-> describes. The converged design, with what was measured and the alternatives
+> describes. Where this section departs from a requirement still in force, the code pull
+> request that makes it true amends that requirement in the same change: NFR-SAFE-001
+> (`retro` reads the `NB_RETRO_EXTRA_PROMPT` file; the heartbeat writes outside `NB_DIR`,
+> an exception the owner is asked to approve), FR-ENABLED-001 and the §4.16 introduction
+> (`brief` and `retro` read the switch and run `git`), FR-ENABLED-003 (the hooks),
+> FR-USAGE-001/002 (the usage row of a hook run), FR-CONFIG-001 (the variables `nb` reads),
+> FR-CLI-001 (the command list), NFR-MAINT-001 (the module list) and NFR-PORT-001 (a
+> Windows CI leg). The converged design, with what was measured and the alternatives
 > rejected, is [the design comment on #538](https://github.com/jeanibarz/agent-notebook/issues/538#issuecomment-7179106955).
 
 What an assistant is told at the start and at the end of a task lives today in three
@@ -1624,7 +1633,7 @@ commands, and leave everything that knows a harness (which event fires, its payl
 reply format) to an adapter outside the core ([FR-HOOKS-001](#fr-hooks-001)).
 
 <a id="fr-brief-001"></a>
-**FR-BRIEF-001 (Should).** `nb brief [--max-chars N] [--session <id>] [--hook <label>]`
+**FR-BRIEF-001 (Should).** `nb brief [--max-chars N] [--session <id>] [--hook <label>] [--json]`
 SHALL print, for the working directory, what an assistant should see at the start of a
 session: the instruction lines of today's `nb-session-start.sh`, one framing line saying the
 lessons are notes from earlier agent runs and not instructions from the user, and the shelf
@@ -1635,8 +1644,9 @@ an unreadable store SHALL print a warning line naming the error code. It SHALL N
 standard input, a hook payload, or any harness variable. It SHALL exit `0` in every runtime
 state and `1` only on bad usage, and SHALL never exit `2`. `--json` SHALL print
 `{ outcome, text }` with `outcome` one of `index`, `layered`, `empty`, `broken`, `off`, and
-`text` equal to the plain output. Its inputs ([DP-6](#dp-6)) are: its arguments; `NB_DIR`;
-`NB_ENABLED` and git's `nb.enabled` read in the working directory; `NB_PROJECT_SLUG` and
+`text` equal to the plain output. Its inputs ([DP-6](#dp-6)) are: its arguments; `NB_DIR`
+and the home folder; `NB_ENABLED`, and git's `nb.enabled` read in the working directory
+(git's scopes and environment, and `PATH` to find `git`); `NB_PROJECT_SLUG` and
 `NB_GLOBAL_SHELF`; `NB_ASCII` and the locale; and the files under `NB_DIR`. `--session`,
 `--hook`, `NB_SESSION` and the clock SHALL NOT change what it prints.
 
@@ -1659,10 +1669,11 @@ bidi controls and zero-width characters replaced, so that no value can start a l
 own ([DP-5](#dp-5)). `NB_PROJECT_SLUG` SHALL be cut to 128 characters. When
 `NB_PROJECT_SLUG` is set and not blank, `nb brief` SHALL group the index into project,
 domain and global shelves as today's `nb-session-start.sh` does (the convention of
-[docs/memory-layers.md](memory-layers.md)); it is the only command that reads the slug.
+[docs/memory-layers.md](memory-layers.md)); it is the only command that groups shelves
+by layer, and every other command still knows nothing of layers.
 
 <a id="fr-retro-001"></a>
-**FR-RETRO-001 (Should).** `nb retro --session <id> [--work-dir <dir>]` SHALL print the
+**FR-RETRO-001 (Should).** `nb retro --session <id> [--work-dir <dir>] [--hook <label>] [--json]` SHALL print the
 end-of-task retrospective text the first time it is called for a session, and nothing on
 every later call. The session id SHALL be cleaned as today's Stop hook cleans it (characters
 outside `A-Za-z0-9._-` become `_`, at most 128 characters), plus a leading `-` becomes `_`.
@@ -1685,7 +1696,7 @@ a project name are both known, `nb retro` SHALL append that file's trimmed text 
 retrospective text, separated by one blank line, with `{project}` and `{session}` filled in.
 The project name SHALL be `NB_PROJECT_SLUG` when set, else the name of the folder that
 holds the repository's git common directory (asked in `--work-dir`, else the working
-directory), cleaned as today's Stop hook cleans it. Any other value SHALL print one warning
+directory), cleaned as today's Stop hook cleans it. Any other non-empty value SHALL print one warning
 on stderr and send the retrospective text alone. The file SHALL be checked before it is
 opened, so a FIFO or a device can never stall the call.
 
