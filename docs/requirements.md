@@ -2383,7 +2383,8 @@ model's context. An `nb` older than `status` exits 2 with `unknown_subcommand`; 
 stage `agent-notebook-plugin-<V>/` and write `agent-notebook-plugin-<V>.zip` and its `.sha256`
 (`sha256sum` format), `<V>` being the version in `package.json`. The zip SHALL hold only:
 `.claude-plugin/plugin.json` (the source file plus `version`), `package.json` (`name`, `version`,
-`type`, `engines` and `license`, no `dependencies` and no `bin`), `LICENSE`, `bin/nb`, `bin/nb.cmd`,
+`type`, `engines` and `license`, no `dependencies` and no `bin`), `LICENSE`, `CHANGELOG.md` (the repo's, LF, so
+`nb status` finds the release date at `../CHANGELOG.md` next to `dist/`), `bin/nb`, `bin/nb.cmd`,
 `dist/**/*.js` (byte-equal to the repo's, no declarations or maps), the two files `nb-claude-hook.mjs`
 and `nb-hook-entry.cjs` of `examples/hooks/claude-code/`, `hooks/hooks.json` and
 `skills/agent-notebook/SKILL.md` with every `{{VERSION}}` filled in. The zip SHALL be reproducible: the
@@ -2400,7 +2401,8 @@ CRLF, which measured differently from Linux and macOS before the normalising.
 *Proven by:* `plugin-build.test.ts` → `describe('the plugin zip holds exactly these files (FR-PLUGIN-001, issue #559)')`,
 `describe('the build is reproducible (FR-PLUGIN-001, issue #559)')`,
 `describe('what the zip contains matches the sources (FR-PLUGIN-001, issue #559)')` and
-`describe('the build refuses what it should not pack (FR-PLUGIN-001, issue #559)')`; the package version
+`describe('the build refuses what it should not pack (FR-PLUGIN-001, issue #559)')`, and
+`test('nb status run from the staged plugin prints the release date from the shipped CHANGELOG.md')` in the same file; the package version
 and the absence of `plugin/` and `scripts/` in the npm package by `pack-install.test.ts` →
 "the tarball holds no plugin/ or scripts/ file and does hold the hook entry".
 
@@ -2509,7 +2511,7 @@ check that the CHANGELOG has a section for the version (none: failure), all befo
 reaches `github-release`. `github-release` SHALL run no repository code (no checkout, no Node.js setup, no
 npm), take every value through `env:` and never through `${{ }}` inside a `run:` script, and refuse a tag
 or sha256 of the wrong shape, a tag that no longer points at `$GITHUB_SHA`, and a zip that is not byte-equal
-to the npm tarball of the version (every `dist/**/*.js`, the adapter, the entry and `LICENSE`) or to `plugin/` at the
+to the npm tarball of the version (every `dist/**/*.js`, the adapter, the entry, `LICENSE` and `CHANGELOG.md`) or to `plugin/` at the
 tagged commit (`hooks.json`, `bin/nb`, `plugin.json` without `version`, `SKILL.md` with the version put back
 as `{{VERSION}}`; `bin/nb.cmd` against a sha256 pinned in the job), or whose file list is not exactly the tarball's `dist/` files plus the fixed plugin files,
 or whose `SHA256SUMS` is not byte-equal to the file rebuilt from the unpacked zip with the command `build-plugin` uses.

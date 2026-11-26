@@ -174,6 +174,7 @@ function main(argv) {
   add('.claude-plugin/plugin.json', json({ name: pluginName, version, ...rest }));
   add('package.json', json({ name: pkg.name, version, type: 'module', engines: pkg.engines, license: pkg.license }));
   add('LICENSE', text(join(ROOT, 'LICENSE')));
+  add('CHANGELOG.md', text(join(ROOT, 'CHANGELOG.md'))); // `nb status` reads ../CHANGELOG.md next to dist/ for the release date
   add('bin/nb', text(join(ROOT, 'plugin', 'bin', 'nb')));
   add('bin/nb.cmd', NB_CMD); // CRLF on purpose: the one file that keeps it
   for (const f of walk(join(ROOT, 'dist')).filter((f) => f.endsWith('.js'))) add(`dist/${f}`, text(join(ROOT, 'dist', f)));

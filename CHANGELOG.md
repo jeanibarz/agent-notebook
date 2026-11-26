@@ -9,6 +9,8 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+- **The Claude Code plugin zip now carries `CHANGELOG.md`**, so `nb status` run from the plugin shows the release date (issue #560, first part).
+
 ## [0.13.0-beta.2] - 2026-11-27
 
 **TL;DR.** The second beta of epic #537, and the first release that carries the Claude Code plugin (#559) as a zip on its GitHub release.
