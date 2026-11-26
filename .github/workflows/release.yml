@@ -285,7 +285,10 @@ jobs:
 
           rm -rf ../check
           mkdir ../check ../check/npm ../check/zip ../check/src
-          curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors -o ../check/npm.tgz "https://registry.npmjs.org/agent-notebook/-/agent-notebook-${version}.tgz"
+          # npm accepts a publish at once but serves the new tarball only minutes later
+          # (measured on 0.13.0-beta.2: still 404 five minutes after the publish), so wait
+          # for it for up to 20 minutes instead of failing.
+          curl -fsSL --retry 40 --retry-delay 30 --retry-max-time 1200 --retry-all-errors -o ../check/npm.tgz "https://registry.npmjs.org/agent-notebook/-/agent-notebook-${version}.tgz"
           tar -xzf ../check/npm.tgz -C ../check/npm
           npmdir=../check/npm/package
 
