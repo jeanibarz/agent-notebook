@@ -16,7 +16,7 @@
  * detail block goes through `escapeDiskName` with a cap, and a path shows the home
  * folder as `~`.
  */
-import { accessSync, constants as fsConstants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { resolveEnabled, type EnabledState } from './enabled.js';
@@ -226,9 +226,24 @@ function merge(shared: Item[], own: Item[]): Item[] {
 export function readReleaseDate(version: string): string | null {
   try {
     const file = fileURLToPath(new URL('../CHANGELOG.md', import.meta.url));
-    const st = lstatSync(file);
-    if (!st.isFile() || st.size >= CHANGELOG_MAX_BYTES) return null;
-    return releaseDateIn(readFileSync(file, 'utf-8'), version);
+    // lstat first (no link, no FIFO), then a non-blocking open and fstat of what was opened,
+    // so a file swapped between the two calls can never block the open or be read unbounded.
+    if (!lstatSync(file).isFile()) return null;
+    const fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
+    try {
+      const st = fstatSync(fd);
+      if (!st.isFile() || st.size >= CHANGELOG_MAX_BYTES) return null;
+      const buf = Buffer.alloc(st.size);
+      let got = 0;
+      while (got < st.size) {
+        const n = readSync(fd, buf, got, st.size - got, got);
+        if (n <= 0) break;
+        got += n;
+      }
+      return releaseDateIn(buf.subarray(0, got).toString('utf-8'), version);
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return null;
   }

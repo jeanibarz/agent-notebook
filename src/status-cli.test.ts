@@ -70,7 +70,7 @@ interface Run {
 }
 function nb(args: string[], cwd: string, env: Record<string, string | undefined> = {}): Run {
   const t = Date.now();
-  const r = spawnSync(process.execPath, [CLI, ...args], { cwd, env: childEnv(env), encoding: 'utf-8', timeout: 20_000 });
+  const r = spawnSync(process.execPath, [CLI, ...args], { cwd, env: childEnv(env), encoding: 'utf-8', timeout: 20_000, killSignal: 'SIGKILL' });
   return { code: r.status, out: r.stdout, err: r.stderr, ms: Date.now() - t };
 }
 
@@ -444,7 +444,7 @@ describe('nb status, the built CLI (FR-STATUS-001..003)', { timeout: 120_000 }, 
         writers.push(
           new Promise<void>((resolve) => {
             const script = `for i in 1 2 3 4 5 6 7 8; do "${process.execPath}" "${CLI}" brief --hook tool-a.session-start --session w${w}x$i >/dev/null 2>&1; done`;
-            const c = spawn('sh', ['-c', script], { cwd: r, env: childEnv(), stdio: 'ignore' });
+            const c = spawn('sh', ['-c', script], { cwd: r, env: childEnv(), stdio: 'ignore', timeout: 60_000, killSignal: 'SIGKILL' });
             c.on('close', () => resolve());
           }),
         );
