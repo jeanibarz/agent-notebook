@@ -9,6 +9,16 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+### Added
+
+- **`nb retro --session <id>`: the end-of-task retrospective text, once per session (issue #538).** It prints the text the example Stop hook sends today, word for word, the first time it is called for a session, and nothing on later calls, so a harness's stop hook can call it on every stop. It reads no hook payload and exits 0 in every runtime state. "First" is decided by creating `<NB_DIR>/.retro-<id>` exclusively, the same file the 0.12 Stop hook creates, so an old copied hook and the new command nudge once between them. `.retro-*` files older than `NB_RETRO_TTL_DAYS` (7) are then removed. It prints nothing where `nb enabled` says off, here or in `--work-dir` (the directory the assistant last worked in). `NB_RETRO_EXTRA_PROMPT` is appended as the hook does it, and must now name a regular file of at most 64 KiB, so a FIFO can no longer stall the call and a UTF-16 file is skipped with a warning instead of reaching the model as garbled text. `--json` prints `{outcome, text, session}`. The example hooks do not call it yet; a later release turns them into a thin adapter.
+- **A Windows CI leg** runs the tests of the new command.
+
+### Changed
+
+- **The usage log and `nb stats` for hook commands.** A `nb retro` call that finds the session already claimed logs no usage row, so a stop hook does not add one per stop. `nb stats` no longer reports `nb retro` (or the coming `nb brief`) as a loop, and does not report `enabled` or `list` as gone silent while those commands run, since the hooks will stop calling the old ones.
+- **`nb config`** no longer lists `NB_RETRO_EXTRA_PROMPT`, `NB_RETRO_TTL_DAYS` or `NB_PROJECT_SLUG` as not read by `nb`.
+
 ### Documentation
 
 - **Requirements for `nb brief` and `nb retro` (issue #538), before the code.** `docs/requirements.md` gains section 4.17, marked "proposed — not yet implemented": the two harness-blind commands that will print the start-of-session text and the once-per-session retrospective, a Node adapter for the Claude Code hooks, and a record that the hooks ran. DP-6 now lists the inputs a call may depend on, and NG-005 says it governs lessons, not runtime markers such as the retrospective sentinel. `docs/harness-setup.md`, `examples/README.md`, `docs/memory-layers.md` and RFC 0530 note the planned change. No behaviour changes yet.

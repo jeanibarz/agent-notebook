@@ -123,6 +123,32 @@ describe('module boundaries (issue #478)', () => {
     }
   });
 
+  // Issue #538: the agent-facing loop (`nb retro`) and its text sit below cli.ts.
+  // The mechanism never learns about them, and only the CLI reaches them.
+  test('the agent-facing loop modules sit below cli.ts and the mechanism never imports them (issue #538)', () => {
+    const graph = importGraph();
+    expect(graph.get('agent-text')).toEqual([]);
+    expect(graph.get('loop')?.slice().sort()).toEqual(['agent-text', 'enabled', 'notebook']);
+    expect(graph.get('cli')).toEqual(expect.arrayContaining(['loop']));
+    expect(graph.get('notebook')).toEqual([]);
+    for (const [mod, deps] of graph) {
+      if (mod !== 'cli') expect(deps, `${mod}.ts imports loop`).not.toContain('loop');
+      if (mod !== 'loop') expect(deps, `${mod}.ts imports agent-text`).not.toContain('agent-text');
+    }
+  });
+
+  test('no source module speaks a harness hook format (issue #538)', () => {
+    // The core stays harness-blind: the Claude Code reply and payload fields live
+    // in the adapter under examples/, never in src/.
+    for (const f of readdirSync(srcDir)) {
+      if (!f.endsWith('.ts') || f.endsWith('.test.ts')) continue;
+      const text = readFileSync(join(srcDir, f), 'utf-8');
+      for (const term of ['hookSpecificOutput', 'stop_hook_active', 'additionalContext', 'hook_event_name', 'background_tasks']) {
+        expect(text.includes(term), `${f} mentions ${term}`).toBe(false);
+      }
+    }
+  });
+
   test('the root re-exports every module export except the named internals', () => {
     // index.ts lists notebook.ts names explicitly (so the internals stay off the
     // root). This catches the other direction: a new public export in a module

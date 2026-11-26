@@ -526,6 +526,10 @@ export function parseWindowMs(raw: string | undefined): number {
  * here" line, not the index (issue #517).
  */
 const READ_COMMANDS = new Set(['show', 'list', 'search']);
+/** Commands a harness runs on its own events (issue #538): left out of the loop check. */
+const HARNESS_DRIVEN_COMMANDS = new Set(['brief', 'retro']);
+/** What the example hooks ran before `nb brief` / `nb retro` replaced them (issue #538). */
+const REPLACED_BY_HARNESS_COMMANDS = new Set(['enabled', 'list']);
 /** Deliberate reads for the retrospective check (cause 2): opening content, EXCLUDING the hook's auto `nb list`. */
 const DELIBERATE_READ_COMMANDS = new Set(['show', 'search']);
 
@@ -988,6 +992,9 @@ export function stats(
   const LOOP_WINDOW_MS = loopWindowSec() * 1000;
   const byShelfCmd = new Map<string, number[]>();
   for (const r of recent) {
+    // `nb brief` and `nb retro` run when a harness event fires (issue #538): a
+    // burst of subagent starts is not a stuck agent, so they never feed the loop check.
+    if (HARNESS_DRIVEN_COMMANDS.has(r.command)) continue;
     // A `search` row carries the surfaced entry ids since issue #114 (for the
     // serendipity provenance join), but the loop detector must keep treating it
     // as entry-less: searches are grouped by shelf+command so a stuck agent
@@ -1029,8 +1036,13 @@ export function stats(
     const t = Date.parse(r.ts);
     lastSeen.set(r.command, Math.max(lastSeen.get(r.command) ?? 0, t));
   }
+  // A hook that moved from `nb enabled` + `nb list` to `nb brief` / `nb retro`
+  // (issue #538) stops logging the old commands: while either new command runs in
+  // the window, the old ones are covered, not "went silent".
+  const hookCommandsLive = [...HARNESS_DRIVEN_COMMANDS].some((c) => byCmd.has(c));
   for (const [command, last] of lastSeen) {
     const age = now - last;
+    if (hookCommandsLive && REPLACED_BY_HARNESS_COMMANDS.has(command)) continue;
     if (age > SILENT_MS && !byCmd.has(command)) {
       anomalies.push({
         kind: 'went-silent',

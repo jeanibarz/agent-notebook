@@ -21,6 +21,7 @@
 //   nb path   [<shelf> | --usage] [--json]   print the notebooks dir, a shelf's file path, or the usage-log path (--json = {dir, shelf, path} object)
 //   nb config [--json]                      print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json = object keyed by name, string vars under `environment`)
 //   nb enabled [--why] [--json]             print `on` or `off`: whether the agent-facing loop (hooks, retrospective, text `nb list`) is on here (NB_ENABLED, then git config nb.enabled, default on)
+//   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  the end-of-task retrospective text, once per session (issue #538)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
 //   nb ls / nb shelves / nb roles          aliases of `nb list` (`roles` is deprecated)
 //   nb completion <bash|zsh>               print a static shell-completion script to source
@@ -86,6 +87,7 @@ import {
   type ConfigStatus,
 } from './config-report.js';
 import { describeSource, resolveEnabled, stateWord } from './enabled.js';
+import { retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import {
   fmt,
@@ -167,6 +169,7 @@ usage:
   nb path   --usage [--json]               print the resolved usage-log path (to tail -F or back it up)
   nb config [--json]                       print the effective (post-clamp) NB_* tunables + the NB_DIR/NB_SESSION/NB_ASCII string env vars as name=value (--json: tunables keyed by name, string vars under \`environment\`)
   nb enabled [--why] [--json]              print \`on\` or \`off\`: whether the agent-facing loop (hooks, retrospective, text \`nb list\`) is on in this directory
+  nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  print the end-of-task retrospective text the first time it is called for a session, nothing afterwards
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
   nb ls     [prefix] [--limit N]          alias of \`nb list\`
   nb shelves [prefix] [--limit N]         alias of \`nb list\`
@@ -320,6 +323,15 @@ notes:
     one repository, \`--global\` for all of them); otherwise on. A missing \`git\` or an invalid value resolves to
     on, with a warning on stderr. \`--why\` adds which input decided. Read-only; it switches off only the hooks
     that ask it and the text \`nb list\` index, never the other \`nb\` commands.
+  - \`nb retro --session <id>\` prints the end-of-task retrospective text the first time it is called for that
+    session and nothing afterwards, so a harness's stop hook can call it on every stop. "First" is decided by
+    creating \`<NB_DIR>/.retro-<id>\` exclusively (the file the 0.12 example Stop hook creates, so an old copied
+    hook and this command nudge once between them); \`.retro-*\` files older than \`NB_RETRO_TTL_DAYS\` (7) are
+    then removed. It prints nothing where \`nb enabled\` says off, here or in \`--work-dir\` (the directory the
+    assistant last worked in; an off there releases the claim). \`NB_RETRO_EXTRA_PROMPT\` (an absolute path to a
+    regular file of at most 64 KiB) is appended, with \`{project}\` and \`{session}\` filled in. \`--hook <label>\`
+    is set by an adapter and recorded in the usage row's note column. It reads no hook payload and exits 0 in
+    every runtime state; \`--json\` prints \`{outcome, text, session}\`.
   - \`nb completion <bash|zsh>\` prints a static, dependency-free completion script to stdout.
     Source it with \`eval "$(nb completion bash)"\` (or the zsh form) to tab-complete the command set
     and, where a command takes a shelf, existing shelf names (looked up via \`nb list\`, guarded so it
@@ -356,7 +368,7 @@ function parseDelta(arg: string): number {
  */
 export const KNOWN_COMMANDS = [
   'show', 'stale', 'add', 'vote', 'merge', 'split', 'rm', 'move', 'describe',
-  'search', 'stats', 'doctor', 'path', 'config', 'enabled', 'completion', 'list', 'ls', 'shelves', 'roles',
+  'search', 'stats', 'doctor', 'path', 'config', 'enabled', 'retro', 'completion', 'list', 'ls', 'shelves', 'roles',
   'help', 'version',
 ] as const;
 
@@ -577,6 +589,7 @@ export const KNOWN_FLAGS: Record<string, readonly string[]> = {
   path: ['--usage'],
   config: [],
   enabled: ['--why'],
+  retro: ['--session', '--work-dir', '--hook'],
   list: ['--limit'],
   ls: ['--limit'],
   shelves: ['--limit'],
@@ -592,7 +605,7 @@ export const KNOWN_FLAGS: Record<string, readonly string[]> = {
  * literal `--json` value is the exception: the global `--json` strip runs first,
  * so passing it as a value needs the `--` terminator instead — issue #277.)
  */
-const VALUE_FLAGS = new Set(['--reason', '--note', '--limit', '--since']);
+const VALUE_FLAGS = new Set(['--reason', '--note', '--limit', '--since', '--session', '--work-dir', '--hook']);
 
 /**
  * Refuse an unknown or misplaced long option rather than silently swallowing it
@@ -771,6 +784,9 @@ export async function runNbCli(
   // empty and `logUsage` writes blanks. `session` is filled by `logUsage` from
   // `NB_SESSION`, so it is not set here.
   const meta: UsageMeta = {};
+  // Set by a command whose call must leave no usage row (`nb retro` on a
+  // repeated stop, FR-USAGE-001's one exception).
+  let skipUsageRow = false;
   // `--` is an end-of-options terminator (issue #277): every token after the
   // first `--` is a literal operand, never a flag. Without it, the unconditional
   // `--json` strip below removed a `--json` token *anywhere* in argv — including
@@ -1570,6 +1586,42 @@ export async function runNbCli(
         }
         break;
       }
+      case 'retro': {
+        // The end-of-task retrospective, once per session (issue #538,
+        // FR-RETRO-001). Harness-blind: the adapter passes the session id, the
+        // directory the assistant last worked in, and its hook label. Exit 0 in
+        // every runtime state; only bad usage (a missing --session) exits 1.
+        let rest = flagArgs;
+        let sessionRaw: string | undefined;
+        let workDir: string | undefined;
+        let hook: string | undefined;
+        ({ value: sessionRaw, rest } = extractOption(rest, '--session'));
+        ({ value: workDir, rest } = extractOption(rest, '--work-dir'));
+        ({ value: hook, rest } = extractOption(rest, '--hook'));
+        for (const flag of ['--session', '--work-dir', '--hook']) {
+          if (rest.includes(flag)) throw new NbError('bad_args', `${flag} given more than once for \`nb retro\` — pass it once`);
+        }
+        // No positional operand: anything left besides the command word was
+        // unexpected (a stray word, or an operand after a `--` terminator).
+        const extraOperand = rest.slice(1).concat(operands)[0];
+        if (extraOperand !== undefined) throw new NbError('bad_args', `unexpected extra argument "${extraOperand}" for \`nb retro\``);
+        if (sessionRaw === undefined) throw new NbError('bad_args', 'missing --session <id> (the harness session id; pass --session "" when there is none)');
+        const r = retro({ session: sessionRaw, workDir, dir, cwd: process.cwd() });
+        if (r.err) process.stderr.write(r.err);
+        meta.outcome = r.outcome;
+        meta.session = r.session;
+        if (hook !== undefined) meta.note = cleanHookLabel(hook);
+        // A repeated stop logs no row (FR-USAGE-001's named exception): every
+        // later stop of a session would otherwise add one and shorten the
+        // history `nb stats` reads.
+        if (r.outcome === 'already') skipUsageRow = true;
+        if (json) {
+          process.stdout.write(JSON.stringify({ outcome: r.outcome, text: r.text, session: r.session }) + '\n');
+        } else if (r.text !== '') {
+          process.stdout.write(r.text + '\n');
+        }
+        break;
+      }
       case 'list':
       case 'ls':
       case 'shelves':
@@ -1704,11 +1756,17 @@ export async function runNbCli(
   } finally {
     // The `stats` read of the usage log happens above; logging it afterwards is fine.
     try {
-      logUsage(dir, shelf, cmd, ok, Date.now() - started, meta);
+      if (!(ok && skipUsageRow)) logUsage(dir, shelf, cmd, ok, Date.now() - started, meta);
     } finally {
       setCallMaxChars(undefined);
     }
   }
+}
+
+/** An adapter's hook label, cleaned to `[a-z0-9._-]`, at most 40 characters (`-` when nothing is left). */
+function cleanHookLabel(raw: string): string {
+  const s = raw.toLowerCase().replace(/[^a-z0-9._-]/g, '-').slice(0, 40);
+  return s === '' ? '-' : s;
 }
 
 function need(v: string | undefined, name: string): string {

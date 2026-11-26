@@ -2438,7 +2438,6 @@ describe('runNbCli', () => {
         // unknown-var block, not a real knob.
         const EXAMPLE_ONLY = new Set([
           'NB_BIN',
-          'NB_RETRO_TTL_DAYS',
           'NB_GIT_AUTOCOMMIT',
           'NB_GIT_SESSION_TRAILER',
           'NB_BACKUP_PUSH_TIMEOUT',
@@ -2460,7 +2459,21 @@ describe('runNbCli', () => {
         const names = new Set<string>(j0.unrecognized.map((u: { name: string }) => u.name));
         // Every documented tunable must be surfaced by `nb config` and must not
         // be reported unknown...
-        const missing = [...documented].filter((v) => !EXAMPLE_ONLY.has(v) && !surfaced.has(v)).sort();
+        // The variables only `nb retro` reads (issue #538) are recognized but get no
+        // line of their own (FR-CONFIG-001): they must never be reported unknown.
+        const READ_BY_RETRO = ['NB_RETRO_EXTRA_PROMPT', 'NB_RETRO_TTL_DAYS', 'NB_PROJECT_SLUG'];
+        for (const v of READ_BY_RETRO) expect(documented.has(v), `${v} missing from the README`).toBe(true);
+        for (const v of READ_BY_RETRO) process.env[v] = v === 'NB_RETRO_TTL_DAYS' ? '3' : '/p';
+        let jr: { unrecognized: Array<{ name: string }> };
+        try {
+          jr = JSON.parse((await run(['config', '--json'])).out);
+        } finally {
+          for (const v of READ_BY_RETRO) delete process.env[v];
+        }
+        expect(jr.unrecognized.map((u: { name: string }) => u.name).filter((n: string) => READ_BY_RETRO.includes(n))).toEqual([]);
+        const missing = [...documented]
+          .filter((v) => !EXAMPLE_ONLY.has(v) && !READ_BY_RETRO.includes(v) && !surfaced.has(v))
+          .sort();
         expect(missing, `documented but not surfaced by nb config: ${missing.join(', ')}`).toEqual([]);
         // ...and, the other direction, a surfaced var must be documented and
         // never reported unknown.
