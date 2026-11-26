@@ -54,7 +54,12 @@ export interface FactsInput {
   argv1: string | undefined;
   /** The version of this program. */
   version: string;
+  /** The clock, in milliseconds (default `Date.now()`): a row dated more than `FUTURE_SLACK_MS` after it is forged and dropped. */
+  now?: number;
 }
+
+/** A row may be dated this far ahead of the clock (clock skew between two machines sharing a notebook) before it is dropped as forged. */
+export const FUTURE_SLACK_MS = 5 * 60_000;
 
 export interface FactsDeps {
   homedir: () => string;
@@ -190,11 +195,11 @@ export function validateRow(u: UsageRow): Item | null {
 }
 
 /** The valid rows of one log, in file order. */
-function readLog(deps: FactsDeps, dir: string): Item[] {
+function readLog(deps: FactsDeps, dir: string, now: number): Item[] {
   const out: Item[] = [];
   for (const u of safe(() => deps.readUsage(dir, STATUS_LOG_MAX_BYTES), [] as UsageRow[])) {
     const item = safe(() => validateRow(u), null);
-    if (item !== null) out.push(item);
+    if (item !== null && item.atMs <= now + FUTURE_SLACK_MS) out.push(item);
   }
   return out;
 }
@@ -309,6 +314,8 @@ export function gatherFacts(input: FactsInput, overrides: Partial<FactsDeps> = {
     } catch (e) {
       const code = (e as NodeJS.ErrnoException | null)?.code;
       folder = code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'unreadable';
+      // A folder that does not exist yet holds no shelves (`brief` creates it; status creates nothing).
+      if (folder === 'missing') shelves = 0;
     }
     if (folder === 'ok') {
       const file = usageFile(dir);
@@ -326,8 +333,9 @@ export function gatherFacts(input: FactsInput, overrides: Partial<FactsDeps> = {
   }
 
   // The logs: an own place reads its own log and the shared one, otherwise the shared one.
-  const sharedRows = readLog(deps, input.place.shared);
-  const ownRows = input.place.kind === 'own' && dir !== null && dir !== input.place.shared ? readLog(deps, dir) : [];
+  const now = input.now ?? Date.now();
+  const sharedRows = readLog(deps, input.place.shared, now);
+  const ownRows = input.place.kind === 'own' && dir !== null && dir !== input.place.shared ? readLog(deps, dir, now) : [];
   const all = merge(sharedRows, ownRows);
   const rows: StatusRow[] = [];
   let lastAddAt: string | null = null;

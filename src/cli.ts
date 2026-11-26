@@ -1895,7 +1895,9 @@ export async function runNbCli(
         if (extraOperand !== undefined) throw new NbError('bad_args', `unexpected extra argument "${extraOperand}" for \`nb status\``);
         const cwd = currentDir();
         const st = place?.project ?? projectOfCall(process.env, cwd, resolveProject);
+        const now = Date.now();
         const facts = gatherFacts({
+          now,
           env: process.env,
           cwd,
           place: { kind: place!.kind, dir: place!.dir, shared: sharedDir, reason: place!.reason },
@@ -1905,7 +1907,6 @@ export async function runNbCli(
           argv1: process.argv[1],
           version: pkgVersion(),
         });
-        const now = Date.now();
         const decision = decideStatus(facts, now);
         process.stdout.write(json ? JSON.stringify(statusJson(facts, decision, now)) + '\n' : renderStatus(facts, decision, now));
         ok = true;

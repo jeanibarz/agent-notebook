@@ -578,6 +578,7 @@ function input(over: Partial<FactsInput> = {}): FactsInput {
     programFile: '/pkg/dist/cli.js',
     argv1: '/pkg/dist/cli.js',
     version: '0.13.0',
+    now: NOW,
     ...over,
   };
 }
@@ -611,6 +612,13 @@ describe('the facts are read from two logs, merged by timestamp, and never throw
     expect(f.rowsRead).toBe(4);
   });
 
+  test('a row dated more than five minutes after the clock is forged and dropped; a little skew is kept', () => {
+    const rows = [usageRow({ ts: iso(-86400), note: 'tool-a.forged' }), usageRow({ ts: iso(-240), note: 'tool-a.skew' }), usageRow({ ts: iso(60), note: 'tool-a.ok' })];
+    const f = gatherFacts(input(), okDeps({ '/nb/shared': rows }));
+    expect(f.rows.map((r) => r.label)).toEqual(['tool-a.skew', 'tool-a.ok']);
+    expect(f.rowsRead).toBe(2);
+  });
+
   test('a shared or env place reads the shared log only', () => {
     const f = gatherFacts(input(), okDeps({ '/nb/shared': [usageRow()], '/nb/own': [usageRow({ note: 'tool-a.own' })] }));
     expect(f.rows.map((r) => r.label)).toEqual(['tool-a.start']);
@@ -638,6 +646,9 @@ describe('the facts are read from two logs, merged by timestamp, and never throw
     };
     const base = okDeps({});
     expect(gatherFacts(input(), { ...base, stat: err('ENOENT') }).live).toEqual({ folder: 'missing', log: 'absent' });
+    // a folder that does not exist yet holds 0 shelves, not "could not be counted"
+    expect(gatherFacts(input(), { ...base, stat: err('ENOENT') }).notebook.shelves).toBe(0);
+    expect(gatherFacts(input(), { ...base, stat: err('EACCES') }).notebook.shelves).toBeNull();
     expect(gatherFacts(input(), { ...base, stat: err('EACCES') }).live.folder).toBe('unreadable');
     expect(gatherFacts(input(), { ...base, stat: () => ({ isFile: () => true, isDirectory: () => false }) }).live.folder).toBe('not-folder');
     expect(gatherFacts(input(), { ...base, readdir: err('EACCES') }).live.folder).toBe('unreadable');
