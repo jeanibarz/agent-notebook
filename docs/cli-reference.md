@@ -340,6 +340,34 @@ nb retro --session "$SESSION_ID" --work-dir "$PWD_OF_THE_AGENT"   # also ask the
 
 The example Claude Code hooks ([`examples/hooks/claude-code/`](../examples/hooks/claude-code/README.md)) are a thin adapter around these two commands: they read the hook payload, skip the stops that must not nudge, and wrap the text in Claude Code's reply format (issue #538).
 
+## Is the notebook running here — `nb status`
+
+`nb status` answers one question: do chats in this project start the notebook on their own? It prints two plain
+lines (what is the case, what to do next), a blank line, then the details: the version, the switch, where the
+lessons live, the last starts and ends it saw for this project, and, in a final group you may want to remove
+before posting, names and paths.
+
+```sh
+nb status            # exit 0 only when it says the notebook is working, else 1
+nb status --json     # {"schemaVersion":1,"verdict":"running|not_seen|off|place_unknown|broken","headline":"…","next":"…","announce":false,…}
+```
+
+- **What it reads**: the tail of the usage log (at most 8 MiB, and never a FIFO or a device), the names of the
+  shelf files, the message files, and `git config nb.enabled` and the project-name reads in the working folder.
+  It writes **nothing**, not even a usage row, takes no lock and creates no folder, so it also answers while a
+  write holds `.nb.lock` and when the place is `unknown`.
+- **The record**: `nb brief --hook <label>` and `nb retro --hook <label>` write the usage row it reads, with the `nb`
+  version and a project key. `running` claims only that this start step ran. It does not show that the
+  assistant read the list or used a lesson.
+- **`not_seen`** is not a fault: an instruction-file setup, hooks copied from 0.12, a chat that was open before
+  the install, and a policy that blocks hooks all look the same to `nb`. See
+  [When nb status has not seen a chat](harness-setup.md#when-nb-status-has-not-seen-a-chat).
+- **`--json`** holds no path. `announce` is true only for `place_unknown` and a project-scoped `broken`, so a
+  caller that remembers nothing does not repeat itself every session. Callers branch on `verdict`, not on the exit
+  code. `label` and `project.name` are untrusted text: repeat only `headline` and `next`. The fields are
+  [FR-STATUS-003](requirements.md#fr-status-003).
+- Any flag other than `--json` is refused (exit 1).
+
 ## Shell completion
 
 `nb` is run dozens of times a session, so it ships tab-completion for **bash** and **zsh**. `nb completion <bash|zsh>` prints a static, dependency-free script to stdout; source it to complete the command set and — where a command takes a shelf — existing shelf names:

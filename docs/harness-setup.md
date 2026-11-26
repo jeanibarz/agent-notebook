@@ -624,6 +624,7 @@ nb --version                         # the CLI resolves
 nb add smoke "setup check" && nb show smoke   # a notebook round-trips
 nb list                              # the index renders
 nb stats                             # each shelf shows its adds and, when full, its retention window
+nb status                            # does a chat in this project start the notebook on its own? (see below)
 node "$(npm root -g)/agent-notebook/examples/nb-janitor.mjs"   # diagnostics run
 git -C "$(nb path)" log --oneline    # (if versioning) a commit appeared
 nb rm smoke "setup check"            # clean up the smoke lesson
@@ -670,6 +671,57 @@ the three results together:
 
 ---
 
+## When nb status has not seen a chat
+
+`nb status` says whether chats in the current project start the notebook on their own. When it answers
+"This check has not seen a chat in this project start the notebook on its own", it found no sign of a start
+in the usage log. That is not always a fault, and it is never proof that something is broken: `nb status`
+can only see what `nb` itself wrote. It cannot see inside your assistant. Run it from the project folder,
+after starting a **new** chat there (a chat that was already open keeps the setup it started with).
+
+```sh
+nb status          # two plain lines, then the details; exit 0 only when it says the notebook is working
+nb status --json   # the same as fields, for a script or a plugin
+```
+
+The causes below depend on the assistant and on the computer, not on `nb`. Work down the list.
+
+- **Expected, no fault: you use an instruction file.** If the notebook reaches your assistant through an
+  instruction file such as `AGENTS.md`, no start-up script runs `nb brief --hook`, so no start is recorded.
+  Nothing is wrong. The same holds for a person typing `nb brief` by hand.
+- **Hooks copied from 0.12 never record.** Start-up scripts copied from before version 0.13 do not call
+  `nb brief`, so they leave no sign even when they work. Copy the scripts again from `examples/hooks/`, as
+  described for your assistant above, and start a new chat.
+- **The plugin or the hooks are not installed, or are switched off in the assistant.** Check in the assistant
+  itself that the plugin or the hook entry is listed and enabled, then start a new chat. A plugin installed
+  while a chat was open does nothing until the next chat.
+- **A company policy blocks them.** On a managed computer the assistant may be set to run only hooks that an
+  administrator approved. In Claude Code the setting is `allowManagedHooksOnly` in the managed settings; while
+  it is on, hooks from your own settings, from a project or from a plugin do not run, and nothing says so. Ask
+  the administrator to allow the notebook's hook (its command is `nb brief --hook <label>`; see the example
+  in `examples/hooks/`), either by adding it to the managed hooks or by turning the restriction off for it.
+  Other assistants have similar settings; the question to ask is "may a hook that I installed run on this
+  computer?"
+- **Node.js is missing or older than 18.** The hooks are small Node.js programs. Without `node` on the
+  `PATH` that the assistant uses (a desktop app does not always read your shell's `PATH`), or with Node.js
+  older than 18, they fail without a message and `nb` never runs. Check with `node --version` in a terminal
+  and, where you can, from the assistant itself.
+- **A Codex hook that is not trusted.** Codex runs a hook only after you trust it, and `codex exec` skips an
+  untrusted hook silently. Trust it in an interactive `codex` session (`/hooks`, then `t`); see
+  [Codex CLI](#codex-cli). Changing the hook's entry withdraws the trust again.
+- **A setup with instructions only.** If you wired only the standing instruction (no hooks), the assistant
+  opens the notebook when it chooses to. `nb status` cannot tell that from "never connected". The notebook
+  still works; its lessons arrive when the assistant asks for them.
+- **A lost record.** The usage log keeps days, not months, and two commands that run at the same moment can
+  lose a row. Start a new chat and run `nb status` again.
+
+If the verdict is something else, the second line says what to do. `place_unknown` and `broken` mean `nb`
+itself could not open the notebook; `nb doctor`, `nb config`, `nb enabled --why` and `nb place` show why.
+The text it prints is safe to paste into an issue, except the last group (names and paths), which you may
+want to remove first.
+
+---
+
 ## Diagnosing low engagement
 
 [Verify it's working](#verify-its-working) is a one-time smoke test for a *fresh*
@@ -690,7 +742,7 @@ activity, which is the deployment-wide picture these symptoms live in.)
 
 | Symptom — the `nb stats` `surfacing:` line reads… | Cause | Remedy |
 |---|---|---|
-| `…notebooks hold N lessons but had 0 reads…; the SessionStart injection hook is probably not wired` | the index never reaches the agent — the hook isn't firing, or `nb` isn't resolvable from it (fail-open ⇒ silent). Also what you see when every repository using this store is [switched off](#per-repository-onoff) (an `nb list` that printed the off line is not a read): then nothing is broken | run the **hook self-check** below; put `nb` on PATH or point the hook at your wrapper with `NB_BIN` |
+| `…notebooks hold N lessons but had 0 reads…; the SessionStart injection hook is probably not wired (nb status says whether chats start the notebook)` | the index never reaches the agent — the hook isn't firing, or `nb` isn't resolvable from it (fail-open ⇒ silent). Also what you see when every repository using this store is [switched off](#per-repository-onoff) (an `nb list` that printed the off line is not a read): then nothing is broken | run the **hook self-check** below; put `nb` on PATH or point the hook at your wrapper with `NB_BIN` |
 | `…N session opened a notebook but cast no vote; the end-of-task retrospective nudge isn't landing` | agents read the notebooks but skip the retrospective (moment ④), so nothing is voted, pruned, or added | wire the [`Stop` retrospective hook](#claude-code) (`nb-retrospective.sh`), or reinforce moment ④ in the contract |
 | `…NB_SESSION was unset on N calls, so none could group into a session; export NB_SESSION…` | calls happen but aren't attributed to a session, so engagement can't be measured | export `NB_SESSION` (a per-task id) in the harness environment — see [the janitor note](#the-janitor) |
 | `surfacing: N engaged session(s)` (with `recall-miss` / `precision-miss` readouts) | **not a bug** — the plumbing works and this is real usage; low volume may just be a healthy [sufficient-notebook plateau](#the-janitor) | nothing to fix; read the readout for memory *quality*, not wiring |
