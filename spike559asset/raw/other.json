@@ -1,0 +1,18 @@
+{
+  "name": "nb559other",
+  "owner": {
+    "name": "spike 559"
+  },
+  "description": "spike559asset marketplace, state=1",
+  "plugins": [
+    {
+      "name": "agent-notebook",
+      "description": "Plain-text memory for your AI assistant.",
+      "source": {
+        "source": "archive",
+        "url": "https://raw.githubusercontent.com/jeanibarz/agent-notebook/refs/heads/spike/559-asset/spike559asset/raw/old/agent-notebook-plugin-0.13.0-beta.1.559.zip",
+        "sha256": "9656893df022425b5837f2104de988b98132d9f983a5e50689702745980a2ddf"
+      }
+    }
+  ]
+}

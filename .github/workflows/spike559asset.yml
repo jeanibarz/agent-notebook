@@ -1,0 +1,70 @@
+# Spike #559 step 7 only. Lives on a throwaway branch that is never merged and never opened as a pull request.
+# No secret, no login, no write permission. The marketplace files under spike559asset/raw are changed by pushes
+# that do not start a new run; the jobs wait for the raw URL to serve each state.
+name: spike-559-asset
+on:
+  push:
+    branches:
+      - 'spike/559-asset'
+    paths-ignore:
+      - 'spike559asset/raw/**'
+permissions: {}
+concurrency:
+  group: spike559asset-${{ github.sha }}
+  cancel-in-progress: false
+env:
+  DISABLE_AUTOUPDATER: '1'
+  CLAUDE_VERSION: '2.1.332'
+jobs:
+  measure:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, shell: bash }
+          - { os: macos-latest, shell: bash }
+          - { os: windows-latest, shell: powershell }
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Install Claude Code (native installer, pinned)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/claude-install.sh" https://claude.ai/install.sh
+          bash "$RUNNER_TEMP/claude-install.sh" "$CLAUDE_VERSION"
+          test -x "$HOME/.local/bin/claude"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install Claude Code (native installer, pinned)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          & ([scriptblock]::Create((irm https://claude.ai/install.ps1))) $env:CLAUDE_VERSION
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.local\bin"
+      - name: setup (redirect chain, real zip, hide git)
+        run: node spike559asset/measure.mjs setup
+      - name: p1 item 1 install from the raw URL, old zip
+        run: node spike559asset/measure.mjs p1
+      - name: p2 item 2 wait for state 2 and update
+        run: node spike559asset/measure.mjs p2
+      - name: p3 item 3 sessions and files
+        run: node spike559asset/measure.mjs p3
+      - name: p4a item 5 wait for state 3 and roll back
+        run: node spike559asset/measure.mjs p4a
+      - name: p4b item 5 wait for state 4 and roll forward
+        run: node spike559asset/measure.mjs p4b
+      - name: p5 item 6 uninstall
+        run: node spike559asset/measure.mjs p5
+      - name: p7 item 7 managed settings
+        if: runner.os == 'Linux'
+        run: node spike559asset/measure.mjs p7
