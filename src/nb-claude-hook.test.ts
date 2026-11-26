@@ -31,14 +31,7 @@ beforeEach(() => {
   globalCfg = join(tmp, 'global.gitconfig');
   writeFileSync(globalCfg, '');
 });
-afterEach(() => {
-  try {
-    rmSync(tmp, { recursive: true, force: true });
-  } catch (e) {
-    console.log('DEBUG545-AFTER', String(e), (e as Error).stack);
-    throw e;
-  }
-});
+afterEach(() => rmSync(tmp, { recursive: true, force: true }));
 
 function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -273,14 +266,10 @@ describe('the adapter (FR-HOOKS-001)', () => {
     for (let i = 0; i < 40; i++) shelf(`s${i}-${'x'.repeat(100)}`, 50 - i, 'd'.repeat(150));
     const big = adapter('subagent-start');
     const small = done(spawnSync(process.execPath, [ADAPTER, 'subagent-start', '--max-chars', '3000'], { cwd: tmp, env: childEnv(), input: '{}', encoding: 'utf-8' }));
-    console.log('DEBUG545', JSON.stringify({ big: [big.code, big.out.length, big.out.slice(0, 300), big.err], small: [small.code, small.out.length, small.out.slice(-400), small.err] }));
-    try {
-      expect(JSON.parse(big.out).hookSpecificOutput.additionalContext.length).toBeGreaterThan(3000);
-      expect(JSON.parse(small.out).hookSpecificOutput.additionalContext.length).toBeLessThanOrEqual(3000);
-    } catch (e) {
-      console.log('DEBUG545-BODY', String(e));
-      throw e;
-    }
+    // On macOS, where a write to a pipe is asynchronous, this also proves that a
+    // reply above the 8 KiB pipe buffer reaches the reader whole (the adapter must
+    // not call process.exit() after writing it).
+    expect(JSON.parse(big.out).hookSpecificOutput.additionalContext.length).toBeGreaterThan(8192);
     expect(JSON.parse(small.out).hookSpecificOutput.additionalContext.length).toBeLessThanOrEqual(3000);
   });
 
