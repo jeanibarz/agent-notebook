@@ -9,12 +9,23 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+## [0.13.0-beta.1] - 2026-11-26
+
+**TL;DR.** A beta of the new setup core from epic #537. Try it with `npm install -g agent-notebook@beta`; a plain `npm install agent-notebook` still gives 0.12.0.
+
+- **The notebook text comes from `nb` itself.** `nb brief` prints what an assistant sees at the start of a session, and `nb retro` asks for the end-of-task retrospective once per session. The Claude Code hooks become one small Node script that needs no bash and runs on Windows; `node <package>/examples/hooks/claude-code/nb-claude-hook.mjs print-settings` prints the block for `settings.json`. Hooks copied from 0.12 keep working.
+- **No more `NB_PROJECT_SLUG` to set.** `nb project` derives the project name from the git remote (`git@github.com:acme/app.git` gives `acme-app`).
+- **A project can have its own notebook.** `nb place own` creates `~/.agent-notebook/projects/<project>/` and moves that project's shelves into it; `nb place shared` moves them back. Without that folder nothing changes.
+- **One thing to check:** without `NB_PROJECT_SLUG`, `{project}` in `NB_RETRO_EXTRA_PROMPT` becomes `owner-repo` instead of the folder name, so new ideas-store shelves start under the new name. Set `NB_PROJECT_SLUG` to keep the old one.
+
+The full list follows.
+
 ### Added
 
 - **`nb brief`: what an assistant sees at the start of a session (issue #538).** It prints what the 0.12 example session-start hook printed, word for word (the instruction lines and the `nb list` index, or the layered index when `NB_PROJECT_SLUG` is set), with three differences: one new line framing the lessons as notes from earlier agent runs, not instructions from the user; a store that cannot be read is named by its error code (`EACCES`) instead of an exit status; and the cut line below. Over `--max-chars` (default 9000, under Claude Code's 10,000-character limit for hook output) the shelves with the fewest lessons are dropped and the last line says how many. Control characters and line separators in a name, description, folder path or slug are shown as `\uXXXX`, so no value can forge a line. It reads no hook payload and exits 0 in every runtime state; `--json` prints `{outcome, text}`.
 - **`nb retro --session <id>`: the end-of-task retrospective text, once per session (issue #538).** It prints the text the 0.12 example Stop hook sent, word for word, the first time it is called for a session, and nothing on later calls, so a harness's stop hook can call it on every stop. It reads no hook payload and exits 0 in every runtime state. "First" is decided by creating `<NB_DIR>/.retro-<id>` exclusively, the same file the 0.12 Stop hook creates, so an old copied hook and the new command nudge once between them. `.retro-*` files older than `NB_RETRO_TTL_DAYS` (7) are then removed. It prints nothing where `nb enabled` says off, here or in `--work-dir` (the directory the assistant last worked in). `NB_RETRO_EXTRA_PROMPT` is appended as the hook does it, and must now name a regular file of at most 64 KiB, so a FIFO can no longer stall the call and a UTF-16 file is skipped with a warning instead of reaching the model as garbled text. `--json` prints `{outcome, text, session}`.
 - **A Windows CI leg** runs the tests of the new commands and of the hook adapter.
-- **`nb project [--why] [--json]`: the project name of this directory (issue #540).** It prints `NB_PROJECT_SLUG` when set (no git runs); otherwise the git `origin` remote's path with its segments joined by `-` and the host left out (`git@github.com:acme/app.git` gives `acme-app`); otherwise the repository's folder name; outside a repository, or when git is missing, slow or refuses the folder, an empty line. A remote URL is never printed, and a URL with a token or any unusual character in its path gives the folder name instead. `--why` says which rule decided; `--json` prints `{name, source, reason}`. `nb brief` and `nb retro` do not use it yet.
+- **`nb project [--why] [--json]`: the project name of this directory (issue #540).** It prints `NB_PROJECT_SLUG` when set (no git runs); otherwise the git `origin` remote's path with its segments joined by `-` and the host left out (`git@github.com:acme/app.git` gives `acme-app`); otherwise the repository's folder name; outside a repository, or when git is missing, slow or refuses the folder, an empty line. A remote URL is never printed, and a URL with a token or any unusual character in its path gives the folder name instead. `--why` says which rule decided; `--json` prints `{name, source, reason}`.
 - **A project can have its own notebook: the folder `~/.agent-notebook/projects/<project>/` (issue #548).** When that folder exists, `<project>` being the name `nb project` prints from `NB_PROJECT_SLUG` or the git remote, every `nb` command run in that project reads and writes it instead of the shared notebook, with its own usage log and stats; other projects keep the shared notebook. There is no setting: the folder is the switch.
   - **Nothing changes without it.** With `NB_DIR` set, or with no `projects/` folder, every output is byte-identical and no new process is started. Once a project folder exists, each notebook command in a repository without `NB_PROJECT_SLUG` runs `git` twice (about 6 ms) to learn the name.
   - **`nb place [--json]`** says where this directory's lessons live (`own`, `shared`, `env` for `NB_DIR`, or `unknown`) and why, and lists the project folders. In an own notebook it also counts the project's shelves still in the shared notebook, and warns when other users can read the folder.
@@ -40,7 +51,7 @@ versions are listed plainly.
 
 - **One notebook per project (issue #548).** `docs/harness-setup.md` gains a section on `nb place own`: what it does and does not guarantee, how `NB_DIR` interacts with it, and how to version, back up and scan an own notebook (one `git init`, the backup loop over `~/.agent-notebook/projects/*/`, the janitor with `NB_DIR` set to the folder). `docs/getting-started.md` links to it.
 
-- **Requirements for `nb brief` and `nb retro` (issue #538), before the code.** `docs/requirements.md` gains section 4.17, marked "proposed — not yet implemented": the two harness-blind commands that will print the start-of-session text and the once-per-session retrospective, a Node adapter for the Claude Code hooks, and a record that the hooks ran. DP-6 now lists the inputs a call may depend on, and NG-005 says it governs lessons, not runtime markers such as the retrospective sentinel. `docs/harness-setup.md`, `examples/README.md`, `docs/memory-layers.md` and RFC 0530 note the planned change. No behaviour changes yet.
+- **Requirements for `nb brief` and `nb retro` (issue #538), before the code.** `docs/requirements.md` gains section 4.17, marked "proposed — not yet implemented": the two harness-blind commands that will print the start-of-session text and the once-per-session retrospective, a Node adapter for the Claude Code hooks, and a record that the hooks ran. DP-6 now lists the inputs a call may depend on, and NG-005 says it governs lessons, not runtime markers such as the retrospective sentinel. `docs/harness-setup.md`, `examples/README.md`, `docs/memory-layers.md` and RFC 0530 note the planned change.
 
 ## [0.12.0] - 2026-11-23
 
@@ -924,7 +935,8 @@ versions are listed plainly.
 ### Added
 - Initial release: a bounded, voted, plain-text memory for AI agents. Commands: `nb add`, `show`, `vote`, `merge`, `rm`, `stats`. Each role's notebook holds at most 200 lines, each at most 200 characters, and the lowest-scored line is evicted first when full. The library has zero runtime dependencies.
 
-[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.13.0-beta.1...HEAD
+[0.13.0-beta.1]: https://github.com/jeanibarz/agent-notebook/compare/v0.12.0...v0.13.0-beta.1
 [0.12.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/jeanibarz/agent-notebook/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.10.0...v0.11.0
