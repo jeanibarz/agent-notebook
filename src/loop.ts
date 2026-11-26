@@ -391,16 +391,19 @@ function layeredBody(dir: string, slug: string, globalName: string, room: number
     '  ' + clean(r.shelf) + '  ' + r.lessons + '  ' + clean(String(r.desc || r.auto || '')).slice(0, 100) + (!r.desc && r.auto ? '  (auto)' : '');
   const render = (kept: NotebookSummary[], cut: number): string[] => {
     const out = [...layeredPreamble(cSlug), ''];
-    const section = (title: string, rows: NotebookSummary[], ifEmpty?: string): void => {
-      if (rows.length === 0 && ifEmpty === undefined) return;
+    // A layer is shown when it has shelves before the cut, so a budget that cuts all
+    // of its rows still leaves its heading (FR-BRIEF-002); the cut line says why.
+    const section = (title: string, layer: 'project' | 'domain' | 'global', ifEmpty?: string): void => {
+      const had = classified.some((r) => layerOf(r) === layer);
+      if (!had && ifEmpty === undefined) return;
       out.push('### ' + title);
+      const rows = kept.filter((r) => layerOf(r) === layer);
       if (rows.length) out.push(...rows.map(row));
-      else out.push('  ' + ifEmpty);
+      else if (!had) out.push('  ' + ifEmpty);
     };
-    const project = kept.filter((r) => layerOf(r) === 'project');
-    section(LAYERED_TEXT.projectTitle(cSlug), project, hadProject ? undefined : LAYERED_TEXT.projectEmpty(cSlug));
-    section(LAYERED_TEXT.domainTitle, kept.filter((r) => layerOf(r) === 'domain'));
-    section(LAYERED_TEXT.globalTitle, kept.filter((r) => layerOf(r) === 'global'));
+    section(LAYERED_TEXT.projectTitle(cSlug), 'project', hadProject ? undefined : LAYERED_TEXT.projectEmpty(cSlug));
+    section(LAYERED_TEXT.domainTitle, 'domain');
+    section(LAYERED_TEXT.globalTitle, 'global');
     out.push('');
     if (unread > 0) out.push(LAYERED_TEXT.unclassified(unread));
     out.push(hidden > 0 && !hadProject && unread === 0 ? LAYERED_TEXT.noneForSlug(hidden, cSlug) : LAYERED_TEXT.hidden(hidden, cSlug));
