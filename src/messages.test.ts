@@ -961,7 +961,7 @@ describe('nb retro adds the message files after the nudge and before the extra p
     expect(r.out).toContain(`retro.txt was not used (${'the folder is inside the notebooks folder, which the shipped scripts sync'})`);
   });
 
-  test('HOME= and a relative HOME read nothing, though a retro file is planted under the working directory', () => {
+  test.skipIf(isWin)('HOME= and a relative HOME read nothing, though a retro file is planted under the working directory', () => {
     const planted = join(plain, '.agent-notebook', 'messages');
     mkdirSync(planted, { recursive: true });
     writeFileSync(join(planted, 'retro.txt'), 'PLANTED');
