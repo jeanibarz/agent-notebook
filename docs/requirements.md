@@ -148,7 +148,8 @@ Every operation SHALL complete locally with no network call and SHALL be
 deterministic given the same inputs and files. The inputs of a call are its arguments,
 the documented `NB_*` variables, the working directory and the git configuration read
 there (by the commands that read it: `enabled`, `config`, the text form of `list`, `brief` and
-`retro` of [§4.17](#fr-brief-001), `project` of [§4.18](#fr-project-001), and every notebook command once a
+`retro` of [§4.17](#fr-brief-001) (which also run git for the project key of
+[FR-HEARTBEAT-001](#fr-heartbeat-001) when `--hook` is given), `project` of [§4.18](#fr-project-001), and every notebook command once a
 project folder exists, [§4.19](#fr-place-001)), the entries of `~/.agent-notebook/projects/` when `NB_DIR`
 is unset ([FR-PLACE-001](#fr-place-001)), the `GIT_*` variables git
 itself reads,
@@ -158,7 +159,12 @@ times, [FR-MSG-001](#fr-msg-001)), the locale, the files
 under `NB_DIR` (or the project folder in use), and the clock: `stats` and `doctor` report against the current time
 (their `--since` window, a lock's age). For `brief` and `retro` the clock SHALL decide
 side effects only (timestamps, removing an expired retrospective sentinel), never what
-they print; §4.17 lists their inputs.
+they print; §4.17 lists their inputs. *Status: proposed — not yet implemented (issue #558):* the inputs of
+`nb status` ([FR-STATUS-001](#fr-status-001)) are its arguments; `NB_DIR`, `NB_ENABLED`, `NB_PROJECT_SLUG`
+and the home folder; the tail of the usage log(s), the names of shelf files and the entries of
+`~/.agent-notebook/projects/`; the message files; `package.json` and `CHANGELOG.md` beside `cli.js`; git's
+`nb.enabled` and the project-name reads in the working directory; and the clock, which decides the ages it
+prints and the verdict's recency, never a write.
 **Rationale:** Agent memory must be usable on every task without latency, cost, or
 a dependency on an external service being up.
 
@@ -1072,12 +1078,20 @@ row written by an older `nb` cannot emit an escape sequence either.
 **Rationale:** Monitoring must itself be bounded and must never break a real call;
 the "every call appends one row" invariant is what lets `nb stats` see the classic
 integration-not-wired symptom of a harness that only ever calls `--help`.
+**Trailing columns (issue #558):** a `brief` or `retro` row SHALL carry two more columns, `version` and `project`,
+defined in [FR-HEARTBEAT-001](#fr-heartbeat-001); every other row stays byte-identical, and a reader SHALL read a
+row that ends before them as `''` for both.
+*Proven by* (the columns): `usage-record.test.ts` → `describe('a brief or retro row records the version and, with --hook, the project (FR-HEARTBEAT-001, FR-USAGE-001)')`
+and `describe('old rows and the stats readout (FR-USAGE-001, issue #558)')`.
 **One exception (issue #538):** a successful `nb retro` that finds the session already
 claimed (outcome `already`) SHALL append no row. A stop hook calls it on every stop of a
 session, and those rows would carry no information while shortening the history the
 ring keeps. For a `retro` row the `session` column holds the cleaned `--session` value
 (not `NB_SESSION`), and the `note` column holds the adapter's `--hook` label, cleaned to
-`[a-z0-9._-]`, when one is given; a `brief` row records them the same way. *Proven by* (the exception): `retro.test.ts` →
+`[a-z0-9._-]`, when one is given; a `brief` row records them the same way. **A second named exception (issue #558) — *Status: proposed — not yet implemented (issue #558)*:** `nb status`
+([FR-STATUS-001](#fr-status-001)) SHALL append no row in any case, successful or not, so that an adapter may call it
+at every session start without filling the ring.
+*Proven by* (the exception): `retro.test.ts` →
 "an already call adds no usage row" and "a nudge logs one retro row with outcome nudge, the cleaned session and the hook label".
 *Proven by:* `notebook.test.ts` → `describe('usage log + stats')`; the `--help`/`--version`
 rows by `cli.test.ts` → `describe('runNbCli')` → the two `issue #250` usage-row tests; the
@@ -1114,6 +1128,12 @@ to `maxChars` (with the same trailing-ellipsis convention as `note`, never rejec
 logging is best-effort), since it is caller-influenced free text appended to every
 row and must not let the ring's row-count bound stop bounding its bytes (issue #202,
 extending the `note` cap of [FR-USAGE-003](#fr-usage-003) / [NFR-BOUND-001](#nfr-bound-001)).
+A `brief` or `retro` row SHALL end with two further columns (issue #558, [FR-HEARTBEAT-001](#fr-heartbeat-001)):
+`\t<version>\t<project>`, `version` cleaned to `[0-9A-Za-z.+-]` and capped at 32 characters, `project` cleaned to
+`[0-9A-Za-z.:?_-]` and capped at 80, the key being at most 64 characters or `h:` and 12 hex. They are cut with no
+`…` and are not subject to `NB_MAX_CHARS`. `UsageRow` gains `version: string` and `project: string`, both `''` for a
+row that lacks them (an additive change to an exported type), so a 16-column row parses unchanged and `nb stats`
+and `stats --json` read the same on a log with and without them. More trailing columns may be added later.
 The `entry-ids` column SHALL likewise be bounded to `maxChars` for the whole
 comma-joined list: a `search match` row records the full pre-`limit` surfaced ids
 (every hit across every matching notebook), so without a cap a single broad `search`
@@ -1713,14 +1733,14 @@ still complete in an off repository.
 
 > **Status: FR-BRIEF-001..003, FR-RETRO-001..003 and FR-HOOKS-001 are implemented
 > ([issue #538](https://github.com/jeanibarz/agent-notebook/issues/538)). FR-HEARTBEAT-001 is
-> proposed — not yet implemented: its only reader is `nb status`, and the write outside `NB_DIR`
-> it needs waits for the owner's approval, so it moves to the `nb status` issue of
-> [epic #537](https://github.com/jeanibarz/agent-notebook/issues/537).** The hooks pass
+> implemented by the second pull request of [issue #558](https://github.com/jeanibarz/agent-notebook/issues/558):
+> the record that a hook ran is the usage row `brief` and `retro` write, with two trailing columns
+> (`version` and `project`), and nothing is written outside `NB_DIR`. Its reader, `nb status`
+> ([§4.21](#fr-status-001)), is proposed, not yet implemented.** The hooks pass
 > `--hook <label>` already; it is recorded in the usage log ([FR-USAGE-001](#fr-usage-001)).
 > These requirements landed before the code, as the issue asks. Where this section departs from a requirement still in force, the code pull
 > request that makes it true amends that requirement in the same change: NFR-SAFE-001
-> (`retro` reads the `NB_RETRO_EXTRA_PROMPT` file; the heartbeat writes outside `NB_DIR`,
-> an exception the owner is asked to approve), FR-ENABLED-001 and the §4.16 introduction
+> (`retro` reads the `NB_RETRO_EXTRA_PROMPT` file), FR-ENABLED-001 and the §4.16 introduction
 > (`brief` and `retro` read the switch and run `git`), FR-ENABLED-003 (the hooks),
 > FR-USAGE-001/002 (the usage row of a hook run), FR-CONFIG-001 (the variables `nb` reads),
 > FR-CLI-001 (the command list), NFR-MAINT-001 (the module list) and NFR-PORT-001 (a
@@ -1761,7 +1781,9 @@ and the home folder; `NB_ENABLED`, and git's `nb.enabled` read in the working di
 `<project>.brief.txt` exists); `NB_ASCII` and the locale; the
 entries of `~/.agent-notebook/projects/` ([FR-PLACE-001](#fr-place-001)); the entries and the
 `brief.txt` and `<project>.brief.txt` files of `~/.agent-notebook/messages/` ([FR-MSG-001](#fr-msg-001));
-and the files under `NB_DIR` (or the project folder in use). `--session`,
+and the files under `NB_DIR` (or the project folder in use). When `--hook` is given, the project
+key of [FR-HEARTBEAT-001](#fr-heartbeat-001) is also computed in the working directory, which asks git
+even when the store holds no project shelf; without `--hook` no extra git run is made. `--session`,
 `--hook`, `NB_SESSION` and the clock SHALL NOT change what it prints.
 
 *Proven by:* `brief.test.ts` → `describe('nb brief prints what the 0.12 session-start hook printed, plus the framing line (FR-BRIEF-001)')`,
@@ -1912,14 +1934,36 @@ change.
 `nb-retrospective.test.ts` → `describe('nb-retrospective.sh nudge timing (issue #520)')`.
 
 <a id="fr-heartbeat-001"></a>
-**FR-HEARTBEAT-001 (Should).** When an adapter passes `--hook <label>`, `nb brief` and
-`nb retro` SHALL record that they ran, as one small file per hook label and project in a
-state folder outside every notebook folder (`NB_STATE_DIR`, else
-`~/.agent-notebook/state`), replaced whole on each write, so a later `nb status` can tell
-"running" from "never ran". A call without `--hook` SHALL NOT write it, so a person typing
-`nb brief` never counts as a hook run. A failed write SHALL NOT change the output or the exit
-code. The file SHALL NOT be written inside `NB_DIR`, where a git-versioned notebook would
-commit it.
+**FR-HEARTBEAT-001 (Should).** *Implemented by the second pull request of issue #558.* The record that a
+hook ran SHALL be the usage row that `nb brief` and `nb retro` already write ([FR-USAGE-001](#fr-usage-001)),
+not a file. On `brief` and `retro` rows only, two trailing columns follow `misses`:
+`version` (column 17), the `nb` version that wrote the row, cleaned to `[0-9A-Za-z.+-]` and capped at 32
+characters; and `project` (column 18), the project key, written only when `--hook <label>` was given and
+empty otherwise, so a person typing `nb brief`, an instruction-file setup and an inherited `NB_SESSION` never
+count as a hook run. Neither column is ever cut with `…`, and neither is subject to `NB_MAX_CHARS`. An empty
+`version` means a row written before this change. The project key is `projectRecordKey` (`src/project.ts`),
+the one function the writer and `nb status` use:
+- the cleaned project name when it comes from `NB_PROJECT_SLUG` or the git remote (it is already in shelf
+  names); a name over 64 characters becomes `h:` and the first 12 hex characters of its sha256;
+- otherwise `h:` and the first 12 hex characters of the sha256 of the real path of the repository folder (the
+  folder holding the git common dir, so a subfolder and a linked worktree give the same key, and two unrelated
+  clones with the same folder name give two keys), or, outside git or when git is not found, of the real path
+  of the working folder (on Windows the drive letter is lower-cased first). A folder name never reaches the log;
+- `?` when git could not answer (a timeout, a refusal for ownership), so that a failed start is still recorded.
+
+For `retro` the key is computed in `--work-dir` when it is an absolute folder that exists, else in the working
+folder. `projectRecordKey` never throws. A call that writes no row (a repeated stop, an unreadable store or log)
+leaves no record, and the row of a call that failed on bad usage inside the command carries `version` only.
+**What the record proves:** `nb brief` or `nb retro` ran with a hook label, for that project, with that version,
+at that time. It does NOT prove that the harness delivered the text, nor that the model read it or used a lesson
+([DP-5](#dp-5)). It cannot tell apart an instruction file, a person typing `nb brief`, and a hook that omits
+`--hook`; nor the 0.12 hooks (which never call `brief`) and no setup at all. The ring keeps days, not months, and
+a ring compaction that meets concurrent writers can lose a row. Nothing is written outside `NB_DIR`, and no
+other file is written for this record ([NFR-SAFE-001](#nfr-safe-001)).
+*Proven by:* `usage-record.test.ts` → `describe('a brief or retro row records the version and, with --hook, the project (FR-HEARTBEAT-001, FR-USAGE-001)')`,
+`describe('old rows and the stats readout (FR-USAGE-001, issue #558)')` and
+`describe('brief --hook under concurrency leaves no torn row (FR-HEARTBEAT-001, issue #558)')`; the key by `project.test.ts` →
+`describe('projectRecordKey: the key a hook row records for the project (FR-HEARTBEAT-001, issue #558)')`.
 
 ### 4.18 The project name: `nb project` (issue #540)
 
@@ -2162,6 +2206,117 @@ text reaches neither the model nor the user. A file that vanishes between the li
 "hostile contents reach the model only as escaped text on lines of their own"; `retro.test.ts` →
 `describe('nb retro and a broken NB_RETRO_EXTRA_PROMPT (FR-RETRO-002)')`.
 
+### 4.21 Is the notebook running here: `nb status` (issue #558)
+
+> **Status: proposed — not yet implemented (issue #558).** FR-STATUS-001, FR-STATUS-002 and FR-STATUS-003 land
+> as text with the second pull request of [issue #558](https://github.com/jeanibarz/agent-notebook/issues/558),
+> before the code that makes them true, as the issue asks; the third pull request builds `nb status`. What is
+> built already is the record it reads, [FR-HEARTBEAT-001](#fr-heartbeat-001). The converged design, with what
+> was measured and the alternatives rejected, is the design comment on #558.
+
+A person who installed the notebook asks one question: is it running here? `nb status` answers it in two plain
+lines, from the record of [FR-HEARTBEAT-001](#fr-heartbeat-001) and from a few live checks, without writing
+anything.
+
+<a id="fr-status-001"></a>
+**FR-STATUS-001 (Should).** *Status: proposed — not yet implemented (issue #558).* `nb status [--json]` SHALL print
+two fixed lines: line 1 says the verdict, line 2 says what to do next. Both are fixed sentences picked by a code
+and filled only with ages, counts, versions and file names, never a path or a reason string read from disk or
+git, and neither uses the words hook, shelf or PATH, or a variable name. After a blank line it SHALL print a
+detail block: first the facts, one per line (the sentence "This shows the start step ran. It does not show that
+your assistant read the list or used a lesson."; the version, plus the release date when the shipped
+`CHANGELOG.md` heading has one; the Node version and the platform; the switch and its source, as seen from this
+terminal; the place kind; the project source and key kind; the shelf count and when a lesson was last added;
+which message files are used and which are refused, with the reason; the record: rows read, the span, and this
+project's last 5 start and end rows; the version the chats last used when it differs from this one; how often,
+and when last, an older program answered; and a pointer to `nb doctor`, `nb config`, `nb enabled --why` and
+`nb place`), then one final group headed `Names and paths (remove these lines before posting publicly if they
+are private)`: the project name, the folder asked, the notebook folder and why, and the program path and the Node
+path. Lesson text, shelf names, the remote URL and other projects' names SHALL never appear. The home folder is
+shown as `~`, and every value from disk, the environment or git goes through `escapeDiskName` with a per-field cap.
+It SHALL exit `0` when the verdict is `running` and `1` for every other verdict and for bad usage; callers branch
+on `verdict`, never on the exit code. It SHALL be read-only: it takes no lock (it answers while `.nb.lock` is
+held), appends no usage row in any case ([FR-USAGE-001](#fr-usage-001)), creates no folder, never throws on a runtime
+state, and runs when the place is `unknown`. Its reads are bounded: the tail of the usage log(s), at most 8 MiB,
+through the bounded reader of [NFR-BOUND-001](#nfr-bound-001) (a regular file after `lstat`, a non-blocking open, a size
+cap); one `readdir` of the notebook folder; `~/.agent-notebook/projects/` as every command; the message files as
+`nb config`; and `package.json` and `CHANGELOG.md` beside `cli.js`, bounded. It starts only `git config --get nb.enabled`
+and the project-name reads of [FR-PROJECT-001](#fr-project-001), read-only, with fixed argument lists and no shell.
+No network is used and no `doctor` is run.
+
+<a id="fr-status-002"></a>
+**FR-STATUS-002 (Should).** *Status: proposed — not yet implemented (issue #558).* The verdict SHALL follow these
+rules, in this order.
+- **Logs read.** An own place reads its own log and the shared log; a shared or `env` place reads the shared log.
+  Within one log, "newest" means last in file order. Across the two logs, rows are merged by timestamp, with ties
+  going to the own log. Ages are `max(0, now − time)`, and a row dated in the future never outranks a later row.
+- **Read-time validation.** A row is used only if every column passes: an ISO timestamp, a known command, an
+  outcome from that command's list, a label matching `[a-z0-9._-]{1,40}`, and `version` and `project` in their
+  alphabets. Rows are cleaned when written, and checked again when read.
+- **A start row** is `brief`, with a hook label, `project` equal to this project's key, and outcome
+  `index`, `layered` or `empty` (it showed the index), `off`, or `broken`. **An end row** is `retro`, with a hook
+  label, this key, and outcome `nudge`.
+- **This project's key** is computed by `nb status` with the same `projectRecordKey` in its own working folder. A
+  different `NB_PROJECT_SLUG` in the terminal gives another key; the detail block prints the key's source.
+- **`off`.** The switch is off in this folder; or this project's newest start row has outcome `off`. Line 1 is
+  `The notebook is switched off for this folder.` or `Your chats here found the notebook switched off (last start <age>).`;
+  line 2 comes from git config: `It was switched off on purpose. To use it here again, ask your assistant to
+  switch it back on.` or, from the environment: `A setting on this computer switched it off, possibly set by whoever
+  manages it. Leave it unless you set it yourself.`
+- **`place_unknown`.** The place is `unknown` ([FR-PLACE-001](#fr-place-001)). Line 1: `The notebook can't tell where
+  this project's lessons are kept, so it stays closed here for now. Your lessons are safe.` Line 2: `Ask your
+  assistant to look at the details below.`
+- **`broken`.** Checked live first: the notebook folder in use exists but cannot be read or is not a folder, or its
+  usage log exists and cannot be written (these cases leave no row at all, while `brief` still exits 0 and prints a
+  warning, so only a live check can see them). Line 1 for them: `The notebook can't be opened right now, so chats
+  can't use it.` or `The notebook can't note when a chat starts it (a file in it can't be written), so this check
+  can't tell whether it works.` Otherwise, from the rows: this project's newest start or end row has outcome
+  `broken`, or a newer row with key `?` has it (a place `unknown` at hook time writes an ok row with outcome
+  `broken` in the shared log). Line 1: `The notebook could not open when a chat last started it (<age>).` Line 2: if
+  the notebook opens now, `It opens now: start a new chat and ask again.`; otherwise `Ask your assistant to look at
+  the details below.`
+- **`running`.** This project's newest start row showed the index. Line 1: `The notebook was working when a chat
+  last started it on its own, <age>.` followed by `Last lesson added <age>.`, or `No lessons yet: they are added at
+  the end of tasks.`, or `No lesson added in the last <N> days.` The variant with end rows only reads `…a chat asked
+  for the end-of-task notes on its own <age>; no automatic start is recorded.` Line 2: if a message file of the user
+  is refused, `Your own start message (brief.txt) is not used: <fixed reason>. Ask your assistant to show you why.`;
+  otherwise `Nothing to do.`
+- **`not_seen`.** Nothing above. Line 1: `This check has not seen a chat in this project start the notebook on its own
+  (it looked at the last <N> days).`; with a missing or empty log the `…yet` wording is used and no `<N>`. When an
+  older program answered a start and no later row carries a version, add ` Part of the notebook seemed out of date
+  the last time a chat tried (<age>).` Line 2: `Start a new chat here and ask again. If it still says this, ask your
+  assistant to look at the details below.`, or, with the out-of-date sentence, `Ask your assistant to help you
+  update the notebook, then start a new chat. Your lessons are safe.`
+- **`not_seen` stays true, and never says "broken",** for the copied 0.12 hooks, the instruction-only `AGENTS.md`
+  setup, a plugin installed with no new chat since, Node missing or Node 12, a disabled or uninstalled plugin,
+  hooks blocked by a managed-hooks policy, an untrusted Codex hook, and a lost row. None of these leaves a row nb
+  can see, and the core names none of them (it is harness-blind). The detail block adds: `If you use the notebook
+  through an instruction file or through start-up scripts from before version 0.13, this is expected. If chats should
+  start it on their own and this stays, the assistant may not run it (not installed or switched off there, blocked
+  by a company policy, Node.js missing or too old).`
+- **What cannot be told apart, said plainly:** an instruction file, a person typing `nb brief`, and a hook that
+  omits `--hook`; the 0.12 hooks and no setup at all; "never connected" and "the hook program is missing or
+  crashes"; "the hook ran" and "the assistant saw the text".
+- **A missing notebook folder** is not `broken`: `brief` creates it, so with no row yet it reads `not_seen`.
+- **An older program answering** (0.12 answers `nb brief --hook` with exit 2 and an `unknown_subcommand` row) is only
+  a sentence under `not_seen`: it cannot be tied to this project and can be stale after an upgrade, so it is never a
+  verdict.
+- **Pinned by the golden tests:** when the chats found the notebook switched off but the terminal's switch is on, line 2
+  is the git-config wording; `scope` is `notebook` only for a `broken` that rests on a `?`-key row; a `?`-key row with
+  a good outcome never counts as a start for any project.
+The verdict `running` claims only that the start step ran ([FR-HEARTBEAT-001](#fr-heartbeat-001), [DP-5](#dp-5)).
+
+<a id="fr-status-003"></a>
+**FR-STATUS-003 (Should).** *Status: proposed — not yet implemented (issue #558).* `nb status --json` SHALL print one
+object:
+`{"schemaVersion":1,"verdict":"off|place_unknown|broken|running|not_seen","scope":"project|notebook","headline":"<line 1>","next":"<line 2>","announce":false,"problem":"message_ignored|null","now":"<iso>","evidence":{"lastStart":{"at":"<iso>","ageSeconds":0,"label":"<untrusted>","outcome":"index","version":"0.13.0|null"},"lastEnd":null,"olderProgram":null,"rowsRead":0,"since":"<iso>|null"},"switch":{"enabled":true,"source":"env|git|default"},"place":{"kind":"env|own|shared|unknown"},"project":{"name":"<untrusted>|null","source":"env|remote|folder|none","key":"name|folder-hash|undetermined|none"},"notebook":{"shelves":0,"lastAddAt":"<iso>|null"},"program":{"version":"…","released":"YYYY-MM-DD|null","nodeVersion":"v…","platform":"linux"}}`.
+**Stability:** fields and enum values MAY be added and SHALL never be removed, renamed or retyped; `headline` and
+`next` MAY be reworded in any release, the codes SHALL NOT; a caller that meets an unknown `verdict` repeats
+`headline` only, with `announce` false. `announce` SHALL be true only for `place_unknown` and for a project-scoped
+`broken`, so a caller that keeps no memory does not nag every session. The JSON SHALL hold no path. `label` and
+`project.name` are untrusted data: callers repeat only `headline` and `next`, and never put `evidence` into the
+model's context. An `nb` older than `status` exits 2 with `unknown_subcommand`; callers read that as "nb is too old".
+
 ## 5. Non-functional requirements
 
 <a id="nfr-perf-001"></a>
@@ -2171,7 +2326,12 @@ in under ~50 ms on a developer machine (plain `fs` over one small file; no netwo
 <a id="nfr-bound-001"></a>
 **NFR-BOUND-001 (Must).** A notebook SHALL never exceed `maxLines` entries after any
 operation; a lesson SHALL never exceed `maxChars`; the usage log SHALL never exceed
-`usageRing` rows. *(Unbounded growth is the failure this product exists to avoid.)*
+`usageRing` rows. A reader that must stay bounded (`nb status`, issue #558) SHALL read the usage log
+through `parseUsage(dir, { maxBytes })`: it `lstat`s the log and refuses anything that is not a regular file (a
+FIFO, a device, a symlink: no rows, no throw), opens it with `O_NONBLOCK`, reads only the last `maxBytes` and
+drops the first, possibly partial, line. Without the option `parseUsage` reads the whole file, as before.
+*(Unbounded growth is the failure this product exists to avoid.)*
+*Proven by:* `usage-record.test.ts` → `describe('parseUsage reads a bounded tail and refuses what is not a plain file (NFR-BOUND-001, issue #558)')`.
 
 <a id="nfr-port-001"></a>
 **NFR-PORT-001 (Must).** The tool SHALL run on Node.js ≥ 18 as an ESM package with no
@@ -2183,7 +2343,7 @@ the Node-18 leg runs a dependency-free runtime smoke of the built CLI
 minimum engine is actually executed and not merely compiled. A Windows leg (Node 22)
 runs the tests of the agent-facing loop added by issue #538 (`src/brief.test.ts`, `src/retro.test.ts`,
 `src/loop-stats.test.ts`, `src/module-boundaries.test.ts`) and of the project name added by issue #540
-(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`) and of the message files added by issue #539 (`src/messages.test.ts`); the rest of the suite is not
+(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`) and of the message files added by issue #539 (`src/messages.test.ts`) and of the usage record added by issue #558 (`src/usage-record.test.ts`); the rest of the suite is not
 yet run on Windows. *(Proven by
 `src/smoke-node18.test.ts`.)*
 
@@ -2201,7 +2361,12 @@ folder `~/.agent-notebook/messages/` of the home folder and the message files in
 when the home folder is not an absolute path (an empty or relative `HOME`, which would read files
 under the working directory, possibly a clone), and its files SHALL NOT be read when the folder, after
 `realpath`, lies inside `NB_DIR` (the shipped scripts sync that folder). Nothing in it is ever created or
-written ([NG-008](#ng-008)). Both refusals are proven on Windows by `src/messages.test.ts`.
+written ([NG-008](#ng-008)). Both refusals are proven on Windows by `src/messages.test.ts`. The record that a hook ran
+([FR-HEARTBEAT-001](#fr-heartbeat-001)) writes nothing outside `NB_DIR`: it is a usage row. *Status: proposed — not
+yet implemented (issue #558):* `nb status` SHALL write nothing at all, and reads only the tail of the usage log(s)
+(at most 8 MiB, through the bounded reader of [NFR-BOUND-001](#nfr-bound-001)), the names of the shelf files, the
+entries of `~/.agent-notebook/projects/`, the message files as `nb config` does, and `package.json` and
+`CHANGELOG.md` beside `cli.js`; it starts only the read-only `git` runs of `src/git.ts`.
 
 *Proven by:* `messages.test.ts` → `describe('a home folder or a notebooks folder that would plant text is refused (NFR-SAFE-001, acceptance criterion 5)')`,
 `describe('the messages folder is found, listed and refused as the design says (FR-MSG-001, NFR-SAFE-001)')` and
@@ -2214,8 +2379,8 @@ never imported by it, and `src/cli.ts` a thin wrapper (argument parsing, dispatc
 shell completion, stdin reading and process guards). The read-side report renderers (`src/render.ts`), the
 `nb config` report (`src/config-report.ts`), the did-you-mean helpers (`src/suggest.ts`),
 `nb doctor` (`src/doctor.ts`), the `nb enabled` resolver (`src/enabled.ts`), the agent-facing loop
-(`src/loop.ts`, with its text in `src/agent-text.ts`, issue #538), the project name (`src/project.ts`,
-issue #540), the user's message files (`src/messages.ts`, issue #539: it imports only `node:fs`, `node:path` and `src/notebook.ts`, takes the project name and the home folder as plain values, runs no process and writes nothing; only `src/loop.ts` and `src/config-report.ts` import it), the place resolver and its moves (`src/place.ts`, `src/place-ops.ts`, issue #548) SHALL live in modules that `src/cli.ts`
+(`src/loop.ts`, with its text in `src/agent-text.ts`, issue #538), the project name and the project record key (`src/project.ts`,
+issue #540 and, for `projectRecordKey`, issue #558: it adds `node:crypto` and no module dependency), the user's message files (`src/messages.ts`, issue #539: it imports only `node:fs`, `node:path` and `src/notebook.ts`, takes the project name and the home folder as plain values, runs no process and writes nothing; only `src/loop.ts` and `src/config-report.ts` import it), the place resolver and its moves (`src/place.ts`, `src/place-ops.ts`, issue #548) SHALL live in modules that `src/cli.ts`
 imports and that never import it; `src/notebook.ts` SHALL NOT import the loop modules. Only
 `src/git.ts` SHALL start a process (`git`, read-only, a fixed argument list, no shell). Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
 
