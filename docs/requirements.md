@@ -982,6 +982,13 @@ any other error (e.g. `EACCES`/`EPERM`/`EROFS`/`ENOSPC` from an unwritable
 names the underlying code, rather than busy-waiting the whole acquire budget and
 then reporting a misleading 'locked' when no other process exists (issue #263).
 (The usage log is appended outside this lock — see [FR-USAGE-001](#fr-usage-001).)
+Every mutation SHALL hold one lock, except `nb place own` and `nb place shared`
+([FR-PLACE-003](#fr-place-003)), which SHALL hold two and always take the shared notebook's
+first, then the project folder's; they SHALL wait for the second at most half the stale
+threshold, counted from taking the first, and then refuse with nothing changed, so the
+first lock (never refreshed) cannot age into a steal while they wait (issue #551). As
+no other process waits for a lock while it holds one, and both commands use one order,
+the two locks cannot deadlock.
 **Rationale:** Serial CLI calls on one host occasionally overlap; the lock keeps a
 concurrent `add`+`vote` from corrupting the file, and stale-steal recovers from a
 crashed process — recovery that is reachable only when the acquire budget is at
@@ -990,7 +997,10 @@ least the steal threshold (issue #133).
 "a crashed holder’s fresh lock is reclaimed WITHIN the acquire window, not thrown (issue #133) [timing]"
 and "a genuinely live holder that keeps its lock fresh still times out, reporting the DERIVED budget [timing]"
 — the latter asserts the thrown timeout message reports the derived budget (`staleMs + grace`),
-which proves the acquire deadline is >= the steal threshold. The fail-fast guarantee is proven by
+which proves the acquire deadline is >= the steal threshold. The two-lock rule is proven by
+`place-ops.test.ts` → `describe('two locks in a fixed order: the shared notebook first, then the project folder (issue #551)')`,
+in particular "place own of an existing folder and place shared hold both locks, ours, when they act" and
+"a busy folder lock is waited for at most half the stale threshold, then refused with nothing changed". The fail-fast guarantee is proven by
 "fails fast (not 'locked') when mkdir(.nb.lock) throws EACCES — unwritable store (issue #263)"
 (and its `EROFS`/`ENOSPC` siblings), which inject an unwritable store and assert the mutation rejects
 well under the acquire budget with a 'not writable' error naming the errno, not 'notebook is locked'.
@@ -1001,7 +1011,8 @@ interrupt (Ctrl-C) or a harness `SIGTERM` during a mutation does not strand
 `.nb.lock`. Installing the handlers changes the signals' default "terminate now"
 disposition to a deferred callback, so an in-flight mutation's synchronous critical
 section — including [FR-LOCK-001](#fr-lock-001)'s release — runs to completion before
-the process exits; the handler additionally releases any lock the process still owns,
+the process exits; the handler additionally releases every lock the process still owns
+(two while `nb place` waits for its second lock, issue #551),
 then exits with the conventional `128 + signo` status (130 for `SIGINT`, 143 for
 `SIGTERM`). A handler SHALL release *only* a lock this process owns — ownership is
 established solely by this process's own atomic `mkdir` acquire, never by stealing a
@@ -1016,7 +1027,8 @@ an avoidable stall on a tool whose promise is that a call is a millisecond (issu
 (an owned lock is released, a foreign lock is never removed, and release is idempotent)
 and `describe('signal handler in the real built CLI (issue #247)')`, which delivers a
 real `SIGINT`/`SIGTERM` to a built process with the handlers installed and asserts it
-exits 130/143 and leaves a lock it does not own intact.
+exits 130/143 and leaves a lock it does not own intact; the two-lock case by `place-ops.test.ts` →
+"a signal while place shared waits for the folder lock frees the shared lock, never the lock it waits on".
 
 <a id="fr-dur-001"></a>
 **FR-DUR-001 (Must).** A *notebook* write SHALL go to a temp file, be `fsync`'d,
@@ -2010,7 +2022,8 @@ link the shelves into a staging folder, rename it to the project folder, and onl
 shared copies, each only if both it and its new copy are still the file that was linked; any failure before the rename
 SHALL leave nothing changed. A link SHALL never overwrite: a shelf already in the folder stays in
 the shared notebook and is reported, unless it is the same file (a run that stopped after the rename),
-which counts as moved. When the folder already exists, the move SHALL run under the folder's own lock.
+which counts as moved. When the folder already exists, the move SHALL also hold the folder's own lock,
+taken after the shared one; whether the folder exists SHALL be decided once the shared lock is held (issue #551).
 A source that cannot be removed SHALL be kept and reported, never counted as moved. Run again, it
 SHALL move what is left and remove staging folders of dead processes. It SHALL refuse (exit `1`, `bad_args`, nothing changed) when `NB_DIR` is
 set, the place is unknown, there is no project name, the name comes from the repository's folder,
@@ -2020,20 +2033,25 @@ shared notebook is a git repository and the new folder is not. A write to the sh
 ask the write guard of [FR-PLACE-001](#fr-place-001) again once it holds the shared notebook's lock,
 so a write that resolved the shared notebook before the folder existed refuses rather than land
 there. `nb place shared [--json]` SHALL move every shelf of the project's folder back into the shared
-notebook the same way, under the folder's lock, each as `<x>@<project>` (a shelf without that suffix
+notebook the same way, holding the shared notebook's lock and then the folder's, each as `<x>@<project>` (a shelf without that suffix
 is renamed, so it stays the project's and the write guard keeps other calls off it until the folder
 is gone), remove `nb`'s own files there (the usage log and its
 count file, retrospective markers, `nb`'s temporary files), and remove the folder without recursing;
-it SHALL refuse (nothing changed) when a shelf name is already in the shared notebook, when two
-shelves of the folder would arrive under one name (letter case ignored), or the folder
-holds anything else (`.git`, `.nb.json`, a subfolder), and SHALL exit `1` and keep the folder when a
-write landed in it meanwhile. Run where no own notebook is in use, it SHALL say so and exit `0`.
+it SHALL refuse (nothing changed), deciding it once both locks are held and before anything moves,
+when a shelf name is already in the shared notebook as a different file (the same file, left by a run
+that stopped between link and unlink, counts as moved), when two shelves of the folder would arrive
+under one name (letter case ignored), or the folder holds anything else (`.git`, `.nb.json`, a subfolder), and SHALL exit `1` and keep the folder when a
+write landed in it meanwhile. Run where no own notebook is in use, or once the folder is already gone
+when the locks are held, it SHALL say so and exit `0`. Both commands SHALL check, before they unlink
+anything, that their locks still carry their owner token; if a stalled run's lock was taken over, every
+source stays where it is, reported, and a re-run finishes the move.
 `--json` SHALL print `{ kind: "own", dir, created, moved, kept, lessons, unversioned }` and
 `{ kind: "shared", dir, moved, renamed, kept, lessons, removed }`.
 **Rationale:** whole-file moves keep every vote; `nb move` works within one folder and could
 deduplicate or evict on the way. The issue's "through the existing `nb move` code" is departed from
 for that reason (design comment on issue #548).
-*Proven by:* `place-ops.test.ts` → `describe('placeOwn and placeShared (FR-PLACE-003)')` and
+*Proven by:* `place-ops.test.ts` → `describe('placeOwn and placeShared (FR-PLACE-003)')`,
+`describe('two locks in a fixed order: the shared notebook first, then the project folder (issue #551)')` and
 `describe('nb place own / shared through the built CLI (FR-PLACE-003)')`.
 
 <a id="fr-place-004"></a>

@@ -98,7 +98,7 @@ import {
 import { describeSource, resolveEnabled, stateWord } from './enabled.js';
 import { describeProject, resolveProject } from './project.js';
 import { isWindowsDeviceName, placeRefusal, resolvePlace, scanProjects, sharedWriteRefusal, type Place } from './place.js';
-import { allShelves, isGitRepo, placeOwn, placeShared, sharedBlockers, type PlaceMove } from './place-ops.js';
+import { allShelves, isGitRepo, placeOwn, placeShared, type PlaceMove } from './place-ops.js';
 import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, extraPromptStatus, messageProjectName, placeLine, projectOfCall, retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import {
@@ -1744,20 +1744,28 @@ export async function runNbCli(
           else process.stdout.write(`shared: ${stripControlChars(p.shared)}\n  this directory does not use an own notebook (${stripControlChars(p.reason)}); nothing to move.\n`);
         } else {
           const own = p.dir!;
-          const b = sharedBlockers(p.shared, own, st!.name);
-          if (b.foreign.length > 0) {
+          // What stops the move is decided under both locks, before anything moves
+          // (issue #551), so each refusal below means nothing changed.
+          const r = await placeShared(p.shared, own, st!.name);
+          const b = r.blocked;
+          if (b !== undefined && b.foreign.length > 0) {
             throw new NbError(
               'bad_args',
               `${own} holds files that are not lessons (${b.foreign.map(escapeDiskName).join(', ')}); move or remove them first. Nothing changed.`,
             );
           }
-          if (b.clashes.length > 0) {
+          if (b !== undefined && b.clashes.length > 0) {
             throw new NbError(
               'bad_args',
               `${[...new Set(b.clashes)].join(', ')} would clash in the shared notebook (a shelf there already has the name, or two shelves of this project would arrive under it: a shelf without @<project> comes back as <x>@<project>); rename one first (\`nb move\` within one notebook). Nothing changed.`,
             );
           }
-          const r = await placeShared(p.shared, own, st!.name);
+          if (r.gone === true) {
+            meta.outcome = 'shared';
+            if (json) process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: [], renamed: [], kept: [], lessons: 0, removed: false }) + '\n');
+            else process.stdout.write(`shared: ${stripControlChars(p.shared)}\n  nothing to move: this project already uses the shared notebook.\n`);
+            break;
+          }
           meta.outcome = r.removed ? 'shared' : 'shared-partial';
           meta.entries = r.moved.slice(0, 20);
           if (json) {
@@ -2396,10 +2404,11 @@ export function installPipeGuards(
 // turns the signal into a deferred JS callback, so the synchronous critical section
 // of an in-flight mutation (withLock's `fn` + its `finally`) runs to completion and
 // releases the lock normally before we exit. The explicit `releaseHeldLock()` is
-// defensive cover for the case of still owning a lock when the handler runs (e.g.
-// were a mutation ever to hold the lock across an `await`); it removes ONLY a lock
-// THIS process owns — never another live `nb`'s, never a fresh lock we are merely
-// spinning on — and is a harmless no-op otherwise.
+// cover for the case of still owning a lock when the handler runs: `nb place own`
+// and `nb place shared` hold the shared notebook's lock across the `await` of the
+// project folder's acquire (issue #551), and a signal there would otherwise strand
+// it. It removes ONLY locks THIS process owns — never another live `nb`'s, never a
+// fresh lock we are merely spinning on — and is a harmless no-op otherwise.
 //
 // After releasing, exit with the conventional 128+signo code (130 for SIGINT, 143
 // for SIGTERM) so shells and callers see a normal signal-terminated status. Normal,
