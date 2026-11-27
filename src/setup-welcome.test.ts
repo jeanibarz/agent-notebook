@@ -393,6 +393,14 @@ describe('prepareSessionStart: the one entry point (FR-SETUP-001, FR-SETUP-003)'
     expect(existsSync(projects)).toBe(false);
   });
 
+  test('NB_DIR set with both files present: no note A, no note B, no grouping, whatever they hold', () => {
+    mkdirSync(projects, { recursive: true, mode: 0o700 });
+    writeFileSync(claimFile(), 'done\n');
+    writeFileSync(join(projects, '.layout'), 'ask\n');
+    expect(prepareSessionStart(deps({ env: { NB_DIR: join(tmp, 'x') } }))).toEqual({ note: null, group: false, seenWritten: false });
+    expect(files()).toEqual(['.first-start', '.layout']);
+  });
+
   test('a blank NB_DIR or NB_PROJECT_SLUG counts as unset', () => {
     expect(prepareSessionStart(deps({ env: { NB_DIR: '  ', NB_PROJECT_SLUG: '' } })).note?.kind).toBe('first');
   });
