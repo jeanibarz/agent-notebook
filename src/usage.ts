@@ -6,7 +6,7 @@
  * bounded codes.
  *
  * Nothing in the cap-and-vote mechanism (`notebook.ts`) depends on this module.
- * The CLI calls `logUsage` once per command, after the command has finished.
+ * The CLI calls `appendUsage` once per command, after the command has finished.
  * Crash-recovery counts reach it through `drainPendingRecovery`, the tally that
  * core's lock and temp-file recovery paths fill.
  */
@@ -763,8 +763,8 @@ export function appendUsage(
     // A previous writer may have crashed mid-row, leaving no final `\n`: a blind
     // append would glue our row onto theirs. A trusted sidecar proves the file
     // still ends with the `\n` we wrote.
-    const sep = !trusted && !endsWithNewline(fd, size) ? '\n' : '';
-    const buf = Buffer.from(`${sep}${line}\n`, 'utf-8');
+    const lead = !trusted && !endsWithNewline(fd, size) ? '\n' : '';
+    const buf = Buffer.from(`${lead}${line}\n`, 'utf-8');
     writeSync(fd, buf, 0, buf.length);
     writeUsageState(dir, { rows: rows + 1, bytes: size + buf.length, retryAt });
     return 'written';

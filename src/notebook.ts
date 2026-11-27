@@ -166,14 +166,11 @@ export function usageRing(): number {
 }
 
 /**
- * How many rows past the ring cap the usage log is allowed to grow before a
- * compaction trims it back (issue #135). The append fast-path tracks an
- * approximate line count in a tiny sidecar so it never reads the whole ring; a
- * small slack lets several appends pass between the rare read+rewrite
- * compactions, making the common `nb` call O(1) instead of O(ring). It is a
- * fraction of the ring (floored to a small minimum so a tiny ring still gets
- * meaningful amortization), so the peak overshoot — and how far `stats` can
- * briefly over-count — stays a few percent of the ring.
+ * How many rows later the usage log tries its rotation again after one found
+ * `.nb.lock` busy or failed (issue #576; before, the rows a ring could grow past
+ * its cap between two compactions, issue #135). It is a fraction of the ring,
+ * floored to a small minimum, so a rotation that keeps failing costs one lock
+ * attempt every few percent of the ring.
  */
 export function usageRingSlack(): number {
   return Math.max(16, Math.floor(usageRing() / 16));
@@ -479,7 +476,7 @@ function shelfFile(dir: string, shelf: string): string {
 
 /**
  * Resolved path of the usage ring, `<dir>/.nb-usage.log`. Exported so a
- * supervisor can tail (`tail -F` — compaction replaces the file via rename) or
+ * supervisor can tail (`tail -F` — a rotation renames the file to `.nb-usage.log.1`) or
  * back up the log via `nb path --usage` (or this helper) instead of hard-coding
  * the filename — the same coupling `nb path` was added to remove (issue #14,
  * #169). The filename may change; always resolve it through here.
@@ -1135,8 +1132,8 @@ export function isLeftoverTemp(dir: string, name: string): boolean {
  *   - `<shelf>.md.<pid>.tmp` from a durable notebook write (writeFileDurable,
  *     per-process since issue #270; the legacy `<shelf>.md.tmp` from a pre-#270
  *     writer is still swept for upgrade safety), renamed over `<shelf>.md`;
- *   - `.nb-usage.log.<pid>.tmp` from a usage-log compaction (issue #163), renamed
- *     over `.nb-usage.log`.
+ *   - `.nb-usage.log.<pid>.tmp` from an older nb's usage-log compaction (issue
+ *     #163), renamed over `.nb-usage.log`.
  * We sweep both here under the just-acquired mkdir lock, which serializes every
  * mutation — so a shelf temp we see is dead crash debris, never a rename in
  * flight. Since issue #576 this nb writes no usage-log temp (the ring rotates by a
@@ -1361,8 +1358,7 @@ function writeFileDurable(file: string, tmp: string, data: string): void {
  * `target` is the temp file's open fd or its path. Best effort: a missing
  * original or a filesystem that rejects chmod must never fail the write.
  *
- * Exported for the usage log (`usage.ts`), which rewrites its ring the same way.
- * It is internal: the package root (`index.ts`) does not re-export it.
+ * Exported (it was used by the usage log's compaction before issue #576). It is internal: the package root (`index.ts`) does not re-export it.
  */
 export function preserveMode(file: string, target: number | string): void {
   try {

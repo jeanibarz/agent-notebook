@@ -1420,8 +1420,8 @@ activity-line test and the `stats --json … activity` test (both issue #106).
 
 <a id="fr-stats-006"></a>
 **FR-STATS-006 (Should).** `stats` SHALL additionally report the **usage ring's own
-occupancy** as `StatsReport.usageRing = { rows, cap }`, where `rows` is the total
-row count held on disk and `cap` is `usageRing()` (the `NB_USAGE_RING` bound of
+occupancy** as `StatsReport.usageRing = { rows, cap }`, where `rows` is the row count
+`parseUsage` read (the newest `usageRing()` rows of the ring's two files, never above `cap`) and `cap` is `usageRing()` (the `NB_USAGE_RING` bound of
 [NFR-BOUND-001](#nfr-bound-001)), surfaced both as a human `usage ring: <rows>/<cap> rows`
 line in the `nb stats` table (flagged `FULL` at the cap) and in `--json`. This is
 **total** occupancy — independent of the `--since` window and the `[<shelf>]` scope,
@@ -2094,7 +2094,7 @@ leaves no record, and the row of a call that failed on bad usage inside the comm
 at that time. It does NOT prove that the harness delivered the text, nor that the model read it or used a lesson
 ([DP-5](#dp-5)). It cannot tell apart an instruction file, a person typing `nb brief`, and a hook that omits
 `--hook`; nor the 0.12 hooks (which never call `brief`) and no setup at all. The ring keeps days, not months, and
-a ring compaction that meets concurrent writers can lose a row. Nothing is written outside `NB_DIR`, and no
+a row can still be lost only in the cases [FR-USAGE-005](#fr-usage-005) lists. Nothing is written outside `NB_DIR`, and no
 other file is written for this record ([NFR-SAFE-001](#nfr-safe-001)).
 *Proven by:* `usage-record.test.ts` → `describe('a brief or retro row records the version and, with --hook, the project (FR-HEARTBEAT-001, FR-USAGE-001)')`,
 `describe('old rows and the stats readout (FR-USAGE-001, issue #558)')` and

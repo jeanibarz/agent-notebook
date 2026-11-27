@@ -728,8 +728,8 @@ The causes below depend on the assistant and on the computer, not on `nb`. Work 
 - **A setup with instructions only.** If you wired only the standing instruction (no hooks), the assistant
   opens the notebook when it chooses to. `nb status` cannot tell that from "never connected". The notebook
   still works; its lessons arrive when the assistant asks for them.
-- **A lost record.** The usage log keeps days, not months, and two commands that run at the same moment can
-  lose a row. Start a new chat and run `nb status` again.
+- **A lost record.** The usage log keeps days, not months. Start a new chat and run `nb status` again. (A usage
+  log that is a link, a folder or a special file is not written at all; `nb status` says so instead.)
 
 If the verdict is something else, the second line says what to do. `place_unknown` and `broken` mean `nb`
 itself could not open the notebook; `nb doctor`, `nb config`, `nb enabled --why` and `nb place` show why.

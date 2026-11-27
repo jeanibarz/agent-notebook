@@ -133,7 +133,7 @@ Why: the order is the recency signal eviction needs, carried in line position at
 
 `NB_DIR` overrides the storage directory (default `~/.agent-notebook/notebooks`); a leading `~` (or `~/…`) in `NB_DIR` is expanded by `nb` itself to your home directory — so `NB_DIR=~/notes` works even when the value comes from a source with no shell (`settings.json` `env`, systemd, cron, `.env`). `~user/…`, absolute and relative paths are used verbatim (pass an absolute path if you want no ambiguity). `NB_MAX_LINES` and `NB_MAX_CHARS` override the caps, if you need something other than the 50-line / 200-char defaults (see the [configuration table](https://github.com/jeanibarz/agent-notebook/blob/main/README.md#configuration)).
 
-You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory, `nb path <shelf>` the resolved file, and `nb path --usage` the usage-log path, so `cat "$(nb path reviewer)"`, `git diff "$(nb path reviewer)"`, or `tail -F "$(nb path --usage)"` just works. (Use `tail -F`, not `-f`: the usage log is periodically compacted by writing a new file and renaming it into place, so a `-f` tail following the old inode would silently go stale.) The usage-log filename may change, so resolve it through `nb path --usage` rather than hard-coding it.
+You never have to reconstruct that layout by hand — `nb path` prints the notebooks directory, `nb path <shelf>` the resolved file, and `nb path --usage` the usage-log path (its older rows are in the same path plus `.1`), so `cat "$(nb path reviewer)"`, `git diff "$(nb path reviewer)"`, or `tail -F "$(nb path --usage)"` just works. (Use `tail -F`, not `-f`: when the usage log fills, it is renamed to `.nb-usage.log.1` and a new file starts, so a `-f` tail following the old inode would silently go stale.) The usage-log filename may change, so resolve it through `nb path --usage` rather than hard-coding it.
 
 ## Discovering notebooks — `nb list`
 
@@ -390,7 +390,7 @@ nb status            # exit 0 only when it says the notebook is working, else 1
 nb status --json     # {"schemaVersion":1,"verdict":"running|not_seen|off|place_unknown|broken","headline":"…","next":"…","announce":false,…}
 ```
 
-- **What it reads**: the tail of the usage log (at most 8 MiB, and never a FIFO or a device), the names of the
+- **What it reads**: the tail of the usage log, `.nb-usage.log` then `.nb-usage.log.1` (at most 8 MiB, and only plain files: never a link, a folder, a FIFO or a device), the names of the
   shelf files, the message files, and `git config nb.enabled` and the project-name reads in the working folder.
   It writes **nothing**, not even a usage row, takes no lock and creates no folder, so it also answers while a
   write holds `.nb.lock` and when the place is `unknown`.
