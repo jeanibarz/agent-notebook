@@ -58,8 +58,10 @@ const withReplies = (...r: Reply[]): void => {
 };
 const rule = (type: string, extra: Record<string, unknown> = {}): Record<string, unknown> => ({ type, ruleset_source_type: 'Repository', ruleset_source: 'o/r', ruleset_id: 7, ...extra });
 const FAST = ['--repo', 'o/r', '--retry-ms', '1'];
+// Each case starts Node.js once or several times: a busy runner needs more than the default 5 s.
+const SLOW = { timeout: 60_000 };
 
-describe('check-main-rule.mjs lets a release through when main requires a pull request (NFR-REL-001)', () => {
+describe('check-main-rule.mjs lets a release through when main requires a pull request (NFR-REL-001)', SLOW, () => {
   test('a pull_request rule among the active rules is ok, and the ruleset is named', async () => {
     withReplies({ body: JSON.stringify([rule('deletion'), rule('non_fast_forward'), rule('pull_request', { parameters: { required_approving_review_count: 0 } })]) });
     const r = await check(FAST);
@@ -100,7 +102,7 @@ describe('check-main-rule.mjs lets a release through when main requires a pull r
   });
 });
 
-describe('check-main-rule.mjs refuses a release when no active rule requires a pull request (NFR-REL-001)', () => {
+describe('check-main-rule.mjs refuses a release when no active rule requires a pull request (NFR-REL-001)', SLOW, () => {
   const expectRefusal = (r: { code: number | null; stdout: string; stderr: string }, found: string): void => {
     expect(r.stderr).toBe('');
     expect(r.stdout).toContain(`::error::no active rule requires a pull request on main of o/r (${found}).`);
@@ -128,7 +130,7 @@ describe('check-main-rule.mjs refuses a release when no active rule requires a p
   });
 });
 
-describe('check-main-rule.mjs: an answer it could not read is neither ok nor a refusal (NFR-REL-001)', () => {
+describe('check-main-rule.mjs: an answer it could not read is neither ok nor a refusal (NFR-REL-001)', SLOW, () => {
   const expectCannotTell = (r: { code: number | null; stdout: string; stderr: string }, marker: string): void => {
     expect(r.stdout).toContain('::error::check-main-rule: ');
     expect(r.stdout).toContain(marker);
