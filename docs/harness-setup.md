@@ -308,7 +308,12 @@ Each one is silent: nothing errors, and `nb stats` still reports engaged session
    a lead that delegates again after the nudge gets no second one. Whatever is
    learned after the nudge gets none. (A Claude Code that sends no
    `background_tasks` nudges the lead's first stop, even one where it is waiting
-   for subagents.)
+   for subagents.) One stop is skipped on purpose: in the first chat after the
+   plugin is installed, the stop right after the reply that asks where notes are
+   kept asks nothing, so a lesson cannot land in the shared notebook before the
+   user has answered; the nudge comes at that chat's next stop. A first chat with
+   a single reply therefore gets no retrospective, nor the text of
+   `retro.txt` or `NB_RETRO_EXTRA_PROMPT` ([FR-RETRO-001](requirements.md#fr-retro-001)).
 2. **Subagents are never nudged.** The hook lets every `SubagentStop` through,
    so the only retrospective a subagent runs is the one its brief asks for.
 3. **A blocked subagent stop would cost its report.** This is why the hook stays

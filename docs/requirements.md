@@ -1131,7 +1131,7 @@ then not computed; a `retro` row holds its cleaned `--session` instead, see [FR-
 near-duplicate), `no-shelf` for a `show` of a shelf with no notebook file (issue #480;
 for `nb show a b` the row names the first shelf, so the outcome is about that one), `off` for a
 text `nb list` that printed the switched-off line ([FR-ENABLED-004](#fr-enabled-004)),
-`nudge`/`off`/`off-work-dir` for `retro` ([FR-RETRO-001](#fr-retro-001)), `index`/`layered`/`empty`/`broken`/`off`
+`nudge`/`off`/`off-work-dir`/`deferred` for `retro` ([FR-RETRO-001](#fr-retro-001)), `index`/`layered`/`empty`/`broken`/`off`
 for `brief` ([FR-BRIEF-001](#fr-brief-001)), and blank for a
 read-only command otherwise, `collided-id` is the id of the existing entry that blocked a
 `dedup-blocked` add or a `move-blocked` move, and `evicted-id:score` records the
@@ -1898,9 +1898,15 @@ SHALL NOT read standard input or a hook payload, SHALL exit `0` in every runtime
 before the sentinel and before every `off` return, SHALL be the confirmation of [FR-SETUP-002](#fr-setup-002): a
 `.first-start` holding `pending` for the hash of this cleaned session id becomes `done`; any other
 session, no claim, an unreadable claim and any write error leave it as it was. The confirmation SHALL print
-nothing and SHALL NOT change the text, the outcome or the exit code of `nb retro`. `--json` SHALL print
-`{ outcome, text, session }` with `outcome` one of `nudge`, `already`, `off`,
-`off-work-dir`. On a `nudge` the text SHALL be, each part separated by one blank line: the built-in
+nothing and SHALL NOT change the exit code of `nb retro`. When it confirms this chat's own claim, that one call
+SHALL print nothing else, claim no sentinel and have the outcome `deferred`: the question was asked in this
+chat's first reply and the user has not answered yet, so a lesson added now would land in the shared notebook
+and keep a "separate notebook for each project" answer from giving this project its own (issue #560). The
+chat's next `nb retro` is a normal one, so a first chat with a single reply gets no retrospective and none of
+the user's retro message files or `NB_RETRO_EXTRA_PROMPT` text; the note A' chat (no question) defers the same
+way, since the claim does not record which note was printed. In every other case the confirmation SHALL NOT change the text or the
+outcome. `--json` SHALL print `{ outcome, text, session }` with `outcome` one of `nudge`, `already`, `off`,
+`off-work-dir`, `deferred`. On a `nudge` the text SHALL be, each part separated by one blank line: the built-in
 text; the blocks of the user's `retro.txt` and then `<project>.retro.txt` ([FR-MSG-001](#fr-msg-001)); the
 `NB_RETRO_EXTRA_PROMPT` text ([FR-RETRO-002](#fr-retro-002)). The message files SHALL be read only after
 the claim and only on `nudge`: a call whose outcome is `off`, `off-work-dir` or `already` reads none.
@@ -2671,7 +2677,7 @@ nobody with notes already kept. Note A or A' is printed for the first start; not
 of the cleaned session id>` or `done`; anything else, a file over 128 bytes, a link, a folder or a FIFO is `unreadable`, which counts as
 "never" and is never replaced. **Claim:** `projects/` is made with mode 0700, `~/.agent-notebook` and `projects/` SHALL be real folders of
 the user (not links, owned by the user on POSIX), then `.first-start` is created exclusively with mode 0600; any error SHALL mean no note, and a claim that could not be
-written whole is removed. **Confirm:** the first step of `nb retro --session <id>` ([FR-RETRO-001](#fr-retro-001)) turns `pending` for the hash of this session into `done` (an
+written whole is removed. **Confirm:** the first step of `nb retro --session <id>` ([FR-RETRO-001](#fr-retro-001)) turns `pending` for the hash of this session into `done`, and that one call then asks nothing (outcome `deferred`) (an
 exclusive 0600 temporary file and a rename), errors swallowed. **Expiry:** a `pending` claim older than 60 minutes, or dated more than 5 minutes in the future (a clock set back; a claim a moment ahead is another start's, written just after this one read the clock), is renamed aside by a later
 fresh start, and only the process whose rename wins creates the new claim; a file that is not the one it saw is put back.
 
@@ -2689,7 +2695,7 @@ had a turn but whose assistant did not pass the question on spends it.
 **Rationale:** a Stop runs only after a real turn, so a chat opened and closed without a prompt, or a hook killed at its time limit, does not spend the question.
 *Proven by:* `setup-welcome.test.ts` → `describe('the .first-start grammar (FR-SETUP-002)')`,
 `describe('the claim: an exclusive create in a real folder of this user (FR-SETUP-002)')`,
-`describe('expiry: a pending claim older than 60 minutes, or dated in the future, is taken over once (FR-SETUP-002)')` and
+`describe('expiry: a pending claim older than 60 minutes, or dated more than 5 minutes in the future, is taken over once (FR-SETUP-002)')` and
 `describe('the confirmation: pending for this session becomes done, and nothing else changes (FR-SETUP-002)')`;
 `brief-welcome.test.ts` → `describe('the claim under failure and abuse (FR-SETUP-002, NFR-SAFE-001)')`.
 

@@ -149,7 +149,7 @@ const OTHER_OUTCOME_RE = /^[a-z][a-z0-9-]{0,23}$/;
 
 const OUTCOMES: Record<string, readonly string[]> = {
   brief: ['index', 'layered', 'empty', 'broken', 'off'],
-  retro: ['nudge', 'already', 'off', 'off-work-dir'],
+  retro: ['nudge', 'already', 'off', 'off-work-dir', 'deferred'],
   add: ['accepted', 'dedup-blocked', 'rejected-full', 'empty', 'too-long'],
 };
 

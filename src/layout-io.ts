@@ -309,23 +309,25 @@ export function claimFirstStart(projectsDir: string, cleanedSession: string, now
  * temporary file and a rename). Another session's claim, `done`, no file, an unreadable
  * file and every error leave the file as it was. Never throws.
  */
-export function confirmFirstStart(projectsDir: string, cleanedSession: string): void {
-  if (cleanedSession === '') return;
+export function confirmFirstStart(projectsDir: string, cleanedSession: string): boolean {
+  if (cleanedSession === '') return false;
   try {
     const r = readFirstStart(projectsDir);
-    if (r.state !== 'pending' || r.hash !== sessionHash(cleanedSession)) return;
+    if (r.state !== 'pending' || r.hash !== sessionHash(cleanedSession)) return false;
     const tmp = join(projectsDir, `.first-start.${process.pid}.${randomBytes(8).toString('hex')}.tmp`);
     const fd = openSync(tmp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
     try {
       writeSync(fd, FIRST_START_DONE);
       closeSync(fd);
       renameSync(tmp, firstStartPath(projectsDir));
+      return true;
     } catch {
       removeQuietly(tmp);
     }
   } catch {
     // The question may be asked once more; nothing else is lost.
   }
+  return false;
 }
 
 /** Which set-up note a call prints, and for which project (`name` is `''` unless the kind is `project`). */

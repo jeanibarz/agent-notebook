@@ -353,7 +353,7 @@ prints. It reads no hook payload and exits 0 in every runtime state.
 
 ```sh
 nb retro --session "$SESSION_ID"                # the text, once; nothing on later calls
-nb retro --session "$SESSION_ID" --json         # {"outcome":"nudge|already|off|off-work-dir","text":"…","session":"…"}
+nb retro --session "$SESSION_ID" --json         # {"outcome":"nudge|already|off|off-work-dir|deferred","text":"…","session":"…"}
 nb retro --session "$SESSION_ID" --work-dir "$PWD_OF_THE_AGENT"   # also ask the on/off switch there
 ```
 

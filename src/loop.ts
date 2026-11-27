@@ -47,8 +47,13 @@ import { escapeDiskName, expandHomeDir, listNotebooks, stripControlChars, type N
 import { listMessages, readCheckedFile, readMessages, type MessageFile } from './messages.js';
 import { formatListing, renderConflicts, renderSkipped } from './render.js';
 
-/** What `nb retro` decided. `already` means a sentinel for this session existed. */
-export type RetroOutcome = 'nudge' | 'already' | 'off' | 'off-work-dir';
+/**
+ * What `nb retro` decided. `already` means a sentinel for this session existed. `deferred`
+ * (issue #560) means this Stop confirmed the set-up note's claim of this very chat: the user
+ * has not answered where notes go yet, so the end-of-task request waits for a later Stop
+ * (decided in `cli.ts`, which owns the setup files).
+ */
+export type RetroOutcome = 'nudge' | 'already' | 'off' | 'off-work-dir' | 'deferred';
 
 export interface RetroResult {
   outcome: RetroOutcome;

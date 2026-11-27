@@ -58,7 +58,7 @@ describe('the .first-start grammar (FR-SETUP-002)', () => {
     expect(parseFirstStart(raw)).toBeNull();
   });
 
-  test('expired: over 60 minutes old, or dated in the future; a fresh one is not', () => {
+  test('expired: over 60 minutes old, or dated more than 5 minutes in the future; a fresh one is not', () => {
     expect(FIRST_START_EXPIRY_MS).toBe(3_600_000);
     expect(pendingExpired(T0, T0 + 3_600_000)).toBe(false);
     expect(pendingExpired(T0, T0 + 3_600_001)).toBe(true);
@@ -135,7 +135,7 @@ describe('setupDue: the predicate, one row per kind of person (FR-SETUP-001)', (
     expect(setupDue(facts({ sessionLength: 8 })).due).toBe(true);
   });
 
-  test('an expired pending claim is due as a takeover, whether it is old or dated in the future', () => {
+  test('an expired pending claim is due as a takeover, whether it is old or dated more than 5 minutes in the future', () => {
     const old = pendingAt(T0 - 3_600_001);
     expect(setupDue(facts({ firstStart: old }))).toEqual({ due: true, takeover: true, raw: (old as { raw: string }).raw });
     const future = pendingAt(T0 + 300_001);
@@ -228,7 +228,7 @@ function statModeOf(p: string): number {
   return Number(execFileSync(process.execPath, ['-e', `process.stdout.write(String(require('fs').statSync(${JSON.stringify(p)}).mode & 0o777))`], { encoding: 'utf-8' }));
 }
 
-describe('expiry: a pending claim older than 60 minutes, or dated in the future, is taken over once (FR-SETUP-002)', () => {
+describe('expiry: a pending claim older than 60 minutes, or dated more than 5 minutes in the future, is taken over once (FR-SETUP-002)', () => {
   test('an expired claim is renamed aside and replaced by the one process that takes it over; the aside file is gone', () => {
     expect(claimFirstStart(projects, SESSION, T0)).toBe(true);
     const seen = readFirstStart(projects);
@@ -259,7 +259,7 @@ describe('expiry: a pending claim older than 60 minutes, or dated in the future,
     expect(prepareSessionStart({ ...d, session: 'third-session', nowMs: T0 + 3_602_000 }).note).toBeNull();
   });
 
-  test('a claim dated in the future is expired: the next fresh start takes it over, once', () => {
+  test('a claim dated more than 5 minutes in the future is expired: the next fresh start takes it over, once', () => {
     put(formatPending(T0 + 5 * 86_400_000, sessionHash('clock-was-wrong')));
     const d = deps({ nowMs: T0 });
     expect(prepareSessionStart(d).note?.kind).toBe('first');
