@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { placeOwn, placeShared } from './place-ops.js';
 import { acquireLock, releaseLock } from './notebook.js';
 import { readLayout, writeSeen } from './layout-io.js';
@@ -572,6 +572,31 @@ describe('a start never undoes what nb place chose, decided under the lock (FR-S
     expect(nb(['brief'], repo, { NB_ENABLED: '1' }).code).toBe(0);
     expect(nb(['place', 'shared']).code).toBe(0);
     expect(nb(['brief'], repo, { NB_ENABLED: '1' }).code).toBe(0);
+    expect(listing(projects)).toEqual(['.layout', '.seen-acme-app']);
+    expect(nb(['place']).out).toMatch(/^shared: /);
+  });
+
+  test('nb place shared that has not yet looked at the folder is not undone by a start that makes it first (an ordering gate, no timing)', async () => {
+    if (isWin) return;
+    setLayout('own\n');
+    const shimDir = join(tmp, 'gate');
+    mkdirSync(shimDir);
+    const reached = join(tmp, 'git-reached');
+    const go = join(tmp, 'git-go');
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf-8' }).trim();
+    // A git for this one `nb place shared` call only: it says it was reached, then waits for the go file.
+    writeFileSync(join(shimDir, 'git'), `#!/bin/sh\ntouch '${reached}'\nwhile [ ! -e '${go}' ]; do sleep 0.05; done\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+    const child = spawn(process.execPath, [CLI, 'place', 'shared'], { cwd: repo, env: childEnv({ PATH: `${shimDir}:${process.env.PATH}` }) });
+    let out = '';
+    child.stdout.on('data', (d) => (out += d));
+    const done = new Promise<number | null>((r) => child.on('close', r));
+    while (!existsSync(reached)) await new Promise((r) => setTimeout(r, 20));
+    // `place shared` has resolved its place (no folder) and is inside git; a start now makes the folder, as it may.
+    expect(nb(['brief'], repo, { NB_ENABLED: '1' }).code).toBe(0);
+    expect(existsSync(join(projects, 'acme-app'))).toBe(true);
+    writeFileSync(go, '');
+    expect(await done).toBe(0);
+    expect(out).toContain('shared: ');
     expect(listing(projects)).toEqual(['.layout', '.seen-acme-app']);
     expect(nb(['place']).out).toMatch(/^shared: /);
   });

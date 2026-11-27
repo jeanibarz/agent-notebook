@@ -2611,7 +2611,7 @@ when the notebook switch is on and git is startable (a `.git` entry in the worki
 shared notebook holds no shelf `*@<project>` (letter case ignored), which is decided under the lock: with shelves it SHALL do nothing and
 write no `.seen`, since a hook never moves a lesson. It SHALL also ask again, under the lock, that `.seen-<name>` is still absent and `.layout` still reads
 `own`, and `nb place own|shared` SHALL write `.seen-<name>` while holding both locks, before anything moves, so a start that was waiting for a lock
-never recreates the folder a user just removed. With the lock held by another call (waiting at most a quarter of a second) or any
+never recreates the folder a user just removed. Where `nb place shared` finds no folder it takes no lock for the move, so it writes the marker, passes through the shared notebook's lock once (waiting out a start that already holds it), and moves the folder back under the locks if one appeared. With the lock held by another call (waiting at most a quarter of a second) or any
 error (a read-only home), it SHALL skip, silently, and try again at the next start. A name that fails the refusals of `nb place own` (a
 name from the folder, over 64 characters, a Windows device name, `default`, a bare repository, a differing letter case) SHALL make nothing. A name
 from `NB_PROJECT_SLUG` SHALL NEVER create a folder or a `.seen` file, because a repository's settings can set it. An existing project folder

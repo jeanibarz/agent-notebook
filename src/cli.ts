@@ -44,12 +44,14 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  acquireLock,
   addEntry,
   assertSafeShelf,
   classifyError,
   DESC_KEY,
   entryId,
   getDescription,
+  releaseLock,
   getMetaValue,
   listNotebooks,
   listShelves,
@@ -1782,9 +1784,8 @@ export async function runNbCli(
           } else {
             process.stdout.write(renderMove('own', r, st!.name, unversioned, old.length, st!.oldName));
           }
-        } else if (p.kind !== 'own' && !hasUnfinished(p, st)) {
-          // Nothing to move back: this directory does not use an own notebook. A start that waits for a lock re-reads `.seen` under it.
-          markSeen(p.projectsDir, st);
+        } else if (p.kind !== 'own' && !hasUnfinished(p, st) && !(await ownFolderAppeared(p, st))) {
+          // Nothing to move back: this directory does not use an own notebook.
           meta.outcome = 'shared';
           if (json) process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: [], renamed: [], kept: [], lessons: 0, removed: false }) + '\n');
           else process.stdout.write(`shared: ${stripControlChars(p.shared)}\n  this directory does not use an own notebook (${stripControlChars(p.reason)}); nothing to move.\n`);
@@ -2169,6 +2170,22 @@ function layoutGroups(env: NodeJS.ProcessEnv): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * `nb place shared` where the place resolved to the shared notebook: record `.seen-<name>`, then wait out any
+ * start that already passed its own check (it holds the shared lock while it makes the folder), and report whether
+ * the folder exists now. Then the command goes on to move it back under the locks instead of saying "nothing to move".
+ */
+async function ownFolderAppeared(p: Place, st: ProjectState | null): Promise<boolean> {
+  if (!remoteNamed(st)) return false;
+  markSeen(p.projectsDir, st);
+  try {
+    releaseLock(await acquireLock(p.shared));
+  } catch {
+    // The lock stayed busy: look anyway.
+  }
+  return presentFolders(p).includes(st.name);
 }
 
 /** A project named from the git remote, outside a bare repository: the only kind that gets a folder or a `.seen` file. */
