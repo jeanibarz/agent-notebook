@@ -1920,8 +1920,15 @@ export async function runNbCli(
         // asked once, and the copied 0.12 bash Stop hook agrees on where it is.
         // The first step: a Stop is a real turn, so it confirms the set-up note's claim (issue #560,
         // FR-SETUP-002), before the sentinel and every "off" return. It prints nothing and never fails.
-        if (sessionRaw !== '' && !(process.env.NB_DIR && process.env.NB_DIR.trim() !== '')) confirmFirstStart(projectsDirOf(), cleanSessionId(sessionRaw));
-        const r = retro({ session: sessionRaw, workDir, dir: sharedDir, cwd: currentDir(), nbDir: sharedDir, isDeviceName: isWindowsDeviceName });
+        // When it confirms this very chat's claim, the user has not answered the question yet
+        // (it was asked in this chat's first reply): a lesson added now would land in the shared
+        // notebook before a "separate notebook for each project" answer, which could then not
+        // give this project its own. So this one Stop asks nothing, claims no sentinel, and the
+        // end-of-task request comes at the chat's next Stop. A brand-new notebook has nothing to vote on.
+        const confirmed = sessionRaw !== '' && !(process.env.NB_DIR && process.env.NB_DIR.trim() !== '') && confirmFirstStart(projectsDirOf(), cleanSessionId(sessionRaw));
+        const r = confirmed
+          ? { outcome: 'deferred' as const, text: '', session: cleanSessionId(sessionRaw), err: '' }
+          : retro({ session: sessionRaw, workDir, dir: sharedDir, cwd: currentDir(), nbDir: sharedDir, isDeviceName: isWindowsDeviceName });
         if (r.err) process.stderr.write(r.err);
         meta.outcome = r.outcome;
         meta.session = r.session;

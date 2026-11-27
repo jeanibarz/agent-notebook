@@ -194,19 +194,38 @@ describe('who is shown the note (FR-SETUP-001)', () => {
 });
 
 describe('the confirmation is the first step of nb retro (FR-RETRO-001, FR-SETUP-002)', () => {
-  test('retro with another session id does not confirm; with the same id it does, whatever retro prints', () => {
+  test('retro with another session id does not confirm; with the same id it does, and that one Stop asks nothing', () => {
     welcome();
     const other = nb(['retro', '--session', 'some-other-session']);
     expect(claim()).toMatch(/^pending /);
-    const same = nb(['retro', '--session', SESSION]);
+    const same = nb(['retro', '--session', SESSION, '--json']);
     expect(claim()).toBe('done\n');
-    // The text and the exit code of retro are those of a home without any claim.
+    expect(other.code).toBe(0);
+    expect(same.code).toBe(0);
+    expect(JSON.parse(same.out)).toEqual({ outcome: 'deferred', text: '', session: SESSION });
+    // No sentinel was claimed, so the chat's next Stop (after the user has answered) asks as usual.
+    expect(existsSync(join(shared, `.retro-${SESSION}`))).toBe(false);
+    const next = nb(['retro', '--session', SESSION]);
+    expect(next.code).toBe(0);
+    expect(next.out).toContain('Before finishing, run the agent-notebook retrospective');
+    // The text of that next Stop is the one of a home without any claim.
     rmSync(projects, { recursive: true });
     const control = nb(['retro', '--session', 'control-session-1']);
-    expect(other.code).toBe(0);
-    expect(same.out).toBe(control.out);
-    expect(same.err).toBe(control.err);
-    expect(same.code).toBe(control.code);
+    expect(next.out).toBe(control.out);
+    expect(next.err).toBe(control.err);
+  });
+
+  test('choice 2 in the first chat: the first Stop adds no lesson, so the answer still gives this project its own notebook (AC1)', () => {
+    welcome();
+    // The first reply asks; the Stop after it asks nothing (no retrospective, so no lesson in the shared notebook).
+    expect(nb(['retro', '--session', SESSION]).out).toBe('');
+    // Turn 2: the user answers "a separate notebook for each project".
+    expect(nb(['place', 'default', 'own']).code).toBe(0);
+    expect(nb(['place']).out).toMatch(/^own: /);
+    // The next Stop asks for the retrospective; its lesson lands in the project's own notebook.
+    expect(nb(['retro', '--session', SESSION]).out).toContain('Before finishing, run the agent-notebook retrospective');
+    expect(nb(['add', 'testing@acme-app', 'run the tests with npm test']).code).toBe(0);
+    expect(nb(['place']).out).toMatch(/^own: /);
   });
 
   test('it confirms before the sentinel and before every "off" return: a repeated stop, the switch off', () => {
