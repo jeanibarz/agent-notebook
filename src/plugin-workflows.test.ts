@@ -1,4 +1,5 @@
 import { describe, test, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,6 +85,24 @@ describe('the plugin end-to-end workflow (FR-PLUGIN-005, issue #559)', () => {
     expect(e2e).toContain('--version 0.0.1-e2e.2');
     expect(e2e).toContain('bash scripts/plugin-e2e/run.sh');
     expect(e2e).toContain('run.ps1 -BuildDir');
+  });
+
+  // A developer's shell or an agent's session exports NB_DIR; the plugin's hooks would then write
+  // into that real notebook. The bash line is run, not only read; the PowerShell twin is read.
+  test('both drivers drop every inherited NB_* variable before they start', () => {
+    const sh = read('scripts/plugin-e2e/run.sh').split('\n').filter((l) => /^for v in .*NB_.*unset/.test(l));
+    expect(sh).toHaveLength(1);
+    if (process.platform !== 'win32') {
+      const left = execFileSync('bash', ['-c', `set -u; ${sh[0]}; env`], {
+        env: { PATH: process.env.PATH, NB_DIR: '/real/notebook', NB_SESSION: 's1', NB_MAX_LINES: '9', NOT_NB_DIR: 'kept' },
+        encoding: 'utf-8',
+      });
+      expect(left).not.toMatch(/^NB_/m);
+      expect(left).toMatch(/^NOT_NB_DIR=kept$/m);
+    }
+    expect(read('scripts/plugin-e2e/run.ps1')).toMatch(
+      /^Get-ChildItem Env: \| Where-Object \{ \$_\.Name -like 'NB_\*' \} \| ForEach-Object \{ Remove-Item "Env:\\\$\(\$_\.Name\)" \}$/m,
+    );
   });
 });
 
