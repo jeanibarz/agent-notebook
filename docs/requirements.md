@@ -1452,7 +1452,7 @@ leftover-temp **reap** of [FR-DUR-001](#fr-dur-001)/the NB_DIR-hygiene sweep —
 ([FR-USAGE-002](#fr-usage-002)) SHALL carry a trailing **`recovered`** column recording the
 recovery performed *during that call* as `<lockSteals>:<tempReaps>` (blank in the common
 no-recovery case), where `lockSteals` is the number of stale `.nb.lock`s the acquire loop
-stole and `tempReaps` is the number of leftover `*.md.<pid>.tmp` / `.nb-usage.log.<pid>.tmp`
+(or the try-once lock of a usage-log rotation, [FR-USAGE-005](#fr-usage-005)) stole and `tempReaps` is the number of leftover `*.md.<pid>.tmp` / `.nb-usage.log.<pid>.tmp`
 files `reapLeftoverTemps` removed. The column SHALL be appended after `decayed` so the
 parser reads a pre-#309 row's missing column as blank, exactly as every prior trailing
 column was added. `stats` SHALL sum the column across the window into
@@ -1473,8 +1473,9 @@ lock and the reaped temp are exactly that evidence; counting them turns a silent
 into an observable one, read for free from behaviour `nb` already performs (issue #309).
 *Proven by:* `notebook.test.ts` → `describe('crash-recovery observability (issue #309)')`
 (the stale-lock steal and planted-temp reap are tallied, round-trip the `recovered` column,
-and sum into `crashRecovery` deployment-wide and window-scoped), and `cli.test.ts` → the
-`issue #309` crash-recovery stats tests.
+and sum into `crashRecovery` deployment-wide and window-scoped), `cli.test.ts` → the
+`issue #309` crash-recovery stats tests, and `usage-hostile.test.ts` → `a stale lock the rotation
+steals is counted on the row the call writes` and its failed-rename sibling (issue #585).
 
 <a id="fr-stats-008"></a>
 **FR-STATS-008 (Should).** A **batch** `vote` (`nb vote <shelf> id1,id2,id3 +1`) that

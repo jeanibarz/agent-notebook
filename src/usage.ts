@@ -565,8 +565,15 @@ export function logUsage(
   appendUsage(dir, shelf, command, ok, ms, meta);
 }
 
-/** The usage row for a call, without its trailing newline. Drains the crash-recovery tally. */
-function usageLine(shelf: string, command: string, ok: boolean, ms: number, meta: UsageMeta): string {
+/** Crash recovery tallied by core (issue #309): stale locks stolen, leftover temps reaped. */
+type Recovery = { lockSteals: number; tempReaps: number };
+
+/**
+ * The usage row for a call, without its trailing newline. `rec` is the crash-recovery
+ * tally `appendUsage` drained for this row; `at` is when the row was first built, so a
+ * row built again after a rotation keeps its time.
+ */
+function usageLine(shelf: string, command: string, ok: boolean, ms: number, meta: UsageMeta, rec: Recovery, at: Date): string {
   // `shelf`, `command`, and every meta field are caller-supplied (and
   // `session` comes from an env var a hook sets); sanitize each so a tab/CR/LF
   // cannot split the row or shift a column and mis-align parseUsage. The richer
@@ -593,14 +600,13 @@ function usageLine(shelf: string, command: string, ok: boolean, ms: number, meta
   // no column can ever be split — it is a no-op on a well-formed enum value.
   const errorClass = sanitizeUsageField(meta.errorClass ?? '');
   const decayed = sanitizeUsageField(meta.decayed ?? '');
-  // Crash-recovery column (issue #309): drain the tally that withLock's
-  // stale-lock steal and reapLeftoverTemps' temp reap filled during this same
-  // process's mutation, and record it as `<lockSteals>:<tempReaps>` — blank in
-  // the common no-recovery case, so an old reader and old rows are unchanged.
-  // Drained exactly once here (read-and-reset), so each event is counted on one
-  // row; the two counts are machine-generated integers, so no sanitize is
-  // needed (no caller text can reach this column).
-  const rec = drainPendingRecovery();
+  // Crash-recovery column (issue #309): the tally that withLock's stale-lock
+  // steal and reapLeftoverTemps' temp reap filled during this same process's
+  // mutation (and a rotation's steal, issue #585), recorded as
+  // `<lockSteals>:<tempReaps>` — blank in the common no-recovery case, so an old
+  // reader and old rows are unchanged. `appendUsage` drains it (read-and-reset),
+  // so each event is counted on one row; the two counts are machine-generated
+  // integers, so no sanitize is needed (no caller text can reach this column).
   const recovered = rec.lockSteals > 0 || rec.tempReaps > 0 ? `${rec.lockSteals}:${rec.tempReaps}` : '';
   // Batch-vote partial misses (issue #310): the count of stale ids skipped by a
   // ≥1-landed batch `vote`. That call exits 0 (`ok=true`) so its misses never
@@ -618,7 +624,7 @@ function usageLine(shelf: string, command: string, ok: boolean, ms: number, meta
       ? ''
       : `\t${meta.version.replace(/[^0-9A-Za-z.+-]/g, '').slice(0, 32)}\t${(meta.project ?? '').replace(/[^0-9A-Za-z.:?_-]/g, '').slice(0, 80)}`;
   const line =
-    `${new Date().toISOString()}\t${usageShelfField(shelf)}\t${capNote(sanitizeUsageField(command))}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
+    `${at.toISOString()}\t${usageShelfField(shelf)}\t${capNote(sanitizeUsageField(command))}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
     `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}\t${decayed}\t${recovered}\t${misses}${record}`;
   return line;
 }
@@ -714,14 +720,16 @@ export function appendUsage(
   meta: UsageMeta = {},
   opts: { noCreate?: boolean } = {},
 ): AppendResult {
-  // Checked before the row is built, so the crash-recovery tally below is not
+  // Checked before the tally is drained, so the crash-recovery counts are not
   // drained into a row that cannot be written.
   if (opts.noCreate === true && !existsSync(dir)) return 'no-folder';
   let fd: number | undefined;
   try {
     if (opts.noCreate !== true) mkdirSync(dir, { recursive: true });
     const file = usageFile(dir);
-    const line = usageLine(shelf, command, ok, ms, meta);
+    const at = new Date();
+    let rec = drainPendingRecovery();
+    let line = usageLine(shelf, command, ok, ms, meta, rec, at);
     const ring = usageRing();
     const budget = usageByteBudget();
     const rowBytes = Buffer.byteLength(line) + 1;
@@ -745,7 +753,16 @@ export function appendUsage(
     // that went away (a `.1` folder removed) ends the refusals at once.
     const tooLarge = usageTooLargeBytes();
     if ((rows + 1 >= ring || size + rowBytes >= budget) && (size >= retryAt || size >= tooLarge)) {
-      if (rotateUsage(dir, ring, budget, rowBytes)) {
+      const rotated = rotateUsage(dir, ring, budget, rowBytes);
+      // A stale `.nb.lock` the rotation stole (issue #585) is tallied after the row
+      // was built: drain again, whatever the rotation's result, and build the row
+      // again with both counts. Only a call that tried to rotate gets here.
+      const late = drainPendingRecovery();
+      if (late.lockSteals > 0 || late.tempReaps > 0) {
+        rec = { lockSteals: rec.lockSteals + late.lockSteals, tempReaps: rec.tempReaps + late.tempReaps };
+        line = usageLine(shelf, command, ok, ms, meta, rec, at);
+      }
+      if (rotated) {
         closeQuietly(fd);
         fd = undefined;
         o = openLive(dir);
