@@ -423,10 +423,12 @@ function openUsageFile(path: string, how: 'read' | 'append' | 'write', mode: () 
         return { refused: 'special' };
       }
       if (O_NOFOLLOW === 0) {
+        // Gone now means renamed meanwhile (a rotation): the descriptor, a regular
+        // file, is still the one we checked, so keep it, as on POSIX.
         const again = usageFileState(lstatOrNull(path));
-        if (again !== 'file') {
+        if (again !== 'file' && again !== 'absent') {
           closeQuietly(fd);
-          return again === 'absent' ? { refused: 'special' } : again;
+          return again;
         }
       }
     } catch (e) {
@@ -733,15 +735,17 @@ export function appendUsage(
     // The row count: the sidecar's when the file's size still matches it, else counted.
     const state = readUsageState(dir);
     let size = fstatSync(fd).size;
-    const trusted = state !== undefined && state.bytes === size;
-    let rows = trusted ? state.rows : countRows(fd, size, ring, budget);
+    let trusted = state !== undefined && state.bytes === size;
+    let rows = trusted ? state!.rows : countRows(fd, size, ring, budget);
     let retryAt = state?.retryAt ?? 0;
 
     // Rotate before appending, so the row goes to the new live file. A failed or
     // busy rotation is tried again `usageRingSlack()` rows later (by size, which
     // keeps growing whatever the count says); without a readable sidecar, every
-    // call tries.
-    if ((rows + 1 >= ring || size + rowBytes >= budget) && size >= retryAt) {
+    // call tries. A log already past the size cap tries on every call, so a cause
+    // that went away (a `.1` folder removed) ends the refusals at once.
+    const tooLarge = usageTooLargeBytes();
+    if ((rows + 1 >= ring || size + rowBytes >= budget) && (size >= retryAt || size >= tooLarge)) {
       if (rotateUsage(dir, ring, budget, rowBytes)) {
         closeQuietly(fd);
         fd = undefined;
@@ -751,13 +755,17 @@ export function appendUsage(
         fd = o.fd;
         size = fstatSync(fd).size;
         rows = countRows(fd, size, ring, budget);
+        trusted = false; // the sidecar described the old file
         retryAt = 0;
       } else {
         retryAt = size + usageRingSlack() * rowBytes;
       }
     }
-    if (size >= usageTooLargeBytes()) {
+    if (size >= tooLarge) {
       writeUsageState(dir, { rows, bytes: size, retryAt });
+      // Name the file that blocks the rotation when it is the older generation.
+      const prev = usageFileState(lstatOrNull(usagePrevFile(dir)));
+      if (prev !== 'absent' && prev !== 'file') return { refused: prev.refused, path: usagePrevFile(dir) };
       return { tooLarge: true, path: file };
     }
     // A previous writer may have crashed mid-row, leaving no final `\n`: a blind

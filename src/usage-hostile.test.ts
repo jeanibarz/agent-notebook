@@ -397,6 +397,22 @@ describe('the ring loses no row written by a concurrent call (issue #576)', () =
     expect(commands(store)[99]).toBe('c249');
   });
 
+  test('a log past the size cap names the folder that blocks its rotation, and logs again once that is gone', () => {
+    process.env.NB_USAGE_RING = '100';
+    const filler = 'x'.repeat(1000);
+    const rows = Array.from({ length: Math.ceil(usageTooLargeBytes() / 1000) + 10 }, (_, i) => `${seedRow(i)}\t${filler}`);
+    writeFileSync(LOG(store), rows.join('\n') + '\n');
+    mkdirSync(`${LOG(store)}.1`); // the rename to .1 fails
+    for (let i = 0; i < 3; i++) {
+      expect(appendUsage(store, 'p', 'blocked', true, 1)).toEqual({ refused: 'folder', path: `${LOG(store)}.1` });
+    }
+    rmSync(`${LOG(store)}.1`, { recursive: true });
+    expect(appendUsage(store, 'p', 'free', true, 1)).toBe('written'); // tried again at once, not a slack later
+    expect(rowsOf(`${LOG(store)}.1`).length).toBe(rows.length);
+    expect(rowsOf(LOG(store))).toHaveLength(1);
+    expect(parseUsage(store).at(-1)?.command).toBe('free');
+  });
+
   test('a reader that meets a rotation between its two opens reads every row once', () => {
     process.env.NB_USAGE_RING = '100';
     for (let i = 0; i < 50; i++) logUsage(store, 'p', `c${i}`, true, 1);
