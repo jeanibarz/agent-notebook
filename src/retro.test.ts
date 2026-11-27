@@ -155,6 +155,15 @@ describe('nb retro sends what the 0.12 Stop hook sent, plus the new-shelf line (
     expect(r.err).toBe('');
   });
 
+  test('the new-shelf line asks for a description with the nb describe command, right after step 5 (issue #589)', () => {
+    // The 0.12 comparisons above splice RETRO_NEW_SHELF_LINE in themselves, so they pin
+    // where it sits, not what it says. This pins the words (FR-RETRO-001).
+    const lines = RETRO_LESSONS.split('\n');
+    const at = lines.indexOf('     If you start a new shelf, give it a description: nb describe <shelf> "<when to open this shelf>"');
+    expect(at).toBeGreaterThan(0);
+    expect(lines[at - 1]).toMatch(/^     Length: /);
+  });
+
   testOld('with NB_RETRO_EXTRA_PROMPT in a git repository nb retro matches the 0.12 Stop hook, placeholders filled', () => {
     const proj = repo('Proj.One');
     const extra = join(tmp, 'extra.txt');
