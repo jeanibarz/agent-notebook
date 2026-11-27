@@ -153,6 +153,7 @@ export default defineConfig({
             'src/messages.test.ts',
             'src/nb-hook-entry.test.ts',
             'src/nb-claude-hook-timeout.test.ts',
+            'src/usage-hostile.test.ts',
           ],
           // @ts-expect-error — same: accepted per project at runtime, missing from the types
           testNamePattern: TIMING_TAG,

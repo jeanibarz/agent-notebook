@@ -54,7 +54,7 @@
 //
 // PORTABILITY: pure Node, zero dependencies; git is optional (section 4 degrades).
 
-import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, lstatSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -237,12 +237,26 @@ function editSim(a, b) {
 }
 
 // ---- usage log ------------------------------------------------------------
+// The ring is two files since issue #576: `.nb-usage.log` and its older generation
+// `.nb-usage.log.1`. Read both, older first, so the ring-at-capacity guard (#275)
+// still fires after a rotation; read only plain files (a FIFO or a link is skipped, as
+// nb skips it), the live file first so a rotation between the two reads cannot hide
+// the generation it just renamed (at worst it is read twice); keep the newest
+// USAGE_RING rows, as nb does.
+function readUsageText(file) {
+  try {
+    return lstatSync(file).isFile() ? readFileSync(file, 'utf-8') : '';
+  } catch {
+    return '';
+  }
+}
+
 function readUsage(dir) {
-  const file = join(dir, '.nb-usage.log');
-  if (!existsSync(file)) return [];
+  const live = readUsageText(join(dir, '.nb-usage.log'));
+  const prev = readUsageText(join(dir, '.nb-usage.log.1'));
   const rows = [];
   try {
-    for (const line of readFileSync(file, 'utf-8').split('\n')) {
+    for (const line of `${prev}\n${live}`.split('\n')) {
       if (line.trim() === '') continue;
       // columns: ts, shelf, command, status, ms, session, entry-ids, outcome, collided, evicted, …
       const [ts, shelf, command, status, , session = '', entries = '', outcome = '', , evicted = ''] = line.split('\t');
@@ -272,7 +286,7 @@ function readUsage(dir) {
   } catch {
     /* ignore */
   }
-  return rows;
+  return rows.length > USAGE_RING ? rows.slice(rows.length - USAGE_RING) : rows;
 }
 
 // ---- git history (optional) ----------------------------------------------

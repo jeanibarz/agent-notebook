@@ -64,7 +64,15 @@ export interface StatusFacts {
   place: { kind: 'env' | 'own' | 'shared' | 'unknown' };
   layout?: StatusLayout;
   project: { name: string | null; source: ProjectSourceFact; keyKind: KeyKind; key: string | null };
-  live: { folder: 'ok' | 'missing' | 'unreadable' | 'not-folder'; log: 'ok' | 'absent' | 'unwritable' };
+  /**
+   * The notebook folder and its usage log. `not-file` (with `logKind`) and `too-large`
+   * are the writer's own refusals (issue #576, FR-USAGE-005): a row is not written there.
+   */
+  live: {
+    folder: 'ok' | 'missing' | 'unreadable' | 'not-folder';
+    log: 'ok' | 'absent' | 'unwritable' | 'not-file' | 'too-large';
+    logKind?: 'link' | 'folder' | 'special';
+  };
   /** The `brief` and `retro` rows of the logs read, oldest first; the newest is last. */
   rows: StatusRow[];
   /** How many valid rows of any command were read. */
@@ -151,6 +159,8 @@ const LINE1: Record<string, (a: { age: string; lessons: string; file: string }) 
   running_start: (a) => `The notebook was working when a chat last started it on its own, ${a.age}. ${a.lessons}`,
   running_end: (a) =>
     `The notebook was working when a chat asked for the end-of-task notes on its own ${a.age}; no automatic start is recorded. ${a.lessons}`,
+  broken_log_file: (a) =>
+    `The notebook's lessons are fine, but its record of chat starts (the usage log, .nb-usage.log) is ${a.file}, so this check can't tell whether chats start it.`,
   not_seen_yet: () => 'This check has not seen a chat in this project start the notebook on its own yet.',
   not_seen: () => 'This check has not seen a chat in this project start the notebook on its own',
 };
@@ -166,6 +176,18 @@ const LINE2 = {
   new_chat: 'Start a new chat here and ask again. If it still says this, ask your assistant to look at the details below.',
   update: 'Ask your assistant to help you update the notebook, then start a new chat. Your lessons are safe.',
 } as const;
+
+/** The plain words for a usage log the writer refuses (issue #576). */
+const LOG_KIND_WORDS = {
+  link: 'a shortcut (symbolic link) instead of a normal file',
+  folder: 'a folder instead of a normal file',
+  special: 'a special system file instead of a normal file',
+  'too-large': 'too large, and a folder named .nb-usage.log.1 keeps it from starting a new one',
+} as const;
+
+function logWords(live: StatusFacts['live']): keyof typeof LOG_KIND_WORDS {
+  return live.log === 'too-large' ? 'too-large' : (live.logKind ?? 'special');
+}
 
 const OUT_OF_DATE = (age: string): string => ` Part of the notebook seemed out of date the last time a chat tried (${age}).`;
 
@@ -290,6 +312,9 @@ export function decideStatus(f: StatusFacts, now: number): StatusDecision {
     return done('broken', 'project', 'broken_folder', {}, LINE2.ask_details);
   }
   if (f.live.log === 'unwritable') return done('broken', 'project', 'broken_log', {}, LINE2.ask_details);
+  if (f.live.log === 'not-file' || f.live.log === 'too-large') {
+    return done('broken', 'project', 'broken_log_file', { file: LOG_KIND_WORDS[logWords(f.live)] }, LINE2.ask_details);
+  }
   const ownBroken = lastStartRow !== null && lastStartRow.outcome === 'broken';
   // A `?` row counts only when it is newer than this project's newest start or end row.
   const noticedBroken = lastUnknownBroken !== null && lastUnknownBrokenPos > newestProjectPos;
@@ -363,6 +388,13 @@ export function renderStatus(f: StatusFacts, d: StatusDecision, now: number): st
   const msgs = f.messages.files.filter((m) => m.status !== 'absent');
   const msgText = msgs.map((m) => `${m.file} ${m.status === 'used' ? 'used' : `refused (${REFUSAL_WORDS[m.reason ?? 'other']})`}`).join('; ');
   lines.push(`Message files: ${msgText === '' ? 'none' : msgText}${f.messages.state === 'unreadable' ? ' (the messages folder cannot be read)' : ''}`);
+  if (f.live.log === 'not-file' || f.live.log === 'too-large') {
+    lines.push(
+      f.live.log === 'not-file'
+        ? `Usage log: ${LOG_KIND_WORDS[logWords(f.live)]}; nb does not write it or read it. The lessons are not in it; delete it (a link itself, not what it points to) and nb starts a new log.`
+        : `Usage log: ${LOG_KIND_WORDS['too-large']}; nb does not write it. The lessons are not in either; remove .nb-usage.log.1 and nb starts a new log.`,
+    );
+  }
   lines.push(
     f.rowsRead === 0
       ? 'Record: no rows (the usage log is missing, empty or cannot be read)'

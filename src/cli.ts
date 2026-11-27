@@ -82,7 +82,7 @@ import {
   voteMany,
   type Entry,
 } from './notebook.js';
-import { appendUsage, formatEvictedUsage, logUsage, normalizeReason, type UsageMeta } from './usage.js';
+import { appendUsage, formatEvictedUsage, normalizeReason, usageNotice, type AppendResult, type UsageMeta } from './usage.js';
 import {
   isValidWindow,
   parseWindowMs,
@@ -848,13 +848,13 @@ export async function runNbCli(
   if (cmd === '' || cmd === '--help' || cmd === '-h' || cmd === 'help' || scoped) {
     const t0 = Date.now();
     process.stdout.write((scoped ? scopedHelp(scoped)! : HELP) + '\n');
-    logUsage(notebooksDir(), '-', 'help', true, Date.now() - t0);
+    sayUsage(appendUsage(notebooksDir(), '-', 'help', true, Date.now() - t0));
     return 0;
   }
   if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
     const t0 = Date.now();
     process.stdout.write(`nb (agent-notebook) ${pkgVersion()}\n`);
-    logUsage(notebooksDir(), '-', 'version', true, Date.now() - t0);
+    sayUsage(appendUsage(notebooksDir(), '-', 'version', true, Date.now() - t0));
     return 0;
   }
 
@@ -2114,9 +2114,10 @@ export async function runNbCli(
       // `nb status` writes no usage row in any case, an error included (FR-STATUS-001, FR-USAGE-001).
       if (cmd !== 'status' && !(ok && skipUsageRow)) {
         const ms = Date.now() - started;
-        if (place?.kind !== 'own' || !appendUsage(dir, shelf, cmd, ok, ms, meta, { noCreate: true })) {
-          logUsage(place?.kind === 'own' ? sharedDir : dir, shelf, cmd, ok, ms, meta);
-        }
+        // The notice of issue #576 is built from the final result only: at most one line a call.
+        let res: AppendResult = place?.kind === 'own' ? appendUsage(dir, shelf, cmd, ok, ms, meta, { noCreate: true }) : 'no-folder';
+        if (res === 'no-folder') res = appendUsage(place?.kind === 'own' ? sharedDir : dir, shelf, cmd, ok, ms, meta);
+        sayUsage(res);
       }
     } finally {
       setCallMaxChars(undefined);
@@ -2124,6 +2125,17 @@ export async function runNbCli(
       setCallLockCheck(undefined);
     }
   }
+}
+
+/**
+ * Print the one stderr line of issue #576 when a usage row was not written because
+ * of what a usage file is (a link, a folder, a FIFO or device, a log too large to
+ * rotate). Logging stays best effort: the call's output and exit code are unchanged,
+ * and any other failure to log (a read-only folder) stays silent, as before.
+ */
+function sayUsage(res: AppendResult): void {
+  const line = usageNotice(res, homedir());
+  if (line !== null) process.stderr.write(`${line}\n`);
 }
 
 /** The commands that never read a notebook, so never ask where it is (issue #548). */

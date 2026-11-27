@@ -17,7 +17,8 @@ const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 // throws. Everything delegates to the real fs; when `events` is null and
 // `failDirFsync` is false (the default, reset in afterEach) behavior is identical
 // to the unwrapped module, so every other test is unaffected.
-const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null, failReadOnceCode: null as string | null, failCodelessRead: false, failReaddirCode: null as string | null, lockProbe: null as { op: 'rename' | 'unlink'; path: string; locked: boolean }[] | null }));
+const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, readBytes: null as { path: string; n: number }[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null, failReadOnceCode: null as string | null, failCodelessRead: false, failReaddirCode: null as string | null, lockProbe: null as { op: 'rename' | 'unlink'; path: string; locked: boolean }[] | null }));
+const fdPaths = vi.hoisted(() => new Map<number, string>());
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
@@ -37,6 +38,16 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       return actual.readFileSync(path, opts as never);
     }) as typeof actual.readFileSync,
+    openSync: ((path: Parameters<typeof actual.openSync>[0], flags?: Parameters<typeof actual.openSync>[1], mode?: Parameters<typeof actual.openSync>[2]) => {
+      const fd = actual.openSync(path, flags as never, mode as never);
+      if (fsHook.readBytes !== null) fdPaths.set(fd, String(path)); // which file a later readSync reads (issue #576)
+      return fd;
+    }) as typeof actual.openSync,
+    readSync: ((fd: number, ...rest: unknown[]) => {
+      const n = (actual.readSync as (...a: unknown[]) => number)(fd, ...rest);
+      fsHook.readBytes?.push({ path: fdPaths.get(fd) ?? '?', n });
+      return n;
+    }) as typeof actual.readSync,
     readdirSync: ((path: Parameters<typeof actual.readdirSync>[0], opts?: Parameters<typeof actual.readdirSync>[1]) => {
       // Opt-in fault injection for the notebooks-directory listing (issue #383):
       // a non-empty string throws with that errno `code`; the empty string throws
@@ -3164,20 +3175,23 @@ describe('usage log + stats', () => {
     expect(stats(dir, { now: Date.now() }).usageRing.cap).toBe(100);
   });
 
-  test('usage log is a bounded ring: a compaction keeps exactly the newest usageRing() rows (issue #135)', () => {
+  test('usage log is a bounded ring: readers get exactly the newest usageRing() rows of its two generations (issue #135, #576)', () => {
     process.env.NB_USAGE_RING = '100';
     const ring = usageRing(); // 100
-    const compactAt = ring + usageRingSlack(); // appends grow the file this far, then one call compacts it
-    // Tag each row so we can prove WHICH rows survived. The fast path appends
-    // cheaply until the file crosses `compactAt`; that call reads+slices the
-    // whole file back down to exactly `ring` newest rows (the rare compaction).
-    for (let i = 0; i < compactAt + 1; i++) logUsage(dir, 'p', `c${i}`, true, 1);
-    const lines = readFileSync(join(dir, '.nb-usage.log'), 'utf-8').split('\n').filter((l) => l !== '');
-    const cmds = lines.map((l) => l.split('\t')[2]);
-    expect(lines.length).toBe(ring); // exactly the cap after overflow — oldest dropped
-    expect(cmds[cmds.length - 1]).toBe(`c${compactAt}`); // the newest row is retained…
-    expect(cmds[0]).toBe(`c${compactAt + 1 - ring}`); // …and exactly `ring` rows back is the oldest kept
+    // Tag each row so we can prove WHICH rows survived. Three rotations happen:
+    // the live file is renamed to `.1` each time it would reach `ring` rows, and
+    // the older `.1` is dropped (issue #576).
+    const total = 3 * ring + 17;
+    for (let i = 0; i < total; i++) logUsage(dir, 'p', `c${i}`, true, 1);
+    const cmds = parseUsage(dir).map((r) => r.command);
+    expect(cmds.length).toBe(ring); // exactly the cap — oldest dropped
+    expect(cmds[cmds.length - 1]).toBe(`c${total - 1}`); // the newest row is retained…
+    expect(cmds[0]).toBe(`c${total - ring}`); // …and exactly `ring` rows back is the oldest kept
     expect(cmds).not.toContain('c0'); // the very first row was dropped
+    // On disk: the live file and one older generation, each below the cap.
+    const rowsOf = (f: string): number => readFileSync(join(dir, f), 'utf-8').split('\n').filter((l) => l !== '').length;
+    expect(rowsOf('.nb-usage.log')).toBeLessThan(ring);
+    expect(rowsOf('.nb-usage.log.1')).toBe(ring - 1);
   });
 
   test('the append fast-path does not read or parse the whole ring (issue #135)', () => {
@@ -3185,16 +3199,23 @@ describe('usage log + stats', () => {
     const usage = join(dir, '.nb-usage.log');
     const sidecar = join(dir, '.nb-usage.log.count');
     for (let i = 0; i < 50; i++) logUsage(dir, 'p', 'show', true, 1); // fill the ring toward its cap
-    fsHook.reads = []; // capture every readFileSync path during the next append
+    fsHook.reads = []; // capture every readFileSync path during the next append…
+    fsHook.readBytes = []; // …and every readSync (the writer reads through descriptors since issue #576)
     let reads: string[];
+    let readBytes: { path: string; n: number }[];
     try {
       logUsage(dir, 'p', 'vote', true, 2); // one more plain under-cap append
     } finally {
       reads = fsHook.reads!;
+      readBytes = fsHook.readBytes!;
       fsHook.reads = null;
+      fsHook.readBytes = null;
+      fdPaths.clear();
     }
     expect(reads).not.toContain(usage); // the ring file itself is never read on the hot path…
-    expect(reads.every((p) => p === sidecar)).toBe(true); // …only the tiny O(1) sidecar counter is.
+    expect(readBytes.filter((r) => r.path === usage)).toEqual([]);
+    expect(readBytes.every((r) => r.path === sidecar)).toBe(true); // …only the tiny O(1) sidecar counter is.
+    expect(readBytes.length).toBeGreaterThan(0);
     // And the append landed as one more whole row (the rewrite path was not taken).
     const lines = readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '');
     expect(lines.length).toBe(51);
@@ -3212,9 +3233,12 @@ describe('usage log + stats', () => {
     writeFileSync(usage, rows.join('\n') + '\n', 'utf-8');
     writeFileSync(sidecar, '3\t200\n', 'utf-8'); // stale rows AND stale bytes — size no longer matches
     logUsage(dir, 'p', 'heal', true, 1);
-    const lines = readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '');
-    expect(lines.length).toBe(ring); // bound restored in a single call, despite the stale sidecar
-    expect(lines[lines.length - 1].split('\t')[2]).toBe('heal'); // the new row is the newest kept
+    // Bound restored in a single call, despite the stale sidecar: the oversized file
+    // became the older generation and the row went to a new live file (issue #576).
+    expect(readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '')).toHaveLength(1);
+    const read = parseUsage(dir);
+    expect(read.length).toBe(ring);
+    expect(read[read.length - 1]!.command).toBe('heal'); // the new row is the newest kept
   });
 
   test('a torn (newline-less) row with a still-valid sidecar is not glued — the size mismatch forces the guarded path (issue #135)', () => {
@@ -3523,19 +3547,22 @@ describe('usage log + stats', () => {
     expect(parseUsage(dir).every((r) => r.command.length > 0)).toBe(true);
   });
 
-  test('logUsage compacts through a PER-PROCESS-unique temp path before the atomic rename (issue #32)', () => {
-    // The compact path (over-cap) is pinned deterministically: logUsage runs
-    // OUTSIDE the .nb.lock spinlock (the CLI calls it from `finally`), so two
-    // concurrent nb processes must not share one temp path or one's rename can
-    // clobber the other mid-write. The temp source of the atomic rename must
-    // carry this process's pid — a revert to the old shared `${file}.tmp` fails.
-    process.env.NB_USAGE_RING = '100'; // the clamp floor; fill past the slack, then force one compact
-    for (let i = 0; i < 100 + usageRingSlack(); i++) logUsage(dir, 'p', 'show', true, 1); // appends (no rename yet)
+  test('logUsage rotates by renaming the live file to .nb-usage.log.1, writing no temp file (issue #32, #576)', () => {
+    // The ring is never rewritten (issue #576): the call that would write the
+    // ring-th row renames the live file to the older generation and appends its row
+    // to a new live file, so no temp file exists for two writers to share (#32) or
+    // for the temp reaper to delete under a live writer.
+    process.env.NB_USAGE_RING = '100'; // the clamp floor
+    for (let i = 0; i < 99; i++) logUsage(dir, 'p', 'show', true, 1); // appends (no rename yet)
     fsHook.renames = []; // opt in to capturing rename source paths
     try {
-      logUsage(dir, 'p', 'show', true, 1); // over cap -> compacts via temp+rename
+      logUsage(dir, 'p', 'last', true, 1); // the 100th row -> rotates first
       const usage = join(dir, '.nb-usage.log');
-      expect(fsHook.renames).toEqual([`${usage}.${process.pid}.tmp`]);
+      expect(fsHook.renames).toEqual([usage]);
+      expect(readFileSync(`${usage}.1`, 'utf-8').split('\n').filter((l) => l !== '')).toHaveLength(99);
+      expect(readFileSync(usage, 'utf-8')).toContain('\tp\tlast\tok\t');
+      expect(readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+      expect(existsSync(join(dir, '.nb.lock'))).toBe(false); // the try-once lock was released
     } finally {
       fsHook.renames = null; // leave the shared hook as the other tests expect it
     }
@@ -3584,7 +3611,7 @@ describe('usage log + stats', () => {
     expect(readdirSync(dir).filter((f) => f.startsWith('.nb-usage.log.') && f.endsWith('.tmp'))).toEqual([]);
   }, 30_000);
 
-  test('a full ring with a missing sidecar appends in place until cap + slack, without a rewrite (issue #377)', () => {
+  test('a full ring with a missing sidecar rotates without rewriting or dropping a row of the file (issue #377, #576)', () => {
     const RING = 100;
     process.env.NB_USAGE_RING = String(RING);
     const usage = join(dir, '.nb-usage.log');
@@ -3592,27 +3619,29 @@ describe('usage log + stats', () => {
     writeFileSync(usage, seed.join('\n') + '\n', 'utf-8'); // exactly at the cap, no .count sidecar
     fsHook.renames = [];
     try {
-      logUsage(dir, 'p', 'add', true, 1); // exact path: must append, not compact
-      expect(fsHook.renames).toEqual([]);
-      const lines = readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '');
-      expect(lines.length).toBe(RING + 1);
-      expect(lines[0]).toBe(seed[0]); // the oldest row is still there: nothing was dropped
+      logUsage(dir, 'p', 'add', true, 1); // exact path: rotates (a rename), never a rewrite
+      expect(fsHook.renames).toEqual([usage]);
+      expect(readFileSync(`${usage}.1`, 'utf-8')).toBe(seed.join('\n') + '\n'); // every row of the file kept, byte for byte
+      expect(readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '')).toHaveLength(1);
     } finally {
       fsHook.renames = null;
     }
   });
 
-  test('the exact path still compacts back to the hard cap once cap + slack is reached (issue #377)', () => {
+  test('a log left over cap + slack by an older nb is rotated in one call, and readers keep the newest ring rows (issue #377, #576)', () => {
     const RING = 100;
     process.env.NB_USAGE_RING = String(RING);
     const usage = join(dir, '.nb-usage.log');
     const total = RING + usageRingSlack();
-    const seed = Array.from({ length: total }, (_, i) => `${new Date(i * 1000).toISOString()}\tseed\tshow\tok\t1ms`);
+    const seed = Array.from({ length: total }, (_, i) => `${new Date(i * 1000).toISOString()}\tseed\tc${i}\tok\t1ms`);
     writeFileSync(usage, seed.join('\n') + '\n', 'utf-8'); // at cap + slack, no sidecar
+    writeFileSync(join(dir, '.nb-usage.log.count'), `3\t200\n`, 'utf-8'); // an old two-column sidecar, stale
     logUsage(dir, 'p', 'add', true, 1);
-    const lines = readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '');
-    expect(lines.length).toBe(RING);
-    expect(lines[lines.length - 1]).toContain('\tp\tadd\t'); // the newest row survives
+    const read = parseUsage(dir);
+    expect(read.length).toBe(RING);
+    expect(read[read.length - 1]!.command).toBe('add'); // the newest row survives
+    expect(read[0]!.command).toBe(`c${total - RING + 1}`);
+    expect(readFileSync(join(dir, '.nb-usage.log.count'), 'utf-8')).toMatch(/^1\t\d+\n$/); // the sidecar healed, two columns
   });
 
   test('cross-process: concurrent writers on a full ring each leave their row (issue #377) [timing]', async () => {

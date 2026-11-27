@@ -23,7 +23,7 @@ import { resolveEnabled, type EnabledState } from './enabled.js';
 import { INSIDE_NOTEBOOKS_WHY, listMessages, NOT_UTF8_WHY, readMessages, type MessageFile, type MessageKind, type MessageListing } from './messages.js';
 import { escapeDiskName, usageFile } from './notebook.js';
 import { projectRecordKey, type ProjectState } from './project.js';
-import { parseUsage, type UsageRow } from './usage.js';
+import { parseUsage, usageFileState, usagePrevFile, usageTooLargeBytes, type UsageRow, type UsageStat } from './usage.js';
 import type { KeyKind, MessageFileFact, RefusalCode, StatusFacts, StatusLayout, StatusRow } from './status.js';
 
 /** The most of a usage log `nb status` reads: its tail. */
@@ -71,7 +71,7 @@ export interface FactsDeps {
   execPath: string;
   readUsage: (dir: string, maxBytes: number) => UsageRow[];
   stat: (p: string) => { isFile(): boolean; isDirectory(): boolean };
-  lstat: (p: string) => { isFile(): boolean };
+  lstat: (p: string) => UsageStat;
   readdir: (p: string) => string[];
   writable: (p: string) => boolean;
   enabled: (env: NodeJS.ProcessEnv, cwd: string) => EnabledState;
@@ -99,6 +99,19 @@ const defaultDeps: FactsDeps = {
   readMessages,
   changelog: (version) => readReleaseDate(version),
 };
+
+/**
+ * Whether the ring's older generation is a folder, the one thing at `.nb-usage.log.1`
+ * that blocks a rotation: a rename replaces a link or a FIFO there (issue #576).
+ */
+function prevBlocks(deps: FactsDeps, dir: string): boolean {
+  try {
+    const state = usageFileState(deps.lstat(usagePrevFile(dir)));
+    return typeof state === 'object' && state.refused === 'folder';
+  } catch {
+    return false; // absent: nothing blocks the rotation
+  }
+}
 
 function safe<T>(fn: () => T, fallback: T): T {
   try {
@@ -319,6 +332,7 @@ export function gatherFacts(input: FactsInput, overrides: Partial<FactsDeps> = {
   const dir = input.place.dir;
   let folder: StatusFacts['live']['folder'] = 'ok';
   let log: StatusFacts['live']['log'] = 'absent';
+  let logKind: StatusFacts['live']['logKind'];
   let shelves: number | null = null;
   if (dir !== null) {
     try {
@@ -335,13 +349,24 @@ export function gatherFacts(input: FactsInput, overrides: Partial<FactsDeps> = {
       if (folder === 'missing') shelves = 0;
     }
     if (folder === 'ok') {
+      // The writer's own rule (issue #576, FR-USAGE-005): a link, a folder or a
+      // FIFO/device is refused; a live file past the size cap is refused only when
+      // it cannot be rotated, because `.1` is a folder (else the next call rotates
+      // it and writes its row).
       const file = usageFile(dir);
       try {
-        deps.lstat(file);
-        try {
-          log = deps.stat(file).isFile() && deps.writable(file) ? 'ok' : 'unwritable';
-        } catch {
-          log = 'unwritable';
+        const st = deps.lstat(file);
+        const state = usageFileState(st);
+        if (state !== 'file' && state !== 'absent') {
+          log = 'not-file';
+          logKind = state.refused;
+        } else if (Number(st.size) >= usageTooLargeBytes() && prevBlocks(deps, dir)) log = 'too-large';
+        else {
+          try {
+            log = deps.writable(file) ? 'ok' : 'unwritable';
+          } catch {
+            log = 'unwritable';
+          }
         }
       } catch (e) {
         log = (e as NodeJS.ErrnoException | null)?.code === 'ENOENT' ? 'absent' : 'unwritable';
@@ -391,7 +416,7 @@ export function gatherFacts(input: FactsInput, overrides: Partial<FactsDeps> = {
       keyKind: keyKindOf(key),
       key,
     },
-    live: { folder, log },
+    live: { folder, log, ...(logKind !== undefined ? { logKind } : {}) },
     rows,
     rowsRead: all.length,
     since,

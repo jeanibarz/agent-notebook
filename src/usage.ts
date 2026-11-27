@@ -6,34 +6,35 @@
  * bounded codes.
  *
  * Nothing in the cap-and-vote mechanism (`notebook.ts`) depends on this module.
- * The CLI calls `logUsage` once per command, after the command has finished.
+ * The CLI calls `appendUsage` once per command, after the command has finished.
  * Crash-recovery counts reach it through `drainPendingRecovery`, the tally that
  * core's lock and temp-file recovery paths fill.
  */
 import {
-  appendFileSync,
   closeSync,
   constants as fsConstants,
   existsSync,
+  fchmodSync,
   fstatSync,
+  ftruncateSync,
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
   readSync,
   renameSync,
-  statSync,
-  writeFileSync,
+  writeSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, sep } from 'node:path';
 import {
   assertSafeShelf,
   drainPendingRecovery,
   entryId,
+  escapeDiskName,
   maxChars,
-  preserveMode,
+  releaseLock,
   sanitizeLesson,
   stripControlChars,
+  tryAcquireLock,
   usageFile,
   usageRing,
   usageRingSlack,
@@ -301,58 +302,257 @@ export function formatEvictedUsage(evicted: Entry[]): string {
   return `${prefix}+${dropped}`;
 }
 
+// ---------------------------------------------------------------------------
+// Which files the usage log uses (issue #576, FR-USAGE-005)
+// ---------------------------------------------------------------------------
+
 /**
- * Sidecar recording the usage log's row count AND its byte size as of this
- * process's last write, so the append fast-path can decide append-vs-compact
- * without reading and splitting the whole ring on every `nb` call (issue #135).
+ * Why a usage file was refused: it is a symbolic link, a folder, or something that
+ * is not a file at all (a FIFO, a device, a socket). nb never opens a refused file,
+ * so a FIFO cannot block a call and a device cannot be read without end.
+ */
+export type UsageRefusal = 'link' | 'folder' | 'special';
+
+/** The stat fields `usageFileState` needs; an `lstat` result has them. */
+export interface UsageStat {
+  isFile(): boolean;
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+  size: number | bigint;
+}
+
+/**
+ * The one rule for every usage file — the log, its `.count` sidecar and the older
+ * generation `.nb-usage.log.1` — shared by the writer, `parseUsage` (`nb stats`,
+ * `nb status`) and the log check of `nb status`. `st` is an `lstat` result (so a
+ * link is seen as a link) or `null` when the path does not exist. Only a regular
+ * file is used; a hard link is a regular file.
+ */
+export function usageFileState(st: UsageStat | null): 'absent' | 'file' | { refused: UsageRefusal } {
+  if (st === null) return 'absent';
+  if (st.isFile()) return 'file';
+  if (st.isSymbolicLink()) return { refused: 'link' };
+  if (st.isDirectory()) return { refused: 'folder' };
+  return { refused: 'special' };
+}
+
+/**
+ * The most bytes a usage-log read takes, and the byte size at which the live file
+ * is rotated even before it holds `usageRing` rows (issue #576). A row's caps count
+ * characters, not bytes, so a multibyte session can make one row 4 KB at
+ * `NB_MAX_CHARS=2000`; the real average is about 110 bytes. 1 KiB a row, kept
+ * between 1 and 64 MiB: 5 MiB at the default ring.
+ */
+export function usageByteBudget(): number {
+  return Math.min(64 * 1024 * 1024, Math.max(1024 * 1024, usageRing() * 1024));
+}
+
+/**
+ * The live file's size at which a call stops appending (and says so), reached only
+ * when rotations keep failing: twice `usageByteBudget()`. `nb status` uses the same
+ * number, so the two never disagree about a log that is too large.
+ */
+export function usageTooLargeBytes(): number {
+  return 2 * usageByteBudget();
+}
+
+/** The older generation of the ring (issue #576): the live file is renamed to it when it fills. */
+export function usagePrevFile(dir: string): string {
+  return `${usageFile(dir)}.1`;
+}
+
+const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
+const O_NONBLOCK = fsConstants.O_NONBLOCK ?? 0;
+
+type Opened = { fd: number; created: boolean } | { refused: UsageRefusal } | 'absent';
+
+function lstatOrNull(path: string): UsageStat | null {
+  try {
+    return lstatSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return null;
+    throw e;
+  }
+}
+
+function closeQuietly(fd: number): void {
+  try {
+    closeSync(fd);
+  } catch {
+    // nothing to release
+  }
+}
+
+/**
+ * Open a usage file without ever blocking or following a link (issue #576). The
+ * path is `lstat`ed first and anything but a regular file is refused unopened;
+ * the open adds `O_NONBLOCK` and `O_NOFOLLOW` (both missing on Windows, where an
+ * `lstat` after the open re-checks the path); and the open descriptor must be a
+ * regular file — a FIFO with a reader, `/dev/zero` and a folder all open, so this
+ * last check is the one that keeps them out. `'append'` and `'write'` create an
+ * absent file with `O_EXCL` and `mode()` (asked only then); a file that appears
+ * meanwhile is opened on a second try.
+ * Other errors (ENOENT of the folder, EACCES…) are thrown.
+ */
+function openUsageFile(path: string, how: 'read' | 'append' | 'write', mode: () => number = () => 0o666): Opened {
+  for (let attempt = 0; ; attempt++) {
+    const st = lstatOrNull(path);
+    const state = usageFileState(st);
+    if (state !== 'absent' && state !== 'file') return state;
+    if (state === 'absent' && how === 'read') return 'absent';
+    const base =
+      how === 'read' ? fsConstants.O_RDONLY : how === 'append' ? fsConstants.O_RDWR | fsConstants.O_APPEND : fsConstants.O_WRONLY;
+    const create = state === 'absent';
+    let fd: number;
+    try {
+      fd = create
+        ? openSync(path, base | O_NOFOLLOW | O_NONBLOCK | fsConstants.O_CREAT | fsConstants.O_EXCL, mode())
+        : openSync(path, base | O_NOFOLLOW | O_NONBLOCK);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException)?.code;
+      if (code === 'EEXIST' && attempt === 0) continue; // created by another call meanwhile
+      if (code === 'ENOENT' && !create && attempt === 0) continue; // removed meanwhile
+      if (code === 'ELOOP') return { refused: 'link' };
+      if (code === 'EISDIR') return { refused: 'folder' };
+      if (code === 'ENXIO') return { refused: 'special' };
+      throw e;
+    }
+    try {
+      if (!fstatSync(fd).isFile()) {
+        closeQuietly(fd);
+        return { refused: 'special' };
+      }
+      if (O_NOFOLLOW === 0) {
+        // Gone now means renamed meanwhile (a rotation): the descriptor, a regular
+        // file, is still the one we checked, so keep it, as on POSIX.
+        const again = usageFileState(lstatOrNull(path));
+        if (again !== 'file' && again !== 'absent') {
+          closeQuietly(fd);
+          return again;
+        }
+      }
+    } catch (e) {
+      closeQuietly(fd);
+      throw e;
+    }
+    return { fd, created: create };
+  }
+}
+
+/** Read `[start, start + len)` of `fd` into a buffer; a short file gives a shorter buffer. */
+function readRange(fd: number, start: number, len: number): Buffer {
+  const buf = Buffer.alloc(Math.max(0, len));
+  let got = 0;
+  while (got < len) {
+    const n = readSync(fd, buf, got, len - got, start + got);
+    if (n <= 0) break;
+    got += n;
+  }
+  return buf.subarray(0, got);
+}
+
+/**
+ * The rows of the live file, counted without building a string (issue #576): the
+ * newline bytes of a file of at most `budget` bytes; a larger file counts as at
+ * least `ring` rows (it is rotated anyway). A last row without its `\n` counts.
+ */
+function countRows(fd: number, size: number, ring: number, budget: number): number {
+  if (size === 0) return 0;
+  if (size > budget) return ring;
+  const buf = readRange(fd, 0, size);
+  let n = 0;
+  for (let i = 0; i < buf.length; i++) if (buf[i] === 0x0a) n++;
+  return buf.length > 0 && buf[buf.length - 1] !== 0x0a ? n + 1 : n;
+}
+
+/** Whether the file's last byte is a newline (an empty file counts as one). */
+function endsWithNewline(fd: number, size: number): boolean {
+  if (size === 0) return true;
+  const last = readRange(fd, size - 1, 1);
+  return last.length === 0 || last[0] === 0x0a;
+}
+
+// ---------------------------------------------------------------------------
+// The `.count` sidecar (issue #135)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sidecar recording the live file's row count AND its byte size as of this
+ * process's last write, so the hot path decides when to rotate without reading
+ * the ring (issue #135). The count is trusted only when the file's size still
+ * equals the recorded size; any other change (a concurrent writer, a hand edit, a
+ * torn row) falls back to counting. An optional third column (issue #576) is the
+ * live file's size at which the next rotation may be tried after one failed or
+ * found the lock busy; an older nb reads only the first two.
  *
- * The byte size is the integrity check: the fast path trusts the row count only
- * when the log's current size exactly equals the recorded size — i.e. nothing
- * has touched the file since we wrote it. Any out-of-band change (a concurrent
- * writer, a hand-edit, a crash that truncated a row) moves the size, so the
- * stale count is distrusted and the call falls to the exact read+compact path,
- * which re-derives the true count, re-applies the trailing-newline guard, and
- * restores the hard ring bound — in a single call, at any ring size.
- *
- * It is a tiny dotfile next to the log — not a `*.md` shelf (`listShelves`/stats
- * skip dotfiles) and, lacking a `.tmp` suffix, not matched by either reap
- * convention (shelf `*.md[.<pid>].tmp` or usage-log `.nb-usage.log.*.tmp`), so it
- * is never surfaced or deleted.
+ * It is a dotfile next to the log — not a `*.md` shelf, and, lacking a `.tmp`
+ * suffix, never reaped. It is read and written through `openUsageFile`, so a
+ * sidecar planted as a link never redirects the write (issue #576: before, one
+ * `nb list` overwrote a link's target).
  */
 function usageCountFile(dir: string): string {
   return join(dir, '.nb-usage.log.count');
 }
 
-/** Read the sidecar `{ rows, bytes }`, or `undefined` if it is missing or unparseable. */
-function readUsageState(dir: string): { rows: number; bytes: number } | undefined {
+interface UsageState {
+  rows: number;
+  bytes: number;
+  retryAt: number;
+}
+
+/** Read the sidecar, or `undefined` if it is missing, refused or unparseable. */
+function readUsageState(dir: string): UsageState | undefined {
+  let fd: number | undefined;
   try {
-    const [rowsRaw, bytesRaw] = readFileSync(usageCountFile(dir), 'utf-8').trim().split('\t');
+    const o = openUsageFile(usageCountFile(dir), 'read');
+    if (typeof o === 'string' || 'refused' in o) return undefined;
+    fd = o.fd;
+    const [rowsRaw, bytesRaw, retryRaw] = readRange(fd, 0, 64).toString('utf-8').trim().split('\t');
     const rows = Number.parseInt(rowsRaw ?? '', 10);
     const bytes = Number.parseInt(bytesRaw ?? '', 10);
+    const retryAt = Number.parseInt(retryRaw ?? '', 10);
     if (!Number.isFinite(rows) || rows < 0 || !Number.isFinite(bytes) || bytes < 0) return undefined;
-    return { rows, bytes };
+    return { rows, bytes, retryAt: Number.isFinite(retryAt) && retryAt > 0 ? retryAt : 0 };
   } catch {
-    return undefined; // missing/unreadable — the caller falls back to the exact read.
+    return undefined; // the caller falls back to counting
+  } finally {
+    if (fd !== undefined) closeQuietly(fd);
   }
 }
 
-/** The log's byte size, or -1 if it cannot be stat'd — which never equals a recorded size, so the fast path falls back to the exact read instead of dropping the row on a race/ENOENT. */
-function usageSize(file: string): number {
+/** Best-effort sidecar write; a refused or failed write only makes the next call count. */
+function writeUsageState(dir: string, s: UsageState): void {
+  let fd: number | undefined;
   try {
-    return statSync(file).size;
+    const o = openUsageFile(usageCountFile(dir), 'write');
+    if (typeof o === 'string' || 'refused' in o) return;
+    fd = o.fd;
+    ftruncateSync(fd, 0);
+    writeSync(fd, `${s.rows}\t${s.bytes}${s.retryAt > 0 ? `\t${s.retryAt}` : ''}\n`, 0, 'utf-8');
   } catch {
-    return -1;
+    /* best-effort: the sidecar is only an optimisation */
+  } finally {
+    if (fd !== undefined) closeQuietly(fd);
   }
 }
 
-/** Best-effort sidecar write; a failed/stale sidecar just forces the next call down the exact read path. */
-function writeUsageState(dir: string, rows: number, bytes: number): void {
-  try {
-    writeFileSync(usageCountFile(dir), `${rows}\t${bytes}\n`, 'utf-8');
-  } catch {
-    /* best-effort: the sidecar is only an optimisation; the exact path re-derives it. */
-  }
-}
+// ---------------------------------------------------------------------------
+// The writer
+// ---------------------------------------------------------------------------
+
+/**
+ * What `appendUsage` did with the row (issue #576): written; not written because the
+ * own folder is missing (`noCreate`); refused because a usage file is not a regular
+ * file, or because the live file has grown past `usageTooLargeBytes()` (the CLI
+ * prints one line for these two); or failed for any other reason (silent, as a
+ * read-only store always was).
+ */
+export type AppendResult =
+  | 'written'
+  | 'no-folder'
+  | 'failed'
+  | { refused: UsageRefusal; path: string }
+  | { tooLarge: true; path: string };
 
 export function logUsage(
   dir: string,
@@ -365,13 +565,145 @@ export function logUsage(
   appendUsage(dir, shelf, command, ok, ms, meta);
 }
 
+/** The usage row for a call, without its trailing newline. Drains the crash-recovery tally. */
+function usageLine(shelf: string, command: string, ok: boolean, ms: number, meta: UsageMeta): string {
+  // `shelf`, `command`, and every meta field are caller-supplied (and
+  // `session` comes from an env var a hook sets); sanitize each so a tab/CR/LF
+  // cannot split the row or shift a column and mis-align parseUsage. The richer
+  // columns are appended AFTER the original five, so an old reader that
+  // looks only at the first five still parses, and an old row missing them
+  // round-trips as blank (backward-compatible — see parseUsage). `errorClass`
+  // is the newest column and goes LAST (issue #176), so a pre-#176 row — which
+  // ends at `note` — reads it as blank rather than mis-aligning any prior field.
+  // `session` (from NB_SESSION, which a harness sets) is caller-influenced
+  // free text, exactly like `note` — not a short fixed token — so it is capped
+  // to the same per-field length (issue #202). #128 capped only `note`, calling
+  // it "the one unbounded free-text field", but a long NB_SESSION is appended to
+  // EVERY row, so without this the ring's row-count bound no longer bounds its
+  // bytes. Truncated (never rejected) so `logUsage` keeps its never-throw
+  // contract, with the same trailing-ellipsis convention as the note.
+  const session = capNote(sanitizeUsageField(meta.session ?? process.env.NB_SESSION ?? ''));
+  const entries = capEntries((meta.entries ?? []).map(sanitizeUsageField));
+  const outcome = sanitizeUsageField(meta.outcome ?? '');
+  const collided = sanitizeUsageField(meta.collided ?? '');
+  const evicted = sanitizeUsageField(meta.evicted ?? '');
+  const reason = sanitizeUsageField(meta.reason ?? '');
+  const note = capNote(sanitizeUsageField(meta.note ?? ''));
+  // A fixed enum token (never user text), but sanitize anyway for uniformity so
+  // no column can ever be split — it is a no-op on a well-formed enum value.
+  const errorClass = sanitizeUsageField(meta.errorClass ?? '');
+  const decayed = sanitizeUsageField(meta.decayed ?? '');
+  // Crash-recovery column (issue #309): drain the tally that withLock's
+  // stale-lock steal and reapLeftoverTemps' temp reap filled during this same
+  // process's mutation, and record it as `<lockSteals>:<tempReaps>` — blank in
+  // the common no-recovery case, so an old reader and old rows are unchanged.
+  // Drained exactly once here (read-and-reset), so each event is counted on one
+  // row; the two counts are machine-generated integers, so no sanitize is
+  // needed (no caller text can reach this column).
+  const rec = drainPendingRecovery();
+  const recovered = rec.lockSteals > 0 || rec.tempReaps > 0 ? `${rec.lockSteals}:${rec.tempReaps}` : '';
+  // Batch-vote partial misses (issue #310): the count of stale ids skipped by a
+  // ≥1-landed batch `vote`. That call exits 0 (`ok=true`) so its misses never
+  // reach the err-rate table; recording them lets `nb stats` fold them into the
+  // vote error-cause readout. A machine-generated non-negative integer (no
+  // caller text, so no sanitize), blank in the common no-miss case so an old
+  // reader and old rows are unchanged.
+  const misses = meta.misses && meta.misses > 0 ? String(Math.round(meta.misses)) : '';
+  // Trailing columns 17 and 18 (issue #558): only a row whose caller passed a
+  // `version` (`brief`, `retro`) carries them; every other row stays byte-identical.
+  // Neither is cut with `…` nor subject to `NB_MAX_CHARS`: a cleaned value is
+  // short by construction, and a cap here is a hard cut of a token.
+  const record =
+    meta.version === undefined
+      ? ''
+      : `\t${meta.version.replace(/[^0-9A-Za-z.+-]/g, '').slice(0, 32)}\t${(meta.project ?? '').replace(/[^0-9A-Za-z.:?_-]/g, '').slice(0, 80)}`;
+  const line =
+    `${new Date().toISOString()}\t${usageShelfField(shelf)}\t${capNote(sanitizeUsageField(command))}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
+    `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}\t${decayed}\t${recovered}\t${misses}${record}`;
+  return line;
+}
+
+/** The mode a new live file takes: that of the older generation, when there is one (#459). */
+function generationMode(dir: string): number | undefined {
+  try {
+    const st = lstatSync(usagePrevFile(dir));
+    return st.isFile() ? st.mode & 0o777 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * `logUsage`, plus a no-create mode for the CLI (issue #551): with `noCreate` the
- * folder is never created, so a row for a project's own notebook cannot re-create
- * the folder that `nb place shared` removed. Returns `false` only when the row was
- * not written because, in that mode, the folder is missing; the caller then logs
- * it elsewhere. Every other failure is swallowed, as in `logUsage`. Internal: not
+ * Open the live file for appending; a file this call creates takes the older
+ * generation's mode (through `fchmod`, so the umask cannot narrow it), as a
+ * compaction kept the mode before (issue #459).
+ */
+function openLive(dir: string): Opened {
+  let mode: number | undefined;
+  const o = openUsageFile(usageFile(dir), 'append', () => (mode = generationMode(dir)) ?? 0o666);
+  if (typeof o !== 'string' && 'fd' in o && o.created && mode !== undefined) {
+    try {
+      fchmodSync(o.fd, mode);
+    } catch {
+      /* chmod unsupported: keep the umask default */
+    }
+  }
+  return o;
+}
+
+/**
+ * Rotate the ring (issue #576): rename the live file to `.nb-usage.log.1`, dropping
+ * the older generation, so a row written meanwhile — even by a call that opened the
+ * live file before the rename — lands in a file that readers still read. Under a
+ * try-once `.nb.lock` (`tryAcquireLock`: no wait), the live file is counted again
+ * and rotated only if it still needs it, so a second rotator, which counted the
+ * file a moment before the first renamed it, does not rotate a fresh file over the
+ * full one. `holds()` just before the rename stops a rotator whose lock was taken
+ * from it as stale. `true` when this call rotated or found the file already rotated;
+ * `false` when the lock was busy or the rename failed.
+ */
+function rotateUsage(dir: string, ring: number, budget: number, rowBytes: number): boolean {
+  const h = tryAcquireLock(dir);
+  if (h === null) return false;
+  try {
+    usageTestHook?.('locked');
+    const o = openUsageFile(usageFile(dir), 'read');
+    if (typeof o === 'string' || 'refused' in o) return true; // gone, or refused: nothing to rotate
+    let due: boolean;
+    try {
+      const size = fstatSync(o.fd).size;
+      due = countRows(o.fd, size, ring, budget) + 1 >= ring || size + rowBytes >= budget;
+    } finally {
+      closeQuietly(o.fd);
+    }
+    if (!due) return true; // another call rotated it already
+    if (!h.holds()) return false;
+    renameSync(usageFile(dir), usagePrevFile(dir));
+    return true;
+  } catch {
+    return false; // Windows EPERM/EBUSY, `.1` is a folder…: tried again later
+  } finally {
+    releaseLock(h);
+  }
+}
+
+/** A test seam of the rotation (issue #576). Internal: not on the package root. */
+let usageTestHook: ((point: 'locked') => void) | undefined;
+export function setUsageTestHook(fn: ((point: 'locked') => void) | undefined): void {
+  usageTestHook = fn;
+}
+
+/**
+ * `logUsage`, plus a no-create mode for the CLI (issue #551) and a result (issue
+ * #576). With `noCreate` the folder is never created, so a row for a project's own
+ * notebook cannot re-create the folder that `nb place shared` removed; the result
+ * is then `no-folder` and the caller logs elsewhere. Never throws. Internal: not
  * on the package root.
+ *
+ * The ring is two generations (issue #576): appends go to `.nb-usage.log` with no
+ * lock; when it would reach `usageRing` rows (or `usageByteBudget()` bytes) one
+ * call renames it to `.nb-usage.log.1` (see `rotateUsage`) and the row goes to a
+ * new live file. Readers keep the newest `usageRing` rows of the two.
  */
 export function appendUsage(
   dir: string,
@@ -381,199 +713,183 @@ export function appendUsage(
   ms: number,
   meta: UsageMeta = {},
   opts: { noCreate?: boolean } = {},
-): boolean {
+): AppendResult {
   // Checked before the row is built, so the crash-recovery tally below is not
   // drained into a row that cannot be written.
-  if (opts.noCreate === true && !existsSync(dir)) return false;
+  if (opts.noCreate === true && !existsSync(dir)) return 'no-folder';
+  let fd: number | undefined;
   try {
     if (opts.noCreate !== true) mkdirSync(dir, { recursive: true });
     const file = usageFile(dir);
-    // `shelf`, `command`, and every meta field are caller-supplied (and
-    // `session` comes from an env var a hook sets); sanitize each so a tab/CR/LF
-    // cannot split the row or shift a column and mis-align parseUsage. The richer
-    // columns are appended AFTER the original five, so an old reader that
-    // looks only at the first five still parses, and an old row missing them
-    // round-trips as blank (backward-compatible — see parseUsage). `errorClass`
-    // is the newest column and goes LAST (issue #176), so a pre-#176 row — which
-    // ends at `note` — reads it as blank rather than mis-aligning any prior field.
-    // `session` (from NB_SESSION, which a harness sets) is caller-influenced
-    // free text, exactly like `note` — not a short fixed token — so it is capped
-    // to the same per-field length (issue #202). #128 capped only `note`, calling
-    // it "the one unbounded free-text field", but a long NB_SESSION is appended to
-    // EVERY row, so without this the ring's row-count bound no longer bounds its
-    // bytes. Truncated (never rejected) so `logUsage` keeps its never-throw
-    // contract, with the same trailing-ellipsis convention as the note.
-    const session = capNote(sanitizeUsageField(meta.session ?? process.env.NB_SESSION ?? ''));
-    const entries = capEntries((meta.entries ?? []).map(sanitizeUsageField));
-    const outcome = sanitizeUsageField(meta.outcome ?? '');
-    const collided = sanitizeUsageField(meta.collided ?? '');
-    const evicted = sanitizeUsageField(meta.evicted ?? '');
-    const reason = sanitizeUsageField(meta.reason ?? '');
-    const note = capNote(sanitizeUsageField(meta.note ?? ''));
-    // A fixed enum token (never user text), but sanitize anyway for uniformity so
-    // no column can ever be split — it is a no-op on a well-formed enum value.
-    const errorClass = sanitizeUsageField(meta.errorClass ?? '');
-    const decayed = sanitizeUsageField(meta.decayed ?? '');
-    // Crash-recovery column (issue #309): drain the tally that withLock's
-    // stale-lock steal and reapLeftoverTemps' temp reap filled during this same
-    // process's mutation, and record it as `<lockSteals>:<tempReaps>` — blank in
-    // the common no-recovery case, so an old reader and old rows are unchanged.
-    // Drained exactly once here (read-and-reset), so each event is counted on one
-    // row; the two counts are machine-generated integers, so no sanitize is
-    // needed (no caller text can reach this column).
-    const rec = drainPendingRecovery();
-    const recovered = rec.lockSteals > 0 || rec.tempReaps > 0 ? `${rec.lockSteals}:${rec.tempReaps}` : '';
-    // Batch-vote partial misses (issue #310): the count of stale ids skipped by a
-    // ≥1-landed batch `vote`. That call exits 0 (`ok=true`) so its misses never
-    // reach the err-rate table; recording them lets `nb stats` fold them into the
-    // vote error-cause readout. A machine-generated non-negative integer (no
-    // caller text, so no sanitize), blank in the common no-miss case so an old
-    // reader and old rows are unchanged.
-    const misses = meta.misses && meta.misses > 0 ? String(Math.round(meta.misses)) : '';
-    // Trailing columns 17 and 18 (issue #558): only a row whose caller passed a
-    // `version` (`brief`, `retro`) carries them; every other row stays byte-identical.
-    // Neither is cut with `…` nor subject to `NB_MAX_CHARS`: a cleaned value is
-    // short by construction, and a cap here is a hard cut of a token.
-    const record =
-      meta.version === undefined
-        ? ''
-        : `\t${meta.version.replace(/[^0-9A-Za-z.+-]/g, '').slice(0, 32)}\t${(meta.project ?? '').replace(/[^0-9A-Za-z.:?_-]/g, '').slice(0, 80)}`;
-    const line =
-      `${new Date().toISOString()}\t${usageShelfField(shelf)}\t${capNote(sanitizeUsageField(command))}\t${ok ? 'ok' : 'err'}\t${Math.round(ms)}ms` +
-      `\t${session}\t${entries}\t${outcome}\t${collided}\t${evicted}\t${reason}\t${note}\t${errorClass}\t${decayed}\t${recovered}\t${misses}${record}`;
+    const line = usageLine(shelf, command, ok, ms, meta);
     const ring = usageRing();
-    const compactAt = ring + usageRingSlack();
+    const budget = usageByteBudget();
+    const rowBytes = Buffer.byteLength(line) + 1;
 
-    // Fast path — the hot path on nearly every `nb` call. The sidecar records the
-    // log's row count AND byte size as of our last write, so we decide
-    // append-vs-compact WITHOUT reading or splitting the whole ring (issue #135):
-    // on a busy deployment the ring sits near its 5000-row cap, and re-reading
-    // hundreds of KB to record one line blew the "a call is a millisecond" budget.
-    //
-    // We trust the row count ONLY when the log's current size exactly equals the
-    // recorded size — proof that nothing has touched the file since we wrote it,
-    // so the count is accurate AND the file still ends with the `\n` we wrote (no
-    // row can be glued). Any out-of-band change — a concurrent writer, a
-    // hand-edit, an ENOSPC/crash-torn partial row — moves the size, so we fall
-    // through to the exact path, which re-derives the count, re-applies the
-    // trailing-newline guard, and restores the ring bound in that single call.
-    // The append here is O(1) and touches neither the preceding rows nor the
-    // inode (no rewrite, no rename).
+    let o = openLive(dir);
+    if (o === 'absent') return 'failed'; // not reachable in append mode
+    if ('refused' in o) return { refused: o.refused, path: file };
+    fd = o.fd;
+
+    // The row count: the sidecar's when the file's size still matches it, else counted.
     const state = readUsageState(dir);
-    if (state !== undefined && state.rows < compactAt && usageSize(file) === state.bytes) {
-      const buf = `${line}\n`;
-      appendFileSync(file, buf, 'utf-8');
-      writeUsageState(dir, state.rows + 1, state.bytes + Buffer.byteLength(buf));
-      return true;
+    let size = fstatSync(fd).size;
+    let trusted = state !== undefined && state.bytes === size;
+    let rows = trusted ? state!.rows : countRows(fd, size, ring, budget);
+    let retryAt = state?.retryAt ?? 0;
+
+    // Rotate before appending, so the row goes to the new live file. A failed or
+    // busy rotation is tried again `usageRingSlack()` rows later (by size, which
+    // keeps growing whatever the count says); without a readable sidecar, every
+    // call tries. A log already past the size cap tries on every call, so a cause
+    // that went away (a `.1` folder removed) ends the refusals at once.
+    const tooLarge = usageTooLargeBytes();
+    if ((rows + 1 >= ring || size + rowBytes >= budget) && (size >= retryAt || size >= tooLarge)) {
+      if (rotateUsage(dir, ring, budget, rowBytes)) {
+        closeQuietly(fd);
+        fd = undefined;
+        o = openLive(dir);
+        if (o === 'absent') return 'failed';
+        if ('refused' in o) return { refused: o.refused, path: file };
+        fd = o.fd;
+        size = fstatSync(fd).size;
+        rows = countRows(fd, size, ring, budget);
+        trusted = false; // the sidecar described the old file
+        retryAt = 0;
+      } else {
+        retryAt = size + usageRingSlack() * rowBytes;
+      }
     }
-
-    // Exact path: the sidecar was missing, stale, says we have reached the
-    // threshold, or the file changed out of band — so read the real rows and
-    // re-derive the count+size. This runs on the first write, the rare compaction
-    // (once per ~slack appends), and whenever a stale estimate needs healing —
-    // never on the common append.
-    const existing = existsSync(file) ? readFileSync(file, 'utf-8') : '';
-    const lines = existing.split('\n').filter((l) => l !== '');
-
-    if (lines.length < compactAt) {
-      // Still under cap + slack: append in place (no rewrite, no rename). This is
-      // the same threshold as the fast path — a stale sidecar on a full ring must
-      // not rewrite the log on every overlapping call and drop a concurrent
-      // writer's row (issue #377). Record the now-known count+size. Guard the trailing newline — a previous
-      // writer may have crashed mid-row leaving no final `\n`, and a blind append
-      // would glue our row onto theirs.
-      const sep = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
-      const buf = `${sep}${line}\n`;
-      appendFileSync(file, buf, 'utf-8');
-      writeUsageState(dir, lines.length + 1, Buffer.byteLength(existing) + Buffer.byteLength(buf));
-      return true;
+    if (size >= tooLarge) {
+      writeUsageState(dir, { rows, bytes: size, retryAt });
+      // Name the file that blocks the rotation when it is the older generation: a
+      // folder there (a rename replaces a link or a FIFO), as `nb status` says.
+      const prev = usageFileState(lstatOrNull(usagePrevFile(dir)));
+      if (typeof prev === 'object' && prev.refused === 'folder') return { refused: 'folder', path: usagePrevFile(dir) };
+      return { tooLarge: true, path: file };
     }
-
-    // At/over cap: compact. Slice to the newest `ring` rows (oldest dropped) and
-    // atomically replace the file — the only path that rewrites the previous
-    // bytes, now reached only on the rare compaction rather than every call.
-    lines.push(line);
-    const kept = lines.slice(lines.length - ring);
-    const body = kept.join('\n') + '\n';
-    // Per-process-unique temp path: this log write runs OUTSIDE the .nb.lock
-    // (it is called from the CLI's finally block), so two concurrent nb
-    // processes would otherwise write and rename the same `${file}.tmp` and
-    // clobber each other mid-write. The pid keeps each writer's temp distinct;
-    // the rename is still atomic, so a reader sees one whole file or the other.
-    const tmp = `${file}.${process.pid}.tmp`;
-    writeFileSync(tmp, body, 'utf-8');
-    preserveMode(file, tmp);
-    renameSync(tmp, file);
-    writeUsageState(dir, kept.length, Buffer.byteLength(body));
-    return true;
+    // A previous writer may have crashed mid-row, leaving no final `\n`: a blind
+    // append would glue our row onto theirs. A trusted sidecar proves the file
+    // still ends with the `\n` we wrote.
+    const lead = !trusted && !endsWithNewline(fd, size) ? '\n' : '';
+    const buf = Buffer.from(`${lead}${line}\n`, 'utf-8');
+    writeSync(fd, buf, 0, buf.length);
+    writeUsageState(dir, { rows: rows + 1, bytes: size + buf.length, retryAt });
+    return 'written';
   } catch (e) {
     // The folder went away between the check above and the write: the caller logs elsewhere.
-    if (opts.noCreate === true && (e as NodeJS.ErrnoException)?.code === 'ENOENT' && !existsSync(dir)) return false;
+    if (opts.noCreate === true && (e as NodeJS.ErrnoException)?.code === 'ENOENT' && !existsSync(dir)) return 'no-folder';
     /* monitoring is best-effort; never fail a real operation because the log write failed */
-    return true;
+    return 'failed';
+  } finally {
+    if (fd !== undefined) closeQuietly(fd);
   }
 }
+
+/**
+ * The one line a call prints on stderr when its usage row was not written because
+ * of what a usage file is (issue #576), or `null`. Written for a person who may not
+ * know the words, and for an assistant to pass on. The path is escaped, with the
+ * home folder shown as `~`.
+ */
+export function usageNotice(result: AppendResult, home: string): string | null {
+  if (typeof result === 'string') return null;
+  let shown = result.path;
+  if (home !== '' && isAbsolute(home) && home !== sep && shown.startsWith(home + sep)) shown = `~${shown.slice(home.length)}`;
+  shown = escapeDiskName(shown.length > 512 ? `${shown.slice(0, 512)}...` : shown);
+  const head = `nb (the notebook): this use of the notebook was not recorded in its usage log, because ${shown}`;
+  if ('tooLarge' in result) {
+    return `${head} has grown past ${Math.round(usageTooLargeBytes() / (1024 * 1024))} MB and the notebook could not start a new one. Your lessons are not in that file; delete it and the notebook starts a new log.`;
+  }
+  const what =
+    result.refused === 'link'
+      ? 'is a shortcut (symbolic link) instead of a normal file. Your lessons are not in that file. Delete the link itself, not what it points to, and the notebook starts a new log.'
+      : result.refused === 'folder'
+        ? 'is a folder instead of a normal file. Your lessons are not in it; look inside it before you delete it, and the notebook starts a new log.'
+        : 'is a special system file instead of a normal file. Your lessons are not in it; delete it and the notebook starts a new log.';
+  return `${head} ${what} If it keeps coming back, a sync app (iCloud Drive, Dropbox) may be changing the notebook folder.`;
+}
+
+// ---------------------------------------------------------------------------
+// The readers
+// ---------------------------------------------------------------------------
 
 /** Options of `parseUsage`. */
 export interface ParseUsageOptions {
   /**
-   * Read at most the last `maxBytes` of the log (issue #558), for a reader that must
-   * stay bounded (`nb status`). With it, the log is `lstat`ed and anything that is not
-   * a regular file (a FIFO, a device, a symlink) gives no rows; it is opened with
-   * `O_NONBLOCK`; and the first, possibly partial, line of a cut read is dropped.
-   * Never throws. Without it, the whole file is read, as before.
+   * Read at most `maxBytes` of the two generations together (issue #558), for a
+   * reader that must stay small (`nb status`). Without it the budget is
+   * `usageByteBudget()` (issue #576). Either way only regular files are read, every
+   * open is non-blocking, the first, possibly partial, line of a cut read is dropped,
+   * and it never throws.
    */
   maxBytes?: number;
 }
 
-/** The text of the last `maxBytes` of the log, or `null` when it is not a plain readable file. */
-function readTail(file: string, maxBytes: number): string | null {
-  let fd: number | undefined;
+/** The text of the last `maxBytes` of `fd`, dropping a first partial line when the read is cut. */
+function tailText(fd: number, maxBytes: number): string {
+  const size = fstatSync(fd).size;
+  const len = Math.min(size, Math.max(0, Math.floor(maxBytes)));
+  if (len === 0) return '';
+  const start = size - len;
+  const text = readRange(fd, start, len).toString('utf-8');
+  if (start === 0) return text;
+  const nl = text.indexOf('\n');
+  return nl === -1 ? '' : text.slice(nl + 1);
+}
+
+function openForRead(path: string): number | undefined {
   try {
-    if (!lstatSync(file).isFile()) return null;
-    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
-    const st = fstatSync(fd);
-    if (!st.isFile()) return null;
-    const want = Math.max(0, Math.floor(maxBytes));
-    const len = Math.min(st.size, want);
-    if (len === 0) return '';
-    const start = st.size - len;
-    const buf = Buffer.alloc(len);
-    let got = 0;
-    while (got < len) {
-      const n = readSync(fd, buf, got, len - got, start + got);
-      if (n <= 0) break;
-      got += n;
-    }
-    const text = buf.subarray(0, got).toString('utf-8');
-    if (start === 0) return text;
-    // Cut mid-file: the first line may be partial; drop it (all of it, when it has no newline).
-    const nl = text.indexOf('\n');
-    return nl === -1 ? '' : text.slice(nl + 1);
+    const o = openUsageFile(path, 'read');
+    return typeof o === 'string' || 'refused' in o ? undefined : o.fd;
   } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) {
-      try {
-        closeSync(fd);
-      } catch {
-        // nothing to release
-      }
-    }
+    return undefined;
   }
 }
 
+/**
+ * The usage rows, oldest first: the newest `usageRing` rows of the older generation
+ * and the live file (issue #576). The live file is opened first and `.1` second, and
+ * `.1` is skipped when it is the same file (a rotation happened between the two
+ * opens), so no row is read twice. A refused file (a link, a FIFO, a folder…) gives
+ * no rows. Never throws.
+ */
 export function parseUsage(dir: string, opts: ParseUsageOptions = {}): UsageRow[] {
-  const file = usageFile(dir);
-  let text: string;
-  if (opts.maxBytes !== undefined) {
-    const tail = readTail(file, opts.maxBytes);
-    if (tail === null) return [];
-    text = tail;
-  } else {
-    if (!existsSync(file)) return [];
-    text = readFileSync(file, 'utf-8');
+  const budget = opts.maxBytes ?? usageByteBudget();
+  const ring = usageRing();
+  const live = openForRead(usageFile(dir));
+  const prev = openForRead(usagePrevFile(dir));
+  try {
+    let liveText = '';
+    let prevText = '';
+    let used = 0;
+    if (live !== undefined) {
+      try {
+        liveText = tailText(live, budget);
+        used = Buffer.byteLength(liveText);
+      } catch {
+        liveText = '';
+      }
+    }
+    const liveRows = parseRows(liveText);
+    if (prev !== undefined && liveRows.length < ring && used < budget) {
+      try {
+        const a = live === undefined ? null : fstatSync(live, { bigint: true });
+        const b = fstatSync(prev, { bigint: true });
+        if (a === null || a.ino !== b.ino || a.dev !== b.dev) prevText = tailText(prev, budget - used);
+      } catch {
+        prevText = '';
+      }
+    }
+    const rows = prevText === '' ? liveRows : parseRows(prevText).concat(liveRows);
+    return rows.length > ring ? rows.slice(rows.length - ring) : rows;
+  } finally {
+    if (live !== undefined) closeQuietly(live);
+    if (prev !== undefined) closeQuietly(prev);
   }
+}
+
+function parseRows(text: string): UsageRow[] {
   const rows: UsageRow[] = [];
   for (const line of text.split('\n')) {
     if (line.trim() === '') continue;
