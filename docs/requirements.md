@@ -1902,7 +1902,9 @@ nothing and SHALL NOT change the exit code of `nb retro`. When it confirms this 
 SHALL print nothing else, claim no sentinel and have the outcome `deferred`: the question was asked in this
 chat's first reply and the user has not answered yet, so a lesson added now would land in the shared notebook
 and keep a "separate notebook for each project" answer from giving this project its own (issue #560). The
-chat's next `nb retro` is a normal one. In every other case the confirmation SHALL NOT change the text or the
+chat's next `nb retro` is a normal one, so a first chat with a single reply gets no retrospective and none of
+the user's retro message files or `NB_RETRO_EXTRA_PROMPT` text; the note A' chat (no question) defers the same
+way, since the claim does not record which note was printed. In every other case the confirmation SHALL NOT change the text or the
 outcome. `--json` SHALL print `{ outcome, text, session }` with `outcome` one of `nudge`, `already`, `off`,
 `off-work-dir`, `deferred`. On a `nudge` the text SHALL be, each part separated by one blank line: the built-in
 text; the blocks of the user's `retro.txt` and then `<project>.retro.txt` ([FR-MSG-001](#fr-msg-001)); the

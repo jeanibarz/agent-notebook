@@ -225,7 +225,8 @@ describe('the confirmation is the first step of nb retro (FR-RETRO-001, FR-SETUP
     // The next Stop asks for the retrospective; its lesson lands in the project's own notebook.
     expect(nb(['retro', '--session', SESSION]).out).toContain('Before finishing, run the agent-notebook retrospective');
     expect(nb(['add', 'testing@acme-app', 'run the tests with npm test']).code).toBe(0);
-    expect(nb(['place']).out).toMatch(/^own: /);
+    expect(existsSync(join(projects, 'acme-app', 'testing@acme-app.md'))).toBe(true);
+    expect(existsSync(join(shared, 'testing@acme-app.md'))).toBe(false);
   });
 
   test('it confirms before the sentinel and before every "off" return: a repeated stop, the switch off', () => {
@@ -373,5 +374,5 @@ describe('an existing user sees nothing new, with or without --welcome and the t
     expect(run(true)).toEqual(base);
     expect(base[0]).not.toContain('Set-up note');
     expect(readdirSync(projects).sort()).toEqual(['.first-start', '.layout']);
-  });
+  }, 30_000); // it runs nb many times; a loaded host takes over 5 s
 });
