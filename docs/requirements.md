@@ -2689,7 +2689,7 @@ had a turn but whose assistant did not pass the question on spends it.
 **Rationale:** a Stop runs only after a real turn, so a chat opened and closed without a prompt, or a hook killed at its time limit, does not spend the question.
 *Proven by:* `setup-welcome.test.ts` → `describe('the .first-start grammar (FR-SETUP-002)')`,
 `describe('the claim: an exclusive create in a real folder of this user (FR-SETUP-002)')`,
-`describe('expiry: a pending claim older than 60 minutes, or dated in the future, is taken over once (FR-SETUP-002)')` and
+`describe('expiry: a pending claim older than 60 minutes, or dated more than 5 minutes in the future, is taken over once (FR-SETUP-002)')` and
 `describe('the confirmation: pending for this session becomes done, and nothing else changes (FR-SETUP-002)')`;
 `brief-welcome.test.ts` → `describe('the claim under failure and abuse (FR-SETUP-002, NFR-SAFE-001)')`.
 
