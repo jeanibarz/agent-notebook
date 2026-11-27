@@ -98,7 +98,7 @@ async function run(
 
 /** The end of the created-shelf note for a shelf `add` or `move` started with no description (issue #589). */
 const askDesc = (shelf: string): string =>
-  `; it has no description, so the index shows its top lesson. Say when to open it: nb describe ${shelf} "<when to open this shelf>"`;
+  `; it has no description, so the index shows its top lesson. Say when to open the shelf: nb describe ${shelf} "<when to open this shelf>"`;
 
 describe('runNbCli', () => {
   test('a forgotten shelf never writes the lesson text into the usage log (issue #375)', async () => {
@@ -5765,7 +5765,7 @@ describe('created-shelf note (issue #404)', () => {
     expect(r.out).toBe('added — 1 line\n'); // stdout unchanged
     expect(r.err).toBe(
       'note: created new shelf "release-and-tagging"; it has no description, so the index shows its top lesson. ' +
-        'Say when to open it: nb describe release-and-tagging "<when to open this shelf>"\n',
+        'Say when to open the shelf: nb describe release-and-tagging "<when to open this shelf>"\n',
     );
     // The command the note names works as printed.
     const d = await run(['describe', 'release-and-tagging', 'cutting a release or a tag']);

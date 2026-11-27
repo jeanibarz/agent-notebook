@@ -827,7 +827,7 @@ function writeCreatedNote(shelf: string, sim: string[], consolidateId?: string, 
           (consolidateId ? ` — if it is the same subject, consolidate with: nb move ${shelf} ${sim[0]} ${consolidateId}` : '')
         : '') +
       (undescribed
-        ? `; it has no description, so the index shows its top lesson. Say when to open it: nb describe ${shelf} "<when to open this shelf>"`
+        ? `; it has no description, so the index shows its top lesson. Say when to open the shelf: nb describe ${shelf} "<when to open this shelf>"`
         : '') +
       '\n',
   );
