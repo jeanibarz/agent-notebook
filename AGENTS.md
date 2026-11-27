@@ -124,6 +124,11 @@ notebook so the next run of this task starts wiser:
    ```sh
    nb add "<shelf>" "fresh worktree has no node_modules — run npm install before build/test"
    ```
+   If you start a new shelf, give it a description with `nb describe`: the index shows
+   it as the shelf's "open me when…" line, and without one it shows the top lesson instead.
+   ```sh
+   nb describe "<new-shelf>" "<when to open this shelf>"
+   ```
 
 > Never pad the notebook to hit a quota — a forced lesson pollutes a bounded
 > notebook and skews the usage signals `nb stats` reads. "I learned nothing new
@@ -194,6 +199,7 @@ END (retro) nb vote <shelf> <id> +1   # the lessons that helped
             nb rm   <shelf> <id> --reason obsolete   # what no longer applies
             nb merge/split …         # keep it tidy
             nb add  <shelf> "<=200-char lesson (aim ~150)"  # at most ONE, to the fitting notebook
+            nb describe <new-shelf> "<when to open it>"     # if you started a new shelf
 ```
 
 ---

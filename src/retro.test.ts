@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { RETRO_LESSONS } from './agent-text.js';
+import { RETRO_LESSONS, RETRO_NEW_SHELF_LINE } from './agent-text.js';
 import { parseUsage } from './usage.js';
 
 // Issue #538: `nb retro`, the once-per-session retrospective, ported from the
@@ -124,6 +124,18 @@ function oldHook(session: string | undefined, opts: { cwd?: string; env?: Record
   return j.reason;
 }
 
+/**
+ * The 0.12 Stop hook's text with the one line `nb retro` adds after step 5, which asks
+ * for a description on a new shelf (issue #589); every other line is the 0.12 text.
+ */
+function withNewShelfLine(old: string): string {
+  const lines = old.split('\n');
+  const at = lines.findIndex((l) => l.startsWith('     Length:'));
+  expect(at).toBeGreaterThan(0);
+  lines.splice(at + 1, 0, RETRO_NEW_SHELF_LINE);
+  return lines.join('\n');
+}
+
 const sentinels = (): string[] => readdirSync(store).filter((n) => n.startsWith('.retro-')).sort();
 const retroJson = (r: Run) => JSON.parse(r.out) as { outcome: string; text: string; session: string };
 
@@ -132,13 +144,13 @@ function age(path: string, days: number): void {
   utimesSync(path, t, t);
 }
 
-describe('nb retro sends what the 0.12 Stop hook sent (FR-RETRO-001, FR-RETRO-002)', () => {
-  testOld('for a fresh session nb retro prints exactly the reason the 0.12 Stop hook blocked with, plus a newline', () => {
+describe('nb retro sends what the 0.12 Stop hook sent, plus the new-shelf line (FR-RETRO-001, FR-RETRO-002)', () => {
+  testOld('for a fresh session nb retro prints the reason the 0.12 Stop hook blocked with, plus the new-shelf line and a newline', () => {
     const old = oldHook('parity-1', { env: { NB_DIR: join(tmp, 'old-store') } });
     const r = nb(['retro', '--session', 'parity-1']);
     expect(old).not.toBeNull();
     expect(r.code).toBe(0);
-    expect(r.out).toBe(old + '\n');
+    expect(r.out).toBe(withNewShelfLine(old!) + '\n');
     expect(r.out).toBe(RETRO_LESSONS + '\n');
     expect(r.err).toBe('');
   });
@@ -150,8 +162,8 @@ describe('nb retro sends what the 0.12 Stop hook sent (FR-RETRO-001, FR-RETRO-00
     const env = { NB_RETRO_EXTRA_PROMPT: extra };
     const old = oldHook('sess-extra', { cwd: proj, env: { ...env, NB_DIR: join(tmp, 'old-store') } });
     const r = nb(['retro', '--session', 'sess-extra'], { cwd: proj, env });
-    expect(old).toBe(`${RETRO_LESSONS}\n\nProject proj.one, session sess-extra; again proj.one.`);
-    expect(r.out).toBe(old + '\n');
+    expect(withNewShelfLine(old!)).toBe(`${RETRO_LESSONS}\n\nProject proj.one, session sess-extra; again proj.one.`);
+    expect(r.out).toBe(withNewShelfLine(old!) + '\n');
   });
 
   test('the project name for {project} is asked in --work-dir before the working directory', () => {
@@ -189,8 +201,8 @@ describe('nb retro sends what the 0.12 Stop hook sent (FR-RETRO-001, FR-RETRO-00
     const env = { NB_RETRO_EXTRA_PROMPT: extra, NB_PROJECT_SLUG: 'My Slug!' };
     const old = oldHook('sess-slug', { env: { ...env, NB_DIR: join(tmp, 'old-store') } });
     const r = nb(['retro', '--session', 'sess-slug'], { env });
-    expect(old).toBe(`${RETRO_LESSONS}\n\nslug=my-slug id=sess-slug`);
-    expect(r.out).toBe(old + '\n');
+    expect(withNewShelfLine(old!)).toBe(`${RETRO_LESSONS}\n\nslug=my-slug id=sess-slug`);
+    expect(r.out).toBe(withNewShelfLine(old!) + '\n');
   });
 });
 
@@ -681,7 +693,7 @@ describe('nb retro under concurrency (FR-RETRO-001)', () => {
 
   testOld('with a retro.txt present: the 0.12 Stop hook ignores it; the claim is shared, so whoever is second prints nothing', () => {
     putRetroFile('MY OWN RETRO TEXT');
-    expect(oldHook('old-first')).toBe(RETRO_LESSONS);
+    expect(withNewShelfLine(oldHook('old-first')!)).toBe(RETRO_LESSONS);
     expect(nb(['retro', '--session', 'old-first']).out).toBe('');
     const r = nb(['retro', '--session', 'new-first']);
     expect(r.out).toContain('MY OWN RETRO TEXT');
@@ -706,7 +718,7 @@ describe('nb retro under concurrency (FR-RETRO-001)', () => {
     // The old hook's reason is JSON; the new command prints plain text with the block.
     const out = spoke[0]!.out;
     if (out.startsWith('{')) {
-      expect((JSON.parse(out) as { reason: string }).reason).toBe(RETRO_LESSONS);
+      expect(withNewShelfLine((JSON.parse(out) as { reason: string }).reason)).toBe(RETRO_LESSONS);
     } else {
       expect(out).toContain('MY OWN RETRO TEXT');
     }
