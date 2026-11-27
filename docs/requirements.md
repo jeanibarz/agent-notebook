@@ -177,6 +177,9 @@ and the home folder; the tail of the usage log(s), the names of shelf files and 
 `~/.agent-notebook/projects/`; the message files; `package.json` and `CHANGELOG.md` beside `cli.js`; git's
 `nb.enabled` and the project-name reads in the working directory; and the clock, which decides the ages it
 prints and the verdict's recency, never a write.
+No call SHALL block, or read without bound, because of what a file it uses is: the usage log and its sidecars are
+opened without blocking and read through a byte budget, and logging never waits for a lock
+([FR-USAGE-005](#fr-usage-005), issue #576). A file system that stalls (a hung network mount) can still stall a call.
 **Rationale:** Agent memory must be usable on every task without latency, cost, or
 a dependency on an external service being up.
 
@@ -1005,7 +1008,8 @@ any other error (e.g. `EACCES`/`EPERM`/`EROFS`/`ENOSPC` from an unwritable
 `NB_DIR`) SHALL fail fast with a clear 'directory is not writable' error that
 names the underlying code, rather than busy-waiting the whole acquire budget and
 then reporting a misleading 'locked' when no other process exists (issue #263).
-(The usage log is appended outside this lock — see [FR-USAGE-001](#fr-usage-001).)
+(The usage log is appended outside this lock — see [FR-USAGE-001](#fr-usage-001). Its rotation takes it only
+try-once, never waiting, and steals only a stale lock that is a real folder ([FR-USAGE-005](#fr-usage-005)).)
 Every mutation SHALL hold one lock, except `nb place own` and `nb place shared`
 ([FR-PLACE-003](#fr-place-003)), which SHALL hold two and always take the shared notebook's
 first, then the project folder's; they SHALL wait for the second at most half the stale
@@ -1064,12 +1068,14 @@ lose a lesson the CLI already reported as added. *(Directory-fsync failure is
 tolerated for platforms that disallow it.)*
 
 <a id="fr-dur-002"></a>
-**FR-DUR-002 (Should).** A rewrite of an existing shelf, and the usage log's compaction,
-SHALL preserve the file's permission bits (`mode & 0o777`) on the replacement, so a
-`chmod 600` or group-shared `660` survives the next `add`, `vote`, `describe`, `merge`,
-`split`, `move` or compaction. Owner and group are not preserved. A newly created file
+**FR-DUR-002 (Should).** A rewrite of an existing shelf SHALL preserve the file's permission
+bits (`mode & 0o777`) on the replacement, so a `chmod 600` or group-shared `660` survives the
+next `add`, `vote`, `describe`, `merge`, `split` or `move`. The usage log's rotation
+([FR-USAGE-005](#fr-usage-005)) SHALL give the new live file the mode of the generation it
+replaces, whatever the umask. Owner and group are not preserved. A newly created file
 keeps the process umask default, and a failure to set the mode is non-fatal.
-*Proven by:* `notebook.test.ts` → `describe('rewrites preserve the file mode (issue #459)')`.
+*Proven by:* `notebook.test.ts` → `describe('rewrites preserve the file mode (issue #459)')`;
+the rotation by `usage-hostile.test.ts` → "the log keeps its mode (0600 or 0660) across a rotation, whatever the umask".
 
 ### 4.12 Usage log & stats
 
@@ -1079,7 +1085,7 @@ log a lightweight best-effort row under the canonical command `help`/`version` (
 an empty shelf and no entry-level columns) so that a harness that only ever runs
 `nb --help` is still visible to `nb stats` rather than leaving no trace — SHALL
 append one tab-delimited row to the usage ring, bounded to `usageRing` rows (oldest
-dropped). The row's first five columns SHALL be
+dropped; the ring is two files and readers keep its newest `usageRing` rows, [FR-USAGE-005](#fr-usage-005)). The row's first five columns SHALL be
 `"<iso-ts>\t<shelf>\t<command>\t<ok|err>\t<ms>ms"`, followed by the five entry-level
 columns of [FR-USAGE-002](#fr-usage-002) and the two reason columns of
 [FR-USAGE-003](#fr-usage-003). For a call resolved to a project's own notebook
@@ -1189,6 +1195,44 @@ lesson ([NG-004](#ng-004)). Appending after the existing columns keeps an older 
 and older rows working, exactly as [FR-USAGE-002](#fr-usage-002) was appended after the
 base five.
 *Proven by:* `notebook.test.ts` → `describe('operation reasons (seed-and-grow enum)')`.
+
+<a id="fr-usage-005"></a>
+**FR-USAGE-005 (Must).** The usage log SHALL be safe whatever its path holds, and SHALL lose no row written by
+a concurrent call (issue #576).
+- **One rule for its files.** The live log `.nb-usage.log`, its sidecar `.nb-usage.log.count` and its older
+  generation `.nb-usage.log.1` SHALL be used only when they are regular files (or absent). A symbolic link, a
+  folder, a FIFO, a device or a socket SHALL be refused unopened: the path is `lstat`ed, the open adds
+  `O_NONBLOCK` and `O_NOFOLLOW` (an `lstat` after the open replaces the latter on Windows), and the open
+  descriptor SHALL be a regular file. The writer, `nb stats`, `nb status`'s reader and `nb status`'s log check
+  SHALL apply this same rule (`usageFileState`). A linked log is refused rather than followed (the compaction
+  before this change replaced the link with a plain file anyway); a linked `NB_DIR` keeps working.
+- **Bounded reads.** Every read of the log SHALL take at most `usageByteBudget()` bytes (`usageRing` × 1 KiB,
+  between 1 and 64 MiB), from the end, dropping a first partial line; the writer counts rows without building
+  the file as a string. `parseUsage` therefore never throws for a FIFO or a folder (it gives no rows) and no
+  longer follows a linked log.
+- **Two generations.** Appends SHALL take no lock. When the live file would reach `usageRing` rows or
+  `usageByteBudget()` bytes, the call SHALL take `.nb.lock` try-once (no wait), count the live file again, check
+  it still holds the lock, and rename the live file to `.nb-usage.log.1` (dropping the older generation), then
+  append its row to a new live file. A busy lock or a failed rename SHALL be retried `usageRingSlack()` rows
+  later (by size, recorded in an optional third sidecar column). Readers SHALL read the live file first, then
+  `.1` unless it is the same file, and keep the newest `usageRing` rows. The disk therefore holds up to two
+  generations (about 2 × `usageRing` rows); removing `.nb-usage.log*` purges the log.
+- **When a row is not written.** When the live file is refused, or is still at least `usageTooLargeBytes()`
+  (twice the budget) after a rotation was tried, the row SHALL not be written and the CLI SHALL print one line
+  on stderr, once per call, naming the file in plain words and saying the lessons are not in it; the call's
+  output and exit code SHALL be unchanged. Any other failure to log (a read-only folder) stays silent.
+- **Residual loss, stated.** A row can still be lost only when its writer stays suspended across two rotations;
+  when a rotator stalls longer than `NB_STALE_LOCK_MS` between its ownership check and its rename (a window of
+  microseconds, unbounded only when the lock's owner token could not be written, a full disk); when an `nb`
+  older than this change compacts the same log; when one folder is written from two machines (NFS, SMB); or
+  when a scanner blocks the append on Windows. An older `nb` reads only the live file.
+**Rationale:** The log is the input of `nb status` ([FR-STATUS-001](#fr-status-001)); a lost start row made it
+answer "not seen" for a setup that works, and a FIFO at the log's path hung the session-start hook.
+*Proven by:* `usage-hostile.test.ts` → `describe('a usage log that is not a plain file never blocks, grows or fails a call (issue #576, FR-USAGE-005)')`,
+`describe('the writer and nb status accept the same kinds of file (issue #576)')`,
+`describe('the ring loses no row written by a concurrent call (issue #576)')` and
+`describe('the one-line notice (issue #576)')`; `notebook.test.ts` →
+"usage log is a bounded ring: readers get exactly the newest usageRing() rows of its two generations (issue #135, #576)".
 
 <a id="fr-reason-001"></a>
 **FR-REASON-001 (Should).** A mutating op MAY carry an optional **operation reason**:
@@ -2413,10 +2457,15 @@ rules, in this order.
   this project's lessons are kept, so it stays closed here for now. Your lessons are safe.` Line 2: `Ask your
   assistant to look at the details below.`
 - **`broken`.** Checked live first: the notebook folder in use exists but cannot be read or is not a folder, or its
-  usage log exists and cannot be written (these cases leave no row at all, while `brief` still exits 0 and prints a
-  warning, so only a live check can see them). Line 1 for them: `The notebook can't be opened right now, so chats
-  can't use it.` or `The notebook can't note when a chat starts it (a file in it can't be written), so this check
-  can't tell whether it works.` Otherwise, from the rows: this project's newest start or end row has outcome
+  usage log exists and cannot be written, or is a file the writer refuses (a link, a folder, a FIFO or device, or
+  a log too large to rotate, [FR-USAGE-005](#fr-usage-005)) (these cases leave no row at all, while `brief` still
+  exits 0, so only a live check can see them). Line 1 for them: `The notebook can't be opened right now, so chats
+  can't use it.`, `The notebook can't note when a chat starts it (a file in it can't be written), so this check
+  can't tell whether it works.`, or, for a refused log, `The notebook's lessons are fine, but its record of chat
+  starts (the usage log, .nb-usage.log) is <kind>, so this check can't tell whether chats start it.`, where
+  `<kind>` is `a shortcut (symbolic link) instead of a normal file`, `a folder instead of a normal file`, `a special
+  system file instead of a normal file` or `too large to start a new one`; the detail block then has a `Usage log:`
+  line saying the lessons are not in it. Otherwise, from the rows: this project's newest start or end row has outcome
   `broken`, or a newer row with key `?` has it (a place `unknown` at hook time writes an ok row with outcome
   `broken` in the shared log). Line 1: `The notebook could not open when a chat last started it (<age>).` Line 2: if
   the notebook opens now, `It opens now: start a new chat and ask again.`; otherwise `Ask your assistant to look at
@@ -2740,11 +2789,12 @@ in under ~50 ms on a developer machine (plain `fs` over one small file; no netwo
 
 <a id="nfr-bound-001"></a>
 **NFR-BOUND-001 (Must).** A notebook SHALL never exceed `maxLines` entries after any
-operation; a lesson SHALL never exceed `maxChars`; the usage log SHALL never exceed
-`usageRing` rows. A reader that must stay bounded (`nb status`, issue #558) SHALL read the usage log
-through `parseUsage(dir, { maxBytes })`: it `lstat`s the log and refuses anything that is not a regular file (a
-FIFO, a device, a symlink: no rows, no throw), opens it with `O_NONBLOCK`, reads only the last `maxBytes` and
-drops the first, possibly partial, line. Without the option `parseUsage` reads the whole file, as before.
+operation; a lesson SHALL never exceed `maxChars`; a reader of the usage log SHALL never get more than
+`usageRing` rows, and the log on disk SHALL never exceed two generations of it ([FR-USAGE-005](#fr-usage-005)).
+A reader that must stay small (`nb status`, issue #558) SHALL read the usage log
+through `parseUsage(dir, { maxBytes })`: it refuses anything that is not a regular file (a
+FIFO, a device, a symlink: no rows, no throw), opens it with `O_NONBLOCK`, reads at most `maxBytes` of the two
+generations and drops the first, possibly partial, line. Without the option the budget is `usageByteBudget()` (issue #576).
 *(Unbounded growth is the failure this product exists to avoid.)*
 *Proven by:* `usage-record.test.ts` → `describe('parseUsage reads a bounded tail and refuses what is not a plain file (NFR-BOUND-001, issue #558)')`.
 
@@ -2758,7 +2808,7 @@ the Node-18 leg runs a dependency-free runtime smoke of the built CLI
 minimum engine is actually executed and not merely compiled. A Windows leg (Node 22)
 runs the tests of the agent-facing loop added by issue #538 (`src/brief.test.ts`, `src/retro.test.ts`,
 `src/loop-stats.test.ts`, `src/module-boundaries.test.ts`) and of the project name added by issue #540
-(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`) and of the message files added by issue #539 (`src/messages.test.ts`) and of the usage record added by issue #558 (`src/usage-record.test.ts`) and of `nb status` (`src/status.test.ts`, `src/status-cli.test.ts`) and of the plugin's hook entry added by issue #559 (`src/nb-hook-entry.test.ts`) and of the plugin's build and hooks (`src/plugin-workflows.test.ts` with them); the rest of the suite is not
+(`src/project.test.ts`) and of the project folders added by issue #548 (`src/place.test.ts`, `src/place-ops.test.ts`) and of the message files added by issue #539 (`src/messages.test.ts`) and of the usage record added by issue #558 (`src/usage-record.test.ts`) and of the usage-log safety added by issue #576 (`src/usage-hostile.test.ts`) and of `nb status` (`src/status.test.ts`, `src/status-cli.test.ts`) and of the plugin's hook entry added by issue #559 (`src/nb-hook-entry.test.ts`) and of the plugin's build and hooks (`src/plugin-workflows.test.ts` with them); the rest of the suite is not
 yet run on Windows. The `plugin-e2e` workflow installs, updates, rolls back and uninstalls the plugin on Linux, macOS and Windows ([FR-PLUGIN-005](#fr-plugin-005)). An `old-node-entry` leg runs that entry on Node 12 and 16, the versions it exists for. *(Proven by
 `src/smoke-node18.test.ts`.)*
 

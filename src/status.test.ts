@@ -2,7 +2,7 @@ import { describe, test, expect } from 'vitest';
 import { ageWords, decideStatus, renderStatus, statusJson, NAMES_HEADING, type StatusFacts, type StatusRow } from './status.js';
 import { gatherFacts, releaseDateIn, ROW_COMMANDS, shown, tildify, validateRow, type FactsInput } from './status-facts.js';
 import { KNOWN_COMMANDS } from './cli.js';
-import type { UsageRow } from './usage.js';
+import { usageTooLargeBytes, type UsageRow } from './usage.js';
 
 // Issue #558, FR-STATUS-001..003: the verdicts and their fixed sentences (pure), the read-time validation
 // and the merge of the logs (injected dependencies). The built CLI is run in status-cli.test.ts.
@@ -134,6 +134,31 @@ describe('every verdict and every line variant, as text (golden, FR-STATUS-002)'
     expect(d.verdict).toBe('broken');
     expect(d.headline).toBe("The notebook can't note when a chat starts it (a file in it can't be written), so this check can't tell whether it works.");
     expect(d.next).toBe('Ask your assistant to look at the details below.');
+  });
+
+  test('broken, live: the usage log is not a plain file, or too large to rotate, in plain words (issue #576)', () => {
+    const cases = [
+      [{ log: 'not-file', logKind: 'link' }, 'a shortcut (symbolic link) instead of a normal file', ' or read it'],
+      [{ log: 'not-file', logKind: 'folder' }, 'a folder instead of a normal file', ' or read it'],
+      [{ log: 'not-file', logKind: 'special' }, 'a special system file instead of a normal file', ' or read it'],
+      [{ log: 'too-large' }, 'too large to start a new one', ''],
+    ] as const;
+    for (const [live, words, read] of cases) {
+      const f = facts({ live: { folder: 'ok', ...live } });
+      const d = decideStatus(f, NOW);
+      expect(d).toMatchObject({ verdict: 'broken', scope: 'project', problem: null });
+      expect(d.headline).toBe(
+        `The notebook's lessons are fine, but its record of chat starts (the usage log, .nb-usage.log) is ${words}, so this check can't tell whether chats start it.`,
+      );
+      expect(d.next).toBe('Ask your assistant to look at the details below.');
+      expect(renderStatus(f, d, NOW)).toContain(
+        `\nUsage log: ${words}; nb does not write it${read}. The lessons are not in it; delete it (a link itself, not what it points to) and nb starts a new log.\n`,
+      );
+      expect(statusJson(f, d, NOW)).not.toHaveProperty('live'); // the JSON shape is unchanged
+    }
+    // an ordinary log prints no such line
+    const ok = facts({});
+    expect(renderStatus(ok, decideStatus(ok, NOW), NOW)).not.toContain('Usage log:');
   });
 
   test('broken, from this project\'s newest start row', () => {
@@ -591,7 +616,7 @@ const okDeps = (logs: Record<string, UsageRow[]>): Parameters<typeof gatherFacts
   execPath: '/usr/bin/node',
   readUsage: (dir) => logs[dir] ?? [],
   stat: () => ({ isFile: () => true, isDirectory: () => true }),
-  lstat: () => ({ isFile: () => true }),
+  lstat: () => ({ isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, size: 10 }),
   readdir: () => ['a.md', 'b.md', '.hidden.md', 'README.md', 'notes.txt'],
   writable: () => true,
   enabled: () => ({ enabled: true, source: 'default', value: null, origin: null, warning: null }),
@@ -655,9 +680,23 @@ describe('the facts are read from two logs, merged by timestamp, and never throw
     expect(gatherFacts(input(), { ...base, writable: () => { throw new Error('EACCES'); } }).live.log).toBe('unwritable');
     expect(gatherFacts(input(), { ...base, lstat: err('ENOENT') }).live.log).toBe('absent');
     expect(gatherFacts(input(), base).live.log).toBe('ok');
-    // a log that is not a regular file (a FIFO) cannot be written to by a row
-    const fifo = (p: string) => ({ isFile: () => !p.endsWith('.nb-usage.log'), isDirectory: () => p === '/nb/shared' });
-    expect(gatherFacts(input(), { ...base, stat: fifo }).live.log).toBe('unwritable');
+    // The writer's own rule (issue #576): the log is lstat'ed, never stat'ed, so a link is a link.
+    const kind = (k: 'fifo' | 'link' | 'folder') => (p: string) => ({
+      isFile: () => !p.endsWith('.nb-usage.log'),
+      isDirectory: () => k === 'folder' && p.endsWith('.nb-usage.log'),
+      isSymbolicLink: () => k === 'link' && p.endsWith('.nb-usage.log'),
+      size: 0,
+    });
+    expect(gatherFacts(input(), { ...base, lstat: kind('fifo') }).live).toEqual({ folder: 'ok', log: 'not-file', logKind: 'special' });
+    expect(gatherFacts(input(), { ...base, lstat: kind('link') }).live).toEqual({ folder: 'ok', log: 'not-file', logKind: 'link' });
+    expect(gatherFacts(input(), { ...base, lstat: kind('folder') }).live).toEqual({ folder: 'ok', log: 'not-file', logKind: 'folder' });
+    // a stat that follows the link (to a plain file) no longer decides: only the lstat does
+    expect(gatherFacts(input(), { ...base, lstat: kind('link'), stat: () => ({ isFile: () => true, isDirectory: () => true }) }).live.log).toBe('not-file');
+    // the size cap is the writer's (usageTooLargeBytes), so the two agree
+    const big = () => ({ isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, size: usageTooLargeBytes() });
+    expect(gatherFacts(input(), { ...base, lstat: big }).live.log).toBe('too-large');
+    const under = () => ({ isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, size: usageTooLargeBytes() - 1 });
+    expect(gatherFacts(input(), { ...base, lstat: under }).live.log).toBe('ok');
   });
 
   test('no dependency can make it throw', () => {

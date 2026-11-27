@@ -260,13 +260,13 @@ describe('the no-re-create switch (issue #548)', () => {
 
   test('the no-create usage-log write never creates the folder and says so; the public logUsage still creates it (issue #551)', () => {
     const gone = join(tmp, 'gone');
-    expect(appendUsage(gone, 'build', 'add', true, 1, {}, { noCreate: true })).toBe(false);
+    expect(appendUsage(gone, 'build', 'add', true, 1, {}, { noCreate: true })).toBe('no-folder');
     expect(existsSync(gone)).toBe(false);
     mkdirSync(gone);
-    expect(appendUsage(gone, 'build', 'add', true, 1, {}, { noCreate: true })).toBe(true);
+    expect(appendUsage(gone, 'build', 'add', true, 1, {}, { noCreate: true })).toBe('written');
     expect(readFileSync(join(gone, '.nb-usage.log'), 'utf-8')).toContain('\tbuild\tadd\tok\t');
     const other = join(tmp, 'other');
-    expect(appendUsage(other, 'build', 'add', true, 1)).toBe(true);
+    expect(appendUsage(other, 'build', 'add', true, 1)).toBe('written');
     expect(existsSync(join(other, '.nb-usage.log'))).toBe(true);
   });
 

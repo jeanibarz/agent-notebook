@@ -531,6 +531,7 @@ export function isNbOwnFile(name: string): boolean {
   return (
     name === '.nb-usage.log' ||
     name === '.nb-usage.log.count' ||
+    name === '.nb-usage.log.1' || // the ring's older generation (issue #576)
     /^\.nb-usage\.log\.\d+\.tmp$/.test(name) ||
     /^\.retro-/.test(name) ||
     /^.+\.md\.\d+\.tmp$/.test(name)

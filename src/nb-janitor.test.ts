@@ -609,6 +609,19 @@ describe('nb-janitor — --days window vs usage-ring span (#275)', () => {
     expect(human).toContain('retains only the last 2d of activity');
   });
 
+  test('a ring that nb rotated (.nb-usage.log.1 + the live file) is still seen at capacity (issue #576)', () => {
+    // Since #576 the ring is two files; right after a rotation the live file holds
+    // a few rows and `.1` the rest. Read alone, the live file would never reach
+    // capacity, and the #275 guard would silently stop firing.
+    seed(Array.from({ length: 10 }, () => ageRow('busy', 'show', 1)));
+    writeFileSync(join(dir, '.nb-usage.log.1'), Array.from({ length: 99 }, () => ageRow('busy', 'show', 2)).join('\n') + '\n');
+    const w = usageWindow(['--days', '90'], '100');
+    expect(w.rows).toBe(100); // the newest 100 of the two, as nb reads them
+    expect(w.atCapacity).toBe(true);
+    expect(w.coverageDays).toBe(2);
+    expect(w.blind).toBe(true);
+  });
+
   test('a ring below capacity is never flagged blind, even with a wide --days (young store, no false alarm)', () => {
     // Only 3 rows, far below the 100-row ring → nothing has been evicted; the
     // store is simply young. The window is not "blind" — raising the ring would

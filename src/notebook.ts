@@ -19,7 +19,7 @@
 // Everything here is plain fs over one small file under a mkdir spinlock, so
 // a call is a millisecond and offline.
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, rmdirSync, unlinkSync, statSync, openSync, fsyncSync, closeSync, fchmodSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, renameSync, rmdirSync, unlinkSync, statSync, lstatSync, openSync, fsyncSync, closeSync, fchmodSync, chmodSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -900,32 +900,11 @@ export async function acquireLock(
   for (;;) {
     try {
       mkdirSync(lock); // atomic: succeeds only if it did not exist
-      const entry = { lock, token: token as string | null };
-      held.push(entry); // we now own this lock (the signal handler may reap it)
-      try {
-        writeFileSync(join(lock, OWNER_FILE), token, 'utf-8');
-      } catch (werr) {
-        if ((werr as NodeJS.ErrnoException)?.code === 'ENOENT') {
-          // The lock dir was removed under us (a racing stealer): we do NOT hold
-          // the lock. Do not run fn or release anything — re-acquire.
-          held.splice(held.indexOf(entry), 1);
-          continue;
-        }
-        entry.token = null; // cannot prove ownership; release falls back to unconditional
-      }
-      h = {
-        dir,
-        lock,
-        token: entry.token,
-        released: false,
-        holds() {
-          return this.token === null || readOwner(this.lock) === this.token;
-        },
-        rebase(newDir: string) {
-          this.lock = join(newDir, '.nb.lock');
-          entry.lock = this.lock;
-        },
-      };
+      const owned = ownLock(dir, lock, token);
+      // The lock dir was removed under us (a racing stealer): we do NOT hold
+      // the lock. Do not run fn or release anything — re-acquire.
+      if (owned === null) continue;
+      h = owned;
       break;
     } catch (err) {
       // EEXIST is the ONLY code that means "the lock is genuinely held": the
@@ -948,23 +927,7 @@ export async function acquireLock(
       }
       // Stale-lock recovery: a crashed nb process can leave .nb.lock behind.
       // Steal it once its holder has been silent longer than the stale threshold.
-      try {
-        // Read the token BEFORE the mtime: a stale mtime that follows a token read
-        // can only belong to that same lock generation (a replacement lock is
-        // fresh), so the (token, stale) pair is consistent (issue #331).
-        const observed = readOwner(lock);
-        if (Date.now() - statSync(lock).mtimeMs > staleMs) {
-          if (stealStale(lock, observed, staleMs)) {
-            // A stale lock we just stole is evidence its holder crashed while
-            // holding it — tally the steal (issue #309), only after a confirmed
-            // removal so a lost race never counts a phantom steal.
-            noteRecovery('lock-steal');
-            continue;
-          }
-        }
-      } catch {
-        /* lock vanished between mkdir and stat — just retry */
-      }
+      if (stealIfStale(lock, staleMs)) continue;
       if (opts.deadline !== undefined && performance.now() > opts.deadline) {
         throw opts.busy?.() ?? new Error(`notebook is locked (another nb process did not release ${lock} in time)`);
       }
@@ -986,6 +949,87 @@ export async function acquireLock(
     throw e;
   }
   return h;
+}
+
+/**
+ * Record a lock this process has just created with `mkdirSync(lock)`: push it on
+ * `held`, write the owner token, and build its handle. `null` when the lock dir
+ * was removed under us before the token landed (a racing stealer): we do not hold
+ * it. Shared by `acquireLock` and `tryAcquireLock`, so both own a lock the same way.
+ */
+function ownLock(dir: string, lock: string, token: string): Held | null {
+  const entry = { lock, token: token as string | null };
+  held.push(entry); // we now own this lock (the signal handler may reap it)
+  try {
+    writeFileSync(join(lock, OWNER_FILE), token, 'utf-8');
+  } catch (werr) {
+    if ((werr as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      held.splice(held.indexOf(entry), 1);
+      return null;
+    }
+    entry.token = null; // cannot prove ownership; release falls back to unconditional
+  }
+  return {
+    dir,
+    lock,
+    token: entry.token,
+    released: false,
+    holds() {
+      return this.token === null || readOwner(this.lock) === this.token;
+    },
+    rebase(newDir: string) {
+      this.lock = join(newDir, '.nb.lock');
+      entry.lock = this.lock;
+    },
+  };
+}
+
+/**
+ * Steal `lock` when its holder has been silent longer than `staleMs`; true when
+ * this call removed it. Read the token BEFORE the mtime: a stale mtime that follows
+ * a token read can only belong to that same lock generation (a replacement lock is
+ * fresh), so the (token, stale) pair is consistent (issue #331). A lock that is not
+ * a real folder (a file or a link planted at `.nb.lock`) is never stolen, so its
+ * target is never touched (issue #576). Every failure reads as "not stolen".
+ */
+function stealIfStale(lock: string, staleMs: number): boolean {
+  try {
+    const observed = readOwner(lock);
+    const st = lstatSync(lock);
+    if (!st.isDirectory() || Date.now() - st.mtimeMs <= staleMs) return false;
+    if (!stealStale(lock, observed, staleMs)) return false;
+    // A stale lock we just stole is evidence its holder crashed while holding it —
+    // tally the steal (issue #309), only after a confirmed removal so a lost race
+    // never counts a phantom steal.
+    noteRecovery('lock-steal');
+    return true;
+  } catch {
+    return false; // lock vanished between mkdir and stat — the caller retries
+  }
+}
+
+/**
+ * Take `dir`'s `.nb.lock` now or not at all (issue #576): one `mkdir`, and on a
+ * held lock one age-checked steal of a stale one and one more `mkdir`. It never
+ * waits, never creates `dir`, never reaps temps and never runs the call-scoped lock
+ * check, so a usage-log rotation can take it from any command without delaying the
+ * call. `null` when the lock is held or cannot be made. Release with `releaseLock`.
+ * Internal: not on the package root.
+ */
+export function tryAcquireLock(dir: string): LockHandle | null {
+  const lock = join(dir, '.nb.lock');
+  const token = `${process.pid}.${randomBytes(8).toString('hex')}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      mkdirSync(lock);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') return null;
+      if (attempt === 0 && stealIfStale(lock, staleLockMs())) continue;
+      return null;
+    }
+    return ownLock(dir, lock, token);
+  }
+  return null;
 }
 
 /**
@@ -1095,9 +1139,10 @@ export function isLeftoverTemp(dir: string, name: string): boolean {
  *     over `.nb-usage.log`.
  * We sweep both here under the just-acquired mkdir lock, which serializes every
  * mutation — so a shelf temp we see is dead crash debris, never a rename in
- * flight. A usage-log temp is different: it is written OUTSIDE this lock (from the
- * CLI's finally block), so in a rare window we may reap one a live writer created
- * but has not yet renamed. That is deliberately acceptable and strictly bounded:
+ * flight. Since issue #576 this nb writes no usage-log temp (the ring rotates by a
+ * rename of the log itself); the reap remains for an older nb's temps. Such a temp
+ * is written OUTSIDE this lock (from the CLI's finally block), so in a rare window
+ * we may reap one a live older writer created but has not yet renamed. That is deliberately acceptable and strictly bounded:
  * the writer's `renameSync` then fails with ENOENT, which it already swallows
  * (usage logging is best-effort), costing at most that one compaction's monitoring
  * row — never a lost lesson and never corruption, since the rename is atomic. The
