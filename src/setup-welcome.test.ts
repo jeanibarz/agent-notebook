@@ -63,7 +63,10 @@ describe('the .first-start grammar (FR-SETUP-002)', () => {
     expect(pendingExpired(T0, T0 + 3_600_000)).toBe(false);
     expect(pendingExpired(T0, T0 + 3_600_001)).toBe(true);
     expect(pendingExpired(T0, T0)).toBe(false);
-    expect(pendingExpired(T0 + 1, T0)).toBe(true);
+    // A claim written just after this start read its clock is not "in the future" (a race of two starts).
+    expect(pendingExpired(T0 + 1, T0)).toBe(false);
+    expect(pendingExpired(T0 + 300_000, T0)).toBe(false);
+    expect(pendingExpired(T0 + 300_001, T0)).toBe(true);
     expect(pendingExpired(T0 + 365 * 86_400_000, T0)).toBe(true);
   });
 });
@@ -135,7 +138,7 @@ describe('setupDue: the predicate, one row per kind of person (FR-SETUP-001)', (
   test('an expired pending claim is due as a takeover, whether it is old or dated in the future', () => {
     const old = pendingAt(T0 - 3_600_001);
     expect(setupDue(facts({ firstStart: old }))).toEqual({ due: true, takeover: true, raw: (old as { raw: string }).raw });
-    const future = pendingAt(T0 + 1);
+    const future = pendingAt(T0 + 300_001);
     expect(setupDue(facts({ firstStart: future }))).toMatchObject({ due: true, takeover: true });
   });
 
@@ -335,6 +338,22 @@ describe('a hostile .first-start is never read through, never trusted and never 
       expect(files()).toEqual(before);
     });
   }
+});
+
+describe('a linked projects/ folder is never read or written through (NFR-SAFE-001)', () => {
+  test.skipIf(isWin)('projects/ as a link to a folder holding a pending claim for this chat: unreadable, and the confirm leaves the target untouched', () => {
+    const elsewhere = join(tmp, 'elsewhere');
+    mkdirSync(elsewhere, { recursive: true });
+    const claim = formatPending(T0, sessionHash(SESSION));
+    writeFileSync(join(elsewhere, '.first-start'), claim);
+    mkdirSync(join(home, '.agent-notebook'), { recursive: true });
+    rmSync(projects, { recursive: true, force: true });
+    symlinkSync(elsewhere, projects);
+    expect(readFirstStart(projects)).toEqual({ state: 'unreadable' });
+    confirmFirstStart(projects, SESSION);
+    expect(readFileSync(join(elsewhere, '.first-start'), 'utf-8')).toBe(claim);
+    expect(readdirSync(elsewhere)).toEqual(['.first-start']);
+  });
 });
 
 /** Plain deps of a person who is new, in a project named from the git remote. */

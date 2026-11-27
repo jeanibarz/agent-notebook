@@ -169,8 +169,16 @@ export function parseFirstStart(raw: string): Exclude<FirstStartRead, { state: '
 }
 
 /** A `pending` claim is expired when it is over 60 minutes old, or dated in the future (a clock that moved back, or a forged date). */
+/**
+ * How far in the future a claim may be dated and still count as fresh. Two starts read the
+ * clock and the file in that order, so a claim written just after another start read its
+ * clock looks slightly in the future to it; only a claim clearly ahead (a clock set back)
+ * is treated as expired.
+ */
+export const FIRST_START_FUTURE_SLACK_MS = 5 * 60 * 1000;
+
 export function pendingExpired(at: number, nowMs: number): boolean {
-  return nowMs - at > FIRST_START_EXPIRY_MS || at > nowMs;
+  return nowMs - at > FIRST_START_EXPIRY_MS || at - nowMs > FIRST_START_FUTURE_SLACK_MS;
 }
 
 /**

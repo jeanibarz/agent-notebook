@@ -2659,7 +2659,7 @@ nobody with notes already kept. Note A or A' is printed for the first start; not
 | a shelf, a `.git` folder or a `.nb.json` in the notebook; a messages folder; any entry in `projects/` | never |
 | the switch off, an unknown place, a session id under 8 characters, a note over `--max-chars` | not now, and nothing is claimed |
 | `.first-start` that is `done`, a fresh `pending`, or unreadable (a link, a folder, a FIFO, over 128 bytes, a NUL, garbage) | never |
-| an expired `pending` (over 60 minutes old, or dated in the future) | once more, for the chat that takes it over |
+| an expired `pending` (over 60 minutes old, or dated more than 5 minutes in the future) | once more, for the chat that takes it over |
 
 *Proven by:* `setup-welcome.test.ts` → `describe('setupDue: the predicate, one row per kind of person (FR-SETUP-001)')` and
 `describe('prepareSessionStart: the one entry point (FR-SETUP-001, FR-SETUP-003)')`;
@@ -2672,7 +2672,7 @@ of the cleaned session id>` or `done`; anything else, a file over 128 bytes, a l
 "never" and is never replaced. **Claim:** `projects/` is made with mode 0700, `~/.agent-notebook` and `projects/` SHALL be real folders of
 the user (not links, owned by the user on POSIX), then `.first-start` is created exclusively with mode 0600; any error SHALL mean no note, and a claim that could not be
 written whole is removed. **Confirm:** the first step of `nb retro --session <id>` ([FR-RETRO-001](#fr-retro-001)) turns `pending` for the hash of this session into `done` (an
-exclusive 0600 temporary file and a rename), errors swallowed. **Expiry:** a `pending` claim older than 60 minutes, or dated in the future, is renamed aside by a later
+exclusive 0600 temporary file and a rename), errors swallowed. **Expiry:** a `pending` claim older than 60 minutes, or dated more than 5 minutes in the future (a clock set back; a claim a moment ahead is another start's, written just after this one read the clock), is renamed aside by a later
 fresh start, and only the process whose rename wins creates the new claim; a file that is not the one it saw is put back.
 
 | From | Event | To |
@@ -2680,7 +2680,7 @@ fresh start, and only the process whose rename wins creates the new claim; a fil
 | no file | the first start that is due, with the claim made | `pending` (this session) |
 | `pending` (this session) | `nb retro --session` of that session | `done` |
 | `pending` (another session) | `nb retro` of a different session | unchanged |
-| `pending`, over 60 minutes old or in the future | a fresh start that is due | `pending` (the new session), once |
+| `pending`, over 60 minutes old or more than 5 minutes in the future | a fresh start that is due | `pending` (the new session), once |
 | `pending`, fresh | any other start | unchanged, no note |
 | `done`, or unreadable | anything | unchanged, no note |
 
