@@ -218,13 +218,15 @@ npm test           # vitest run — needs Node 20.12+ (see CONTRIBUTING.md)
   than a `src/` file, so a bare `npx vitest run` is safe too. `npm run test:watch`
   starts with the same check but does **not** rebuild on later edits: rerun
   `npm run build` yourself after editing `src/` while it is running.
-- **Try `nb` by hand against a throwaway folder, never the real notebook:**
-  `NB_DIR="$(mktemp -d)" node dist/cli.js …`. An agent session usually exports
-  `NB_DIR` (the real notebook), and the `nb` on `PATH` is the released version. A
-  bare `nb …` therefore writes test lessons and usage rows into the real notebook,
-  where they show up as errors and loops in `nb stats`, and it fails as an unknown
-  command for anything not released yet. The test suites are already safe: the
-  Vitest global setup removes every inherited `NB_*` variable.
+- **Try `nb` by hand against throwaway folders, never the real notebook:**
+  `HOME="$(mktemp -d)" NB_DIR="$(mktemp -d)" node dist/cli.js …`. An agent session
+  usually exports `NB_DIR` (the real notebook), and the `nb` on `PATH` is the
+  released version. A bare `nb …` therefore writes test lessons and usage rows into
+  the real notebook, where they show up as errors and loops in `nb stats`, and it
+  fails as an unknown command for anything not released yet. The throwaway `HOME`
+  is needed too: `nb place default <value>` writes
+  `~/.agent-notebook/projects/.layout` whatever `NB_DIR` is. The test suites are
+  already safe: the Vitest global setup removes every inherited `NB_*` variable.
 - Keep `docs/requirements.md` and `CHANGELOG.md` in sync with any user-facing
   change; the [PR template](.github/PULL_REQUEST_TEMPLATE.md) has the checklist.
 - **Every PR body is built from [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md)**,
