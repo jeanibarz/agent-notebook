@@ -16,7 +16,7 @@
  *     the file) is retried for about one second;
  *   - `.seen-<name>` is an exclusive create (0600), so exactly one process makes it.
  */
-import { closeSync, constants as fsConstants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { isOwnRealDir } from './place-ops.js';
@@ -31,7 +31,7 @@ export const layoutPath = (projectsDir: string): string => join(projectsDir, '.l
  * A `projects/` that is a link or another user's folder is treated as absent: nothing
  * in it is read, and no output of nb changes.
  */
-export function readLayout(projectsDir: string): LayoutRead {
+export function readLayout(projectsDir: string, uid: number | null = typeof process.getuid === 'function' ? process.getuid() : null): LayoutRead {
   if (!isOwnRealDir(projectsDir)) return { state: 'none' };
   const file = layoutPath(projectsDir);
   let st;
@@ -48,7 +48,7 @@ export function readLayout(projectsDir: string): LayoutRead {
     const fst = fstatSync(fd);
     const since = layoutDate(fst.mtimeMs);
     if (!fst.isFile()) return { state: 'unreadable', since: null };
-    if (typeof process.getuid === 'function' && fst.uid !== process.getuid()) return { state: 'unreadable', since };
+    if (uid !== null && fst.uid !== uid) return { state: 'unreadable', since };
     if (fst.size > LAYOUT_FILE_MAX_BYTES) return { state: 'unreadable', since };
     const buf = Buffer.alloc(LAYOUT_FILE_MAX_BYTES + 1);
     const n = readSync(fd, buf, 0, buf.length, 0);
@@ -92,6 +92,7 @@ const RENAME_BACKOFF_MS = [0, 20, 40, 80, 160, 320, 400];
  */
 export async function writeLayout(projectsDir: string, value: Layout): Promise<void> {
   ensureProjectsDir(projectsDir);
+  sweepStaleTemps(projectsDir);
   const tmp = join(projectsDir, `.layout.${process.pid}.${randomBytes(8).toString('hex')}.tmp`);
   const fail = (e: unknown): Error =>
     new Error(`could not record the choice (${(e as NodeJS.ErrnoException).code ?? 'error'}): ${projectsDir} cannot be written.`);
@@ -124,6 +125,22 @@ export async function writeLayout(projectsDir: string, value: Layout): Promise<v
   }
   removeQuietly(tmp);
   throw fail(last);
+}
+
+/** A temporary file left by a process that died between its create and its rename: removed once it is this old. */
+const STALE_TEMP_MS = 5 * 60_000;
+
+function sweepStaleTemps(projectsDir: string): void {
+  try {
+    for (const n of readdirSync(projectsDir)) {
+      if (!/^\.layout\.\d+\.[0-9a-f]{16}\.tmp$/.test(n)) continue;
+      const f = join(projectsDir, n);
+      const st = lstatSync(f);
+      if (st.isFile() && Date.now() - st.mtimeMs > STALE_TEMP_MS) removeQuietly(f);
+    }
+  } catch {
+    // best effort
+  }
 }
 
 function removeQuietly(p: string): void {

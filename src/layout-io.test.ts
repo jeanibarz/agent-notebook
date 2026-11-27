@@ -101,11 +101,10 @@ describe('readLayout: one word in a small regular file of this user (FR-PLACE-00
     expect(readLayout(projects)).toMatchObject({ state: 'chosen', value: 'ask' });
   });
 
-  test("a file of another user is unreadable (needs root to make one)", () => {
-    if (isWin || !isRoot) return;
+  test('a file of another user is unreadable (the user id is injected, so this runs everywhere)', () => {
     put('own\n');
-    spawnSync('chown', ['65534', layoutPath(projects)]);
-    expect(readLayout(projects)).toMatchObject({ state: 'unreadable' });
+    expect(readLayout(projects, 4_000_000)).toMatchObject({ state: 'unreadable' });
+    expect(readLayout(projects, typeof process.getuid === 'function' ? process.getuid() : null)).toMatchObject({ state: 'chosen', value: 'own' });
   });
 });
 
@@ -160,6 +159,17 @@ describe('writeLayout: an exclusive 0600 temporary file, then a rename (FR-PLACE
       chmodSync(parent, 0o700);
     }
     expect(readdirSync(parent)).toEqual([]);
+  });
+
+  test('a temporary file left by a dead writer is swept once old, and a fresh one is left alone', async () => {
+    mkdirSync(projects, { recursive: true, mode: 0o700 });
+    const old = join(projects, `.layout.123.${'a'.repeat(16)}.tmp`);
+    const fresh = join(projects, `.layout.124.${'b'.repeat(16)}.tmp`);
+    writeFileSync(old, 'x');
+    writeFileSync(fresh, 'x');
+    utimesSync(old, new Date(Date.now() - 3_600_000), new Date(Date.now() - 3_600_000));
+    await writeLayout(projects, 'own');
+    expect(readdirSync(projects).sort()).toEqual(['.layout', `.layout.124.${'b'.repeat(16)}.tmp`]);
   });
 
   test('50 writes at once leave one whole answer and no temporary file', async () => {

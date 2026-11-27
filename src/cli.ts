@@ -1771,8 +1771,8 @@ export async function runNbCli(
         const refused = placeRefusal(p, st, action);
         if (refused !== null) throw new NbError('bad_args', `${refused} Nothing changed.`);
         if (action === 'own') {
-          const r = await placeOwn(p.shared, p.projectsDir, st!.name);
-          markSeen(p.projectsDir, st);
+          // `.seen` is written while the locks are held, before anything moves, so a start that waits for them sees it.
+          const r = await placeOwn(p.shared, p.projectsDir, st!.name, { whenLocked: () => markSeen(p.projectsDir, st) });
           meta.outcome = r.created ? 'own-created' : 'own';
           meta.entries = r.moved.slice(0, 20);
           const unversioned = isGitRepo(p.shared) && !isGitRepo(r.dir);
@@ -1783,7 +1783,7 @@ export async function runNbCli(
             process.stdout.write(renderMove('own', r, st!.name, unversioned, old.length, st!.oldName));
           }
         } else if (p.kind !== 'own' && !hasUnfinished(p, st)) {
-          // Nothing to move back: this directory does not use an own notebook.
+          // Nothing to move back: this directory does not use an own notebook. A start that waits for a lock re-reads `.seen` under it.
           markSeen(p.projectsDir, st);
           meta.outcome = 'shared';
           if (json) process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: [], renamed: [], kept: [], lessons: 0, removed: false }) + '\n');
@@ -1794,7 +1794,7 @@ export async function runNbCli(
           const own = p.kind === 'own' ? p.dir! : join(p.projectsDir, st!.name);
           // What stops the move is decided under both locks, before anything moves
           // (issue #551), so each refusal below means nothing changed.
-          const r = await placeShared(p.shared, own, st!.name);
+          const r = await placeShared(p.shared, own, st!.name, { whenLocked: () => markSeen(p.projectsDir, st) });
           const b = r.blocked;
           if (b !== undefined && b.foreign.length > 0) {
             throw new NbError(
@@ -1809,7 +1809,6 @@ export async function runNbCli(
             );
           }
           if (r.gone === true && r.moved.length === 0 && r.resumed.length === 0 && r.left === undefined) {
-            markSeen(p.projectsDir, st);
             meta.outcome = 'shared';
             if (json) process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: [], renamed: [], kept: [], lessons: 0, removed: false }) + '\n');
             else process.stdout.write(`shared: ${stripControlChars(p.shared)}\n  nothing to move: this project already uses the shared notebook.\n`);
@@ -1818,7 +1817,6 @@ export async function runNbCli(
           // Done when this run's folder is removed, or (the folder already gone) when every
           // unfinished move it found is finished.
           const done = r.left === undefined && (r.removed || r.gone === true);
-          if (done) markSeen(p.projectsDir, st);
           meta.outcome = done ? 'shared' : 'shared-partial';
           meta.entries = r.moved.slice(0, 20);
           if (json) {
@@ -2210,7 +2208,12 @@ async function applyLayoutAtStart(env: NodeJS.ProcessEnv): Promise<void> {
     const p = resolvePlace(env, cwd, { project: () => st });
     // `own`: the folder exists, nothing to do. `unknown`: nb cannot tell, so it does nothing.
     if (p.kind !== 'shared' || placeRefusal(p, st, 'own') !== null) return;
-    const r = await placeOwn(p.shared, projectsDir, st.name, {}, { onlyIfNoShelves: true, waitMs: START_LOCK_WAIT_MS });
+    // Asked again under the lock: a `nb place shared` (or `own`) that wrote `.seen` meanwhile, or a changed answer, stands.
+    const stillOwn = (): boolean => {
+      const l = readLayout(projectsDir);
+      return !seenExists(projectsDir, st.name) && l.state === 'chosen' && l.value === 'own';
+    };
+    const r = await placeOwn(p.shared, projectsDir, st.name, {}, { onlyIfNoShelves: true, waitMs: START_LOCK_WAIT_MS, precondition: stillOwn });
     if (!r.skipped) writeSeen(projectsDir, st.name);
   } catch {
     // A start-of-session hook never fails, and never says why, because of this.

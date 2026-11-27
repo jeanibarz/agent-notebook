@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { placeOwn, placeShared } from './place-ops.js';
+import { acquireLock, releaseLock } from './notebook.js';
+import { readLayout, writeSeen } from './layout-io.js';
 
 // Issue #560, FR-PLACE-005 and FR-SETUP-004: `nb place default`, and the answer applied when a chat starts, through the built CLI.
 const here = dirname(fileURLToPath(import.meta.url));
@@ -527,5 +530,49 @@ describe('the git wrapper passes nb place default through and changes nothing in
     expect(git(dir, 'status', '--porcelain').split('\n').filter((l) => l !== '' && !l.includes('.nb-usage'))).toEqual([]);
     expect(readFileSync(join(projects, '.layout'), 'utf-8')).toBe('own\n');
     expect(JSON.parse(wrap(['place', 'default', '--json'], withNbDir ? { NB_DIR: dir } : {}).stdout)).toEqual({ default: 'own', source: 'chosen' });
+  });
+});
+
+describe('a start never undoes what nb place chose, decided under the lock (FR-SETUP-004)', { timeout: 60_000 }, () => {
+  test('a start that waits for the lock sees the .seen marker written meanwhile, and makes no folder', async () => {
+    setLayout('own\n');
+    mkdirSync(shared, { recursive: true });
+    const held = await acquireLock(shared);
+    // What `brief` passes: the answer and the marker are asked again once the lock is held.
+    const start = placeOwn(shared, projects, 'acme-app', {}, {
+      onlyIfNoShelves: true,
+      precondition: () => !existsSync(join(projects, '.seen-acme-app')) && readLayout(projects).state === 'chosen',
+    });
+    // `nb place shared` records the user's choice while the start waits, then releases.
+    expect(writeSeen(projects, 'acme-app')).toBe(true);
+    releaseLock(held);
+    expect(await start).toMatchObject({ skipped: true, created: false });
+    expect(existsSync(join(projects, 'acme-app'))).toBe(false);
+    expect(nb(['place'], repo, { NB_ENABLED: '1' }).out).toMatch(/^shared: /);
+  });
+
+  test('nb place shared and nb place own write .seen while both locks are held, before anything moves', async () => {
+    mkdirSync(join(projects, 'acme-app'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(projects, 'acme-app', 'build@acme-app.md'), '+1 a lesson\n');
+    const seen: { lock: boolean; folder: boolean; marker: boolean }[] = [];
+    const probe = (): void => {
+      seen.push({ lock: existsSync(join(shared, '.nb.lock')), folder: existsSync(join(projects, 'acme-app', 'build@acme-app.md')), marker: existsSync(join(projects, '.seen-acme-app')) });
+    };
+    await placeShared(shared, join(projects, 'acme-app'), 'acme-app', { whenLocked: () => { probe(); writeSeen(projects, 'acme-app'); } });
+    expect(seen).toEqual([{ lock: true, folder: true, marker: false }]);
+    expect(existsSync(join(projects, '.seen-acme-app'))).toBe(true);
+    seen.length = 0;
+    rmSync(join(projects, '.seen-acme-app'));
+    await placeOwn(shared, projects, 'acme-app', { whenLocked: probe });
+    expect(seen).toEqual([{ lock: true, folder: false, marker: false }]);
+  });
+
+  test('through the CLI: nb place shared in a project whose start raced it leaves the project shared', () => {
+    setLayout('own\n');
+    expect(nb(['brief'], repo, { NB_ENABLED: '1' }).code).toBe(0);
+    expect(nb(['place', 'shared']).code).toBe(0);
+    expect(nb(['brief'], repo, { NB_ENABLED: '1' }).code).toBe(0);
+    expect(listing(projects)).toEqual(['.layout', '.seen-acme-app']);
+    expect(nb(['place']).out).toMatch(/^shared: /);
   });
 });

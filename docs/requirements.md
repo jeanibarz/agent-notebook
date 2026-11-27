@@ -2609,7 +2609,9 @@ remote that has no folder and no `.seen-<name>`, `nb brief` SHALL, before it res
 through the code of `nb place own`, holding the locks of [FR-LOCK-001](#fr-lock-001), and then write `.seen-<name>`; it SHALL do this only
 when the notebook switch is on and git is startable (a `.git` entry in the working folder or a parent, or `GIT_DIR`), and only when the
 shared notebook holds no shelf `*@<project>` (letter case ignored), which is decided under the lock: with shelves it SHALL do nothing and
-write no `.seen`, since a hook never moves a lesson. With the lock held by another call (waiting at most a quarter of a second) or any
+write no `.seen`, since a hook never moves a lesson. It SHALL also ask again, under the lock, that `.seen-<name>` is still absent and `.layout` still reads
+`own`, and `nb place own|shared` SHALL write `.seen-<name>` while holding both locks, before anything moves, so a start that was waiting for a lock
+never recreates the folder a user just removed. With the lock held by another call (waiting at most a quarter of a second) or any
 error (a read-only home), it SHALL skip, silently, and try again at the next start. A name that fails the refusals of `nb place own` (a
 name from the folder, over 64 characters, a Windows device name, `default`, a bare repository, a differing letter case) SHALL make nothing. A name
 from `NB_PROJECT_SLUG` SHALL NEVER create a folder or a `.seen` file, because a repository's settings can set it. An existing project folder
@@ -2617,7 +2619,8 @@ SHALL stay authoritative: `.layout` never changes which notebook a project uses 
 project SHALL leave exactly one folder and no stranded shelf. `ask` and `shared` have no effect on `nb brief` in this requirement.
 **Rationale:** older copies of `nb` (the git wrapper, an npm install) read only the folder, so the folder must exist for the answer to
 hold; `.seen` lets a user's later `nb place shared` for one project stand.
-*Proven by:* `place-default.test.ts` → `describe('nb brief applies the answer (FR-SETUP-004)')`;
+*Proven by:* `place-default.test.ts` → `describe('nb brief applies the answer (FR-SETUP-004)')` and
+`describe('a start never undoes what nb place chose, decided under the lock (FR-SETUP-004)')`;
 `place-default-race.test.ts` → `describe('the answer applied by many starts at once (FR-SETUP-004)')`.
 
 ## 5. Non-functional requirements
