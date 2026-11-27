@@ -1561,11 +1561,16 @@ valid object).
 `nb add` (the shelf), `nb move` (the target shelf, only when the move is written, not
 when refused as a duplicate) and `nb describe` (only for a non-empty description on a
 shelf that did not exist) SHALL print `note: created new shelf "<name>"`, followed by
-the existing shelves sharing at least two name words with it when there are any. The
+the existing shelves sharing at least two name words with it when there are any. For
+`nb add` and `nb move`, whose new shelf has no description, the same line SHALL end with
+`; it has no description, so the index shows its top lesson. Say when to open the shelf: nb describe <name> "<when to open this shelf>"`;
+`nb describe` SHALL NOT append this clause, since the shelf then has a description (issue #589). The
 `--json` result SHALL carry `created: true` (and `similarShelves` when non-empty) only
 in the creating case. Exit code and stdout are unchanged.
 **Rationale:** shelf matching is exact, so a mistyped shelf silently starts an orphan;
-`move` targets and `describe` can mistype the same way `add` can (issues #354, #404).
+`move` targets and `describe` can mistype the same way `add` can (issues #354, #404). A
+shelf with no description shows its top lesson in the index, which does not say when to
+open the shelf, and nothing else asks for a description when the shelf is created (issue #589).
 *Proven by:* `cli.test.ts` → `describe('created-shelf note (issue #404)')`.
 
 <a id="fr-desc-001"></a>
@@ -1951,7 +1956,9 @@ chat's next `nb retro` is a normal one, so a first chat with a single reply gets
 the user's retro message files or `NB_RETRO_EXTRA_PROMPT` text; the note A' chat (no question) defers the same
 way, since the claim does not record which note was printed. In every other case the confirmation SHALL NOT change the text or the
 outcome. `--json` SHALL print `{ outcome, text, session }` with `outcome` one of `nudge`, `already`, `off`,
-`off-work-dir`, `deferred`. On a `nudge` the text SHALL be, each part separated by one blank line: the built-in
+`off-work-dir`, `deferred`. The built-in text SHALL be the reason the 0.12 Stop hook blocked with, plus one line
+after step 5, indented like its `Length:` line: `If you start a new shelf, give it a description: nb describe <shelf> "<when to open this shelf>"`
+(issue #589). On a `nudge` the text SHALL be, each part separated by one blank line: the built-in
 text; the blocks of the user's `retro.txt` and then `<project>.retro.txt` ([FR-MSG-001](#fr-msg-001)); the
 `NB_RETRO_EXTRA_PROMPT` text ([FR-RETRO-002](#fr-retro-002)). The message files SHALL be read only after
 the claim and only on `nudge`: a call whose outcome is `off`, `off-work-dir` or `already` reads none.
@@ -1962,7 +1969,7 @@ that one result serves the file lookup (by the rule of [FR-MSG-001](#fr-msg-001)
 remote only) and every `{project}`. When the working directory no longer exists and no `--work-dir` is
 given, only `NB_PROJECT_SLUG` names the project and git is not run. Without a `messages/` folder the
 output is byte for byte that of before.
-*Proven by:* `retro.test.ts` → `describe('nb retro sends what the 0.12 Stop hook sent (FR-RETRO-001, FR-RETRO-002)')`,
+*Proven by:* `retro.test.ts` → `describe('nb retro sends what the 0.12 Stop hook sent, plus the new-shelf line (FR-RETRO-001, FR-RETRO-002)')`,
 `describe('nb retro speaks once per session and shares the 0.12 sentinel (FR-RETRO-001)')`,
 `describe('nb retro cleans the session id before it becomes a file name (FR-RETRO-001)')`,
 `describe('nb retro respects the per-repository switch (FR-RETRO-001)')`,

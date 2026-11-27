@@ -814,13 +814,20 @@ function helpRequest(argv: string[]): string | null | undefined {
  * (to its target) and `describe`. stderr, so stdout stays pipe-clean; the exit
  * code is unchanged. `consolidateId` is the lesson a `nb move` suggestion would
  * carry; absent (describe) means the new shelf has no lesson to move.
+ * `undescribed` (add and move, issue #589): the new shelf has no `# desc:` line,
+ * so the index shows its top lesson instead of when to open it; the note asks
+ * for one. It comes last, since consolidating would make the shelf moot. One
+ * line, so a reader filtering on the `note: created new shelf` prefix drops it all.
  */
-function writeCreatedNote(shelf: string, sim: string[], consolidateId?: string): void {
+function writeCreatedNote(shelf: string, sim: string[], consolidateId?: string, undescribed = false): void {
   process.stderr.write(
     `note: created new shelf "${shelf}"` +
       (sim.length > 0
         ? `; existing shelves with overlapping names: ${sim.join(', ')}` +
           (consolidateId ? ` — if it is the same subject, consolidate with: nb move ${shelf} ${sim[0]} ${consolidateId}` : '')
+        : '') +
+      (undescribed
+        ? `; it has no description, so the index shows its top lesson. Say when to open the shelf: nb describe ${shelf} "<when to open this shelf>"`
         : '') +
       '\n',
   );
@@ -1187,7 +1194,7 @@ export async function runNbCli(
           // Non-blocking new-shelf advisory (issue #354): the one outcome of
           // `add` the agent is not otherwise told about. stderr, so stdout stays
           // pipe-clean; the exit code is unchanged.
-          if (r.created) writeCreatedNote(shelf, r.similarShelves ?? [], r.id);
+          if (r.created) writeCreatedNote(shelf, r.similarShelves ?? [], r.id, true);
         }
         break;
       }
@@ -1363,7 +1370,7 @@ export async function runNbCli(
           if (agedVisibly(r.decayed)) process.stdout.write(` (aged stalest in "${to}" −1 → [${fmt(r.decayed.score)}] ${r.decayed.text})`);
           process.stdout.write('\n');
         }
-        if (r.created) writeCreatedNote(to, r.similarShelves ?? [], r.id);
+        if (r.created) writeCreatedNote(to, r.similarShelves ?? [], r.id, true);
         break;
       }
       case 'describe': {

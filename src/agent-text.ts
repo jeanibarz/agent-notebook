@@ -8,9 +8,16 @@
  * file; their content comes from `messages.ts`.
  *
  * `RETRO_LESSONS` is byte for byte the nudge of the 0.12 `nb-retrospective.sh`,
- * so a hook that switches from the script to `nb retro` sends the model the same
- * words.
+ * plus `RETRO_NEW_SHELF_LINE` (issue #589), so a hook that switches from the
+ * script to `nb retro` sends the model the same words and that one line more.
  */
+
+/**
+ * The line after step 5 that asks for a description on a shelf the agent starts
+ * (issue #589): without one, the start-of-task index shows the shelf's top lesson,
+ * not when to open it. Not in the 0.12 script.
+ */
+export const RETRO_NEW_SHELF_LINE = `     If you start a new shelf, give it a description: nb describe <shelf> "<when to open this shelf>"`;
 
 /** The end-of-task retrospective nudge, one line per element. */
 export const RETRO_LESSONS_LINES: readonly string[] = [
@@ -21,6 +28,7 @@ export const RETRO_LESSONS_LINES: readonly string[] = [
   `  4. nb merge/split <shelf> …    — only if lessons repeat or a line holds two`,
   `  5. nb add  <shelf> "<=200-char lesson"   — at MOST one new, non-obvious lesson, to the notebook it fits (or none)`,
   `     Length: aim for ~150 chars / one clause, no preamble — over 200 is rejected, not truncated.`,
+  RETRO_NEW_SHELF_LINE,
   `Do not pad to hit a quota — "nothing new worth storing" is a valid outcome.`,
   `If you are a subagent, end by repeating your full final report after the retrospective: your last message is all your caller receives. Then stop.`,
 ];

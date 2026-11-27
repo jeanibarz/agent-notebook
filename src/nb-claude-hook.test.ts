@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
-import { BRIEF_EMPTY_LINE, BRIEF_HEADER_LINES, BRIEF_OFF_LINE, FRAMING_LINE, RETRO_LESSONS_LINES } from './agent-text.js';
+import { BRIEF_EMPTY_LINE, BRIEF_HEADER_LINES, BRIEF_OFF_LINE, FRAMING_LINE, RETRO_LESSONS_LINES, RETRO_NEW_SHELF_LINE } from './agent-text.js';
 
 // Issue #538 (FR-HOOKS-001): the Claude Code example hooks are one Node adapter,
 // `nb-claude-hook.mjs`, behind the three 0.12 script names. These tests run the
@@ -79,6 +79,17 @@ function withFraming(old: string): string {
   return lines.join('\n');
 }
 
+/**
+ * The 0.12 Stop block with the one line `nb retro` adds after step 5 (issue #589),
+ * spliced into the JSON-escaped reason so the byte comparison still holds.
+ */
+function withNewShelfLine(oldOut: string): string {
+  const esc = (t: string) => JSON.stringify(t).slice(1, -1);
+  const before = esc(RETRO_LESSONS_LINES[RETRO_LESSONS_LINES.indexOf(RETRO_NEW_SHELF_LINE) - 1]!);
+  expect(oldOut.split(before)).toHaveLength(2);
+  return oldOut.replace(before, `${before}\\n${esc(RETRO_NEW_SHELF_LINE)}`);
+}
+
 const sentinels = () => readdirSync(store).filter((n) => n.startsWith('.retro-')).sort();
 
 describe('the hooks send what the 0.12 scripts sent (FR-HOOKS-001, acceptance criterion 1)', () => {
@@ -106,15 +117,16 @@ describe('the hooks send what the 0.12 scripts sent (FR-HOOKS-001, acceptance cr
     });
   }
 
-  testSh('stop: the same block, byte for byte, with and without the extra prompt', () => {
+  testSh('stop: the same block, byte for byte, plus the new-shelf line, with and without the extra prompt', () => {
     const extra = join(tmp, 'extra.txt');
     writeFileSync(extra, 'ideas for {project} in {session}');
     for (const [i, env] of ([{}, { NB_RETRO_EXTRA_PROMPT: extra, NB_PROJECT_SLUG: 'acme' }] as Record<string, string>[]).entries()) {
       const old = script(OLD, 'nb-retrospective.sh', { session_id: `old-${i}` }, { NB_BIN: nbBin(), ...env });
       const now = script(HOOKS, 'nb-retrospective.sh', { session_id: `new-${i}` }, env);
       expect(now.code).toBe(0);
-      expect(JSON.parse(now.out)).toEqual(JSON.parse(old.out.replaceAll(`old-${i}`, `new-${i}`)));
-      expect(now.out).toBe(old.out.replaceAll(`old-${i}`, `new-${i}`));
+      const want = withNewShelfLine(old.out).replaceAll(`old-${i}`, `new-${i}`);
+      expect(JSON.parse(now.out)).toEqual(JSON.parse(want));
+      expect(now.out).toBe(want);
     }
   });
 

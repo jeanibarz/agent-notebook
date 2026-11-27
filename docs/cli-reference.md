@@ -24,7 +24,7 @@ Start a `reviewer` shelf with two lessons that say nearly the same thing, so the
 ```
 $ nb add reviewer "run lint before claiming done"
 added — 1 line
-note: created new shelf "reviewer"
+note: created new shelf "reviewer"; it has no description, so the index shows its top lesson. Say when to open the shelf: nb describe reviewer "<when to open this shelf>"
 
 $ nb add reviewer "run the linter first"
 added — 2 lines
@@ -71,7 +71,7 @@ removed — [+2] run lint before every commit
 ```
 $ nb add build-and-test "run the build and then vitest"
 added — 1 line
-note: created new shelf "build-and-test"
+note: created new shelf "build-and-test"; it has no description, so the index shows its top lesson. Say when to open the shelf: nb describe build-and-test "<when to open this shelf>"
 
 $ nb split build-and-test build "run the build first" "run vitest after the build" --reason overloaded
 split one entry into two — 2 lines

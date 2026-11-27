@@ -96,6 +96,10 @@ async function run(
   }
 }
 
+/** The end of the created-shelf note for a shelf `add` or `move` started with no description (issue #589). */
+const askDesc = (shelf: string): string =>
+  `; it has no description, so the index shows its top lesson. Say when to open the shelf: nb describe ${shelf} "<when to open this shelf>"`;
+
 describe('runNbCli', () => {
   test('a forgotten shelf never writes the lesson text into the usage log (issue #375)', async () => {
     const r = await run(['add', 'a lesson I typed but forgot the shelf name']);
@@ -183,15 +187,16 @@ describe('runNbCli', () => {
     const first = await run(['add', 'flaky-ci-debugging', 'rerun with --verbose']);
     expect(first.code).toBe(0);
     expect(first.out).toBe('added — 1 line\n'); // stdout unchanged
-    expect(first.err).toBe('note: created new shelf "flaky-ci-debugging"\n'); // no overlap → no names
+    expect(first.err).toBe(`note: created new shelf "flaky-ci-debugging"${askDesc('flaky-ci-debugging')}\n`); // no overlap → no names
     // Adding to an existing shelf says nothing.
     expect((await run(['add', 'flaky-ci-debugging', 'second lesson'])).err).toBe('');
     // Two shared words (ci, debugging) → named, with the consolidating nb move.
     const second = await run(['add', 'ci-debugging-tips', 'pin the runner image']);
     expect(second.code).toBe(0);
-    expect(second.err).toMatch(/created new shelf "ci-debugging-tips"; existing shelves with overlapping names: flaky-ci-debugging — .*nb move ci-debugging-tips flaky-ci-debugging [0-9a-f]{6}\n/);
+    expect(second.err).toMatch(/created new shelf "ci-debugging-tips"; existing shelves with overlapping names: flaky-ci-debugging — .*nb move ci-debugging-tips flaky-ci-debugging [0-9a-f]{6}; it has no description/);
+    expect(second.err.endsWith(`${askDesc('ci-debugging-tips')}\n`)).toBe(true);
     // One shared word is not enough.
-    expect((await run(['add', 'ci-other', 'x lesson'])).err).toBe('note: created new shelf "ci-other"\n');
+    expect((await run(['add', 'ci-other', 'x lesson'])).err).toBe(`note: created new shelf "ci-other"${askDesc('ci-other')}\n`);
     // JSON carries it too.
     const j = JSON.parse((await run(['add', '--json', 'debugging.ci.notes', 'json lesson'])).out);
     expect(j.created).toBe(true);
@@ -3025,7 +3030,7 @@ describe('runNbCli', () => {
       const r = await run(['add', 'reviewer', '-'], 'run lint first\n');
       expect(r.code).toBe(0);
       expect(r.out).toBe('added — 1 line\n'); // the usual message, same as a quoted arg
-      expect(r.err).toBe('note: created new shelf "reviewer"\n'); // only the new-shelf advisory (#354)
+      expect(r.err).toBe(`note: created new shelf "reviewer"${askDesc('reviewer')}\n`); // only the new-shelf advisory (#354)
       const show = await run(['show', 'reviewer']);
       expect(show.out).toContain('run lint first'); // stored verbatim, trailing newline stripped
     });
@@ -5744,11 +5749,47 @@ describe('created-shelf note (issue #404)', () => {
     const r = await run(['move', 'release-notes', 'build-and-tets', 'changelog entry']);
     expect(r.code).toBe(0);
     expect(r.out).toMatch(/^moved \[\+1\] changelog entry/);
-    expect(r.err).toMatch(/^note: created new shelf "build-and-tets"; existing shelves with overlapping names: build-and-test — .*nb move build-and-tets build-and-test [0-9a-f]{6}\n$/);
+    expect(r.err).toMatch(/^note: created new shelf "build-and-tets"; existing shelves with overlapping names: build-and-test — .*nb move build-and-tets build-and-test [0-9a-f]{6}; it has no description/);
+    expect(r.err.endsWith(`${askDesc('build-and-tets')}\n`)).toBe(true);
+    expect(r.err.split('\n')).toHaveLength(2); // one line
     await run(['add', 'flaky-ci-debugging', 'rerun with --verbose']);
     await run(['add', 'src-lesson', 'pin the runner image']);
     const o = await run(['move', 'src-lesson', 'ci-debugging-tips', 'pin the runner']);
-    expect(o.err).toMatch(/created new shelf "ci-debugging-tips"; existing shelves with overlapping names: flaky-ci-debugging — .*nb move ci-debugging-tips flaky-ci-debugging [0-9a-f]{6}\n/);
+    expect(o.err).toMatch(/created new shelf "ci-debugging-tips"; existing shelves with overlapping names: flaky-ci-debugging — .*nb move ci-debugging-tips flaky-ci-debugging [0-9a-f]{6}; it has no description/);
+  });
+
+  // Issue #589: a shelf started by add or move has no description, so the note asks for one.
+  test('a new shelf through add asks for its description, and the asked command sets it', async () => {
+    const r = await run(['add', 'release-and-tagging', 'tag after the changelog commit']);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('added — 1 line\n'); // stdout unchanged
+    expect(r.err).toBe(
+      'note: created new shelf "release-and-tagging"; it has no description, so the index shows its top lesson. ' +
+        'Say when to open the shelf: nb describe release-and-tagging "<when to open this shelf>"\n',
+    );
+    // The command the note names works as printed.
+    const d = await run(['describe', 'release-and-tagging', 'cutting a release or a tag']);
+    expect(d.code).toBe(0);
+    expect(d.err).toBe(''); // the shelf exists now: no created note
+    expect((await run(['describe', 'release-and-tagging'])).out).toBe('cutting a release or a tag\n');
+  });
+
+  test('a new shelf through move asks for its description; a move into a described shelf does not', async () => {
+    await run(['add', 'src-shelf', 'first lesson']);
+    await run(['add', 'src-shelf', 'second lesson']);
+    const r = await run(['move', 'src-shelf', 'fresh-target', 'first lesson']);
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/^moved \[\+1\] first lesson/);
+    expect(r.err).toBe(`note: created new shelf "fresh-target"${askDesc('fresh-target')}\n`);
+    await run(['describe', 'other-target', 'when x']);
+    expect((await run(['move', 'src-shelf', 'other-target', 'second lesson'])).err).toBe('');
+  });
+
+  test('a new shelf through describe does not ask for a description: it was just set', async () => {
+    const r = await run(['describe', 'described-shelf', 'open when building']);
+    expect(r.code).toBe(0);
+    expect(r.err).toBe('note: created new shelf "described-shelf"\n');
+    expect(r.err).not.toContain('nb describe');
   });
 
   test('move into an existing shelf, or refused as a duplicate, prints no note', async () => {
