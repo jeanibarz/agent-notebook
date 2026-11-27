@@ -24,6 +24,7 @@
 //   nb project [--why] [--json]             print the project name of this directory (NB_PROJECT_SLUG, then the git origin remote as owner-repo, then the repository's folder; issue #540)
 //   nb place  [--json]                      say where this directory's lessons live (own project notebook, shared, NB_DIR) and why, and list the project folders (issue #548)
 //   nb place  own|shared [--json]           move this project's shelves into its own folder, or back to the shared notebook (issue #548)
+//   nb place  default [shared|own|ask] [--json]  say, or record, where notes of every project are kept (issue #560)
 //   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  what an assistant sees at the start of a session (issue #538)
 //   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  the end-of-task retrospective text, once per session (issue #538)
 //   nb status [--json]                      say whether chats start the notebook here: two plain lines, then the details; read-only, writes no usage row, exit 0 only when it is running (issue #558)
@@ -39,7 +40,7 @@
 import { lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
@@ -98,11 +99,13 @@ import {
 } from './config-report.js';
 import { describeSource, resolveEnabled, stateWord } from './enabled.js';
 import { describeProject, projectRecordKey, resolveProject, type ProjectState } from './project.js';
-import { isWindowsDeviceName, placeRefusal, resolvePlace, scanProjects, sharedWriteRefusal, type Place } from './place.js';
+import { isWindowsDeviceName, placeRefusal, projectsDirOf, resolvePlace, scanProjects, sharedWriteRefusal, type Place } from './place.js';
+import { LAYOUT_VALUES, defaultDone, effectiveLayout, layoutJson, layoutLine, renderDefault, type Layout, type LayoutRead } from './layout.js';
+import { readLayout, seenExists, writeLayout, writeSeen } from './layout-io.js';
 import { allShelves, isGitRepo, placeOwn, placeShared, sharedName, unfinishedMoves, type PlaceMove } from './place-ops.js';
 import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, existingAbsoluteDir, extraPromptStatus, messageProjectName, placeLine, projectOfCall, retro } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
-import { decideStatus, renderStatus, statusJson } from './status.js';
+import { decideStatus, renderStatus, statusJson, type StatusLayout } from './status.js';
 import { gatherFacts } from './status-facts.js';
 import {
   fmt,
@@ -188,6 +191,7 @@ usage:
   nb place  [--json]                       say where this directory's lessons live and why, and list the project folders under ~/.agent-notebook/projects
   nb place  own [--json]                   give this project its own notebook: create ~/.agent-notebook/projects/<project>/ and move its shelves there
   nb place  shared [--json]                move this project's shelves back to the shared notebook and remove its folder
+  nb place  default [shared|own|ask] [--json]  say, or record, where the notes of every project are kept (never moves notes)
   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  print what an assistant should see at the start of a session: instructions, the notebook index (default budget 9000 characters)
   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  print the end-of-task retrospective text the first time it is called for a session, nothing afterwards
   nb status [--json]                       say whether chats start the notebook here: two plain lines, then the details (read-only; exit 0 only when it is running)
@@ -362,6 +366,9 @@ notes:
     is left. It refuses when \`NB_DIR\` is set or the name comes only from the repository's folder.
     \`nb place shared\` moves every shelf of the folder back and removes it; it refuses when a shelf name is
     already in the shared notebook or the folder holds anything else (\`.git\`, \`.nb.json\`).
+    \`nb place default\` says where the notes of every project are kept (shared, own or ask; none chosen means
+    shared); \`nb place default own\` records the choice, and the next chat in a project makes its own folder, empty,
+    when nothing of it is in the shared notebook yet. Notes are never moved by it. \`--json\` prints \`{default, source}\`.
   - \`nb status\` says whether chats start the notebook here. It prints two plain lines (what is the case, what to do
     next), a blank line, then details: the version, the switch, where the lessons live, the last chat starts it
     saw, and, in a final group you may want to remove before posting, names and paths. The verdict is \`running\`,
@@ -498,6 +505,14 @@ _nb_complete() {
       [ "$cword" -eq 2 ] || return 0 ;;
     move)
       [ "$cword" -eq 2 ] || [ "$cword" -eq 3 ] || return 0 ;;
+    place)
+      # \`nb place own|shared|default\`, then the choices of \`nb place default\`.
+      if [ "$cword" -eq 2 ]; then
+        COMPREPLY=( $(compgen -W "own shared default" -- "$cur") )
+      elif [ "$cword" -eq 3 ] && [ "\${COMP_WORDS[2]}" = default ]; then
+        COMPREPLY=( $(compgen -W "shared own ask" -- "$cur") )
+      fi
+      return 0 ;;
     *)
       return 0 ;;
   esac
@@ -547,6 +562,13 @@ _nb() {
   case $cmd in
     ${shelfCase}) (( CURRENT == 3 )) && want_shelf=1 ;;
     move)         (( CURRENT == 3 || CURRENT == 4 )) && want_shelf=1 ;;
+    place)
+      # \`nb place own|shared|default\`, then the choices of \`nb place default\`.
+      if (( CURRENT == 3 )); then
+        compadd own shared default
+      elif (( CURRENT == 4 )) && [[ \${words[3]} == default ]]; then
+        compadd shared own ask
+      fi ;;
   esac
 
   if (( want_shelf )); then
@@ -839,6 +861,9 @@ export async function runNbCli(
   // Where this call's lessons live (issue #548, FR-PLACE-001). Asked for every
   // notebook command; not for the commands that never read a notebook, nor for an
   // unknown command, so neither can start git for it.
+  // The answer to "where should notes be kept?" is applied by `nb brief` only (issue #560,
+  // FR-SETUP-004), before the place is resolved so this very start already uses the folder.
+  if (cmd === 'brief') await applyLayoutAtStart(process.env);
   const place: Place | null =
     PLACE_FREE_COMMANDS.has(cmd) || !(KNOWN_COMMANDS as readonly string[]).includes(cmd) ? null : resolvePlace(process.env, currentDir());
   // `unknown` has no folder: the call refuses below, and its usage row goes to the shared log.
@@ -1672,9 +1697,10 @@ export async function runNbCli(
             origin: enabledState.origin,
             warning: enabledState.warning,
           };
-          process.stdout.write(JSON.stringify({ ...obj, environment, enabled, unrecognized, ...(messages ? { messages: messages.json } : {}) }) + '\n');
+          const layout = layoutJson(layoutOf(place!));
+          process.stdout.write(JSON.stringify({ ...obj, environment, enabled, unrecognized, ...(messages ? { messages: messages.json } : {}), ...(layout ? { layout } : {}) }) + '\n');
         } else {
-          const { out } = renderConfig(rows, envRows, unknown, enabledState, messages);
+          const { out } = renderConfig(rows, envRows, unknown, enabledState, messages, layoutLine(layoutOf(place!)));
           process.stdout.write(out);
         }
         break;
@@ -1724,15 +1750,20 @@ export async function runNbCli(
         // own` and `nb place shared` move the project's shelves (FR-PLACE-003). The
         // usage row goes to the shared notebook unless the place is an existing own folder.
         const action = args[1];
+        if (action === 'default') {
+          await placeDefault(place!, args[2], args[3], json, meta);
+          break;
+        }
         if (action !== undefined && action !== 'own' && action !== 'shared') {
-          throw new NbError('bad_args', `unknown action "${action}" for \`nb place\` (use \`nb place\`, \`nb place own\` or \`nb place shared\`)`);
+          throw new NbError('bad_args', `unknown action "${action}" for \`nb place\` (use \`nb place\`, \`nb place own\`, \`nb place shared\` or \`nb place default\`)`);
         }
         const extraOperand = args.slice(2)[0];
         if (extraOperand !== undefined) throw new NbError('bad_args', `unexpected extra argument "${extraOperand}" for \`nb place\``);
         const p = place!;
         if (action === undefined) {
-          if (json) process.stdout.write(JSON.stringify(placeJson(p)) + '\n');
-          else process.stdout.write(renderPlace(p));
+          const layout = layoutOf(p);
+          if (json) process.stdout.write(JSON.stringify(placeJson(p, layout)) + '\n');
+          else process.stdout.write(renderPlace(p, layout));
           break;
         }
         const cwd = currentDir();
@@ -1741,6 +1772,7 @@ export async function runNbCli(
         if (refused !== null) throw new NbError('bad_args', `${refused} Nothing changed.`);
         if (action === 'own') {
           const r = await placeOwn(p.shared, p.projectsDir, st!.name);
+          markSeen(p.projectsDir, st);
           meta.outcome = r.created ? 'own-created' : 'own';
           meta.entries = r.moved.slice(0, 20);
           const unversioned = isGitRepo(p.shared) && !isGitRepo(r.dir);
@@ -1752,6 +1784,7 @@ export async function runNbCli(
           }
         } else if (p.kind !== 'own' && !hasUnfinished(p, st)) {
           // Nothing to move back: this directory does not use an own notebook.
+          markSeen(p.projectsDir, st);
           meta.outcome = 'shared';
           if (json) process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: [], renamed: [], kept: [], lessons: 0, removed: false }) + '\n');
           else process.stdout.write(`shared: ${stripControlChars(p.shared)}\n  this directory does not use an own notebook (${stripControlChars(p.reason)}); nothing to move.\n`);
@@ -1776,6 +1809,7 @@ export async function runNbCli(
             );
           }
           if (r.gone === true && r.moved.length === 0 && r.resumed.length === 0 && r.left === undefined) {
+            markSeen(p.projectsDir, st);
             meta.outcome = 'shared';
             if (json) process.stdout.write(JSON.stringify({ kind: 'shared', dir: p.shared, moved: [], renamed: [], kept: [], lessons: 0, removed: false }) + '\n');
             else process.stdout.write(`shared: ${stripControlChars(p.shared)}\n  nothing to move: this project already uses the shared notebook.\n`);
@@ -1784,6 +1818,7 @@ export async function runNbCli(
           // Done when this run's folder is removed, or (the folder already gone) when every
           // unfinished move it found is finished.
           const done = r.left === undefined && (r.removed || r.gone === true);
+          if (done) markSeen(p.projectsDir, st);
           meta.outcome = done ? 'shared' : 'shared-partial';
           meta.entries = r.moved.slice(0, 20);
           if (json) {
@@ -1833,7 +1868,7 @@ export async function runNbCli(
               { command: cmd, flag: '--max-chars', value: maxRaw, usedDefault: BRIEF_MAX_CHARS_DEFAULT },
             );
         }
-        const r = brief({ dir, cwd: currentDir(), maxChars, nbDir: sharedDir, isDeviceName: isWindowsDeviceName, ...briefPlace(place) });
+        const r = brief({ dir, cwd: currentDir(), maxChars, nbDir: sharedDir, isDeviceName: isWindowsDeviceName, ...briefPlace(place), ...(layoutGroups(process.env) ? { layoutGroup: true } : {}) });
         if (r.err) process.stderr.write(r.err);
         meta.outcome = r.outcome;
         if (sessionRaw !== undefined) meta.session = cleanSessionId(sessionRaw);
@@ -1903,6 +1938,7 @@ export async function runNbCli(
           env: process.env,
           cwd,
           place: { kind: place!.kind, dir: place!.dir, shared: sharedDir, reason: place!.reason },
+          layout: statusLayout(layoutOf(place!)),
           project: st,
           messageProject: messageProjectName(st, isWindowsDeviceName).name,
           programFile: fileURLToPath(import.meta.url),
@@ -2081,6 +2117,156 @@ function briefPlace(place: Place | null): { placeLine?: string; placeUnknown?: b
   return { ...project, placeLine: placeLine({ kind: 'shared', folders: place.folders.length }) };
 }
 
+/**
+ * Whether git may be asked about `cwd` (issue #560): a `.git` entry in the folder or a
+ * parent, or `GIT_DIR` set. On a Mac without the developer tools `/usr/bin/git` is a stub
+ * that can open an install dialog, so the paths of issue #560 never start it in a folder
+ * that is plainly not a repository.
+ */
+function gitMayExist(cwd: string, env: NodeJS.ProcessEnv): boolean {
+  if (env.GIT_DIR) return true;
+  let dir = resolve(cwd);
+  for (;;) {
+    try {
+      lstatSync(join(dir, '.git'));
+      return true;
+    } catch {
+      // not here
+    }
+    const up = dirname(dir);
+    if (up === dir) return false;
+    dir = up;
+  }
+}
+
+/** The project of the working directory for the paths of issue #560: no git process unless `gitMayExist`; `null` when there is none to ask. */
+function projectForLayout(place: Place): ProjectState | null {
+  if (place.project !== null) return place.project;
+  const cwd = currentDir();
+  const slug = process.env.NB_PROJECT_SLUG;
+  if (cwd === null && !slug) return null;
+  if (!slug && !gitMayExist(cwd!, process.env)) return null;
+  return resolveProject(process.env, cwd ?? '.');
+}
+
+/** What `.layout` says for a call: nothing when `NB_DIR` is set (project folders and the answer are not read then). */
+function layoutOf(p: Place): LayoutRead {
+  return p.kind === 'env' ? { state: 'none' } : readLayout(p.projectsDir);
+}
+
+function statusLayout(r: LayoutRead): StatusLayout | null {
+  const j = layoutJson(r);
+  const line = layoutLine(r);
+  return j === null || line === null ? null : { line, ...j };
+}
+
+/** Whether `nb brief` groups its index by the derived project name because `.layout` exists (issue #560). */
+function layoutGroups(env: NodeJS.ProcessEnv): boolean {
+  try {
+    if (env.NB_DIR && env.NB_DIR.trim() !== '') return false;
+    if (readLayout(projectsDirOf()).state === 'none') return false;
+    const cwd = currentDir();
+    if (cwd === null) return false;
+    return env.NB_PROJECT_SLUG ? true : gitMayExist(cwd, env);
+  } catch {
+    return false;
+  }
+}
+
+/** A project named from the git remote, outside a bare repository: the only kind that gets a folder or a `.seen` file. */
+function remoteNamed(st: ProjectState | null): st is ProjectState {
+  return st !== null && st.source === 'remote' && st.name !== '' && !st.bare && !st.undetermined;
+}
+
+/** Record that this project is settled (`.seen-<name>`), for a name from the git remote only. Never throws. */
+function markSeen(projectsDir: string, st: ProjectState | null): void {
+  if (remoteNamed(st)) writeSeen(projectsDir, st.name);
+}
+
+/** How long a start-of-session hook waits for the shared notebook's lock before it leaves the folder for the next chat. */
+const START_LOCK_WAIT_MS = 250;
+
+/**
+ * The answer applied when a chat starts (issue #560, FR-SETUP-004). With `NB_DIR` unset
+ * and `.layout` reading `own`, a project named from the git remote that has no folder and
+ * no `.seen-<name>` gets its own EMPTY folder, through `placeOwn` under both locks, and
+ * only when the shared notebook holds no shelf of it (decided under the lock): a hook
+ * never moves a lesson. A name from `NB_PROJECT_SLUG` never makes a folder or a `.seen`
+ * file. A lock that is held, an unreadable or odd `.layout`, a read-only home: nothing
+ * happens and nothing is said. Never throws.
+ */
+async function applyLayoutAtStart(env: NodeJS.ProcessEnv): Promise<void> {
+  try {
+    if (env.NB_DIR && env.NB_DIR.trim() !== '') return;
+    if (env.NB_PROJECT_SLUG) return;
+    const projectsDir = projectsDirOf();
+    const lay = readLayout(projectsDir);
+    if (lay.state !== 'chosen' || lay.value !== 'own') return;
+    const cwd = currentDir();
+    if (cwd === null || !gitMayExist(cwd, env)) return;
+    if (!resolveEnabled(env, cwd).enabled) return;
+    const st = resolveProject(env, cwd);
+    if (!remoteNamed(st) || seenExists(projectsDir, st.name)) return;
+    const p = resolvePlace(env, cwd, { project: () => st });
+    // `own`: the folder exists, nothing to do. `unknown`: nb cannot tell, so it does nothing.
+    if (p.kind !== 'shared' || placeRefusal(p, st, 'own') !== null) return;
+    const r = await placeOwn(p.shared, projectsDir, st.name, {}, { onlyIfNoShelves: true, waitMs: START_LOCK_WAIT_MS });
+    if (!r.skipped) writeSeen(projectsDir, st.name);
+  } catch {
+    // A start-of-session hook never fails, and never says why, because of this.
+  }
+}
+
+/**
+ * `nb place default [shared|own|ask]` (issue #560, FR-PLACE-005). With no value it only
+ * reads. With one it records the answer in `projects/.layout` and, for `own`, makes the
+ * current project's empty folder when nothing of it is in the shared notebook; for
+ * `ask` and `shared` it marks the current project settled. It never moves a lesson.
+ */
+async function placeDefault(p: Place, value: string | undefined, extra: string | undefined, json: boolean, meta: UsageMeta): Promise<void> {
+  if (extra !== undefined) throw new NbError('bad_args', `unexpected extra argument "${extra}" for \`nb place default\``);
+  const nbDirSet = p.kind === 'env';
+  if (value === undefined) {
+    const r = readLayout(p.projectsDir);
+    meta.outcome = 'default';
+    process.stdout.write(json ? JSON.stringify(effectiveLayout(r)) + '\n' : renderDefault(r, nbDirSet));
+    return;
+  }
+  if (!(LAYOUT_VALUES as readonly string[]).includes(value)) {
+    throw new NbError('bad_args', `unknown choice "${value}" for \`nb place default\` (use shared, own or ask)`);
+  }
+  const choice = value as Layout;
+  try {
+    await writeLayout(p.projectsDir, choice);
+  } catch (e) {
+    throw new NbError('bad_args', `${(e as Error).message} Nothing changed.`);
+  }
+  let here = false;
+  let shelvesStay = false;
+  let noProject = false;
+  if (!nbDirSet && p.kind !== 'unknown') {
+    const st = projectForLayout(p);
+    noProject = st === null || st.name === '' || st.source === 'folder' || st.bare;
+    if (choice === 'own') {
+      if (p.kind === 'own') here = true;
+      else if (remoteNamed(st) && placeRefusal(p, st, 'own') === null) {
+        try {
+          const r = await placeOwn(p.shared, p.projectsDir, st.name, {}, { onlyIfNoShelves: true });
+          shelvesStay = r.skipped === true;
+          here = !shelvesStay;
+          if (here) markSeen(p.projectsDir, st);
+        } catch {
+          // The choice is recorded; the folder is made by the next chat that starts here.
+        }
+      }
+    } else {
+      markSeen(p.projectsDir, st);
+    }
+  }
+  meta.outcome = `default-${choice}`;
+  process.stdout.write(json ? JSON.stringify({ default: choice, source: 'chosen' }) + '\n' : defaultDone(choice, { nbDirSet, here, shelvesStay, noProject }));
+}
+
 /** The project folders now (`nb place own` may have made one since the call resolved its place). */
 function presentFolders(p: Place): string[] {
   return scanProjects(p.projectsDir).folders;
@@ -2103,7 +2289,8 @@ function readableByOthers(dir: string): boolean {
 }
 
 /** `nb place --json` (FR-PLACE-002). */
-function placeJson(p: Place): object {
+function placeJson(p: Place, layout: LayoutRead): object {
+  const lj = layoutJson(layout);
   return {
     kind: p.kind,
     dir: p.dir,
@@ -2112,11 +2299,12 @@ function placeJson(p: Place): object {
     reason: p.reason,
     folders: p.folders.map((name) => ({ name, dir: join(p.projectsDir, name) })),
     stranded: strandedShelves(p),
+    ...(lj ? { layout: lj } : {}),
   };
 }
 
 /** The plain `nb place` text (FR-PLACE-002). Folder names are already `[a-z0-9._-]`; paths are cleaned of control characters. */
-function renderPlace(p: Place): string {
+function renderPlace(p: Place, layout: LayoutRead): string {
   const clean = stripControlChars;
   const lines: string[] = [];
   if (p.kind === 'env') {
@@ -2152,6 +2340,8 @@ function renderPlace(p: Place): string {
         : `  an earlier \`nb place shared\` stopped halfway and left ${shelfCount(u.shelves.length)} in ${escapeDiskName(u.dir)}; nothing is lost. Do not delete that folder; run \`nb place shared\` to finish.`,
     );
   }
+  const ll = layoutLine(layout);
+  if (ll !== null) lines.push(ll);
   return lines.join('\n') + '\n';
 }
 

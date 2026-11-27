@@ -233,7 +233,7 @@ of `env`, `remote`, `folder`, `none` (`reason` is prose for people; scripts shou
 
 A project has its own notebook when the folder `~/.agent-notebook/projects/<project>/` exists,
 `<project>` being the name `nb project` prints. Otherwise it uses the shared notebook,
-`~/.agent-notebook/notebooks`. There is no setting: making the folder is the switch.
+`~/.agent-notebook/notebooks`. Making the folder is the switch; [`nb place default`](#where-notes-are-kept-for-every-project--nb-place-default) only decides who makes it.
 
 ```sh
 $ cd ~/git/app && nb place own
@@ -272,6 +272,37 @@ project folders (1): acme-app
 `env` or `unknown`. It exits 0 in every case. Once a project folder exists, every notebook command
 in a repository without `NB_PROJECT_SLUG` runs `git` twice (a few milliseconds) to learn the name;
 without a `projects/` folder no process is started.
+
+### Where notes are kept for every project — `nb place default`
+
+```sh
+$ nb place default
+default: shared (the recommended choice)
+  one notebook for all projects, in sections per project.
+$ nb place default own
+Done: from now on each project gets its own notebook, starting with this one. Notes already kept stay where they are until you ask to move them. To go back, just ask.
+```
+
+`nb place default [shared|own|ask] [--json]` says, or records, one answer for all projects: `shared` (one
+notebook, in sections per project; what you have when nothing was chosen), `own` (a separate notebook for each
+project) or `ask`. The answer is the single word in `~/.agent-notebook/projects/.layout`. With no value the
+command only reads (`--json`: `{"default":"shared|own|ask","source":"chosen|recommended|unreadable"}`).
+A file that is not exactly one of the three words (a link, a folder, a very large file, an unknown word) is
+`unreadable`: it counts as no choice and never overrides a project that already has a folder.
+
+- **It never moves notes.** `own` also makes the current project's *empty* folder, when the project is named from
+  its git remote, has no folder, and the shared notebook holds no shelf `*@<project>`; moving notes stays
+  `nb place own` and `nb place shared`.
+- **`nb brief` applies `own`** when a chat starts: a project named from its git remote that has no folder and
+  was not settled by `nb place own|shared|default` gets an empty folder once (marked by
+  `projects/.seen-<project>`), only when the shared notebook holds none of its shelves. A name from
+  `NB_PROJECT_SLUG` never creates a folder this way. A hook never moves a lesson.
+- **`NB_DIR` wins.** The answer is still recorded, and the command says it applies only where `NB_DIR` is not set.
+- **One line** in `nb place`, `nb status` and `nb config` (and a `layout` key in their `--json`) says where notes
+  are kept and since when; it appears only once `.layout` exists, and never with `NB_DIR` set.
+- Git is started for this only when a `.git` entry exists in the working folder or a parent, or `GIT_DIR` is set.
+- `default` cannot be the name of a project notebook. Exit codes: 0; 1 for an unknown value or when the file cannot
+  be written.
 
 ## The start-of-session text — `nb brief`
 

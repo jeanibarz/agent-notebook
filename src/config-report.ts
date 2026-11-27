@@ -335,6 +335,8 @@ export function renderConfig(
   unknown: UnknownEnv[],
   enabled?: EnabledState,
   messages?: MessagesReport | null,
+  /** One line saying where notes are kept (issue #560), or `null`/absent: nothing is added. */
+  layout?: string | null,
 ): { out: string } {
   const pairW = rows.reduce((w, r) => Math.max(w, `${r.name}=${r.value}`.length), 0);
   const lines = rows.map((r) => {
@@ -363,6 +365,7 @@ export function renderConfig(
     out += `\nenabled=${stateWord(enabled)}  (${describeSource(enabled)})\n`;
   }
   if (messages) out += '\n' + messages.lines.join('\n') + '\n';
+  if (layout) out += '\n' + layout + '\n';
   if (unknown.length > 0) {
     // Keep the tag the same width as the historical `(unrecognized by nb)` so a
     // pure typo re-renders identically. A var with NO close match is still shown

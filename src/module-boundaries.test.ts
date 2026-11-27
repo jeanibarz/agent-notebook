@@ -204,6 +204,30 @@ describe('module boundaries (issue #478)', () => {
     }
   });
 
+  // Issue #560: the answer to "where should notes be kept?" is two modules. The grammar and the
+  // sentences are pure (no import, no read, no clock, no process). The reads and writes sit in one
+  // module on that grammar and on the folder check of the place commands, and only the CLI reaches
+  // either. Moving shelves (place-ops) and the project name (project) never learn about the answer.
+  test('the layout grammar imports nothing, its io module imports a fixed list, only cli imports either (issue #560, NFR-MAINT-001)', () => {
+    const graph = importGraph();
+    expect(graph.get('layout')).toEqual([]);
+    const pure = readFileSync(join(srcDir, 'layout.ts'), 'utf-8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    expect(/^import\b/m.test(pure)).toBe(false);
+    expect(/\bimport\(|\brequire\(|Date\.now|new Date\(\)|process\./.test(pure)).toBe(false);
+    expect(graph.get('layout-io')?.slice().sort()).toEqual(['layout', 'place-ops']);
+    const io = readFileSync(join(srcDir, 'layout-io.ts'), 'utf-8').replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
+    const external = [...io.matchAll(/^import\b[^;]*?\bfrom '([^']+)'/gm)].map((m) => m[1]).filter((m) => !m!.startsWith('./'));
+    expect(new Set(external)).toEqual(new Set(['node:fs', 'node:crypto', 'node:path']));
+    expect(/from 'node:child_process'|\bimport\(/.test(io)).toBe(false);
+    expect(graph.get('cli')).toEqual(expect.arrayContaining(['layout', 'layout-io']));
+    expect(graph.get('place-ops')).toEqual(['notebook']);
+    expect(graph.get('project')).toEqual(['git']);
+    for (const [mod, deps] of graph) {
+      if (mod !== 'cli' && mod !== 'layout-io') expect(deps, `${mod}.ts imports layout`).not.toContain('layout');
+      if (mod !== 'cli') expect(deps, `${mod}.ts imports layout-io`).not.toContain('layout-io');
+    }
+  });
+
   test('no source module speaks a harness hook format (issue #538)', () => {
     // The core stays harness-blind: the Claude Code reply and payload fields live
     // in the adapter under examples/, never in src/.
