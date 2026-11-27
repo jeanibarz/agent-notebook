@@ -23,7 +23,7 @@ import { resolveEnabled, type EnabledState } from './enabled.js';
 import { INSIDE_NOTEBOOKS_WHY, listMessages, NOT_UTF8_WHY, readMessages, type MessageFile, type MessageKind, type MessageListing } from './messages.js';
 import { escapeDiskName, usageFile } from './notebook.js';
 import { projectRecordKey, type ProjectState } from './project.js';
-import { parseUsage, usageFileState, usageTooLargeBytes, type UsageRow, type UsageStat } from './usage.js';
+import { parseUsage, usageFileState, usagePrevFile, usageTooLargeBytes, type UsageRow, type UsageStat } from './usage.js';
 import type { KeyKind, MessageFileFact, RefusalCode, StatusFacts, StatusLayout, StatusRow } from './status.js';
 
 /** The most of a usage log `nb status` reads: its tail. */
@@ -99,6 +99,16 @@ const defaultDeps: FactsDeps = {
   readMessages,
   changelog: (version) => readReleaseDate(version),
 };
+
+/** Whether the ring's older generation exists and is not a plain file, which blocks a rotation (issue #576). */
+function prevRefused(deps: FactsDeps, dir: string): boolean {
+  try {
+    const state = usageFileState(deps.lstat(usagePrevFile(dir)));
+    return state !== 'absent' && state !== 'file';
+  } catch {
+    return false; // absent: nothing blocks the rotation
+  }
+}
 
 function safe<T>(fn: () => T, fallback: T): T {
   try {
@@ -337,7 +347,9 @@ export function gatherFacts(input: FactsInput, overrides: Partial<FactsDeps> = {
     }
     if (folder === 'ok') {
       // The writer's own rule (issue #576, FR-USAGE-005): a link, a folder or a
-      // FIFO/device is refused, and so is a live file past the size cap.
+      // FIFO/device is refused; a live file past the size cap is refused only when
+      // it cannot be rotated, because `.1` is not a plain file (else the next call
+      // rotates it and writes its row).
       const file = usageFile(dir);
       try {
         const st = deps.lstat(file);
@@ -345,7 +357,7 @@ export function gatherFacts(input: FactsInput, overrides: Partial<FactsDeps> = {
         if (state !== 'file' && state !== 'absent') {
           log = 'not-file';
           logKind = state.refused;
-        } else if (Number(st.size) >= usageTooLargeBytes()) log = 'too-large';
+        } else if (Number(st.size) >= usageTooLargeBytes() && prevRefused(deps, dir)) log = 'too-large';
         else {
           try {
             log = deps.writable(file) ? 'ok' : 'unwritable';

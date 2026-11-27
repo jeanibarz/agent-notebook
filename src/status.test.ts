@@ -138,12 +138,12 @@ describe('every verdict and every line variant, as text (golden, FR-STATUS-002)'
 
   test('broken, live: the usage log is not a plain file, or too large to rotate, in plain words (issue #576)', () => {
     const cases = [
-      [{ log: 'not-file', logKind: 'link' }, 'a shortcut (symbolic link) instead of a normal file', ' or read it'],
-      [{ log: 'not-file', logKind: 'folder' }, 'a folder instead of a normal file', ' or read it'],
-      [{ log: 'not-file', logKind: 'special' }, 'a special system file instead of a normal file', ' or read it'],
-      [{ log: 'too-large' }, 'too large to start a new one', ''],
+      [{ log: 'not-file', logKind: 'link' }, 'a shortcut (symbolic link) instead of a normal file'],
+      [{ log: 'not-file', logKind: 'folder' }, 'a folder instead of a normal file'],
+      [{ log: 'not-file', logKind: 'special' }, 'a special system file instead of a normal file'],
+      [{ log: 'too-large' }, 'too large, and a folder or special file named .nb-usage.log.1 keeps it from starting a new one'],
     ] as const;
-    for (const [live, words, read] of cases) {
+    for (const [live, words] of cases) {
       const f = facts({ live: { folder: 'ok', ...live } });
       const d = decideStatus(f, NOW);
       expect(d).toMatchObject({ verdict: 'broken', scope: 'project', problem: null });
@@ -152,7 +152,9 @@ describe('every verdict and every line variant, as text (golden, FR-STATUS-002)'
       );
       expect(d.next).toBe('Ask your assistant to look at the details below.');
       expect(renderStatus(f, d, NOW)).toContain(
-        `\nUsage log: ${words}; nb does not write it${read}. The lessons are not in it; delete it (a link itself, not what it points to) and nb starts a new log.\n`,
+        live.log === 'not-file'
+          ? `\nUsage log: ${words}; nb does not write it or read it. The lessons are not in it; delete it (a link itself, not what it points to) and nb starts a new log.\n`
+          : `\nUsage log: ${words}; nb does not write it. The lessons are not in either; remove .nb-usage.log.1 and nb starts a new log.\n`,
       );
       expect(statusJson(f, d, NOW)).not.toHaveProperty('live'); // the JSON shape is unchanged
     }
@@ -693,8 +695,17 @@ describe('the facts are read from two logs, merged by timestamp, and never throw
     // a stat that follows the link (to a plain file) no longer decides: only the lstat does
     expect(gatherFacts(input(), { ...base, lstat: kind('link'), stat: () => ({ isFile: () => true, isDirectory: () => true }) }).live.log).toBe('not-file');
     // the size cap is the writer's (usageTooLargeBytes), so the two agree
-    const big = () => ({ isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, size: usageTooLargeBytes() });
-    expect(gatherFacts(input(), { ...base, lstat: big }).live.log).toBe('too-large');
+    // past the size cap, the log is refused only when `.1` blocks its rotation, as the writer does
+    const big = (prev: 'absent' | 'file' | 'folder') => (p: string) => {
+      if (p.endsWith('.nb-usage.log.1')) {
+        if (prev === 'absent') throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        return { isFile: () => prev === 'file', isDirectory: () => prev === 'folder', isSymbolicLink: () => false, size: 0 };
+      }
+      return { isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, size: usageTooLargeBytes() };
+    };
+    expect(gatherFacts(input(), { ...base, lstat: big('folder') }).live.log).toBe('too-large');
+    expect(gatherFacts(input(), { ...base, lstat: big('absent') }).live.log).toBe('ok');
+    expect(gatherFacts(input(), { ...base, lstat: big('file') }).live.log).toBe('ok');
     const under = () => ({ isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, size: usageTooLargeBytes() - 1 });
     expect(gatherFacts(input(), { ...base, lstat: under }).live.log).toBe('ok');
   });

@@ -614,7 +614,9 @@ describe('nb-janitor — --days window vs usage-ring span (#275)', () => {
     // a few rows and `.1` the rest. Read alone, the live file would never reach
     // capacity, and the #275 guard would silently stop firing.
     seed(Array.from({ length: 10 }, () => ageRow('busy', 'show', 1)));
-    writeFileSync(join(dir, '.nb-usage.log.1'), Array.from({ length: 99 }, () => ageRow('busy', 'show', 2)).join('\n') + '\n');
+    // The 9 oldest rows of `.1` are 5 days old: read in order (.1 then live), they are the ones dropped.
+    const prev = [...Array.from({ length: 9 }, () => ageRow('busy', 'show', 5)), ...Array.from({ length: 90 }, () => ageRow('busy', 'show', 2))];
+    writeFileSync(join(dir, '.nb-usage.log.1'), prev.join('\n') + '\n');
     const w = usageWindow(['--days', '90'], '100');
     expect(w.rows).toBe(100); // the newest 100 of the two, as nb reads them
     expect(w.atCapacity).toBe(true);

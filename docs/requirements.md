@@ -2464,8 +2464,9 @@ rules, in this order.
   can't tell whether it works.`, or, for a refused log, `The notebook's lessons are fine, but its record of chat
   starts (the usage log, .nb-usage.log) is <kind>, so this check can't tell whether chats start it.`, where
   `<kind>` is `a shortcut (symbolic link) instead of a normal file`, `a folder instead of a normal file`, `a special
-  system file instead of a normal file` or `too large to start a new one`; the detail block then has a `Usage log:`
-  line saying the lessons are not in it. Otherwise, from the rows: this project's newest start or end row has outcome
+  system file instead of a normal file` or, for a log past `usageTooLargeBytes()` whose `.nb-usage.log.1` is not a plain
+  file (so it cannot rotate), `too large, and a folder or special file named .nb-usage.log.1 keeps it from starting a new
+  one`; the detail block then has a `Usage log:` line saying the lessons are not in it. Otherwise, from the rows: this project's newest start or end row has outcome
   `broken`, or a newer row with key `?` has it (a place `unknown` at hook time writes an ok row with outcome
   `broken` in the shared log). Line 1: `The notebook could not open when a chat last started it (<age>).` Line 2: if
   the notebook opens now, `It opens now: start a new chat and ask again.`; otherwise `Ask your assistant to look at

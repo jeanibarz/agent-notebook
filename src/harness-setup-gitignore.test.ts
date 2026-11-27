@@ -30,6 +30,7 @@ function recipeGitignorePatterns(): string[] {
 const MUST_IGNORE = [
   '.nb-usage.log',
   '.nb-usage.log.count', // the #135 sidecar, churns on every `nb` call
+  '.nb-usage.log.1', // the ring's older generation (issue #576)
   '.nb.lock',
   'scratch.tmp', // matches *.tmp
   '.nb-usage.log.12345.tmp', // per-pid temp (also *.tmp)

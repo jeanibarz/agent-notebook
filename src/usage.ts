@@ -678,7 +678,6 @@ function rotateUsage(dir: string, ring: number, budget: number, rowBytes: number
     }
     if (!due) return true; // another call rotated it already
     if (!h.holds()) return false;
-    usageTestHook?.('before-rename');
     renameSync(usageFile(dir), usagePrevFile(dir));
     return true;
   } catch {
@@ -689,8 +688,8 @@ function rotateUsage(dir: string, ring: number, budget: number, rowBytes: number
 }
 
 /** A test seam of the rotation (issue #576). Internal: not on the package root. */
-let usageTestHook: ((point: 'locked' | 'before-rename') => void) | undefined;
-export function setUsageTestHook(fn: ((point: 'locked' | 'before-rename') => void) | undefined): void {
+let usageTestHook: ((point: 'locked') => void) | undefined;
+export function setUsageTestHook(fn: ((point: 'locked') => void) | undefined): void {
   usageTestHook = fn;
 }
 

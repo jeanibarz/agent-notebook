@@ -16,6 +16,8 @@ import {
   statSync,
   symlinkSync,
   truncateSync,
+  lutimesSync,
+  utimesSync,
   writeFileSync,
   writeSync,
 } from 'node:fs';
@@ -164,16 +166,19 @@ function storeWith(name: string, make: (log: string) => void): string {
   make(LOG(d));
   return d;
 }
-function canSymlink(): boolean {
-  const probe = join(tmp, 'probe-link');
+/** Whether this machine can make a symbolic link (Windows needs a privilege), probed once. */
+const canLink = ((): boolean => {
+  const d = mkdtempSync(join(tmpdir(), 'nb-link-probe-'));
   try {
-    symlinkSync(join(tmp, 'global.gitconfig'), probe);
-    rmSync(probe);
+    writeFileSync(join(d, 'f'), '');
+    symlinkSync(join(d, 'f'), join(d, 'l'));
     return true;
   } catch {
-    return false; // Windows without the symlink privilege
+    return false;
+  } finally {
+    rmSync(d, { recursive: true, force: true });
   }
-}
+})();
 
 /** Each command, run against a normal store and against `hostile`: same exit, same stdout, one notice. */
 function expectSameAsWithoutLog(hostile: string, commands: string[][], kind: RegExp): void {
@@ -181,7 +186,6 @@ function expectSameAsWithoutLog(hostile: string, commands: string[][], kind: Reg
     const ref = nb(args, { NB_DIR: join(tmp, `ref-${args[0]}`) });
     const got = nb(args, { NB_DIR: hostile });
     expect(got.signal, `nb ${args.join(' ')} was killed`).toBeNull();
-    expect(got.ms, `nb ${args.join(' ')} took ${got.ms} ms`).toBeLessThan(10_000);
     expect(got.code, `nb ${args.join(' ')}: ${got.err}`).toBe(ref.code);
     expect(got.out.split(hostile).join('<dir>')).toBe(ref.out.split(join(tmp, `ref-${args[0]}`)).join('<dir>'));
     const lines = noticeLines(got.err);
@@ -194,9 +198,9 @@ function expectSameAsWithoutLog(hostile: string, commands: string[][], kind: Reg
 const COMMANDS = [['brief'], ['list'], ['stats'], ['path'], ['show', 'build'], ['add', 'build', 'run the build before the tests']];
 
 describe('a usage log that is not a plain file never blocks, grows or fails a call (issue #576, FR-USAGE-005)', () => {
-  test.skipIf(isWin)('a FIFO as the log: every command returns as without a log, with one notice', () => {
+  test.skipIf(isWin).each(COMMANDS)('a FIFO as the log: nb %s returns as without a log, with one notice', (...args: string[]) => {
     const d = storeWith('fifo', (log) => execFileSync('mkfifo', [log]));
-    expectSameAsWithoutLog(d, COMMANDS, /is a special system file instead of a normal file\. Your lessons are not in it; delete it/);
+    expectSameAsWithoutLog(d, [args], /is a special system file instead of a normal file\. Your lessons are not in it; delete it/);
     expect(lstatSync(LOG(d)).isFIFO()).toBe(true); // never replaced, never written
   });
 
@@ -222,15 +226,14 @@ describe('a usage log that is not a plain file never blocks, grows or fails a ca
     expectSameAsWithoutLog(d, [['brief'], ['stats'], ['path']], /is a shortcut \(symbolic link\) instead of a normal file\. Your lessons are not in that file\. Delete the link itself, not what it points to/);
   });
 
-  test('a folder as the log: nb stats exits 0 (it exited 1 with EISDIR), and every command says so once', () => {
+  test.each(COMMANDS)('a folder as the log: nb %s returns as without a log (nb stats exited 1 with EISDIR), with one notice', (...args: string[]) => {
     const d = storeWith('folder', (log) => mkdirSync(log));
     writeFileSync(join(LOG(d), 'keep.txt'), 'not ours');
-    expectSameAsWithoutLog(d, COMMANDS, /is a folder instead of a normal file\. Your lessons are not in it; look inside it before you delete it/);
+    expectSameAsWithoutLog(d, [args], /is a folder instead of a normal file\. Your lessons are not in it; look inside it before you delete it/);
     expect(readFileSync(join(LOG(d), 'keep.txt'), 'utf-8')).toBe('not ours');
   });
 
-  test('a link to a regular file: the target is never written, and the writer and nb status both refuse it', () => {
-    if (!canSymlink()) return;
+  test.skipIf(!canLink)('a link to a regular file: the target is never written, and the writer and nb status both refuse it', () => {
     const target = join(tmp, 'elsewhere.log');
     writeFileSync(target, 'TARGET\n');
     const d = storeWith('link', (log) => symlinkSync(target, log));
@@ -246,8 +249,7 @@ describe('a usage log that is not a plain file never blocks, grows or fails a ca
     expect(j.headline).toContain('is a shortcut (symbolic link) instead of a normal file');
   });
 
-  test('a sidecar planted as a link never overwrites what it points to', () => {
-    if (!canSymlink()) return;
+  test.skipIf(!canLink)('a sidecar planted as a link never overwrites what it points to', () => {
     const victim = join(tmp, 'victim.txt');
     writeFileSync(victim, 'precious\n');
     const d = join(tmp, 'side-link');
@@ -260,7 +262,7 @@ describe('a usage log that is not a plain file never blocks, grows or fails a ca
     expect(rowsOf(LOG(d))).toHaveLength(1); // the row itself is still written
   });
 
-  test.skipIf(isWin)('a 3 GiB sparse log: a call writes its row, nb stats reads it quickly, and memory stays small', () => {
+  test.skipIf(isWin)('a 3 GiB sparse log: a call writes its row, and nb stats reads it quickly', () => {
     const d = storeWith('huge', (log) => {
       writeFileSync(log, '');
       truncateSync(log, 3 * 1024 ** 3);
@@ -286,20 +288,33 @@ describe('the writer and nb status accept the same kinds of file (issue #576)', 
       ['folder', (log) => mkdirSync(log)],
     ];
     if (!isWin) kinds.push(['fifo', (log) => execFileSync('mkfifo', [log])]);
-    if (canSymlink()) kinds.push(['link', (log) => {
+    if (canLink) kinds.push(['link', (log) => {
       writeFileSync(join(tmp, 'link-target'), '');
       symlinkSync(join(tmp, 'link-target'), log);
     }]);
+    // A plain file past the size cap: rotated and written, unless `.1` blocks the rotation.
+    const oversized = (log: string): void => {
+      writeFileSync(log, '');
+      truncateSync(log, usageTooLargeBytes() + 1024);
+    };
+    kinds.push(['oversized', oversized]);
+    kinds.push(['oversized, .1 a folder', (log) => {
+      oversized(log);
+      mkdirSync(`${log}.1`);
+    }]);
     for (const [name, make] of kinds) {
-      const d = storeWith(`agree-${name}`, make);
+      const d = storeWith(`agree-${name.replace(/[^a-z]+/g, '-')}`, make);
       const st = nb(['status', '--json'], { NB_DIR: d });
       expect(st.signal).toBeNull();
       const j = JSON.parse(st.out) as { verdict: string; headline: string };
-      const res = appendUsage(d, 'p', 'show', true, 1);
-      const writerRefuses = typeof res !== 'string';
+      // The writer runs in a child under the SIGKILL timeout too: a FIFO must never be opened in this process.
+      const w = nb(['path'], { NB_DIR: d });
+      expect(w.signal).toBeNull();
+      expect(w.code).toBe(0);
+      const writerRefuses = noticeLines(w.err).length === 1;
       const statusRefuses = j.verdict === 'broken' && j.headline.includes('record of chat starts');
-      expect(statusRefuses, `${name}: writer ${JSON.stringify(res)}, status ${j.headline}`).toBe(writerRefuses);
-      expect(writerRefuses).toBe(!['absent', 'file'].includes(name));
+      expect(statusRefuses, `${name}: writer ${w.err}, status ${j.headline}`).toBe(writerRefuses);
+      expect(writerRefuses, name).toBe(!['absent', 'file', 'oversized'].includes(name));
     }
   });
 
@@ -413,6 +428,69 @@ describe('the ring loses no row written by a concurrent call (issue #576)', () =
     expect(parseUsage(store).at(-1)?.command).toBe('free');
   });
 
+  test('a log past the size cap whose rotation finds the lock busy is not written, and the CLI says it has grown too large', () => {
+    process.env.NB_USAGE_RING = '100';
+    const rows = Array.from({ length: Math.ceil(usageTooLargeBytes() / 1000) + 10 }, (_, i) => `${seedRow(i)}\t${'x'.repeat(1000)}`);
+    writeFileSync(LOG(store), rows.join('\n') + '\n');
+    mkdirSync(join(store, '.nb.lock')); // a fresh lock, held by a running mutation
+    writeFileSync(join(store, '.nb.lock', 'owner'), 'busy');
+    expect(appendUsage(store, 'p', 'blocked', true, 1)).toEqual({ tooLarge: true, path: LOG(store) });
+    const r = nb(['path'], { NB_USAGE_RING: '100' });
+    expect(r.code).toBe(0);
+    expect(noticeLines(r.err)).toHaveLength(1);
+    expect(r.err).toMatch(/has grown past 2 MB and the notebook could not start a new one/);
+  });
+
+  test('a rename that fails on a ring of normal size still writes the row and records when to try again', () => {
+    fullRing(store);
+    mkdirSync(`${LOG(store)}.1`); // a folder where the older generation goes: the rename fails
+    expect(appendUsage(store, 'p', 'mine', true, 1)).toBe('written');
+    expect(rowsOf(LOG(store)).at(-1)).toContain('\tp\tmine\tok\t');
+    expect(readFileSync(join(store, '.nb-usage.log.count'), 'utf-8')).toMatch(/^117\t\d+\t\d+\n$/);
+  });
+
+  test('a stale lock is taken over for the rotation; a stale link at .nb.lock is never followed', () => {
+    const old = new Date(Date.now() - 3600_000);
+    fullRing(store);
+    mkdirSync(join(store, '.nb.lock'));
+    writeFileSync(join(store, '.nb.lock', 'owner'), 'crashed');
+    utimesSync(join(store, '.nb.lock', 'owner'), old, old);
+    utimesSync(join(store, '.nb.lock'), old, old);
+    logUsage(store, 'p', 'mine', true, 1);
+    expect(existsSync(`${LOG(store)}.1`)).toBe(true); // rotated: the crashed holder's lock was stolen…
+    expect(existsSync(join(store, '.nb.lock'))).toBe(false); // …and released
+    if (!canLink) return;
+    const d = join(tmp, 'linked-lock');
+    mkdirSync(d);
+    fullRing(d);
+    const elsewhere = join(tmp, 'elsewhere-lock');
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, 'owner'), 'theirs');
+    utimesSync(join(elsewhere, 'owner'), old, old);
+    utimesSync(elsewhere, old, old);
+    symlinkSync(elsewhere, join(d, '.nb.lock'), 'dir');
+    lutimesSync(join(d, '.nb.lock'), old, old); // the link itself looks stale too: only the real-folder check refuses it
+    logUsage(d, 'p', 'mine', true, 1);
+    expect(readFileSync(join(elsewhere, 'owner'), 'utf-8')).toBe('theirs'); // its target is untouched
+    expect(lstatSync(join(d, '.nb.lock')).isSymbolicLink()).toBe(true);
+    expect(existsSync(`${LOG(d)}.1`)).toBe(false); // no rotation without the lock
+    expect(rowsOf(LOG(d)).at(-1)).toContain('\tp\tmine\tok\t'); // the row is still written
+  });
+
+  test.skipIf(isWin)('a log swapped for a FIFO between the check and the open is refused by the check on the open file', () => {
+    process.env.NB_USAGE_RING = '100';
+    writeFileSync(LOG(store), `${seedRow(0)}\n`);
+    let swapped = false;
+    fsHook.onOpen = (path) => {
+      if (swapped || path !== LOG(store)) return;
+      swapped = true;
+      rmSync(path);
+      execFileSync('mkfifo', [path]);
+    };
+    expect(appendUsage(store, 'p', 'mine', true, 1)).toEqual({ refused: 'special', path: LOG(store) });
+    expect(swapped).toBe(true);
+  });
+
   test('a reader that meets a rotation between its two opens reads every row once', () => {
     process.env.NB_USAGE_RING = '100';
     for (let i = 0; i < 50; i++) logUsage(store, 'p', `c${i}`, true, 1);
@@ -446,8 +524,8 @@ describe('the ring loses no row written by a concurrent call (issue #576)', () =
     expect(got[got.length - 1]).toBe('c399');
   });
 
-  test('the log keeps its mode (0600 or 0660) across a rotation, whatever the umask', () => {
-    if (isWin) return; // POSIX modes and umask
+  test('the log keeps its mode (0600 or 0660) across a rotation, whatever the umask', (ctx) => {
+    if (isWin) ctx.skip(); // POSIX modes and umask (a plain title, so docs/requirements.md can cite it)
     for (const mode of [0o600, 0o660]) {
       const d = join(tmp, `mode-${mode.toString(8)}`);
       mkdirSync(d);

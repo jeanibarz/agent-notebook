@@ -17,7 +17,8 @@ const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 // throws. Everything delegates to the real fs; when `events` is null and
 // `failDirFsync` is false (the default, reset in afterEach) behavior is identical
 // to the unwrapped module, so every other test is unaffected.
-const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null, failReadOnceCode: null as string | null, failCodelessRead: false, failReaddirCode: null as string | null, lockProbe: null as { op: 'rename' | 'unlink'; path: string; locked: boolean }[] | null }));
+const fsHook = vi.hoisted(() => ({ events: null as string[] | null, renames: null as string[] | null, reads: null as string[] | null, readBytes: null as { path: string; n: number }[] | null, failDirFsync: false, failBodyFsync: false, failRenameTo: null as string | null, failLockMkdirCode: null as string | null, failReadOnceCode: null as string | null, failCodelessRead: false, failReaddirCode: null as string | null, lockProbe: null as { op: 'rename' | 'unlink'; path: string; locked: boolean }[] | null }));
+const fdPaths = vi.hoisted(() => new Map<number, string>());
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
@@ -37,6 +38,16 @@ vi.mock('node:fs', async (importOriginal) => {
       }
       return actual.readFileSync(path, opts as never);
     }) as typeof actual.readFileSync,
+    openSync: ((path: Parameters<typeof actual.openSync>[0], flags?: Parameters<typeof actual.openSync>[1], mode?: Parameters<typeof actual.openSync>[2]) => {
+      const fd = actual.openSync(path, flags as never, mode as never);
+      if (fsHook.readBytes !== null) fdPaths.set(fd, String(path)); // which file a later readSync reads (issue #576)
+      return fd;
+    }) as typeof actual.openSync,
+    readSync: ((fd: number, ...rest: unknown[]) => {
+      const n = (actual.readSync as (...a: unknown[]) => number)(fd, ...rest);
+      fsHook.readBytes?.push({ path: fdPaths.get(fd) ?? '?', n });
+      return n;
+    }) as typeof actual.readSync,
     readdirSync: ((path: Parameters<typeof actual.readdirSync>[0], opts?: Parameters<typeof actual.readdirSync>[1]) => {
       // Opt-in fault injection for the notebooks-directory listing (issue #383):
       // a non-empty string throws with that errno `code`; the empty string throws
@@ -3188,16 +3199,23 @@ describe('usage log + stats', () => {
     const usage = join(dir, '.nb-usage.log');
     const sidecar = join(dir, '.nb-usage.log.count');
     for (let i = 0; i < 50; i++) logUsage(dir, 'p', 'show', true, 1); // fill the ring toward its cap
-    fsHook.reads = []; // capture every readFileSync path during the next append
+    fsHook.reads = []; // capture every readFileSync path during the next append…
+    fsHook.readBytes = []; // …and every readSync (the writer reads through descriptors since issue #576)
     let reads: string[];
+    let readBytes: { path: string; n: number }[];
     try {
       logUsage(dir, 'p', 'vote', true, 2); // one more plain under-cap append
     } finally {
       reads = fsHook.reads!;
+      readBytes = fsHook.readBytes!;
       fsHook.reads = null;
+      fsHook.readBytes = null;
+      fdPaths.clear();
     }
     expect(reads).not.toContain(usage); // the ring file itself is never read on the hot path…
-    expect(reads.every((p) => p === sidecar)).toBe(true); // …only the tiny O(1) sidecar counter is.
+    expect(readBytes.filter((r) => r.path === usage)).toEqual([]);
+    expect(readBytes.every((r) => r.path === sidecar)).toBe(true); // …only the tiny O(1) sidecar counter is.
+    expect(readBytes.length).toBeGreaterThan(0);
     // And the append landed as one more whole row (the rewrite path was not taken).
     const lines = readFileSync(usage, 'utf-8').split('\n').filter((l) => l !== '');
     expect(lines.length).toBe(51);
