@@ -32,6 +32,11 @@ import { acquireLock, readShelf, releaseLock, staleLockMs, type LockHandle } fro
 export interface PlaceHooks {
   /** Both locks are held, before anything is read or decided. */
   onLocked?: () => void;
+  /**
+   * Both locks are held, before anything else (even when the project has no folder). A caller that must record a
+   * decision no later start may miss (the `.seen` marker of `nb place`, issue #560) does it here. Not test-only.
+   */
+  whenLocked?: () => void;
   /** Just before the shelves are linked. */
   beforeLink?: () => void;
   /** `nb place shared`'s rename of the folder away (a test can make it fail as Windows may). */
@@ -69,8 +74,20 @@ interface PlaceLocks {
  * while we wait; then the command refuses with nothing changed. `fn` runs with both
  * locks held; they are released in reverse order.
  */
-async function withPlaceLocks<T>(shared: string, own: string, cmd: 'own' | 'shared', fn: (l: PlaceLocks) => T): Promise<T> {
-  const sharedLock = await acquireLock(shared);
+async function withPlaceLocks<T>(
+  shared: string,
+  own: string,
+  cmd: 'own' | 'shared',
+  fn: (l: PlaceLocks) => T,
+  /** Called first thing, both locks held. */
+  whenLocked?: () => void,
+  /** Give up on the shared notebook's lock after this long (a start-of-session hook must not wait). */
+  waitMs?: number,
+): Promise<T> {
+  const sharedLock = await acquireLock(
+    shared,
+    waitMs === undefined ? {} : { deadline: performance.now() + waitMs, busy: () => new Error('the shared notebook is in use by another nb call') },
+  );
   // Counted from taking the first lock: that lock's age is what must stay under the threshold.
   const start = performance.now();
   let ownLock: LockHandle | null = null;
@@ -88,6 +105,7 @@ async function withPlaceLocks<T>(shared: string, own: string, cmd: 'own' | 'shar
     }
     const l = { shared: sharedLock, own: ownLock };
     assertHeld(l, cmd);
+    whenLocked?.();
     return fn(l);
   } finally {
     if (ownLock !== null) releaseLock(ownLock);
@@ -113,6 +131,18 @@ export interface PlaceMove {
   moved: string[];
   kept: { shelf: string; why: string }[];
   lessons: number;
+  /** Set by `placeOwn(..., { onlyIfNoShelves })` when it made nothing because the shared notebook holds shelves of the project. */
+  skipped?: true;
+}
+
+/** Options of `placeOwn` for callers that must never move a lesson (the answer applied at the start of a chat, `nb place default own`). */
+export interface PlaceOwnOptions {
+  /** Under the lock, make nothing and move nothing when the shared notebook holds a shelf `*@<project>`: the result is `skipped`. */
+  onlyIfNoShelves?: boolean;
+  /** Give up, throwing, when the shared notebook's lock is not free after this many milliseconds. */
+  waitMs?: number;
+  /** Asked once the locks are held; `false` makes nothing and moves nothing (the result is `skipped`). The caller's own re-check of what it decided before the lock. */
+  precondition?: () => boolean;
 }
 
 /** The name a shelf of a project's own folder takes in the shared notebook: `<x>@<project>` (kept when it already ends so). */
@@ -424,7 +454,7 @@ function present(p: string): boolean {
  * is decided under the shared notebook's lock (issue #551): whether the folder
  * exists, and so which further lock is needed.
  */
-export async function placeOwn(shared: string, projectsDir: string, project: string, hooks: PlaceHooks = {}): Promise<PlaceMove> {
+export async function placeOwn(shared: string, projectsDir: string, project: string, hooks: PlaceHooks = {}, opts: PlaceOwnOptions = {}): Promise<PlaceMove> {
   const target = join(projectsDir, project);
   mkdirSync(projectsDir, { recursive: true, mode: 0o700 });
   mkdirSync(shared, { recursive: true });
@@ -446,6 +476,13 @@ export async function placeOwn(shared: string, projectsDir: string, project: str
     hooks.onLocked?.();
     const kept: PlaceMove['kept'] = [];
     const created = l.own === null;
+    if (opts.precondition !== undefined && !opts.precondition()) {
+      return { dir: target, created: false, moved: [], kept, lessons: 0, skipped: true };
+    }
+    // Decided under the lock, so a shelf written between a caller's look and this point is still seen.
+    if (opts.onlyIfNoShelves === true && projectShelves(shared, project).length > 0) {
+      return { dir: target, created: false, moved: [], kept, lessons: 0, skipped: true };
+    }
     if (created && present(target)) {
       throw new Error(`projects/${project} exists but is not a folder nb can use (a link, or another user's); nothing changed.`);
     }
@@ -467,7 +504,7 @@ export async function placeOwn(shared: string, projectsDir: string, project: str
     }
     const moved = unlinkUnlessTakenOver(l, shared, linked, kept, (x) => join(target, `${x}.md`));
     return { dir: target, created, moved, kept, lessons: moved.reduce((n, s) => n + (lessons.get(s) ?? 0), 0) };
-  });
+  }, hooks.whenLocked, opts.waitMs);
 }
 
 /**
@@ -682,7 +719,7 @@ export async function placeShared(shared: string, own: string, project: string, 
     moved = moved.concat(m.moved);
     const r = { ...base, moved, renamed: renamedOf(moved), lessons: lessons + m.lessons, away, keptHere: kept.length - keptBefore };
     return { ...r, ...(left === undefined ? {} : { left }) };
-  });
+  }, hooks.whenLocked);
   // The locks are released (ours inside the renamed folder with them): remove this run's
   // folder if it holds no shelf. A folder of an earlier run that it could not finish stays `left`.
   const { away, keptHere, ...rest } = r as PlaceSharedResult & { away?: string; keptHere?: number };

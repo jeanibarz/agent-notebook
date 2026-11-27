@@ -28,6 +28,14 @@ _nb_complete() {
       [ "$cword" -eq 2 ] || return 0 ;;
     move)
       [ "$cword" -eq 2 ] || [ "$cword" -eq 3 ] || return 0 ;;
+    place)
+      # `nb place own|shared|default`, then the choices of `nb place default`.
+      if [ "$cword" -eq 2 ]; then
+        COMPREPLY=( $(compgen -W "own shared default" -- "$cur") )
+      elif [ "$cword" -eq 3 ] && [ "${COMP_WORDS[2]}" = default ]; then
+        COMPREPLY=( $(compgen -W "shared own ask" -- "$cur") )
+      fi
+      return 0 ;;
     *)
       return 0 ;;
   esac

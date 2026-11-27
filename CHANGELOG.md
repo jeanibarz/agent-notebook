@@ -10,6 +10,9 @@ versions are listed plainly.
 ## [Unreleased]
 
 - **The Claude Code plugin zip now carries `CHANGELOG.md`**, so `nb status` run from the plugin shows the release date (issue #560, first part).
+- **`nb place default [shared|own|ask]` says, or records, where the notes of every project are kept (issue #560, second part).** With no value it only reads (`--json` prints `{"default","source"}`). `own` gives each project its own notebook; `shared` (the default when nothing was chosen) keeps one notebook in sections per project; `ask` is recorded for the next part. The answer is one word in `~/.agent-notebook/projects/.layout`, written only by this command. It never moves a note.
+- **A chat that starts in a project follows the answer `own` (issue #560).** `nb brief` gives a project named from its git remote an empty own folder, once, unless the shared notebook already holds notes for it (then nothing moves). A name set with `NB_PROJECT_SLUG` never gets a folder this way, and `nb place own|shared` now mark the project as settled.
+- **`nb place`, `nb status` and `nb config` say where notes are kept** and since when, only when a choice was made and `NB_DIR` is not set; with no choice every output is unchanged. Once a choice exists, the start-of-chat index is grouped by project from the first chat. `default` can no longer be the name of a project notebook.
 
 ## [0.13.0-beta.2] - 2026-11-27
 

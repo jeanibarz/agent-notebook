@@ -24,7 +24,7 @@ import { INSIDE_NOTEBOOKS_WHY, listMessages, NOT_UTF8_WHY, readMessages, type Me
 import { escapeDiskName, usageFile } from './notebook.js';
 import { projectRecordKey, type ProjectState } from './project.js';
 import { parseUsage, type UsageRow } from './usage.js';
-import type { KeyKind, MessageFileFact, RefusalCode, StatusFacts, StatusRow } from './status.js';
+import type { KeyKind, MessageFileFact, RefusalCode, StatusFacts, StatusLayout, StatusRow } from './status.js';
 
 /** The most of a usage log `nb status` reads: its tail. */
 export const STATUS_LOG_MAX_BYTES = 8 * 1024 * 1024;
@@ -54,6 +54,8 @@ export interface FactsInput {
   argv1: string | undefined;
   /** The version of this program. */
   version: string;
+  /** Where notes are kept (issue #560): present only when `.layout` exists and `NB_DIR` is unset. */
+  layout?: StatusLayout | null;
   /** The clock, in milliseconds (default `Date.now()`): a row dated more than `FUTURE_SLACK_MS` after it is forged and dropped. */
   now?: number;
 }
@@ -382,6 +384,7 @@ export function gatherFacts(input: FactsInput, overrides: Partial<FactsDeps> = {
   return {
     switch: { enabled: en === null ? true : en.enabled, source: en === null ? 'default' : en.source },
     place: { kind: input.place.kind },
+    ...(input.layout ? { layout: input.layout } : {}),
     project: {
       name: st === null || st.name === '' ? null : st.name,
       source: st === null ? 'none' : st.source,

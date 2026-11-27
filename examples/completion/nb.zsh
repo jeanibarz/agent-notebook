@@ -26,6 +26,13 @@ _nb() {
   case $cmd in
     show|stale|add|vote|merge|split|rm|describe|stats|path) (( CURRENT == 3 )) && want_shelf=1 ;;
     move)         (( CURRENT == 3 || CURRENT == 4 )) && want_shelf=1 ;;
+    place)
+      # `nb place own|shared|default`, then the choices of `nb place default`.
+      if (( CURRENT == 3 )); then
+        compadd own shared default
+      elif (( CURRENT == 4 )) && [[ ${words[3]} == default ]]; then
+        compadd shared own ask
+      fi ;;
   esac
 
   if (( want_shelf )); then

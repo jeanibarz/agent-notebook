@@ -227,6 +227,8 @@ export function placeRefusal(place: Place, st: ProjectState | null, action: 'own
   }
   if (st.bare) return `this is a bare repository; run nb from one of its worktrees.`;
   if (isWindowsDeviceName(st.name)) return `"${st.name}" cannot be a folder name on Windows; set NB_PROJECT_SLUG to another name for this project.`;
+  // `nb place default` is a command word of its own (issue #560): a project folder with that name would read as the choice.
+  if (st.name === 'default') return `"default" cannot be the name of a project notebook; set NB_PROJECT_SLUG to another name for this project.`;
   if (st.name.length > OWN_NAME_MAX) {
     return `the project name is ${st.name.length} characters long, over ${OWN_NAME_MAX} (paths would get too long on Windows); set a shorter NB_PROJECT_SLUG for this project.`;
   }

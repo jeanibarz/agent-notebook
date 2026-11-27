@@ -309,6 +309,12 @@ export interface BriefOptions {
   placeLine?: string;
   /** The call could not tell which notebook to use: print the header, `placeLine` and the user's message blocks, with no index (outcome `broken`). */
   placeUnknown?: boolean;
+  /**
+   * `.layout` exists (issue #560) and a project name can be asked: the index is grouped by
+   * the derived name even while the store holds no project shelf yet. Computed by the CLI,
+   * which reads that file; this module never does.
+   */
+  layoutGroup?: boolean;
   /** The home folder whose `.agent-notebook/messages/` is read (issue #539); the CLI uses `os.homedir()`. */
   home?: string;
   /** The shared notebooks folder, for the check that the messages folder is not inside it; defaults to `dir`. */
@@ -551,7 +557,7 @@ export function brief(opts: BriefOptions): BriefResult {
   // (a folder name could be shared by two unrelated repositories, FR-BRIEF-003).
   let slug = (env.NB_PROJECT_SLUG ?? '').trim().slice(0, 128);
   let derived = false;
-  if (!env.NB_PROJECT_SLUG && opts.cwd !== null && hasProjectShelf(opts.dir)) {
+  if (!env.NB_PROJECT_SLUG && opts.cwd !== null && (opts.layoutGroup === true || hasProjectShelf(opts.dir))) {
     const st = ask();
     if (groupsIndex(st) && st.name !== '') {
       slug = st.name;

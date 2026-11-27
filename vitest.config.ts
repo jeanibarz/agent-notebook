@@ -149,6 +149,7 @@ export default defineConfig({
             'src/nb-git-wrapper-lock.test.ts',
             'src/place.test.ts',
             'src/place-ops.test.ts',
+            'src/place-default-race.test.ts',
             'src/messages.test.ts',
             'src/nb-hook-entry.test.ts',
           ],

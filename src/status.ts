@@ -49,10 +49,20 @@ export interface MessageFileFact {
 export type ProjectSourceFact = 'env' | 'remote' | 'folder' | 'none';
 export type KeyKind = 'name' | 'folder-hash' | 'undetermined' | 'none';
 
+/** Where notes are kept (issue #560): present in the facts only when `.layout` exists and `NB_DIR` is unset. */
+export interface StatusLayout {
+  /** The sentence `nb place` and `nb config` print too. */
+  line: string;
+  default: 'shared' | 'own' | 'ask';
+  source: 'chosen' | 'unreadable';
+  since: string | null;
+}
+
 /** What `status-facts.ts` read. Strings under `shown` are escaped and capped for the text output. */
 export interface StatusFacts {
   switch: { enabled: boolean; source: 'env' | 'git' | 'default' };
   place: { kind: 'env' | 'own' | 'shared' | 'unknown' };
+  layout?: StatusLayout;
   project: { name: string | null; source: ProjectSourceFact; keyKind: KeyKind; key: string | null };
   live: { folder: 'ok' | 'missing' | 'unreadable' | 'not-folder'; log: 'ok' | 'absent' | 'unwritable' };
   /** The `brief` and `retro` rows of the logs read, oldest first; the newest is last. */
@@ -345,6 +355,7 @@ export function renderStatus(f: StatusFacts, d: StatusDecision, now: number): st
     `Switch: ${f.switch.enabled ? 'on' : 'off'} (${f.switch.source === 'default' ? 'the default' : f.switch.source === 'env' ? 'NB_ENABLED' : 'git config nb.enabled'}), as seen from this terminal`,
   );
   lines.push(`Place: ${f.place.kind}`);
+  if (f.layout) lines.push(f.layout.line);
   lines.push(`Project: name ${SOURCE_WORDS[f.project.source]}; the key is ${KEY_WORDS[f.project.keyKind]}`);
   const shelves = f.notebook.shelves === null ? 'shelves could not be counted' : `${f.notebook.shelves} ${f.notebook.shelves === 1 ? 'shelf' : 'shelves'}`;
   const lastAdd = f.notebook.lastAddAt === null ? 'no lesson added in the record' : `last lesson added ${ageWords((now - Date.parse(f.notebook.lastAddAt)) / 1000)}`;
@@ -410,6 +421,7 @@ export function statusJson(f: StatusFacts, d: StatusDecision, now: number): Reco
     },
     switch: { enabled: f.switch.enabled, source: f.switch.source },
     place: { kind: f.place.kind },
+    ...(f.layout ? { layout: { default: f.layout.default, source: f.layout.source, since: f.layout.since } } : {}),
     project: { name: f.project.name, source: f.project.source, key: f.project.keyKind },
     notebook: { shelves: f.notebook.shelves, lastAddAt: f.notebook.lastAddAt },
     program: { version: f.program.version, released: f.program.released, nodeVersion: f.program.nodeVersion, platform: f.program.platform },
