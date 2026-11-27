@@ -240,7 +240,8 @@ describe('the user settings file is read for one decision only (D1.1, NFR-SAFE-0
 
 describe('which CLAUDE_CONFIG_DIR values are never opened, under POSIX and Windows rules (D1.1, NFR-SAFE-001)', () => {
   // The predicate is taken from the adapter's own text, so no second copy exists to drift.
-  const src = readFileSync(ADAPTER, 'utf-8');
+  // A Windows checkout turns the file into CRLF, so line ends are made LF before matching.
+  const src = readFileSync(ADAPTER, 'utf-8').replace(/\r\n/g, '\n');
   const fn = /\/\*\*\n \* Whether a `CLAUDE_CONFIG_DIR` value[\s\S]*?\n}\n/.exec(src)![0];
   const make = (isAbs: (p: string) => boolean) => new Function('isAbsolute', 'win32', `${fn}\nreturn configDirRefused;`)(isAbs, win32) as (v: string, a?: (p: string) => boolean) => boolean;
   const refusedValues = [
