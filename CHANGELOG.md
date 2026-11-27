@@ -9,6 +9,13 @@ versions are listed plainly.
 
 ## [Unreleased]
 
+## [0.13.0-beta.3] - 2026-11-28
+
+**TL;DR.** The third beta of epic #537. It carries the first-chat set-up (#560) in the Claude Code plugin, and it is the version the plugin's marketplace file names first (#559).
+- **npm:** a plain `npm install agent-notebook` still gives 0.12.0. Try this beta with `npm install -g agent-notebook@beta`.
+- **The plugin:** the first chat after installing it says the notebook is on and asks one question, where notes are kept (#560). The marketplace file that names this zip is added by #578.
+- **Also new since beta.2:** `nb place default` (#560), the plugin zip carries `CHANGELOG.md` (#560), the usage log can no longer hang or lose rows (#576), the new-shelf note asks for a description (#589), and development runs stay out of the real notebook (#588).
+
 - **The new-shelf note now asks for a description (issue #589).** When `nb add` or `nb move` creates a shelf, the `note: created new shelf` line on stderr now ends with `; it has no description, so the index shows its top lesson. Say when to open the shelf: nb describe <shelf> "<when to open this shelf>"`. When `nb describe` creates a shelf, it does not print this clause (it has just set the description). stdout (`--json` included) and the exit code are unchanged; `nb add --json` still prints no note. The end-of-task text (`nb retro`) gains one line after step 5, `If you start a new shelf, give it a description: nb describe <shelf> "<when to open this shelf>"`, and `AGENTS.md` says the same in moment ④ and on the card.
 - **Development runs stay out of the real notebook.** `AGENTS.md` (section 6) now says to try a build by hand with `HOME="$(mktemp -d)" NB_DIR="$(mktemp -d)" node dist/cli.js …`, and the plugin end-to-end scripts (`scripts/plugin-e2e/run.sh`, `run.ps1`) drop every inherited `NB_*` variable before they start. On a machine where agent sessions export `NB_DIR`, one local run of the end-to-end script had written 12 `brief` rows of its test versions into the real usage log, and unreleased commands tried through the released `nb` on `PATH` had added 9 unknown-command errors, which `nb stats` reported as a high-error-rate anomaly. No code in the package changes.
 - **The Claude Code plugin zip now carries `CHANGELOG.md`**, so `nb status` run from the plugin shows the release date (issue #560, first part).
@@ -983,7 +990,8 @@ The full list follows.
 ### Added
 - Initial release: a bounded, voted, plain-text memory for AI agents. Commands: `nb add`, `show`, `vote`, `merge`, `rm`, `stats`. Each role's notebook holds at most 200 lines, each at most 200 characters, and the lowest-scored line is evicted first when full. The library has zero runtime dependencies.
 
-[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.13.0-beta.2...HEAD
+[Unreleased]: https://github.com/jeanibarz/agent-notebook/compare/v0.13.0-beta.3...HEAD
+[0.13.0-beta.3]: https://github.com/jeanibarz/agent-notebook/compare/v0.13.0-beta.2...v0.13.0-beta.3
 [0.13.0-beta.2]: https://github.com/jeanibarz/agent-notebook/compare/v0.13.0-beta.1...v0.13.0-beta.2
 [0.13.0-beta.1]: https://github.com/jeanibarz/agent-notebook/compare/v0.12.0...v0.13.0-beta.1
 [0.12.0]: https://github.com/jeanibarz/agent-notebook/compare/v0.11.1...v0.12.0
