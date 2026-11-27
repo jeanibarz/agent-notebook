@@ -123,3 +123,108 @@ export function defaultDone(value: Layout, o: DefaultOutcome): string {
 export function seenFileName(name: string): string {
   return `.seen-${name}`;
 }
+
+/*
+ * The first-start claim (issue #560, FR-SETUP-002): `projects/.first-start`, the one-time
+ * record that the set-up note was printed. It holds `pending <ISO time> <16 hex>` (the note
+ * was printed to the chat whose cleaned session id hashes to those 16 hex digits) or `done`
+ * (that chat had a real turn, which `nb retro` saw). Anything else is `unreadable`: no
+ * note, never a throw.
+ */
+
+/** The most bytes `.first-start` may hold: `pending`, a millisecond ISO time and 16 hex digits, with room. */
+export const FIRST_START_MAX_BYTES = 128;
+
+/** A `pending` claim older than this is taken over by a later fresh start (60 minutes). */
+export const FIRST_START_EXPIRY_MS = 60 * 60 * 1000;
+
+/** The fewest characters a cleaned session id needs for a claim: a shorter one cannot tell two chats apart. */
+export const SESSION_ID_MIN_LENGTH = 8;
+
+/** What a read of `.first-start` found. `raw` is the text as read, so a takeover can check it moved the file it saw. */
+export type FirstStartRead =
+  | { state: 'none' }
+  | { state: 'done' }
+  | { state: 'pending'; at: number; hash: string; raw: string }
+  | { state: 'unreadable' };
+
+/** The text of a new `pending` claim, for the time `nowMs` and the 16 hex digits of the session hash. */
+export function formatPending(nowMs: number, hash: string): string {
+  return `pending ${new Date(nowMs).toISOString()} ${hash}\n`;
+}
+
+/** The text of a confirmed claim. */
+export const FIRST_START_DONE = 'done\n';
+
+const PENDING_RE = /^pending (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z) ([0-9a-f]{16})$/;
+
+/** `done` or a well-formed `pending` claim from the file's text (a BOM and white space around it are trimmed), else `null`. */
+export function parseFirstStart(raw: string): Exclude<FirstStartRead, { state: 'none' | 'unreadable' }> | null {
+  const text = raw.replace(/^﻿/, '').trim();
+  if (text === 'done') return { state: 'done' };
+  const m = PENDING_RE.exec(text);
+  if (m === null) return null;
+  const at = Date.parse(m[1]!);
+  return Number.isNaN(at) ? null : { state: 'pending', at, hash: m[2]!, raw };
+}
+
+/** A `pending` claim is expired when it is over 60 minutes old, or dated in the future (a clock that moved back, or a forged date). */
+export function pendingExpired(at: number, nowMs: number): boolean {
+  return nowMs - at > FIRST_START_EXPIRY_MS || at > nowMs;
+}
+
+/**
+ * What `setupDue` needs. Each fact after `welcome` is read only when every condition before
+ * it held, so a call that is not a first start reads as little as possible; a test gives
+ * plain values.
+ */
+export interface SetupFacts {
+  /** `--welcome` was given (the plugin's adapter adds it on a fresh start only). */
+  welcome: boolean;
+  /** `NB_DIR` or `NB_PROJECT_SLUG` is set and not blank. */
+  envSet: () => boolean;
+  /** `projects/` holds an entry whose name does not start with a dot. */
+  projectsUsed: () => boolean;
+  /** `~/.agent-notebook/messages` exists. */
+  messagesPresent: () => boolean;
+  /** The notebook folder holds a non-dot `*.md`, a `.git` or a `.nb.json`. */
+  notebooksUsed: () => boolean;
+  firstStart: () => FirstStartRead;
+  nowMs: number;
+  /** The per-repository switch is on. */
+  switchOn: () => boolean;
+  /** The place can be decided (it is not `unknown`). */
+  placeKnown: () => boolean;
+  /** The length of the cleaned session id; `0` when the call has none. */
+  sessionLength: () => number;
+  /** The note that would be printed fits `--max-chars`. */
+  fits: () => boolean;
+}
+
+/** `due` with `takeover` set when the claim to replace is an expired `pending` one (its text in `raw`), or why not. */
+export type SetupVerdict = { due: true; takeover: boolean; raw: string | null } | { due: false; why: string };
+
+/**
+ * Conditions 2 to 7 of "not set up yet" (issue #560, D1; condition 1 is `welcome`; condition 8,
+ * the claim itself, is made by the caller). Pure: the first condition that fails is the answer,
+ * so nothing is claimed unless the whole note can be seen.
+ */
+export function setupDue(f: SetupFacts): SetupVerdict {
+  if (!f.welcome) return { due: false, why: 'no --welcome' };
+  if (f.envSet()) return { due: false, why: 'NB_DIR or NB_PROJECT_SLUG is set' };
+  if (f.projectsUsed()) return { due: false, why: 'projects/ already holds an entry' };
+  if (f.messagesPresent()) return { due: false, why: 'the messages folder exists' };
+  if (f.notebooksUsed()) return { due: false, why: 'the notebook already holds notes, a git folder or a .nb.json' };
+  const claim = f.firstStart();
+  let takeover = false;
+  let raw: string | null = null;
+  if (claim.state === 'pending' && pendingExpired(claim.at, f.nowMs)) {
+    takeover = true;
+    raw = claim.raw;
+  } else if (claim.state !== 'none') return { due: false, why: `the first-start claim is ${claim.state}` };
+  if (!f.switchOn()) return { due: false, why: 'the notebook is switched off here' };
+  if (!f.placeKnown()) return { due: false, why: 'the place is unknown' };
+  if (f.sessionLength() < SESSION_ID_MIN_LENGTH) return { due: false, why: 'the session id is shorter than 8 characters' };
+  if (!f.fits()) return { due: false, why: 'the note does not fit --max-chars' };
+  return { due: true, takeover, raw };
+}

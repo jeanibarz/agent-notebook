@@ -228,6 +228,25 @@ describe('module boundaries (issue #478)', () => {
     }
   });
 
+  // Issue #560, D6: the question is asked by the assistant, in words the note gives; nothing in src/ names a
+  // harness's question tool or the plugin's options form (a cloned repository could answer that form, R2).
+  test('src/ never names the question tool, the options form or its variables (issue #560, NFR-MAINT-001)', () => {
+    for (const f of readdirSync(srcDir)) {
+      if (!f.endsWith('.ts') || f.endsWith('.test.ts')) continue;
+      const text = readFileSync(join(srcDir, f), 'utf-8');
+      for (const term of ['AskUserQuestion', 'userConfig', 'CLAUDE_PLUGIN_OPTION']) {
+        expect(text.includes(term), `${f} mentions ${term}`).toBe(false);
+      }
+    }
+  });
+
+  test('loop.ts gets the set-up note as a value: its imports are the same fixed list, and only cli reaches layout-io for it (issue #560)', () => {
+    const graph = importGraph();
+    expect(graph.get('loop')?.slice().sort()).toEqual(['agent-text', 'enabled', 'messages', 'notebook', 'project', 'render']);
+    expect(graph.get('layout-io')?.slice().sort()).toEqual(['layout', 'place-ops']);
+    expect(graph.get('cli')).toEqual(expect.arrayContaining(['layout-io', 'loop']));
+  });
+
   test('no source module speaks a harness hook format (issue #538)', () => {
     // The core stays harness-blind: the Claude Code reply and payload fields live
     // in the adapter under examples/, never in src/.

@@ -315,7 +315,14 @@ model whatever it prints. It reads no hook payload and exits 0 in every runtime 
 nb brief                      # instructions + the index (the 50 richest shelves)
 nb brief --max-chars 3000     # a smaller budget, e.g. for subagents
 nb brief --json               # {"outcome":"index|layered|empty|broken|off","text":"…"}
+nb brief --welcome            # as the plugin's hook runs it on a fresh start: may add the set-up note
 ```
+
+- **`--welcome`** (issue #560) lets `nb brief` print the one-time set-up note first, before the index heading,
+  for a person who has not set the notebook up: the notebook is on, and where should notes be kept. The plugin's
+  hook adapter adds it on a fresh start only. Without it the output is byte for byte what it always was. Who
+  counts as new, and how the note is claimed once, are in [FR-SETUP-001 to 003](requirements.md#fr-setup-001).
+  With `NB_DIR` or `NB_PROJECT_SLUG` set, or any notes already kept, it prints nothing extra.
 
 - **Off** (see `nb enabled`) prints one line telling the agent to skip the notebook steps.
 - **Layered**: the index is grouped into this project's shelves (`<situation>@<name>`),

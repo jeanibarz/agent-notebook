@@ -141,6 +141,11 @@ Operations SHALL report honestly rather than pretend success:
 - The verdict `running` of `nb status` SHALL claim only that the start step ran: that `nb brief` or `nb retro`
   ran with a hook label for this project at that time. It SHALL NOT claim that the assistant received the
   text, read the list or used a lesson, and its output says so ([FR-STATUS-002](#fr-status-002), issue #558).
+- The set-up note ([FR-SETUP-003](#fr-setup-003)) SHALL say what happened and no more than that: while a
+  claim is `pending`, the only thing known is that the question was shown to the assistant in the text of a
+  chat, so no output, document or log SHALL say that the user was asked or had answered; it says "the question
+  was shown". A claim that cannot be written, a note that does not fit `--max-chars`, and a claim that cannot
+  be read SHALL NOT print the note, so a question is never spent unseen.
 **Rationale:** The notebook is an agent's memory of its own past; a silent
 truncation or a mis-landed vote poisons future runs. A loud refusal is cheap to
 recover from; a silent corruption is not.
@@ -155,7 +160,8 @@ there (by the commands that read it: `enabled`, `config`, the text form of `list
 [FR-HEARTBEAT-001](#fr-heartbeat-001) when `--hook` is given), `project` of [§4.18](#fr-project-001), and every notebook command once a
 project folder exists, [§4.19](#fr-place-001)), the entries of `~/.agent-notebook/projects/` when `NB_DIR`
 is unset ([FR-PLACE-001](#fr-place-001)), the files `.layout` and `.seen-<name>` there ([FR-PLACE-005](#fr-place-005); not read when `NB_DIR`
-is set, except by `nb place default`), the `.git` entries of the working folder and its parents (on the paths of
+is set, except by `nb place default`), the file `.first-start` there and the existence of `messages/`, of the notebook folder's shelf names, `.git` and `.nb.json`
+([FR-SETUP-001](#fr-setup-001), only with `--welcome`), the `.git` entries of the working folder and its parents (on the paths of
 issue #560), the `GIT_*` variables git
 itself reads,
 `PATH` (to find `git`), the home folder (the default `NB_DIR` and `projects/`, and the `messages/` folder
@@ -164,7 +170,8 @@ times, [FR-MSG-001](#fr-msg-001)), the locale, the files
 under `NB_DIR` (or the project folder in use), and the clock: `stats` and `doctor` report against the current time
 (their `--since` window, a lock's age). For `brief` and `retro` the clock SHALL decide
 side effects only (timestamps, removing an expired retrospective sentinel), never what
-they print; §4.17 lists their inputs. The inputs of
+they print, with one named exception: the age of a `pending` `.first-start` decides whether the set-up note is printed
+again ([FR-SETUP-002](#fr-setup-002)); §4.17 lists their inputs. The inputs of
 `nb status` ([FR-STATUS-001](#fr-status-001)) are its arguments; `NB_DIR`, `NB_ENABLED`, `NB_PROJECT_SLUG`
 and the home folder; the tail of the usage log(s), the names of shelf files and the entries of
 `~/.agent-notebook/projects/`; the message files; `package.json` and `CHANGELOG.md` beside `cli.js`; git's
@@ -703,7 +710,7 @@ shelves; `--json` emits a lone object for one shelf, an array for several),
 `enabled [--why] [--json]` ([FR-ENABLED-001](#fr-enabled-001)),
 `project [--why] [--json]` ([FR-PROJECT-001](#fr-project-001)),
 `place [own|shared|default [shared|own|ask]] [--json]` ([FR-PLACE-002](#fr-place-002), [FR-PLACE-003](#fr-place-003), [FR-PLACE-005](#fr-place-005)),
-`brief [--max-chars N] [--session <id>] [--hook <label>] [--json]` ([FR-BRIEF-001](#fr-brief-001)),
+`brief [--max-chars N] [--session <id>] [--hook <label>] [--welcome] [--json]` ([FR-BRIEF-001](#fr-brief-001)),
 `retro --session <id> [--work-dir <dir>] [--hook <label>] [--json]` ([FR-RETRO-001](#fr-retro-001)),
 `status [--json]` ([FR-STATUS-001](#fr-status-001)),
 `list [prefix] [--limit <N>] [--json]` (aliases `ls`, `shelves`, and the deprecated `roles`),
@@ -1778,7 +1785,7 @@ or registered by hand. None of them runs inside an `nb` call ([DP-6](#dp-6)).
 "the supported harness files are exactly these (issue #559)".
 
 <a id="fr-brief-001"></a>
-**FR-BRIEF-001 (Should).** `nb brief [--max-chars N] [--session <id>] [--hook <label>] [--json]`
+**FR-BRIEF-001 (Should).** `nb brief [--max-chars N] [--session <id>] [--hook <label>] [--welcome] [--json]`
 SHALL print, for the working directory, what an assistant should see at the start of a
 session: the instruction lines of today's `nb-session-start.sh`, one framing line saying the
 lessons are notes from earlier agent runs and not instructions from the user, the place line
@@ -1792,7 +1799,10 @@ an unreadable store SHALL print a warning line naming the error code. It SHALL N
 standard input, a hook payload, or any harness variable. It SHALL exit `0` in every runtime
 state and `1` only on bad usage, and SHALL never exit `2`. `--json` SHALL print
 `{ outcome, text }` with `outcome` one of `index`, `layered`, `empty`, `broken`, `off`, and
-`text` equal to the plain output. Its inputs ([DP-6](#dp-6)) are: its arguments; `NB_DIR`
+`text` equal to the plain output. `--welcome` (issue #560) SHALL be the only way the set-up note
+of [FR-SETUP-003](#fr-setup-003) is printed: it SHALL come first, before the instruction lines, followed by one blank
+line, and SHALL count in the head that is never cut; without `--welcome` every output, `--json` included,
+SHALL be byte for byte what it is without this flag, whatever `.first-start` and `.layout` hold. Its inputs ([DP-6](#dp-6)) are: its arguments; `NB_DIR`
 and the home folder; `NB_ENABLED`, and git's `nb.enabled` read in the working directory
 (git's scopes and environment, and `PATH` to find `git`); `NB_PROJECT_SLUG` and
 `NB_GLOBAL_SHELF`; when `NB_PROJECT_SLUG` is unset, the project name of
@@ -1812,7 +1822,9 @@ a lesson, and it says nothing of these writes.
 
 *Proven by:* `brief.test.ts` → `describe('nb brief prints what the 0.12 session-start hook printed, plus the framing line (FR-BRIEF-001)')`,
 `describe('nb brief respects the per-repository switch (FR-BRIEF-001)')` and
-`describe('nb brief exit codes and the usage log (FR-BRIEF-001)')`; the answer applied by
+`describe('nb brief exit codes and the usage log (FR-BRIEF-001)')`; `--welcome` and the unchanged output without it by
+`brief-welcome.test.ts` → `describe('the notes, word for word (FR-SETUP-003)')` and
+`describe('an existing user sees nothing new, with or without --welcome and the two files (FR-BRIEF-001, NFR-SAFE-001)')`; the answer applied by
 `place-default.test.ts` → `describe('nb brief applies the answer (FR-SETUP-004)')`; the message blocks by
 `messages.test.ts` → `describe('nb brief adds the message files after the place line and before the index (FR-MSG-001, FR-BRIEF-001)')`,
 and the unchanged text without a messages folder by
@@ -1822,8 +1834,9 @@ and the unchanged text without a messages folder by
 **FR-BRIEF-002 (Should).** `nb brief` SHALL keep its whole output within `--max-chars`
 characters (default 9000; `0` disables the budget). Over budget, it SHALL drop index rows
 in the existing `nb list` rank, fewest lessons first, whatever their layer, and SHALL never
-drop the instruction, framing, place, heading or note lines, or the user's message blocks and
-warning lines ([FR-MSG-001](#fr-msg-001)), all of which count in the head that is never cut. The last line SHALL then say how many
+drop the set-up note ([FR-SETUP-003](#fr-setup-003)), the instruction, framing, place, heading or note lines, or the user's message blocks and
+warning lines ([FR-MSG-001](#fr-msg-001)), all of which count in the head that is never cut. A set-up note that
+does not fit `--max-chars` together with the instruction and framing lines SHALL NOT be printed and SHALL NOT be claimed. The last line SHALL then say how many
 shelves were not shown, that the index is capped at that many characters, and give the
 `nb list --limit <total>` command that shows them all. When message blocks are present and the head
 alone is over `--max-chars` (above 0), `nb brief` SHALL print one line saying the user's instructions
@@ -1832,7 +1845,8 @@ leave no room for the index, in place of the index.
 replaces anything longer with a 2,000-character preview and a file path (epic #537, M9);
 a cut index then shows more than today, never less.
 
-*Proven by:* `brief.test.ts` → `describe('nb brief keeps its text within --max-chars (FR-BRIEF-002)')`;
+*Proven by:* `brief.test.ts` → `describe('nb brief keeps its text within --max-chars (FR-BRIEF-002)')`; the note by
+`brief-welcome.test.ts` → `describe('who is shown the note (FR-SETUP-001)')`;
 `messages.test.ts` → "the blocks are part of the never-cut head: the index gets what is left of --max-chars",
 "over the budget by the head alone, one line says so in place of the index" and
 "1,000 shelves with --max-chars 1500 and a block: within budget, block kept, the cut line says how many".
@@ -1880,7 +1894,11 @@ it SHALL print nothing and keep the claim; when it is off only in `--work-dir` (
 absolute directory, the directory the assistant last worked in) it SHALL print nothing and
 release the claim, so a later call from an on directory still nudges once (issue #517). It
 SHALL NOT read standard input or a hook payload, SHALL exit `0` in every runtime state and
-`1` only on bad usage, and SHALL never exit `2`. `--json` SHALL print
+`1` only on bad usage, and SHALL never exit `2`. Its FIRST step for a non-empty `--session <id>` (with `NB_DIR` unset),
+before the sentinel and before every `off` return, SHALL be the confirmation of [FR-SETUP-002](#fr-setup-002): a
+`.first-start` holding `pending` for the hash of this cleaned session id becomes `done`; any other
+session, no claim, an unreadable claim and any write error leave it as it was. The confirmation SHALL print
+nothing and SHALL NOT change the text, the outcome or the exit code of `nb retro`. `--json` SHALL print
 `{ outcome, text, session }` with `outcome` one of `nudge`, `already`, `off`,
 `off-work-dir`. On a `nudge` the text SHALL be, each part separated by one blank line: the built-in
 text; the blocks of the user's `retro.txt` and then `<project>.retro.txt` ([FR-MSG-001](#fr-msg-001)); the
@@ -1897,7 +1915,8 @@ output is byte for byte that of before.
 `describe('nb retro speaks once per session and shares the 0.12 sentinel (FR-RETRO-001)')`,
 `describe('nb retro cleans the session id before it becomes a file name (FR-RETRO-001)')`,
 `describe('nb retro respects the per-repository switch (FR-RETRO-001)')`,
-`describe('nb retro fails open (FR-RETRO-001)')`,
+`describe('nb retro fails open (FR-RETRO-001)')`, the confirmation by
+`brief-welcome.test.ts` → `describe('the confirmation is the first step of nb retro (FR-RETRO-001, FR-SETUP-002)')`,
 `describe('nb retro exit codes and the usage log (FR-RETRO-001, FR-USAGE-001)')` and
 `describe('nb retro under concurrency (FR-RETRO-001)')`; the message blocks by
 `messages.test.ts` → `describe('nb retro adds the message files after the nudge and before the extra prompt (FR-MSG-001, FR-RETRO-001)')`
@@ -1955,8 +1974,20 @@ instruction text of their own. A hook SHALL never exit `2`. When `nb` is missing
 or fails, a start hook SHALL inject one diagnostic line naming the fix (skipped when
 `NB_ENABLED` is off in the environment) and a Stop hook SHALL send nothing. The three
 existing `.sh` file names SHALL keep working, so existing `settings.json` files need no
-change.
-*Proven by:* `nb-claude-hook.test.ts` → `describe('the hooks send what the 0.12 scripts sent (FR-HOOKS-001, acceptance criterion 1)')`,
+change. On `session-start` only, when the payload's `source` is `startup`, the adapter runs from the plugin (`CLAUDE_PLUGIN_ROOT` is set
+and holds the adapter file, both with symlinks resolved; unlike FR-HOOKS-002, a root that cannot be resolved counts as not containing it) and the user's own
+Claude Code settings file does not mention `nb-claude-hook`, `nb-session-start`, `nb-retrospective` or `nb-hook-entry`, it SHALL add
+`--welcome` to `nb brief` ([FR-BRIEF-001](#fr-brief-001)), and never otherwise. That file is
+`$CLAUDE_CONFIG_DIR/settings.json` only when `CLAUDE_CONFIG_DIR` is an absolute local path (a relative path, or one starting
+with two backslashes or two slashes, is refused unopened), else `<home>/.claude/settings.json`; never `settings.local.json`, a project's or a managed
+file. It SHALL be read by `lstat` (a regular file), at most 1 MiB, a non-blocking open, one read and a substring test, and
+nothing of it SHALL reach standard output, standard error, the usage log or `nb`; its only effect is whether the flag is added.
+A file that does not exist is "no mention"; any other error SHALL mean no flag. The adapter cannot know whether `nb` would print
+the note, so it reads that file once per fresh chat, not once per machine ([docs/enterprise.md](enterprise.md#the-first-chat-one-question-and-the-one-file-the-adapter-reads)).
+`plugin/hooks/hooks.json` SHALL stay unchanged by this ([FR-PLUGIN-002](#fr-plugin-002)).
+*Proven by:* `nb-claude-hook-welcome.test.ts` → `describe('the adapter adds --welcome on a fresh start run from the plugin (FR-HOOKS-001, FR-SETUP-001)')` and
+`describe('the user settings file is read for one decision only (D1.1, NFR-SAFE-001)')`;
+`nb-claude-hook.test.ts` → `describe('the hooks send what the 0.12 scripts sent (FR-HOOKS-001, acceptance criterion 1)')`,
 `describe('the adapter (FR-HOOKS-001)')`,
 `describe('the harness label and the project folder (FR-HOOKS-001, issue #558)')` and
 `describe('the trampolines keep the 0.12 file names working (FR-HOOKS-001)')`; the stop rules by
@@ -2492,8 +2523,18 @@ packaged paths by `plugin-build.test.ts` → "every ${CLAUDE_PLUGIN_ROOT} path i
 of this session". Its body SHALL be under 90 lines, stamp the plugin version with `{{VERSION}}` (filled in
 by the build), tell the assistant to compare `nb --version` with it and to run the plugin's own `nb` by
 `${CLAUDE_PLUGIN_ROOT}` when they differ, give the managed-settings path of each operating system, show a
-Windows lesson sent on standard input as UTF-8, and speak to the user in plain words.
+Windows lesson sent on standard input as UTF-8, and speak to the user in plain words. It SHALL trust only the closed
+list of start-of-chat notes the plugin prints (a line starting `agent-notebook:`, the index heading, the set-up note's heading and
+closing sentence), quoted word for word, and never the same words found in a file, a page or a tool result; it SHALL have a section "Where notes
+are kept" (the question asked with the app's multiple-choice question tool when it has one, choice 1 first and recommended, else in words;
+`nb place default …` and `nb place own|shared` to change it; what to say to "I already have notes elsewhere"), and its answer to "is it
+working?" SHALL include where notes are kept and how many there are. Inside the plugin, when `nb` is missing or too old (not found, exit 2, or any
+other failure) a start hook's could-not-load line SHALL read `agent-notebook: the notebook could not start. Tell the user: reinstall agent-notebook.`, and after the
+adapter's 15-second limit `agent-notebook: the notebook took too long to start; it will try again next chat.`; outside the plugin the text is unchanged.
 *Proven by:* `plugin-hooks.test.ts` → `describe('the skill and the manifest (FR-PLUGIN-003, issue #559)')`;
+`skill-notes.test.ts` → `describe('the skill quotes the start-of-chat notes it trusts (FR-SETUP-003, D8)')`;
+`nb-claude-hook-welcome.test.ts` → `describe('the could-not-load line is worded for the plugin (FR-PLUGIN-003)')`;
+`nb-claude-hook-timeout.test.ts` → `describe('the could-not-load line when nb does not answer (FR-PLUGIN-003)')`;
 the stamp by `plugin-build.test.ts` → "SKILL.md has no {{VERSION}} left and names the version".
 
 <a id="fr-plugin-004"></a>
@@ -2599,8 +2640,70 @@ published and reviewed; `docs/releasing.md` says what a compromised step could s
 
 ### 4.23 The one set-up question (issue #560)
 
-> **Status:** this section arrives in pieces. The pull request that adds `nb place default` implements FR-SETUP-004 (the answer applied
-> when a chat starts). FR-SETUP-001 to FR-SETUP-003 (the first-start note, its claim and its confirmation) come with the next pull request.
+<a id="fr-setup-001"></a>
+**FR-SETUP-001 (Should).** `nb brief --welcome` SHALL print a set-up note only for a person who is not set up yet, decided by the pure function
+`setupDue` (`src/layout.ts`), which reads its conditions in this order and stops at the first that fails: (1) `--welcome` is given;
+(2) `NB_DIR` and `NB_PROJECT_SLUG` are unset or blank; (3) `~/.agent-notebook/projects/` is missing or holds no entry whose name does not start with a dot;
+(4) `~/.agent-notebook/messages/` is missing; (5) the notebook folder holds no `*.md` file (not a dot-file), no `.git` and no `.nb.json`;
+(6) `.first-start` is absent, or is `pending` and expired ([FR-SETUP-002](#fr-setup-002)); (7) the per-repository switch is on, the place is not
+`unknown`, the cleaned session id has at least 8 characters, and the whole note fits `--max-chars`; (8) the claim succeeds. Nothing is claimed
+unless all of 1 to 7 hold. Nobody else SHALL see a note: not a person typing `nb brief`, not Codex, a subagent or a resumed, cleared or
+compacted chat (the plugin's adapter adds `--welcome` only on a fresh start, [FR-HOOKS-001](#fr-hooks-001)), not someone whose hooks were copied by hand, and
+nobody with notes already kept. Note A or A' is printed for the first start; note B ([FR-SETUP-003](#fr-setup-003)) needs `--welcome` too.
+
+| Who | Sees the note |
+|---|---|
+| a person who is new, in a project named from the git remote | A, once |
+| a person who is new, in a folder with no such name | A', once |
+| `NB_DIR` or `NB_PROJECT_SLUG` set (also blank counts as unset) | never |
+| a shelf, a `.git` folder or a `.nb.json` in the notebook; a messages folder; any entry in `projects/` | never |
+| the switch off, an unknown place, a session id under 8 characters, a note over `--max-chars` | not now, and nothing is claimed |
+| `.first-start` that is `done`, a fresh `pending`, or unreadable (a link, a folder, a FIFO, over 128 bytes, a NUL, garbage) | never |
+| an expired `pending` (over 60 minutes old, or dated in the future) | once more, for the chat that takes it over |
+
+*Proven by:* `setup-welcome.test.ts` → `describe('setupDue: the predicate, one row per kind of person (FR-SETUP-001)')` and
+`describe('prepareSessionStart: the one entry point (FR-SETUP-001, FR-SETUP-003)')`;
+`brief-welcome.test.ts` → `describe('who is shown the note (FR-SETUP-001)')`.
+
+<a id="fr-setup-002"></a>
+**FR-SETUP-002 (Should).** Two small files of nb's own in `~/.agent-notebook/projects/` SHALL keep the set-up state: `.first-start`, the one-time claim
+(this requirement), and `.layout`, the answer ([FR-PLACE-005](#fr-place-005)). `.first-start` holds `pending <ISO time> <16 hex digits of the sha256
+of the cleaned session id>` or `done`; anything else, a file over 128 bytes, a link, a folder or a FIFO is `unreadable`, which counts as
+"never" and is never replaced. **Claim:** `projects/` is made with mode 0700, `~/.agent-notebook` and `projects/` SHALL be real folders of
+the user (not links, owned by the user on POSIX), then `.first-start` is created exclusively with mode 0600; any error SHALL mean no note, and a claim that could not be
+written whole is removed. **Confirm:** the first step of `nb retro --session <id>` ([FR-RETRO-001](#fr-retro-001)) turns `pending` for the hash of this session into `done` (an
+exclusive 0600 temporary file and a rename), errors swallowed. **Expiry:** a `pending` claim older than 60 minutes, or dated in the future, is renamed aside by a later
+fresh start, and only the process whose rename wins creates the new claim; a file that is not the one it saw is put back.
+
+| From | Event | To |
+|---|---|---|
+| no file | the first start that is due, with the claim made | `pending` (this session) |
+| `pending` (this session) | `nb retro --session` of that session | `done` |
+| `pending` (another session) | `nb retro` of a different session | unchanged |
+| `pending`, over 60 minutes old or in the future | a fresh start that is due | `pending` (the new session), once |
+| `pending`, fresh | any other start | unchanged, no note |
+| `done`, or unreadable | anything | unchanged, no note |
+
+Two chats are both shown the note only when the first sat idle for over an hour before its first reply and a second chat started in that hour. A chat that
+had a turn but whose assistant did not pass the question on spends it.
+**Rationale:** a Stop runs only after a real turn, so a chat opened and closed without a prompt, or a hook killed at its time limit, does not spend the question.
+*Proven by:* `setup-welcome.test.ts` → `describe('the .first-start grammar (FR-SETUP-002)')`,
+`describe('the claim: an exclusive create in a real folder of this user (FR-SETUP-002)')`,
+`describe('expiry: a pending claim older than 60 minutes, or dated in the future, is taken over once (FR-SETUP-002)')` and
+`describe('the confirmation: pending for this session becomes done, and nothing else changes (FR-SETUP-002)')`;
+`brief-welcome.test.ts` → `describe('the claim under failure and abuse (FR-SETUP-002, NFR-SAFE-001)')`.
+
+<a id="fr-setup-003"></a>
+**FR-SETUP-003 (Should).** The set-up notes are text in `src/agent-text.ts` (ASCII, none starting with `agent-notebook:`), printed by `nb brief --welcome` first, before
+`## Your agent-notebook index`, followed by one blank line, and counted in the head that is never cut. **A** (first start, project named from the git remote) says
+the notebook is on and asks "Where should your notes be kept?" with three choices (one notebook for all projects, recommended and already in effect; a separate notebook
+for each project; ask in each new project) and the commands `nb place default own` and `nb place default ask`. **A'** (first start, no project name) says it is
+on and keeps one notebook, with no question. **B** (a new project, the answer `ask`, a name from the git remote, no `.seen-<name>`, and no shelf `*@<name>`
+in the shared notebook) asks for that project and names `nb place own`; it is claimed by `.seen-<name>`. Each is printed once, and the claim is
+made before the note is printed. The note is guidance for the assistant: the user's answer is recorded only by the assistant running the named command.
+*Proven by:* `brief-welcome.test.ts` → `describe('the notes, word for word (FR-SETUP-003)')`;
+`setup-welcome.test.ts` → `describe('note B: a new project, when the answer is ask (FR-SETUP-003)')`;
+`skill-notes.test.ts` → `describe('the skill quotes the start-of-chat notes it trusts (FR-SETUP-003, D8)')`.
 
 <a id="fr-setup-004"></a>
 **FR-SETUP-004 (Should).** The answer of [FR-PLACE-005](#fr-place-005) SHALL be applied by `nb brief` and by no other call (every other call
@@ -2676,13 +2779,19 @@ entries of `~/.agent-notebook/projects/`, the message files as `nb config` does,
 only when that folder is a real folder of the user (created with mode 0700): `.layout` by `nb place default` alone (an exclusive 0600
 temporary file and a rename), `.seen-<name>` (an exclusive 0600 create) by `nb place default`, `nb place own|shared` and `nb brief`, and a
 project's EMPTY own folder by `nb place default own` and `nb brief`. `nb brief` never moves a lesson and never writes for a name from
-`NB_PROJECT_SLUG`. Reads of `.layout` are bounded (a regular file of at most 64 bytes, a non-blocking open).
+`NB_PROJECT_SLUG`. Reads of `.layout` are bounded (a regular file of at most 64 bytes, a non-blocking open). Also under `projects/`: `.first-start` by `nb brief --welcome` (an exclusive 0600
+create, after the folder checks of [FR-SETUP-002](#fr-setup-002); the rename aside of an expired claim; a claim that could not be written whole is removed) and by `nb retro` (its confirmation: an exclusive
+0600 temporary file and a rename), read as `.layout` is (a regular file of at most 128 bytes, a non-blocking open). The plugin's adapter reads one file outside nb: the user's Claude Code `settings.json`
+([FR-HOOKS-001](#fr-hooks-001)), bounded, never passed on, and refused unopened on a network path.
 
 *Proven by:* `messages.test.ts` → `describe('a home folder or a notebooks folder that would plant text is refused (NFR-SAFE-001, acceptance criterion 5)')`,
 `describe('the messages folder is found, listed and refused as the design says (FR-MSG-001, NFR-SAFE-001)')` and
 `describe('nb never writes in the messages folder (NG-008, NFR-SAFE-001)')`; the named writes by
 `layout-io.test.ts` → `describe('writeLayout: an exclusive 0600 temporary file, then a rename (FR-PLACE-005)')` and
-`place-default.test.ts` → `describe('nb brief applies the answer (FR-SETUP-004)')`.
+`place-default.test.ts` → `describe('nb brief applies the answer (FR-SETUP-004)')`; the claim by
+`setup-welcome.test.ts` → `describe('a hostile .first-start is never read through, never trusted and never a throw (NFR-SAFE-001)')` and
+`brief-welcome.test.ts` → `describe('the claim under failure and abuse (FR-SETUP-002, NFR-SAFE-001)')`; the adapter's read by
+`nb-claude-hook-welcome.test.ts` → `describe('the user settings file is read for one decision only (D1.1, NFR-SAFE-001)')`.
 
 <a id="nfr-maint-001"></a>
 **NFR-MAINT-001 (Should).** The whole mechanism SHALL stay in `src/notebook.ts` (the
@@ -2692,11 +2801,11 @@ shell completion, stdin reading and process guards). The read-side report render
 `nb config` report (`src/config-report.ts`), the did-you-mean helpers (`src/suggest.ts`),
 `nb doctor` (`src/doctor.ts`), the `nb enabled` resolver (`src/enabled.ts`), the agent-facing loop
 (`src/loop.ts`, with its text in `src/agent-text.ts`, issue #538), the project name and the project record key (`src/project.ts`,
-issue #540 and, for `projectRecordKey`, issue #558: it adds `node:crypto` and no module dependency), the user's message files (`src/messages.ts`, issue #539: it imports only `node:fs`, `node:path` and `src/notebook.ts`, takes the project name and the home folder as plain values, runs no process and writes nothing; only `src/loop.ts`, `src/config-report.ts` and `src/status-facts.ts` import it), `nb status` (issue #558: `src/status.ts` is pure, with no import at all, so it cannot read a file, start a process or look at the clock, and `src/status-facts.ts` holds every read, imports only `node:fs`, `node:os`, `node:url` and `src/enabled.ts`, `src/messages.ts`, `src/notebook.ts`, `src/project.ts`, `src/usage.ts`, `src/status.ts`, starts no process and writes nothing; only `src/cli.ts` imports either), the answer to "where should notes be kept?" (issue #560: `src/layout.ts` is pure, with no import, and `src/layout-io.ts` imports only `node:fs`, `node:crypto`, `node:path`, `src/layout.ts` and `src/place-ops.ts`; only `src/cli.ts` imports either, and `src/place-ops.ts` and `src/project.ts` do not), the place resolver and its moves (`src/place.ts`, `src/place-ops.ts`, issue #548) SHALL live in modules that `src/cli.ts`
+issue #540 and, for `projectRecordKey`, issue #558: it adds `node:crypto` and no module dependency), the user's message files (`src/messages.ts`, issue #539: it imports only `node:fs`, `node:path` and `src/notebook.ts`, takes the project name and the home folder as plain values, runs no process and writes nothing; only `src/loop.ts`, `src/config-report.ts` and `src/status-facts.ts` import it), `nb status` (issue #558: `src/status.ts` is pure, with no import at all, so it cannot read a file, start a process or look at the clock, and `src/status-facts.ts` holds every read, imports only `node:fs`, `node:os`, `node:url` and `src/enabled.ts`, `src/messages.ts`, `src/notebook.ts`, `src/project.ts`, `src/usage.ts`, `src/status.ts`, starts no process and writes nothing; only `src/cli.ts` imports either), the answer to "where should notes be kept?" (issue #560: `src/layout.ts` is pure, with no import, and holds the grammar of both files and `setupDue`; `src/layout-io.ts` imports only `node:fs`, `node:crypto`, `node:path`, `src/layout.ts` and `src/place-ops.ts`, and holds the one entry point `prepareSessionStart`; only `src/cli.ts` imports either, `src/loop.ts` receives the set-up note as a value and its imports do not grow, and `src/place-ops.ts` and `src/project.ts` do not), the place resolver and its moves (`src/place.ts`, `src/place-ops.ts`, issue #548) SHALL live in modules that `src/cli.ts`
 imports and that never import it; `src/notebook.ts` SHALL NOT import the loop modules. Only
-`src/git.ts` SHALL start a process (`git`, read-only, a fixed argument list, no shell). Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
+`src/git.ts` SHALL start a process (`git`, read-only, a fixed argument list, no shell). No module in `src/` SHALL name `AskUserQuestion`, `userConfig` or `CLAUDE_PLUGIN_OPTION`: the question is asked by the assistant in the note's words, and the plugin has no options form (a cloned repository could answer one). Behavior SHALL be covered by `vitest` tests runnable with `npm test`.
 
-*Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)" and "only git.ts starts a process, and the project name depends on nothing but it (issue #540)" and "the place resolver sits on the project name and the mechanism, below cli.ts (issue #548)" and "the message-file module imports only the standard library and the mechanism, and only loop, config-report and status-facts import it (issue #539)" and "the status decisions import nothing and the status reads import a fixed list, below cli.ts (issue #558, NFR-MAINT-001)" and "the layout grammar imports nothing, its io module imports a fixed list, only cli imports either (issue #560, NFR-MAINT-001)".
+*Proven by:* `module-boundaries.test.ts` → "the mechanism does not depend on the monitoring layer, and nothing in src imports the root" and "the CLI helper modules sit below cli.ts, and nothing in src imports cli (issue #493)" and "only git.ts starts a process, and the project name depends on nothing but it (issue #540)" and "the place resolver sits on the project name and the mechanism, below cli.ts (issue #548)" and "the message-file module imports only the standard library and the mechanism, and only loop, config-report and status-facts import it (issue #539)" and "the status decisions import nothing and the status reads import a fixed list, below cli.ts (issue #558, NFR-MAINT-001)" and "the layout grammar imports nothing, its io module imports a fixed list, only cli imports either (issue #560, NFR-MAINT-001)" and "src/ never names the question tool, the options form or its variables (issue #560, NFR-MAINT-001)" and "loop.ts gets the set-up note as a value: its imports are the same fixed list, and only cli reaches layout-io for it (issue #560)".
 
 <a id="nfr-obs-001"></a>
 **NFR-OBS-001 (Could).** Operational state SHALL be observable without extra tooling
