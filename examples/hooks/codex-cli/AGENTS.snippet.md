@@ -29,6 +29,9 @@ You have a bounded, voted, plain-text memory via the `nb` command. Use it:
   4. `nb merge` / `nb split <shelf> …` only if lessons repeat each other or one line holds two lessons.
   5. `nb add <shelf> "<=200-char lesson>"` — at most ONE genuinely new, non-obvious
      lesson, to the notebook it fits. Adding nothing is fine; never pad.
+     If you start a new shelf, give it a description with `nb describe`:
+     `nb describe <shelf> "<when to open this shelf>"`. The index shows it as the
+     shelf's "open me when…" line; without one it shows the top lesson instead.
 
 Write each lesson as one concrete, actionable line (a trap + its mechanism), not
 a vague reminder. An over-long `add` is rejected, not truncated — rewrite shorter.

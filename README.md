@@ -23,7 +23,7 @@ Node.js 18+, no runtime dependencies.
 ```
 $ nb add build-and-test "run lint before claiming done"
 added — 1 line
-note: created new shelf "build-and-test"
+note: created new shelf "build-and-test"; it has no description, so the index shows its top lesson. Say when to open the shelf: nb describe build-and-test "<when to open this shelf>"
 
 $ nb show build-and-test
 acf179  [+1]  run lint before claiming done
