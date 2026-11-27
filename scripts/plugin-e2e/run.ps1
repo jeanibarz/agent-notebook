@@ -221,7 +221,8 @@ try {
   Step 'sessions of the installed plugin: no node, Node.js 16, a current Node.js'
   Session 'no node on PATH' $PNoNode $Proj 'nonode' $Ver1
   Session 'Node.js 16 on PATH' $POld $Proj 'oldnode' $Ver1
-  Session 'current Node.js on PATH' $PNew $Proj 'newnode' $Ver1
+  Session 'current Node.js on PATH' $PNew $Proj 'newnode-first' $Ver1
+  if (-not (Test-Path (Join-Path $H '.agent-notebook\projects\.first-start'))) { Fail 'the first chat left no .first-start claim' }
 
   # ---- planted programs ----
   Step 'programs planted in the project folder never run'

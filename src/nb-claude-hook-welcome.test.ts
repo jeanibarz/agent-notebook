@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { posix, win32 } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -174,7 +175,7 @@ describe('the user settings file is read for one decision only (D1.1, NFR-SAFE-0
   // if it were read, so "no flag" proves the file was not consulted.
   test.each([
     ['a relative path', () => 'cfg'],
-    ['two leading slashes', (dir: string) => '/' + dir.replace(/\\/g, '/')],
+    ['two leading slashes', (dir: string) => (isWin ? '//host/share/cfg' : '/' + dir)],
     ['two backslashes (a UNC path)', () => '\\\\host\\share\\cfg'],
     ['an extended UNC path', () => '\\\\?\\UNC\\host\\share\\cfg'],
   ])('CLAUDE_CONFIG_DIR as %s: no read, no flag', (_label, make) => {
@@ -235,6 +236,29 @@ describe('the user settings file is read for one decision only (D1.1, NFR-SAFE-0
     expect(Date.now() - t0).toBeLessThan(15_000);
     expect(existsSync(argsLog)).toBe(true);
   });
+});
+
+describe('which CLAUDE_CONFIG_DIR values are never opened, under POSIX and Windows rules (D1.1, NFR-SAFE-001)', () => {
+  // The predicate is taken from the adapter's own text, so no second copy exists to drift.
+  const src = readFileSync(ADAPTER, 'utf-8');
+  const fn = /\/\*\*\n \* Whether a `CLAUDE_CONFIG_DIR` value[\s\S]*?\n}\n/.exec(src)![0];
+  const make = (isAbs: (p: string) => boolean) => new Function('isAbsolute', 'win32', `${fn}\nreturn configDirRefused;`)(isAbs, win32) as (v: string, a?: (p: string) => boolean) => boolean;
+  const refusedValues = [
+    '', 'rel', './rel', '../rel', 'C:foo', 'C:', '\\\\host\\share', '//host/share', '\\/host/share', '/\\host\\share', '\\\\?\\UNC\\host\\share', '\\\\?\\C:\\x',
+    '\\\\.\\pipe\\x', '//?/UNC/host/share', '//./pipe/x', '\\?\\C:\\x', '\\.\\C:\\x', '~/cfg', ' /abs',
+  ];
+  const localValues = ['/home/ana/.claude', '/', 'C:\\Users\\Ana\\.claude', 'C:/Users/Ana/.claude'];
+  for (const [name, pm] of [['posix', posix], ['win32', win32]] as const) {
+    test(`${name} rules: every network, device, relative and drive-relative form is refused`, () => {
+      const refused = make(pm.isAbsolute);
+      for (const v of refusedValues) expect(refused(v), JSON.stringify(v)).toBe(true);
+    });
+    test(`${name} rules: a plain absolute local path that the rules know is not refused`, () => {
+      const refused = make(pm.isAbsolute);
+      for (const v of localValues.filter((x) => pm.isAbsolute(x) && win32.isAbsolute(x))) expect(refused(v), JSON.stringify(v)).toBe(false);
+      expect(localValues.some((x) => pm.isAbsolute(x) && win32.isAbsolute(x))).toBe(true);
+    });
+  }
 });
 
 describe('the could-not-load line is worded for the plugin (FR-PLUGIN-003)', () => {

@@ -24,7 +24,7 @@
 import { spawnSync } from 'node:child_process';
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // The exit status is left at 0 by returning, never by process.exit(): on macOS a
@@ -193,6 +193,19 @@ function insidePlugin() {
 }
 
 /**
+ * Whether a `CLAUDE_CONFIG_DIR` value must not be opened: anything that is not an absolute local path by the
+ * rules of this system AND by the Windows rules (so a drive-relative `C:foo` is refused on every system), and any
+ * value that starts with two slashes of either kind (`\\host`, `//host`, `\/`, `/\`, `\\?\`, `\\.\`, `//?/`) or
+ * with one slash and `?` or `.` and a slash (`\?\`, the NT form). Opening a network path on Windows can hand the
+ * user's credential to that server. `isAbs` is the system's `isAbsolute`; a test gives the POSIX one.
+ */
+function configDirRefused(cfg, isAbs = isAbsolute) {
+  if (typeof cfg !== 'string' || cfg === '') return true;
+  if (/^[\\/]{2}/.test(cfg) || /^[\\/][?.][\\/]/.test(cfg)) return true;
+  return !(isAbs(cfg) && win32.isAbsolute(cfg));
+}
+
+/**
  * Whether the user's own Claude Code settings file mentions one of the four names of a hook
  * copied by hand (issue #560, D1.1): such a person already has the notebook, so no set-up note.
  * The file is `$CLAUDE_CONFIG_DIR/settings.json` only when that is an absolute local path (one
@@ -210,7 +223,7 @@ function mentionsCopiedHooks() {
     const cfg = process.env.CLAUDE_CONFIG_DIR;
     let dir;
     if (cfg === undefined || cfg === '') dir = join(homedir(), '.claude');
-    else if (!isAbsolute(cfg) || cfg.startsWith('\\\\') || cfg.startsWith('//')) return true;
+    else if (configDirRefused(cfg)) return true;
     else dir = cfg;
     const file = join(dir, 'settings.json');
     let st;
