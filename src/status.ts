@@ -182,7 +182,7 @@ const LOG_KIND_WORDS = {
   link: 'a shortcut (symbolic link) instead of a normal file',
   folder: 'a folder instead of a normal file',
   special: 'a special system file instead of a normal file',
-  'too-large': 'too large, and a folder or special file named .nb-usage.log.1 keeps it from starting a new one',
+  'too-large': 'too large, and a folder named .nb-usage.log.1 keeps it from starting a new one',
 } as const;
 
 function logWords(live: StatusFacts['live']): keyof typeof LOG_KIND_WORDS {

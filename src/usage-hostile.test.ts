@@ -302,6 +302,15 @@ describe('the writer and nb status accept the same kinds of file (issue #576)', 
       oversized(log);
       mkdirSync(`${log}.1`);
     }]);
+    if (canLink) kinds.push(['oversized, .1 a link', (log) => {
+      oversized(log);
+      writeFileSync(join(tmp, 'prev-target'), 'TARGET\n');
+      symlinkSync(join(tmp, 'prev-target'), `${log}.1`);
+    }]);
+    if (!isWin) kinds.push(['oversized, .1 a fifo', (log) => {
+      oversized(log);
+      execFileSync('mkfifo', [`${log}.1`]);
+    }]);
     for (const [name, make] of kinds) {
       const d = storeWith(`agree-${name.replace(/[^a-z]+/g, '-')}`, make);
       const st = nb(['status', '--json'], { NB_DIR: d });
@@ -314,7 +323,7 @@ describe('the writer and nb status accept the same kinds of file (issue #576)', 
       const writerRefuses = noticeLines(w.err).length === 1;
       const statusRefuses = j.verdict === 'broken' && j.headline.includes('record of chat starts');
       expect(statusRefuses, `${name}: writer ${w.err}, status ${j.headline}`).toBe(writerRefuses);
-      expect(writerRefuses, name).toBe(!['absent', 'file', 'oversized'].includes(name));
+      expect(writerRefuses, name).toBe(!['absent', 'file', 'oversized', 'oversized, .1 a link', 'oversized, .1 a fifo'].includes(name));
     }
   });
 
@@ -512,13 +521,17 @@ describe('the ring loses no row written by a concurrent call (issue #576)', () =
     process.env.NB_MAX_CHARS = '2000';
     const wide = '漢'.repeat(2000); // 6 KB in UTF-8 for 2000 characters
     const results = new Set<string>();
+    let largest = 0;
     for (let i = 0; i < 400; i++) {
       const r = appendUsage(store, 'p', `c${i}`, true, 1, { session: wide, note: wide, entries: [] });
       results.add(typeof r === 'string' ? r : JSON.stringify(r));
+      largest = Math.max(largest, statSync(LOG(store)).size);
     }
     expect([...results]).toEqual(['written']);
     expect(existsSync(`${LOG(store)}.1`)).toBe(true);
-    expect(statSync(LOG(store)).size).toBeLessThan(usageByteBudget() + 20_000);
+    // Rotated by size before reaching the row cap (100 rows of 12 KB would be 1.2 MB): the live file never
+    // passed the byte budget by more than one row.
+    expect(largest).toBeLessThan(usageByteBudget() + 20_000);
     expect(statSync(`${LOG(store)}.1`).size).toBeLessThan(usageTooLargeBytes());
     const got = commands(store);
     expect(got[got.length - 1]).toBe('c399');

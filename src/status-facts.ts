@@ -100,11 +100,14 @@ const defaultDeps: FactsDeps = {
   changelog: (version) => readReleaseDate(version),
 };
 
-/** Whether the ring's older generation exists and is not a plain file, which blocks a rotation (issue #576). */
-function prevRefused(deps: FactsDeps, dir: string): boolean {
+/**
+ * Whether the ring's older generation is a folder, the one thing at `.nb-usage.log.1`
+ * that blocks a rotation: a rename replaces a link or a FIFO there (issue #576).
+ */
+function prevBlocks(deps: FactsDeps, dir: string): boolean {
   try {
     const state = usageFileState(deps.lstat(usagePrevFile(dir)));
-    return state !== 'absent' && state !== 'file';
+    return typeof state === 'object' && state.refused === 'folder';
   } catch {
     return false; // absent: nothing blocks the rotation
   }
@@ -348,8 +351,8 @@ export function gatherFacts(input: FactsInput, overrides: Partial<FactsDeps> = {
     if (folder === 'ok') {
       // The writer's own rule (issue #576, FR-USAGE-005): a link, a folder or a
       // FIFO/device is refused; a live file past the size cap is refused only when
-      // it cannot be rotated, because `.1` is not a plain file (else the next call
-      // rotates it and writes its row).
+      // it cannot be rotated, because `.1` is a folder (else the next call rotates
+      // it and writes its row).
       const file = usageFile(dir);
       try {
         const st = deps.lstat(file);
@@ -357,7 +360,7 @@ export function gatherFacts(input: FactsInput, overrides: Partial<FactsDeps> = {
         if (state !== 'file' && state !== 'absent') {
           log = 'not-file';
           logKind = state.refused;
-        } else if (Number(st.size) >= usageTooLargeBytes() && prevRefused(deps, dir)) log = 'too-large';
+        } else if (Number(st.size) >= usageTooLargeBytes() && prevBlocks(deps, dir)) log = 'too-large';
         else {
           try {
             log = deps.writable(file) ? 'ok' : 'unwritable';

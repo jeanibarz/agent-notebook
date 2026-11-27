@@ -762,9 +762,10 @@ export function appendUsage(
     }
     if (size >= tooLarge) {
       writeUsageState(dir, { rows, bytes: size, retryAt });
-      // Name the file that blocks the rotation when it is the older generation.
+      // Name the file that blocks the rotation when it is the older generation: a
+      // folder there (a rename replaces a link or a FIFO), as `nb status` says.
       const prev = usageFileState(lstatOrNull(usagePrevFile(dir)));
-      if (prev !== 'absent' && prev !== 'file') return { refused: prev.refused, path: usagePrevFile(dir) };
+      if (typeof prev === 'object' && prev.refused === 'folder') return { refused: 'folder', path: usagePrevFile(dir) };
       return { tooLarge: true, path: file };
     }
     // A previous writer may have crashed mid-row, leaving no final `\n`: a blind

@@ -141,7 +141,7 @@ describe('every verdict and every line variant, as text (golden, FR-STATUS-002)'
       [{ log: 'not-file', logKind: 'link' }, 'a shortcut (symbolic link) instead of a normal file'],
       [{ log: 'not-file', logKind: 'folder' }, 'a folder instead of a normal file'],
       [{ log: 'not-file', logKind: 'special' }, 'a special system file instead of a normal file'],
-      [{ log: 'too-large' }, 'too large, and a folder or special file named .nb-usage.log.1 keeps it from starting a new one'],
+      [{ log: 'too-large' }, 'too large, and a folder named .nb-usage.log.1 keeps it from starting a new one'],
     ] as const;
     for (const [live, words] of cases) {
       const f = facts({ live: { folder: 'ok', ...live } });
@@ -696,16 +696,19 @@ describe('the facts are read from two logs, merged by timestamp, and never throw
     expect(gatherFacts(input(), { ...base, lstat: kind('link'), stat: () => ({ isFile: () => true, isDirectory: () => true }) }).live.log).toBe('not-file');
     // the size cap is the writer's (usageTooLargeBytes), so the two agree
     // past the size cap, the log is refused only when `.1` blocks its rotation, as the writer does
-    const big = (prev: 'absent' | 'file' | 'folder') => (p: string) => {
+    const big = (prev: 'absent' | 'file' | 'folder' | 'link' | 'fifo') => (p: string) => {
       if (p.endsWith('.nb-usage.log.1')) {
         if (prev === 'absent') throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
-        return { isFile: () => prev === 'file', isDirectory: () => prev === 'folder', isSymbolicLink: () => false, size: 0 };
+        return { isFile: () => prev === 'file', isDirectory: () => prev === 'folder', isSymbolicLink: () => prev === 'link', size: 0 };
       }
       return { isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, size: usageTooLargeBytes() };
     };
     expect(gatherFacts(input(), { ...base, lstat: big('folder') }).live.log).toBe('too-large');
     expect(gatherFacts(input(), { ...base, lstat: big('absent') }).live.log).toBe('ok');
     expect(gatherFacts(input(), { ...base, lstat: big('file') }).live.log).toBe('ok');
+    // a rename replaces a link or a FIFO at `.1`, so they do not block the rotation
+    expect(gatherFacts(input(), { ...base, lstat: big('link') }).live.log).toBe('ok');
+    expect(gatherFacts(input(), { ...base, lstat: big('fifo') }).live.log).toBe('ok');
     const under = () => ({ isFile: () => true, isDirectory: () => false, isSymbolicLink: () => false, size: usageTooLargeBytes() - 1 });
     expect(gatherFacts(input(), { ...base, lstat: under }).live.log).toBe('ok');
   });
