@@ -26,7 +26,7 @@ import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { appendUsage, logUsage, parseUsage, setUsageTestHook, usageByteBudget, usageFileState, usageNotice, usageTooLargeBytes } from './usage.js';
-import { isLeftoverTemp } from './notebook.js';
+import { drainPendingRecovery, isLeftoverTemp, noteRecovery } from './notebook.js';
 import { isNbOwnFile } from './place-ops.js';
 import { runNbCli } from './cli.js';
 
@@ -484,6 +484,42 @@ describe('the ring loses no row written by a concurrent call (issue #576)', () =
     expect(lstatSync(join(d, '.nb.lock')).isSymbolicLink()).toBe(true);
     expect(existsSync(`${LOG(d)}.1`)).toBe(false); // no rotation without the lock
     expect(rowsOf(LOG(d)).at(-1)).toContain('\tp\tmine\tok\t'); // the row is still written
+  });
+
+  // Issue #585: the row was built, and the crash-recovery tally drained, before the
+  // rotation stole the lock, so the steal reached no row.
+  const staleLock = (d: string): void => {
+    const old = new Date(Date.now() - 3600_000);
+    mkdirSync(join(d, '.nb.lock'));
+    writeFileSync(join(d, '.nb.lock', 'owner'), 'crashed');
+    utimesSync(join(d, '.nb.lock', 'owner'), old, old);
+    utimesSync(join(d, '.nb.lock'), old, old);
+  };
+  const recoveredOf = (d: string): string[] => parseUsage(d).map((r) => r.recovered);
+
+  test('a stale lock the rotation steals is counted on the row the call writes', () => {
+    drainPendingRecovery(); // a steal left by an earlier test
+    fullRing(store);
+    staleLock(store);
+    expect(appendUsage(store, 'p', 'mine', true, 1)).toBe('written');
+    expect(existsSync(`${LOG(store)}.1`)).toBe(true);
+    expect(rowsOf(LOG(store))).toHaveLength(1);
+    expect(rowsOf(LOG(store))[0]).toContain('\tp\tmine\tok\t');
+    expect(recoveredOf(store).at(-1)).toBe('1:0');
+    expect(recoveredOf(store).filter((r) => r !== '')).toEqual(['1:0']); // once
+    expect(drainPendingRecovery()).toEqual({ lockSteals: 0, tempReaps: 0 }); // nothing left for a later row
+  });
+
+  test('a steal by a rotation whose rename fails is counted too, with what the command recovered before', () => {
+    drainPendingRecovery();
+    fullRing(store);
+    staleLock(store);
+    mkdirSync(`${LOG(store)}.1`); // a folder where the older generation goes: the rename fails
+    noteRecovery('temp-reap', 2); // the command's own recovery, drained before the rotation
+    expect(appendUsage(store, 'p', 'mine', true, 1)).toBe('written');
+    expect(rowsOf(LOG(store)).at(-1)).toContain('\tp\tmine\tok\t');
+    expect(recoveredOf(store).at(-1)).toBe('1:2');
+    expect(drainPendingRecovery()).toEqual({ lockSteals: 0, tempReaps: 0 });
   });
 
   test.skipIf(isWin)('a log swapped for a FIFO between the check and the open is refused by the check on the open file', () => {
