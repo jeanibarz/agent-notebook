@@ -151,7 +151,7 @@ export function sharedName(shelf: string, project: string): string {
 }
 
 /** The shelves of a folder whose name ends in `@<project>` (in any letter case, as the write guard reads it), regular files only. */
-function projectShelves(dir: string, project: string): string[] {
+export function projectShelves(dir: string, project: string): string[] {
   let names: string[];
   try {
     names = readdirSync(dir);

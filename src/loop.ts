@@ -33,10 +33,13 @@ import {
   LAYERED_UNAVAILABLE_LINE,
   PLACE_TEXT,
   RETRO_LESSONS,
+  SETUP_NOTE_FIRST,
+  SETUP_NOTE_FIRST_NO_PROJECT,
   USER_INSTRUCTIONS,
   briefBrokenLine,
   briefCutLine,
   layeredPreamble,
+  setupNoteProject,
 } from './agent-text.js';
 import { resolveEnabled, type EnabledState } from './enabled.js';
 import { cleanProjectName, groupsIndex, resolveProject, type ProjectState } from './project.js';
@@ -315,6 +318,12 @@ export interface BriefOptions {
    * which reads that file; this module never does.
    */
   layoutGroup?: boolean;
+  /**
+   * A set-up note (issue #560, FR-SETUP-003), as `setupNoteText` made it: printed first,
+   * before the index heading, in the part that is never cut. Omitted without `--welcome`,
+   * so the text is unchanged.
+   */
+  note?: string;
   /** The home folder whose `.agent-notebook/messages/` is read (issue #539); the CLI uses `os.homedir()`. */
   home?: string;
   /** The shared notebooks folder, for the check that the messages folder is not inside it; defaults to `dir`. */
@@ -324,6 +333,23 @@ export interface BriefOptions {
    * The CLI passes `place.ts`'s test, which this module cannot import (issue #539).
    */
   isDeviceName?: (name: string) => boolean;
+}
+
+/** Which set-up note: A (first chat, project named), A' (first chat, no project name), B (a new project). */
+export type SetupNoteKind = 'first' | 'first-no-project' | 'project';
+
+/** The text of a set-up note, no trailing newline. `name` is the cleaned project name of kind `project`. */
+export function setupNoteText(kind: SetupNoteKind, name = ''): string {
+  return (kind === 'first' ? SETUP_NOTE_FIRST : kind === 'first-no-project' ? SETUP_NOTE_FIRST_NO_PROJECT : setupNoteProject(name)).join('\n');
+}
+
+/**
+ * Whether a note fits `maxChars` with the heading and framing lines that always follow it
+ * (`0` disables the budget). A note that does not fit is not printed, and the CLI does not
+ * claim it, so the question is never spent unseen.
+ */
+export function setupNoteFits(note: string, maxChars: number): boolean {
+  return maxChars <= 0 || size([...note.split('\n'), '', ...BRIEF_HEADER_LINES, FRAMING_LINE, '']) <= maxChars;
 }
 
 /**
@@ -547,7 +573,7 @@ export function brief(opts: BriefOptions): BriefResult {
   // The user's own message files (issue #539): after the place line, before the index, in
   // the part that is never cut. No `messages/` folder: no lines, and no process started.
   const blocks = briefBlocks(opts, ask);
-  const head = [...placed, ...blocks, ''];
+  const head = [...(opts.note !== undefined ? [...opts.note.split('\n'), ''] : []), ...placed, ...blocks, ''];
   if (opts.placeUnknown) return { outcome: 'broken', text: head.join('\n') + '\n', err: '' };
   const room = opts.maxChars > 0 ? Math.max(1, opts.maxChars - size(head)) : 0;
   // The project the index is grouped by: NB_PROJECT_SLUG exactly as before (its raw

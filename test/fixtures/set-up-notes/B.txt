@@ -1,0 +1,6 @@
+## Set-up note from the agent-notebook program
+agent-notebook keeps short notes on what worked in past tasks, on this computer only. When it was set up, the user chose to be asked, for each new project, where that project's notes are kept. This project (`<name>`) is new to it. In your first reply, ask them once, in plain words, then carry on with what they asked:
+Where should the notes for this project be kept?
+  1. In the notebook shared by all projects (recommended; already in effect, nothing to do)
+  2. In a separate notebook for this project only
+If they choose 2, run `nb place own` here; they may be asked to allow it. Then tell them in one plain sentence what changed, without naming the command. Run it only with the user's own answer. When you talk to the user, call it "the notebook"; if they ask where the question came from, say the notebook asked it when this chat started.

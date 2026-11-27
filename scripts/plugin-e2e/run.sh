@@ -184,7 +184,8 @@ ENTRY="$ROOT/examples/hooks/claude-code/nb-hook-entry.cjs"
 step "sessions of the installed plugin: no node, Node.js 16, a current Node.js"
 session "no node on PATH" "$P_NONODE" "$PROJ" nonode "$VER1"
 session "Node.js 16 on PATH" "$P_OLD" "$PROJ" oldnode "$VER1"
-session "current Node.js on PATH" "$P_NEW" "$PROJ" newnode "$VER1"
+session "current Node.js on PATH" "$P_NEW" "$PROJ" newnode-first "$VER1"
+[ -f "$H/.agent-notebook/projects/.first-start" ] || fail "the first chat left no .first-start claim"
 
 # ---- planted programs ----
 step "programs planted in the project folder never run"

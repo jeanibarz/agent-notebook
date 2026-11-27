@@ -8,6 +8,8 @@
 //   nonode   no Node.js on PATH     exactly one notice, from the twin of this OS
 //   oldnode  Node.js 16 on PATH     exactly one notice, from the entry
 //   newnode  Node.js 22 or later    the notebook index, and no notice
+//   newnode-first  the same, in the first chat of a new home (issue #560): exactly one set-up note,
+//            then the notebook index, in one output
 //   none     the plugin is not installed: no hook of ours ran and Claude Code does not list it
 //
 // The notice is read from the installed entry file, so that this check follows the entry's
@@ -21,7 +23,7 @@ import { readFileSync } from 'node:fs';
 
 function usage(message) {
   console.error(`hookrep: ${message}`);
-  console.error('usage: node hookrep.mjs <stream.jsonl> --expect nonode|oldnode|newnode|none --os posix|windows --entry <file> [--plugin-version V] [--plugin-root-contains TEXT]');
+  console.error('usage: node hookrep.mjs <stream.jsonl> --expect nonode|oldnode|newnode|newnode-first|none --os posix|windows --entry <file> [--plugin-version V] [--plugin-root-contains TEXT]');
   process.exit(2);
 }
 
@@ -33,7 +35,7 @@ while (args.length) {
   if (!key.startsWith('--') || args.length === 0) usage(`bad argument ${key}`);
   opt[key.slice(2)] = args.shift();
 }
-if (!file || !['nonode', 'oldnode', 'newnode', 'none'].includes(opt.expect) || !['posix', 'windows'].includes(opt.os) || !opt.entry) usage('missing or bad argument');
+if (!file || !['nonode', 'oldnode', 'newnode', 'newnode-first', 'none'].includes(opt.expect) || !['posix', 'windows'].includes(opt.os) || !opt.entry) usage('missing or bad argument');
 
 const entryText = readFileSync(opt.entry, 'utf-8');
 const notice = /^var NOTICE = '(.*)';\r?$/m.exec(entryText)?.[1];
@@ -98,11 +100,20 @@ if (failed.some((e) => e.stdout !== '')) fail('a hook that failed printed on std
 const ran = responses.filter((e) => e.exit_code === 0);
 const noticeEvents = events.filter((e) => JSON.stringify(e).includes(notice));
 const noticeLines = ran.filter((e) => e.stdout.split(/\r?\n/).includes(notice));
-const index = ran.filter((e) => e.stdout.startsWith('## Your agent-notebook index'));
+const INDEX = '## Your agent-notebook index';
+const NOTE = '## Set-up note from the agent-notebook program';
+const index = ran.filter((e) => e.stdout.startsWith(INDEX));
+// The first chat of a new home: the set-up note comes first, then the index, in the same output.
+const first = ran.filter((e) => e.stdout.startsWith(NOTE + '\n') && e.stdout.includes('\n' + INDEX));
 
-if (opt.expect === 'newnode') {
+if (opt.expect === 'newnode' || opt.expect === 'newnode-first') {
   if (noticeEvents.length) fail('a Node.js notice appeared in a session that has Node.js 22 or later');
-  if (index.length !== 1) fail(`${index.length} notebook index outputs, expected 1`);
+  if (opt.expect === 'newnode-first') {
+    if (first.length !== 1 || ran.some((e) => e.stdout.split(NOTE).length - 1 > 1) || index.length) fail(`${first.length} output(s) with the set-up note before the index, expected exactly 1`);
+  } else {
+    if (index.length !== 1) fail(`${index.length} notebook index outputs, expected 1`);
+    if (ran.some((e) => e.stdout.includes(NOTE))) fail('the set-up note appeared again after the first chat');
+  }
   if (ran.length !== 2 || ran.filter((e) => e.stdout === '').length !== 1) fail('expected the index plus one silent twin that exited 0');
 } else {
   if (noticeEvents.length !== 1 || noticeLines.length !== 1) {

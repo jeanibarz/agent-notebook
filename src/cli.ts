@@ -25,7 +25,7 @@
 //   nb place  [--json]                      say where this directory's lessons live (own project notebook, shared, NB_DIR) and why, and list the project folders (issue #548)
 //   nb place  own|shared [--json]           move this project's shelves into its own folder, or back to the shared notebook (issue #548)
 //   nb place  default [shared|own|ask] [--json]  say, or record, where notes of every project are kept (issue #560)
-//   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  what an assistant sees at the start of a session (issue #538)
+//   nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--welcome] [--json]  what an assistant sees at the start of a session (issue #538)
 //   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  the end-of-task retrospective text, once per session (issue #538)
 //   nb status [--json]                      say whether chats start the notebook here: two plain lines, then the details; read-only, writes no usage row, exit 0 only when it is running (issue #558)
 //   nb list   [prefix] [--limit N]         index notebooks: one richest-first line each (name, lessons, desc)
@@ -103,9 +103,9 @@ import { describeSource, resolveEnabled, stateWord } from './enabled.js';
 import { describeProject, projectRecordKey, resolveProject, type ProjectState } from './project.js';
 import { isWindowsDeviceName, placeRefusal, projectsDirOf, resolvePlace, scanProjects, sharedWriteRefusal, type Place } from './place.js';
 import { LAYOUT_VALUES, defaultDone, effectiveLayout, layoutJson, layoutLine, renderDefault, type Layout, type LayoutRead } from './layout.js';
-import { readLayout, seenExists, writeLayout, writeSeen } from './layout-io.js';
+import { confirmFirstStart, prepareSessionStart, readLayout, seenExists, writeLayout, writeSeen, type SessionStartPlan } from './layout-io.js';
 import { allShelves, isGitRepo, placeOwn, placeShared, sharedName, unfinishedMoves, type PlaceMove } from './place-ops.js';
-import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, existingAbsoluteDir, extraPromptStatus, messageProjectName, placeLine, projectOfCall, retro } from './loop.js';
+import { BRIEF_MAX_CHARS_DEFAULT, brief, cleanSessionId, existingAbsoluteDir, extraPromptStatus, messageProjectName, placeLine, projectOfCall, retro, setupNoteFits, setupNoteText } from './loop.js';
 import { closestMatch, closestShelf } from './suggest.js';
 import { decideStatus, renderStatus, statusJson, type StatusLayout } from './status.js';
 import { gatherFacts } from './status-facts.js';
@@ -194,7 +194,7 @@ usage:
   nb place  own [--json]                   give this project its own notebook: create ~/.agent-notebook/projects/<project>/ and move its shelves there
   nb place  shared [--json]                move this project's shelves back to the shared notebook and remove its folder
   nb place  default [shared|own|ask] [--json]  say, or record, where the notes of every project are kept (never moves notes)
-  nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--json]  print what an assistant should see at the start of a session: instructions, the notebook index (default budget 9000 characters)
+  nb brief  [--max-chars N] [--session <id>] [--hook <label>] [--welcome] [--json]  print what an assistant should see at the start of a session: instructions, the notebook index (default budget 9000 characters)
   nb retro  --session <id> [--work-dir <dir>] [--hook <label>] [--json]  print the end-of-task retrospective text the first time it is called for a session, nothing afterwards
   nb status [--json]                       say whether chats start the notebook here: two plain lines, then the details (read-only; exit 0 only when it is running)
   nb list   [prefix] [--limit N]          index notebooks richest-first: one line each (name, lesson count, description)
@@ -385,7 +385,8 @@ notes:
     \`--max-chars\` (default 9000; 0 = no budget) the shelves with the fewest lessons are dropped and the
     last line says how many. Every name and description is made safe to show a model (control characters
     and line separators become \`\\uXXXX\`). It reads no hook payload and exits 0 in every runtime state;
-    \`--json\` prints \`{outcome, text}\`.
+    \`--json\` prints \`{outcome, text}\`. \`--welcome\` (the plugin's hook adds it on a fresh start) lets it print the
+    one-time set-up note first, for a person who has not set the notebook up; without it nothing changes.
   - \`nb retro --session <id>\` prints the end-of-task retrospective text the first time it is called for that
     session and nothing afterwards, so a harness's stop hook can call it on every stop. "First" is decided by
     creating \`<NB_DIR>/.retro-<id>\` exclusively (the file the 0.12 example Stop hook creates, so an old copied
@@ -669,7 +670,7 @@ export const KNOWN_FLAGS: Record<string, readonly string[]> = {
   enabled: ['--why'],
   project: ['--why'],
   place: [],
-  brief: ['--max-chars', '--session', '--hook'],
+  brief: ['--max-chars', '--session', '--hook', '--welcome'],
   retro: ['--session', '--work-dir', '--hook'],
   status: [],
   list: ['--limit'],
@@ -1855,6 +1856,11 @@ export async function runNbCli(
         for (const flag of ['--max-chars', '--session', '--hook']) {
           if (rest.includes(flag)) throw new NbError('bad_args', `${flag} given more than once for \`nb brief\` — pass it once`);
         }
+        // `--welcome` (issue #560): the plugin's adapter adds it on a fresh start only; it lets the
+        // set-up note be printed. Without it the output is what it always was.
+        const welcome = rest.includes('--welcome');
+        if (rest.indexOf('--welcome') !== rest.lastIndexOf('--welcome')) throw new NbError('bad_args', '--welcome given more than once for `nb brief` — pass it once');
+        rest = rest.filter((a) => a !== '--welcome');
         const extraOperand = rest.slice(1).concat(operands)[0];
         if (extraOperand !== undefined) throw new NbError('bad_args', `unexpected extra argument "${extraOperand}" for \`nb brief\``);
         let maxChars = BRIEF_MAX_CHARS_DEFAULT;
@@ -1867,7 +1873,17 @@ export async function runNbCli(
               { command: cmd, flag: '--max-chars', value: maxRaw, usedDefault: BRIEF_MAX_CHARS_DEFAULT },
             );
         }
-        const r = brief({ dir, cwd: currentDir(), maxChars, nbDir: sharedDir, isDeviceName: isWindowsDeviceName, ...briefPlace(place), ...(layoutGroups(process.env) ? { layoutGroup: true } : {}) });
+        const plan = startPlan(place!, welcome, sessionRaw, maxChars);
+        const r = brief({
+          dir,
+          cwd: currentDir(),
+          maxChars,
+          nbDir: sharedDir,
+          isDeviceName: isWindowsDeviceName,
+          ...briefPlace(place),
+          ...(plan.group ? { layoutGroup: true } : {}),
+          ...(plan.note !== null ? { note: setupNoteText(plan.note.kind, plan.note.name) } : {}),
+        });
         if (r.err) process.stderr.write(r.err);
         meta.outcome = r.outcome;
         if (sessionRaw !== undefined) meta.session = cleanSessionId(sessionRaw);
@@ -1902,6 +1918,9 @@ export async function runNbCli(
         // The marker lives in the shared notebook whatever the place (issue #548), so a
         // session that changes project, or a project that gets its own notebook, is
         // asked once, and the copied 0.12 bash Stop hook agrees on where it is.
+        // The first step: a Stop is a real turn, so it confirms the set-up note's claim (issue #560,
+        // FR-SETUP-002), before the sentinel and every "off" return. It prints nothing and never fails.
+        if (sessionRaw !== '' && !(process.env.NB_DIR && process.env.NB_DIR.trim() !== '')) confirmFirstStart(projectsDirOf(), cleanSessionId(sessionRaw));
         const r = retro({ session: sessionRaw, workDir, dir: sharedDir, cwd: currentDir(), nbDir: sharedDir, isDeviceName: isWindowsDeviceName });
         if (r.err) process.stderr.write(r.err);
         meta.outcome = r.outcome;
@@ -2159,17 +2178,37 @@ function statusLayout(r: LayoutRead): StatusLayout | null {
   return j === null || line === null ? null : { line, ...j };
 }
 
-/** Whether `nb brief` groups its index by the derived project name because `.layout` exists (issue #560). */
-function layoutGroups(env: NodeJS.ProcessEnv): boolean {
-  try {
-    if (env.NB_DIR && env.NB_DIR.trim() !== '') return false;
-    if (readLayout(projectsDirOf()).state === 'none') return false;
-    const cwd = currentDir();
-    if (cwd === null) return false;
-    return env.NB_PROJECT_SLUG ? true : gitMayExist(cwd, env);
-  } catch {
-    return false;
-  }
+/**
+ * What a chat's start does about the set-up (issue #560): the note to print, and whether the
+ * index is grouped by the derived project name. The one place `nb brief` reads or writes
+ * `.first-start` and `.seen-<name>`; never throws.
+ */
+function startPlan(place: Place, welcome: boolean, sessionRaw: string | undefined, maxChars: number): SessionStartPlan {
+  const env = process.env;
+  const cwd = currentDir();
+  const home = dirname(dirname(place.projectsDir));
+  let name: string | null | undefined;
+  const projectName = (): string | null => {
+    if (name === undefined) {
+      const st = projectForLayout(place);
+      name = remoteNamed(st) ? st.name : null;
+    }
+    return name;
+  };
+  return prepareSessionStart({
+    welcome,
+    env,
+    projectsDir: place.projectsDir,
+    messagesDir: join(home, '.agent-notebook', 'messages'),
+    sharedDir: place.shared,
+    session: sessionRaw === undefined || sessionRaw === '' ? '' : cleanSessionId(sessionRaw),
+    nowMs: Date.now(),
+    placeKind: place.kind,
+    projectName,
+    canName: () => cwd !== null && (env.NB_PROJECT_SLUG ? true : gitMayExist(cwd, env)),
+    switchOn: () => cwd === null || resolveEnabled(env, cwd).enabled,
+    fits: (n) => setupNoteFits(setupNoteText(n.kind, n.name), maxChars),
+  });
 }
 
 /**

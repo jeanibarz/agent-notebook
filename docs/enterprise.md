@@ -183,10 +183,27 @@ Each system can start only two of the three session-start commands: the twin of 
 | | What |
 |---|---|
 | **Reads** | the environment variable `NB_DIR` (and `NB_*` settings); the git setting `nb.enabled` of the project (`git config`, which starts `git`); the notebooks under `~/.agent-notebook/` (`notebooks/`, and `projects/` for per-project notebooks); your message files in `~/.agent-notebook/messages/`; the hook's JSON on its standard input (the session id) |
-| **Writes** | in the notebook folder: the usage log `.nb-usage.log` (one row per `nb` call; a session start is a row with the `nb` version and a project key) and one empty `.retro-<session>` file, so that the end-of-task question is asked once. Nothing is written outside the notebook folder by the hooks; `nb` writes lessons only when the assistant calls it |
+| **Writes** | in the notebook folder: the usage log `.nb-usage.log` (one row per `nb` call; a session start is a row with the `nb` version and a project key) and one empty `.retro-<session>` file, so that the end-of-task question is asked once. Under `~/.agent-notebook/projects/`, and only for a person who has not set the notebook up (the next section): `.first-start` (one small file, once), `.layout` (the answer, written by `nb place default` only), `.seen-<project>` (one empty file per project already settled) and, when the answer is "a separate notebook for each project", the project's empty folder. Nothing else is written outside the notebook folder by the hooks; `nb` writes lessons only when the assistant calls it |
 | **Sends** | nothing. Neither `nb` nor the hooks make a network call. Claude Code itself downloads the marketplace file and the zip when someone installs or updates, see [Allowing the plugin](#allowing-the-plugin) |
 | **Reaches the model** | at most about 9,000 characters at each session start and for each subagent (the `nb brief` budget, `--max-chars`), plus the one-line notices above |
 | **Uninstall leaves** | Claude Code's own `extraKnownMarketplaces` entry in the user's `settings.json` and the old version folders in its plugin cache (marked as orphaned). The user's notes in `~/.agent-notebook` stay: they are not the plugin's files |
+
+### The first chat: one question, and the one file the adapter reads
+
+On the first chat of someone who has not set the notebook up, `nb brief --welcome` puts a short set-up note first in the text: it says the notebook is on and asks where notes are kept ([FR-SETUP-003](requirements.md#fr-setup-003)). Who counts as new, and the files that remember it, are in [FR-SETUP-001](requirements.md#fr-setup-001) and [FR-SETUP-002](requirements.md#fr-setup-002). Nobody with `NB_DIR` or `NB_PROJECT_SLUG` set, a notebook that already holds a shelf, a git folder or a `.nb.json`, a messages folder, or a project folder sees it, and it is printed once.
+
+The plugin's hook adapter adds `--welcome` on a fresh start (`session-start` with the payload's `source` equal to `startup`) when it runs from the plugin, and only if one more check passes. That check is the only place an adapter reads a file of the user's:
+
+| | The settings-file check |
+|---|---|
+| **What file** | `$CLAUDE_CONFIG_DIR/settings.json` when `CLAUDE_CONFIG_DIR` is an absolute local path, else `<home>/.claude/settings.json`. Never `settings.local.json`, a project's settings or the managed settings. |
+| **When** | once per chat start of the kind above (a fresh start, run from the plugin). Not on resume, clear, compact, a subagent or a stop. |
+| **How** | `lstat` (a regular file, not a link), at most 1 MiB, a non-blocking open, one read, and a test for four fixed names: `nb-claude-hook`, `nb-session-start`, `nb-retrospective`, `nb-hook-entry`. Nothing is parsed or written. A file that does not exist counts as "no mention"; any other error means no `--welcome`. |
+| **Leaves the adapter** | nothing. No byte of the file reaches the output, the error output, the usage log or `nb`. |
+| **Its only effect** | whether `--welcome` is added. It can withhold the note from someone whose settings show hooks copied by hand; it can never cause an answer or an action. A project's settings can set `CLAUDE_CONFIG_DIR`, so a repository can at most show or hide that one note. |
+| **Network paths** | refused without being opened: a `CLAUDE_CONFIG_DIR` that is relative, or starts with two backslashes or two slashes (`\\server\share`, `\\?\UNC\...`). On Windows, opening such a path can hand the user's credential to that server. |
+
+The adapter reads the file once per chat start of that kind, not once per machine: it cannot know whether `nb` would print the note.
 
 ### Allowing the plugin
 
