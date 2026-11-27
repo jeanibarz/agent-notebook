@@ -117,6 +117,8 @@ $ClaudeDir = Split-Path $ClaudeBin
 $NodeBin = (Get-Command node -CommandType Application | Select-Object -First 1).Source
 $NodeDir = Split-Path $NodeBin
 Remove-Item Env:\ANTHROPIC_API_KEY, Env:\CLAUDE_CODE_OAUTH_TOKEN, Env:\ANTHROPIC_AUTH_TOKEN -ErrorAction SilentlyContinue
+# Like run.sh: drop NB_DIR and the other NB_* settings of a developer's shell, or the hooks use that real notebook.
+Get-ChildItem Env: | Where-Object { $_.Name -like 'NB_*' } | ForEach-Object { Remove-Item "Env:\$($_.Name)" }
 
 $Base = $env:E2E_WORK
 if (-not $Base) { $Base = Join-Path $env:RUNNER_TEMP 'nb-e2e' }

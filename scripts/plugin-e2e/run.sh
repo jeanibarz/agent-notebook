@@ -52,6 +52,10 @@ CLAUDE_BIN=$(command -v claude) || fail "claude is not on PATH"
 CLAUDE_DIR=$(dirname "$CLAUDE_BIN")
 NODE_DIR=$(dirname "$(command -v node)")
 unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_AUTH_TOKEN
+# A developer's shell, or an agent's session, may export NB_DIR and other NB_* settings. The plugin's hooks
+# would then read and write that real notebook, not the one in the test's home folder, and the run would
+# not test what the workflow tests. A runner sets none of them.
+for v in $(env | sed -n 's/^\(NB_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 
 # ---- the work folder, a home folder with a name that breaks careless code, the stub PATH ----
 WORK=${E2E_WORK:-${RUNNER_TEMP:-/tmp}/nb-e2e}
