@@ -447,3 +447,28 @@ jobs:
             echo "- zip: https://github.com/${GH_REPO}/releases/download/${TAG}/${zip}"
             echo "- sha256: \`${SHA256}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Issue #597: docs/enterprise.md tells administrators that each release is immutable
+      # and that `gh release verify-asset` checks its files. That rests on the repository's
+      # "immutable releases" setting, so read it back from the release itself. A release that
+      # is not immutable fails the run: npm and the release are already public by now, so the
+      # red run does not stop the release; it is how anyone learns the documented check is
+      # gone. GitHub makes a release immutable only when it is published under the setting,
+      # so re-running does not fix it: switch the setting back on and cut a new version. This
+      # step runs last, so the summary above is written either way.
+      - name: The release is immutable
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          if ! immutable="$(gh release view "$TAG" --json isImmutable --jq .isImmutable)"; then
+            echo "::error::could not read whether release ${TAG} is immutable." >&2
+            exit 1
+          fi
+          if [ "$immutable" != true ]; then
+            echo "::error::release ${TAG} is not immutable (isImmutable: '${immutable}'), so gh release verify-asset cannot check its files as docs/enterprise.md says. Switch on immutable releases in the repository settings and cut a new version." >&2
+            exit 1
+          fi
+          echo "release ${TAG} is immutable."
