@@ -16,7 +16,9 @@ The requirement is [NFR-REL-001](requirements.md#nfr-rel-001).
    version in `package.json`; no other ref can release.
 3. **The jobs**, in this order:
    1. `verify`: the full test matrix (Node 18 to 24, Linux and macOS) on the tagged commit.
-   2. `build-plugin`: builds `dist/`, the plugin zip and its checksums, and runs
+   2. `build-plugin`: first refuses to go on unless `main` requires a pull request
+      (`scripts/check-main-rule.mjs`, see [The owner's checklist](#the-owners-checklist-once-in-the-repository-settings)).
+      Then it builds `dist/`, the plugin zip and its checksums, runs
       `scripts/check-release.mjs` on the zip, and checks that the CHANGELOG has a section for the version.
       Nothing is public yet: a failure here costs nothing.
    3. `publish`: the tag guard, then `npm publish` with provenance, through npm Trusted Publishing.
@@ -54,6 +56,13 @@ No job holds both `id-token: write` and `contents: write`.
 
 - **Before `publish`** (`verify` or `build-plugin`): nothing is public. Fix the problem on `main` and
   cut the next version. A tag is never moved or deleted and re-pushed.
+- **`build-plugin` stopped at "Refuse to release while main does not require a pull request"**: this
+  one is a repository setting, not the code at the tag. Put the ruleset back, then re-run the failed
+  jobs: the step reads the setting as it is now, so the same tag goes through. When the message is
+  "could not read the rules" (exit 2), GitHub gave no usable answer; the message gives the reason in parentheses.
+  The script asks four times after a server error (5xx), a rate limit, a request that failed or was
+  redirected, or a 200 whose body is not JSON; it asks once after a 401, a 404, or a 403 that is not a
+  rate limit, which a retry would not change. Re-run the failed jobs.
 - **After `publish`** (the npm package is out and `github-release` failed): re-run the failed workflow
   run. `publish` sees that npm already has the version and skips itself, with a notice. The build is
   reproducible, so `build-plugin` makes the same zip again and `github-release` continues.
@@ -79,15 +88,29 @@ A bad plugin version is not deleted; the marketplace is pointed at an older one.
 ## The owner's checklist (once, in the repository settings)
 
 The `github-release` job can write to the repository, so these settings decide how much damage a
-compromised step could do. The job prints a warning when no ruleset applies to `main` (the job token cannot read classic
-branch protection, so only rulesets are detected); it does not refuse.
+compromised step could do.
+
+**The release refuses to start without the first one.** `build-plugin` runs
+`node scripts/check-main-rule.mjs --repo <owner>/<name>` before it installs anything. The script asks
+GitHub for the rules that are active on `main` and stops the release (one `::error::` line, exit 1)
+unless one of them is of type `pull_request`. CI runs the same command on every pull request and on
+every push to `main`, so a `main` that lost its rule shows as a red check on the release pull request,
+before the tag. What the script cannot see with the job's
+token: who may bypass the ruleset, and classic branch protection (only rulesets count). A ruleset that
+is disabled or in "evaluate" mode counts as no rule. The other three settings are not checked by any job.
 
 - [ ] **A ruleset on `main`**: a pull request is required, and the list of actors who may bypass it is
   empty, in particular **not GitHub Actions** and not the repository admin role.
 - [ ] **A ruleset on tags `v*`**: only the owner can create them; nobody can move or delete one
   (no "update" and no "deletion").
 - [ ] **Immutable releases** switched on (Settings, General): a published release's assets and tag cannot change.
-- [ ] **The `release` environment** has a required reviewer, and deployment is limited to tags matching `v*`.
+- [ ] **The `release` environment** accepts only tags matching `v*` (a deployment tag rule), so no
+  branch can start a job in the environment that npm Trusted Publishing accepts a publish from.
+- **Optional: a required reviewer on the `release` environment.** The owner decided against it on
+  2026-11-28 ("rulesets, no reviewer"). With one maintainer the approval would come from the account
+  that pushed the tag, so it is a pause and not a second person; and `publish` and `github-release`
+  both use the environment, one after the other, so a release would probably wait twice, the second
+  time after the npm publish. Reconsider it when a second maintainer can approve.
 
 ## What a compromised step could now do
 
@@ -95,12 +118,13 @@ Before this change every job's token could only read the repository, and `publis
 `id-token: write` for npm. A step of `github-release`, that is the pinned `download-artifact`
 action, the `gh` command or the runner image, runs with `contents: write`. It could:
 
-- push to `main` if `main` has no ruleset (it has none today), including a `marketplace.json` that
+- push to `main` if `main` has no ruleset, including a `marketplace.json` that
   names an attacker's zip and its sha256, which would reach every plugin user at their next update;
 - push any file outside `.github/workflows/` to `main` (scripts, `src/`, the `scripts` of
   `package.json`, test configuration); `marketplace.json` above is one example. The next tag's
   `publish` job runs that code with `id-token: write`, so it could lead to a malicious npm release
-  with provenance. This is the largest effect, and only a ruleset on `main` stops it;
+  with provenance. This is the largest effect, and only a ruleset on `main` stops it, which is why
+  the release refuses to start without one;
 - send a `repository_dispatch` event (no workflow listens for one today);
 - create, move or delete tags;
 - create, edit or delete releases and their assets.

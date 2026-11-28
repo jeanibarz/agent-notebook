@@ -61,6 +61,18 @@ jobs:
         with:
           node-version: 22
 
+      # `github-release` below holds contents: write, so a `main` that does not require a
+      # pull request is a `main` a compromised step could push to. Refuse here, first, where
+      # stopping costs nothing: nothing is installed, built or published yet. The check reads
+      # the live setting, so once the ruleset is back a re-run of the failed jobs passes. CI
+      # runs the same command on every pull request (ci.yml), which is what proves it against
+      # the real API before a tag depends on it. The token is given to this step alone.
+      - name: Refuse to release while main does not require a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/check-main-rule.mjs --repo "$GH_REPO"
+
       # --ignore-scripts: no dependency may run code at install time in a job that
       # builds a file people install on their machines.
       - run: npm ci --ignore-scripts
@@ -435,17 +447,3 @@ jobs:
             echo "- zip: https://github.com/${GH_REPO}/releases/download/${TAG}/${zip}"
             echo "- sha256: \`${SHA256}\`"
           } >> "$GITHUB_STEP_SUMMARY"
-
-      # The release job holds contents: write, so a rule on main matters. This warns; it
-      # does not refuse, so that a repository without the rule can still release. The job
-      # token cannot read classic branch protection, so only rulesets are detected.
-      - name: Warn when no ruleset applies to main
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -eu
-          rules="$(gh api "repos/$GH_REPO/rules/branches/main" --jq 'length' 2>/dev/null || echo 0)"
-          if [ "$rules" = 0 ]; then
-            echo "::warning::no ruleset applies to main (classic branch protection cannot be read with the job token, so it is not checked). The release job holds contents: write, so a compromised step could push to main. Add a ruleset that requires a pull request and has no bypass for GitHub Actions (docs/releasing.md)."
-          fi

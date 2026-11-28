@@ -46,6 +46,17 @@ jobs:
       # and not when a tag is pushed. One leg: the files do not depend on the OS.
       - run: node scripts/check-release.mjs --pr
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22
+      # The release refuses to start while `main` does not require a pull request
+      # (release.yml, `build-plugin`). Run the same command here, with the same kind of
+      # token, so the check is proven against the real API on every pull request and not
+      # for the first time on a tag, and so a `main` that lost its rule is seen at once.
+      # A fork has its own settings, so it is skipped there.
+      - name: main requires a pull request (the check the release runs first)
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22 && !github.event.repository.fork
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/check-main-rule.mjs --repo "$GH_REPO"
       # vitest 5 imports `styleText` from node:util, which only exists on
       # Node 20.12+, so the suite cannot run on Node 18. The build step above
       # still verifies the package compiles on its minimum engine (>=18).

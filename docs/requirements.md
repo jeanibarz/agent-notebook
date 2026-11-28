@@ -2669,6 +2669,16 @@ what it needs: the top-level `permissions` is `{}`, `verify` and `build-plugin` 
 nothing else; no job holds both `id-token: write` and `contents: write`. Every action is pinned by a full
 commit SHA and every checkout sets `persist-credentials: false`. The file name and the `release`
 environment of `publish` SHALL NOT change (npm Trusted Publishing keys on them).
+`build-plugin` SHALL first run `node scripts/check-main-rule.mjs --repo <the repository>`, before anything is
+installed or built, in a step with no condition: the script asks GitHub for the rules active on `main`
+(`GET /repos/{repo}/rules/branches/main`, with the job's token) and exits 0 only when one has the type
+`pull_request`; with none it prints one `::error::` line and exits 1 (the refusal); when the answer cannot be
+read (a usage error; four tries that each ended in a 5xx, a rate limit, a failed or redirected request or a body
+that is not JSON; one try that ended in a 401, a 404 or a 403 that is not a rate limit; a body that is not a list
+of rules) it exits 2, so the release
+stops in that case too and "could not tell" is never reported as "no rule". No job only warns about the rule.
+`ci.yml` SHALL run the same command on pull requests and on pushes to `main` (not in a fork), so the check has
+run against the real API before a tag depends on it.
 `build-plugin` SHALL install with `npm ci --ignore-scripts`, run `scripts/check-release.mjs` (the tag,
 both versions of `package-lock.json`, the zip's manifest, `package.json`, skill stamp, engines and the
 entry's `MIN_NODE` all agree; one `::error::` line per disagreement, exit 1), write `SHA256SUMS` and
@@ -2700,7 +2710,11 @@ published and reviewed; `docs/releasing.md` says what a compromised step could s
 `describe('the publish job skips a version that npm already holds (NFR-REL-001, issue #559)')`;
 `release-guard.test.ts` → `describe('check-release.mjs lets a consistent release through (issue #559)')`,
 `describe('check-release.mjs refuses each disagreement with its own marker (issue #559)')` and
-`describe('check-release.mjs: a crash or a usage error is never a refusal (issue #559)')`.
+`describe('check-release.mjs: a crash or a usage error is never a refusal (issue #559)')`;
+`check-main-rule.test.ts` → `describe('check-main-rule.mjs lets a release through when main requires a pull request (NFR-REL-001)')`,
+`describe('check-main-rule.mjs refuses a release when no active rule requires a pull request (NFR-REL-001)')`,
+`describe('check-main-rule.mjs: an answer it could not read is neither ok nor a refusal (NFR-REL-001)')` and
+`describe('the release and CI run check-main-rule.mjs where it counts (NFR-REL-001)')`.
 
 ### 4.23 The one set-up question (issue #560)
 
