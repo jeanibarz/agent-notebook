@@ -26,7 +26,8 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 type Ev = Record<string, unknown>;
 const init: Ev = { type: 'system', subtype: 'init', plugins: [{ name: 'agent-notebook', version: '0.0.1-e2e.1', path: 'C:\\h\\0.0.1-e2e.1' }] };
 const started = (id: string): Ev => ({ type: 'system', subtype: 'hook_started', hook_id: id, hook_name: 'SessionStart:startup', hook_event: 'SessionStart' });
-const progress = (id: string, stdout: string): Ev => ({ type: 'system', subtype: 'hook_progress', hook_id: id, hook_name: 'SessionStart:startup', hook_event: 'SessionStart', stdout, stderr: '', output: stdout });
+const progress = (id: string, stdout: string, more: Ev = {}): Ev => ({ type: 'system', subtype: 'hook_progress', hook_id: id, hook_name: 'SessionStart:startup', hook_event: 'SessionStart', stdout, stderr: '', output: stdout, ...more });
+const withoutId = (e: Ev): Ev => Object.fromEntries(Object.entries(e).filter(([k]) => k !== 'hook_id'));
 const response = (id: string, exit: number, stdout: string, stderr = ''): Ev => ({
   type: 'system', subtype: 'hook_response', hook_id: id, hook_name: 'SessionStart:startup', hook_event: 'SessionStart',
   output: stdout + stderr, stdout, stderr, exit_code: exit, outcome: exit === 0 ? 'success' : 'error',
@@ -35,10 +36,16 @@ const notFound = (id: string, exe: string): Ev => response(id, 1, '', `Executabl
 const result: Ev = { type: 'result', subtype: 'error_during_execution', is_error: true };
 
 // Windows, no node on PATH: node and sh cannot start, the PowerShell twin prints the notice.
-const winNoNode = (extra: Ev[] = []): Ev[] => [
+const winNoNode = (extra: Ev[] = [], twin: Ev = response('ps', 0, `${NOTICE}\r\n`)): Ev[] => [
   started('node'), started('sh'), started('ps'),
   ...extra,
-  notFound('node', 'node'), notFound('sh', 'sh'), response('ps', 0, `${NOTICE}\r\n`),
+  notFound('node', 'node'), notFound('sh', 'sh'), twin,
+  init, result,
+];
+// Windows, Node.js 16: the entry prints the notice, sh cannot start, the twin is silent.
+const winOldNode = (extra: Ev[] = []): Ev[] => [
+  ...extra,
+  response('node', 0, `${NOTICE}\n`), notFound('sh', 'sh'), response('ps', 0, ''),
   init, result,
 ];
 // Windows, Node.js 22: the entry prints the index, sh cannot start, the twin is silent.
@@ -69,19 +76,66 @@ describe('hookrep.mjs counts the notice once per hook (issue #595)', () => {
     expect(r.out).toContain("hook SessionStart progress (an early copy of its hook's output) | stdout: agent-notebook: the notebook needs");
   });
 
+  test('an early copy that holds only the start of the output is not counted either, also for the entry with Node.js 16', () => {
+    // "Output so far": the line ending has not come yet.
+    const r = run(winNoNode([progress('ps', NOTICE)]), 'nonode');
+    expect(r.out).toContain('ok: nonode');
+    expect(r.code).toBe(0);
+    const old = run(winOldNode([progress('node', NOTICE)]), 'oldnode');
+    expect(old.out).toContain('ok: oldnode');
+    expect(old.code).toBe(0);
+  });
+
+  test('an early copy is listed as not counted when another event fails the check', () => {
+    const r = run(winNoNode([progress('ps', `${NOTICE}\r\n`), { type: 'system', subtype: 'status', text: NOTICE }]), 'nonode');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('FAIL: 2 event(s) hold the notice and 1 hook(s) printed it as a line');
+    expect(r.out).toMatch(/^ {2}event system\/hook_progress SessionStart hook ps \(early copy, not counted\), in \[/m);
+    expect(r.out).toMatch(/^ {2}event system\/status, in \[text\]: /m);
+  });
+
+  test('a progress event is counted when it has no hook_id, even next to a response with none', () => {
+    const r = run(winNoNode([withoutId(progress('ps', `${NOTICE}\r\n`))], withoutId(response('ps', 0, `${NOTICE}\r\n`))), 'nonode');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('FAIL: 2 event(s) hold the notice');
+  });
+
+  test('a progress event is counted when its stderr is not the start of its hook\'s stderr', () => {
+    const r = run(winNoNode([progress('ps', `${NOTICE}\r\n`, { stderr: 'warning\n' })]), 'nonode');
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('FAIL: 2 event(s) hold the notice');
+  });
+
+  test('a progress event is counted when it holds the notice outside its output fields', () => {
+    const r = run(winNoNode([progress('ps', '', { message: NOTICE })]), 'nonode');
+    expect(r.code).toBe(1);
+    expect(r.out).toMatch(/^ {2}event system\/hook_progress SessionStart hook ps, in \[message\]: /m);
+  });
+
+  test('a progress event of another hook event is counted and is not printed as a SessionStart progress', () => {
+    const r = run(winNoNode([progress('ps', `${NOTICE}\r\n`, { hook_event: 'PreToolUse', hook_name: 'PreToolUse:Bash' })]), 'nonode');
+    expect(r.code).toBe(1);
+    expect(r.out).not.toContain('hook SessionStart progress');
+    expect(r.out).toMatch(/^ {2}event system\/hook_progress PreToolUse hook ps, in \[/m);
+  });
+
   test('a hook_progress event of another hook is counted, and the failure names both events', () => {
     const r = run(winNoNode([progress('sh', `${NOTICE}\r\n`)]), 'nonode');
     expect(r.code).toBe(1);
     expect(r.out).toContain('hook SessionStart progress (matches no hook response)');
     expect(r.out).toContain('FAIL: 2 event(s) hold the notice and 1 hook(s) printed it as a line, expected exactly one of each');
-    expect(r.out).toMatch(/^ {2}event system\/hook_progress SessionStart hook sh, in \[stdout,output\]: .*agent-notebook: the notebook needs/m);
-    expect(r.out).toMatch(/^ {2}event system\/hook_response SessionStart hook ps, in \[output,stdout\]: .*agent-notebook: the notebook needs/m);
+    expect(r.out).toMatch(/^ {2}event system\/hook_progress SessionStart hook sh, in \[[^\]]*stdout[^\]]*\]: .*agent-notebook: the notebook needs/m);
+    expect(r.out).toMatch(/^ {2}event system\/hook_response SessionStart hook ps, in \[[^\]]*stdout[^\]]*\]: .*agent-notebook: the notebook needs/m);
   });
 
   test('a progress event whose output is not the start of its hook\'s response is counted', () => {
-    const r = run(winNoNode([progress('ps', `${NOTICE}\r\n${NOTICE}\r\n`)]), 'nonode');
-    expect(r.code).toBe(1);
-    expect(r.out).toContain('FAIL: 2 event(s) hold the notice');
+    // One field at a time: stdout, then output, is not the start of the response's.
+    const twice = `${NOTICE}\r\n${NOTICE}\r\n`;
+    for (const p of [progress('ps', twice, { output: `${NOTICE}\r\n` }), progress('ps', `${NOTICE}\r\n`, { output: twice })]) {
+      const r = run(winNoNode([p]), 'nonode');
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('FAIL: 2 event(s) hold the notice');
+    }
   });
 
   test('the notice in another kind of event fails and the failure names its type, subtype and a clip', () => {
@@ -90,7 +144,7 @@ describe('hookrep.mjs counts the notice once per hook (issue #595)', () => {
     expect(r.out).toContain('FAIL: 2 event(s) hold the notice and 1 hook(s) printed it as a line, expected exactly one of each');
     // The clip starts just before the notice, so it shows where the notice sits in the event.
     expect(r.out).toMatch(/^ {2}event system\/hook_additional_context, in \[content\]: .*"content":\["Context: agent-notebook: the notebook needs/m);
-    expect(r.out).toMatch(/^ {2}event system\/hook_response SessionStart hook ps, in \[output,stdout\]: /m);
+    expect(r.out).toMatch(/^ {2}event system\/hook_response SessionStart hook ps, in \[[^\]]*stdout[^\]]*\]: /m);
   });
 
   test('a notice in a session with Node.js 22 fails and lists the event that holds it, even an event with no subtype', () => {

@@ -72,10 +72,14 @@ console.log(`init: agent-notebook plugin = ${plugin ? `${plugin.version} at ${pl
 
 const responses = events.filter((e) => e.subtype === 'hook_response' && e.hook_event === 'SessionStart');
 for (const e of responses) console.log(`hook SessionStart exit ${e.exit_code} ${e.outcome} | stdout: ${clip(e.stdout)} | stderr: ${clip(e.stderr)}`);
-// An early copy: a progress event of a hook whose response starts with the same output.
+// An early copy: a SessionStart progress event whose stdout, stderr and output are each the start of
+// the same fields in the response of the same hook (same hook_id), and that holds the notice in no
+// other field.
+const OUTPUT_FIELDS = ['stdout', 'stderr', 'output'];
 const isEarlyCopy = (e) =>
-  e.subtype === 'hook_progress' && typeof e.hook_id === 'string' &&
-  responses.some((r) => r.hook_id === e.hook_id && String(r.stdout ?? '').startsWith(String(e.stdout ?? '')) && String(r.stderr ?? '').startsWith(String(e.stderr ?? '')));
+  e.subtype === 'hook_progress' && e.hook_event === 'SessionStart' && typeof e.hook_id === 'string' &&
+  !Object.keys(e).some((k) => !OUTPUT_FIELDS.includes(k) && JSON.stringify(e[k]).includes(notice)) &&
+  responses.some((r) => r.hook_id === e.hook_id && OUTPUT_FIELDS.every((k) => String(r[k] ?? '').startsWith(String(e[k] ?? ''))));
 for (const e of events.filter((e) => e.subtype === 'hook_progress' && e.hook_event === 'SessionStart')) {
   console.log(`hook SessionStart progress (${isEarlyCopy(e) ? 'an early copy of its hook\'s output' : 'matches no hook response'}) | stdout: ${clip(e.stdout)} | stderr: ${clip(e.stderr)}`);
 }
