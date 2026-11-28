@@ -2699,10 +2699,16 @@ It SHALL then create the release in one `gh release create --verify-tag` call wi
 and `SHA256SUMS` (`--prerelease` when the version has a hyphen), replace a draft by deleting it without
 `--cleanup-tag` and creating it again, leave a published release that already holds this exact zip alone,
 and otherwise fail: a released archive is never replaced or added to (no `--clobber`, no upload).
+As its last step, after the release is created or confirmed and the summary written, `github-release` SHALL read
+back whether the release is immutable (`gh release view <tag> --json isImmutable`, the tag through `env:`) and fail
+with one `::error::` line when the answer is not `true` or cannot be read; it writes nothing. npm and the release
+are already public by then, so the red run does not stop the release: it shows that `gh release verify-asset`
+can no longer check its files as `docs/enterprise.md` says (issue #597).
 **Rationale:** the job that can write to the repository must be unable to ship anything that was not
 published and reviewed; `docs/releasing.md` says what a compromised step could still do.
 *Proven by:* `release-job.test.ts` → `describe('release.yml holds the least permissions each job needs (NFR-REL-001, issue #559)')`,
 `describe('the github-release job creates the release or confirms it (NFR-REL-001, issue #559)')`,
+`describe('the github-release job fails when the release it made is not immutable (NFR-REL-001, issue #597)')`,
 `describe('the github-release job proves the zip equals the npm package and the tagged commit (NFR-REL-001, issue #559)')`,
 `describe('the github-release job validates its inputs and the tag (NFR-REL-001, issue #559)')`,
 `describe('the build-plugin job writes the checksums and checks the CHANGELOG (NFR-REL-001, issue #559)')`,

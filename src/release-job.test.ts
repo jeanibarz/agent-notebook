@@ -429,7 +429,7 @@ describe('the github-release job creates the release or confirms it (NFR-REL-001
   });
 });
 
-describe('the github-release job fails when the release it made is not immutable (issue #597)', onLinux, () => {
+describe('the github-release job fails when the release it made is not immutable (NFR-REL-001, issue #597)', onLinux, () => {
   const step = runOf(stepByName('The release is immutable'));
   const viewCalls = (w: World): string[][] => w.log().filter((c) => c[0] === 'gh' && c[1] === 'release' && c[2] === 'view');
 
