@@ -265,7 +265,10 @@ describe('the release and CI run check-main-rule.mjs where it counts (NFR-REL-00
     ]);
     const job = jobOf(release, 'build-plugin');
     expect(job).not.toMatch(/continue-on-error/);
-    // No condition on the job either: the lines between its name and `steps:` are these.
+    // No condition on the job either, wherever it is written: a job-level `if:` sits at four spaces,
+    // so it can follow the last step as well as precede `steps:`.
+    expect(job.split('\n').filter((l) => /^ {4}if:/.test(l))).toEqual([]);
+    // And the lines between its name and `steps:` are these.
     expect(linesOf(job.slice(0, job.indexOf('\n    steps:\n')))).toEqual([
       '  build-plugin:',
       '    permissions:',
