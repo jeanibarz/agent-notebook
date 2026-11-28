@@ -69,10 +69,15 @@ No job holds both `id-token: write` and `contents: write`.
   `github-release` waits up to 20 minutes for npm to serve the new tarball. npm accepts a publish at
   once but serves the file minutes later; for 0.13.0-beta.2 it still answered 404 five minutes on.
 - **A draft release** left by an earlier run is deleted and created again (the tag is kept).
-- **A published release that holds this exact zip** is left alone, and the run succeeds.
+- **A published release that holds this exact zip** is left alone, and the run succeeds if that release is immutable (see the
+  last bullet).
 - **A published release without this exact zip** fails the run with the message "a released archive is
   never replaced or added later; cut a new version". The job never replaces or adds an asset: with
   immutable releases the tag and the assets are fixed once published.
+- **A release that is not immutable** fails the last step, "The release is immutable", after the
+  release and the npm package are public. A re-run does not help: GitHub makes a release immutable
+  only when it is published while the repository's "immutable releases" setting is on. Switch the
+  setting back on, then cut the next version.
 
 ## Rollback
 

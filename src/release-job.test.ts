@@ -208,7 +208,7 @@ function writeZip(files: Map<string, Buffer>): Buffer {
 const sha = (b: Buffer): string => createHash('sha256').update(b).digest('hex');
 
 // The fake `gh` and `curl`: Node scripts that log each call as one JSON line (FAKE_LOG) and answer
-// from FAKE_STATE: { release, assetPath, srcRoot, tarball, tagRef, tags }.
+// from FAKE_STATE: { release, immutable, assetPath, srcRoot, tarball, tagRef, tags }.
 const FAKE_GH = `#!/usr/bin/env node
 const fs = require('fs');
 const a = process.argv.slice(2);
@@ -217,7 +217,10 @@ fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(['gh', ...a]) + '\\n');
 const opt = (n) => { const i = a.indexOf(n); return i < 0 ? undefined : a[i + 1]; };
 if (a[0] === 'release' && a[1] === 'view') {
   if (st.release === 'none') { process.stderr.write('release not found\\n'); process.exit(1); }
-  process.stdout.write(st.release === 'draft' ? 'true\\n' : 'false\\n');
+  if (opt('--json') === 'isImmutable') {
+    if (st.immutable === 'unknown-field') { process.stderr.write('Unknown JSON field: "isImmutable"\\n'); process.exit(1); }
+    process.stdout.write(String(st.immutable) + '\\n');
+  } else process.stdout.write(st.release === 'draft' ? 'true\\n' : 'false\\n');
 } else if (a[0] === 'release' && a[1] === 'download') {
   if (st.release !== 'published' || !st.assetPath) { process.stderr.write('no assets match\\n'); process.exit(1); }
   fs.copyFileSync(st.assetPath, require('path').join(opt('--dir'), opt('--pattern')));
@@ -299,7 +302,7 @@ function world(v: string = GOOD, change: { zip?: (f: Map<string, Buffer>) => voi
 
   const statePath = join(ws, 'state.json');
   const logPath = join(ws, 'log.jsonl');
-  const state: Record<string, unknown> = { release: 'none', srcRoot, tarball, tagRef: { type: 'commit', sha: COMMIT }, tags: {} };
+  const state: Record<string, unknown> = { release: 'none', immutable: true, srcRoot, tarball, tagRef: { type: 'commit', sha: COMMIT }, tags: {} };
   writeFileSync(logPath, '');
   const save = (): void => writeFileSync(statePath, JSON.stringify(state));
   save();
@@ -423,6 +426,64 @@ describe('the github-release job creates the release or confirms it (NFR-REL-001
 
   test('the script never replaces an asset: no --clobber and no upload anywhere in the job', () => {
     expect(runsOf(release_).join('\n')).not.toMatch(/--clobber|release upload|--cleanup-tag/);
+  });
+});
+
+describe('the github-release job fails when the release it made is not immutable (issue #597)', onLinux, () => {
+  const step = runOf(stepByName('The release is immutable'));
+  const viewCalls = (w: World): string[][] => w.log().filter((c) => c[0] === 'gh' && c[1] === 'release' && c[2] === 'view');
+
+  test('it is the last step, after the release is created and the summary written, and reads the value through env:', () => {
+    const names = stepsOf(release_).map((x) => /name: (.*)/.exec(x)?.[1]);
+    expect(names[names.length - 1]).toBe('The release is immutable');
+    expect(names.indexOf('Create the release, or confirm it already holds this zip')).toBeLessThan(names.length - 1);
+    const s = stepByName('The release is immutable');
+    expect(s).toMatch(/^ {10}TAG: \$\{\{ github\.ref_name \}\}$/m);
+    expect(s).toMatch(/^ {10}GH_TOKEN: \$\{\{ github\.token \}\}$/m);
+    expect(s).toMatch(/^ {10}GH_REPO: \$\{\{ github\.repository \}\}$/m);
+    expect(s).not.toMatch(/continue-on-error/);
+    expect(s).not.toMatch(/^ {8}if:/m);
+  });
+
+  test('an immutable release passes, with one read and no write', () => {
+    const w = world(GOOD);
+    w.state.release = 'published';
+    const r = w.run(step);
+    expect(r.code, r.out).toBe(0);
+    expect(r.out).toContain(`release v${GOOD} is immutable.`);
+    expect(viewCalls(w)).toEqual([['gh', 'release', 'view', `v${GOOD}`, '--json', 'isImmutable', '--jq', '.isImmutable']]);
+    expect(writeCalls(w)).toEqual([]);
+  });
+
+  test('a release that is not immutable fails the run with an error annotation, and nothing is written', () => {
+    const w = world(GOOD);
+    w.state.release = 'published';
+    w.state.immutable = false;
+    const r = w.run(step);
+    expect(r.out).toContain(`::error::release v${GOOD} is not immutable (isImmutable: 'false')`);
+    expect(r.code).toBe(1);
+    expect(writeCalls(w)).toEqual([]);
+  });
+
+  test('an unreadable value fails closed: no release, an empty answer, or a gh that does not know the field', () => {
+    const none = world(GOOD);
+    const r1 = none.run(step);
+    expect(r1.out).toContain(`::error::could not read whether release v${GOOD} is immutable.`);
+    expect(r1.code).toBe(1);
+    const unknown = world(GOOD);
+    unknown.state.release = 'published';
+    unknown.state.immutable = 'unknown-field';
+    const r2 = unknown.run(step);
+    expect(r2.out).toContain(`::error::could not read whether release v${GOOD} is immutable.`);
+    expect(r2.code).toBe(1);
+    for (const value of ['', 'null']) {
+      const w = world(GOOD);
+      w.state.release = 'published';
+      w.state.immutable = value;
+      const r = w.run(step);
+      expect(r.out, value).toContain(`::error::release v${GOOD} is not immutable (isImmutable: '${value}')`);
+      expect(r.code, value).toBe(1);
+    }
   });
 });
 
