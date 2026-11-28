@@ -9,8 +9,8 @@
       "homepage": "https://github.com/jeanibarz/agent-notebook",
       "source": {
         "source": "archive",
-        "url": "https://github.com/jeanibarz/agent-notebook/releases/download/v0.13.0-beta.2/agent-notebook-plugin-0.13.0-beta.2.zip",
-        "sha256": "68b64348e8b7d8cd32bd4b8f9831fc5c0089ef385ec63d71003d07ce1627c5cf"
+        "url": "https://github.com/jeanibarz/agent-notebook/releases/download/v0.13.0-beta.3/agent-notebook-plugin-0.13.0-beta.3.zip",
+        "sha256": "c4d2beed5e5d99975573ca9f2cddeb8117b75d71be85c0d0ed3936783a69186e"
       }
     }
   ]

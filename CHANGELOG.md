@@ -9,7 +9,7 @@ versions are listed plainly.
 
 ## [Unreleased]
 
-- **Install agent-notebook in Claude Code with one command (issue #559).** `claude plugin install agent-notebook --marketplace https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/.claude-plugin/marketplace.json` installs the plugin with neither git nor Node.js. The plugin brings the notebook index at session start, one end-of-task retrospective, a skill and the `nb` command; the notebook itself needs Node.js 18 or later. `.claude-plugin/marketplace.json` names the zip of the 0.13.0-beta.2 release and its sha256. The README's install section starts with this route.
+- **Install agent-notebook in Claude Code with one command (issue #559).** `claude plugin install agent-notebook --marketplace https://raw.githubusercontent.com/jeanibarz/agent-notebook/main/.claude-plugin/marketplace.json` installs the plugin with neither git nor Node.js. The plugin brings the notebook index at session start, one end-of-task retrospective, a skill and the `nb` command; the notebook itself needs Node.js 18 or later. `.claude-plugin/marketplace.json` names the zip of the 0.13.0-beta.3 release and its sha256. The README's install section starts with this route.
 
 ## [0.13.0-beta.3] - 2026-11-28
 

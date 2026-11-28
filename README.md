@@ -180,7 +180,7 @@ To set up lessons, ideas or both, follow the [setup guide](examples/SETUP.md). T
    You need neither git nor Node.js for this step. It was tested with Claude Code 2.1.332 (check yours with `claude --version`).
 3. Start a new chat, and ask "is agent-notebook working?". If Node.js is missing, the assistant says so in its first reply.
 
-- **What it changes:** no file you edit; Claude Code records the plugin in its own settings.
+- **What it changes:** nothing you need to edit. Claude Code adds its own entries to `~/.claude/settings.json`.
 - **Update:** `claude plugin marketplace update agent-notebook`, then `claude plugin update agent-notebook@agent-notebook`. If it says "already at the latest version", wait a few minutes and run both again. Then start a new chat.
 - **Remove:** `claude plugin uninstall agent-notebook@agent-notebook`. Your notes in `~/.agent-notebook` (`%USERPROFILE%\.agent-notebook` on Windows) stay.
 - **On a company computer** where the install is refused, ask your administrator to read [the company-machines guide](https://github.com/jeanibarz/agent-notebook/blob/main/docs/enterprise.md#claude-code-plugin).

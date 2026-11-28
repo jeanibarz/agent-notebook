@@ -219,7 +219,7 @@ On a managed computer, restrict where plugins may come from with `strictKnownMar
 
 Use this exact form. It was measured with Claude Code 2.1.332: it allows that URL and the archive download it names, and it blocks another path on the same host, the same URL with `?x=1` and the `http://` form. Do not use `hostPattern`: it allows every repository on the host. A user who runs `marketplace add jeanibarz/agent-notebook` (a git source) is blocked by this entry, so the URL form is the only way in, and the README's install command uses it.
 
-Hosts Claude Code contacts at install and at each update: `raw.githubusercontent.com` (the marketplace file), `github.com` (the release asset address), and `release-assets.githubusercontent.com`, the host GitHub redirects the asset download to (measured on the 0.13.0-beta.2 release). Open them for the machines that install or update the plugin.
+Hosts Claude Code contacts at install and at each update: `raw.githubusercontent.com` (the marketplace file), `github.com` (the release asset address), and `release-assets.githubusercontent.com`, the host GitHub redirects the asset download to (measured on the 0.13.0-beta.2 and 0.13.0-beta.3 releases). Open them for the machines that install or update the plugin.
 
 The marketplace file names one zip and its sha256, and Claude Code refuses a zip with another sha256. A person merges every change to that file, after a check that downloads the zip, rebuilds the tag and installs it on three systems (FR-PLUGIN-006).
 
