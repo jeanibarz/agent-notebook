@@ -18,6 +18,13 @@
 // can start only two of them, so one hook per session ends with "Executable not found". That
 // is the known cost of the twin pair, and the only error allowed here.
 //
+// A hook that has printed and is still running about a second later also gets a `hook_progress`
+// event holding its output so far, before its `hook_response` (seen with Claude Code 2.1.332; on a
+// slow Windows runner the PowerShell twin can take that long to exit, issue #595). That event is a
+// progress report in the stream, an early copy of the same hook's output, so it is printed but not
+// counted as a second notice. Any other event that holds the notice is counted, and a miss on the
+// notice lists every event that holds it.
+//
 // It exits 1 and says why on the first miss, 2 when called wrongly.
 import { readFileSync } from 'node:fs';
 
@@ -51,8 +58,9 @@ for (const line of readFileSync(file, 'utf-8').replace(/^﻿/, '').split(/\r?\n/
   }
 }
 
-function fail(message) {
+function fail(message, details = []) {
   console.log(`FAIL: ${message}`);
+  for (const line of details) console.log(line);
   process.exit(1);
 }
 const clip = (s) => String(s ?? '').slice(0, 100).replace(/\r?\n/g, '\\n');
@@ -64,6 +72,17 @@ console.log(`init: agent-notebook plugin = ${plugin ? `${plugin.version} at ${pl
 
 const responses = events.filter((e) => e.subtype === 'hook_response' && e.hook_event === 'SessionStart');
 for (const e of responses) console.log(`hook SessionStart exit ${e.exit_code} ${e.outcome} | stdout: ${clip(e.stdout)} | stderr: ${clip(e.stderr)}`);
+// An early copy: a SessionStart progress event whose stdout, stderr and output are each the start of
+// the same fields in the response of the same hook (same hook_id), and that holds the notice in no
+// other field.
+const OUTPUT_FIELDS = ['stdout', 'stderr', 'output'];
+const isEarlyCopy = (e) =>
+  e.subtype === 'hook_progress' && e.hook_event === 'SessionStart' && typeof e.hook_id === 'string' &&
+  !Object.keys(e).some((k) => !OUTPUT_FIELDS.includes(k) && JSON.stringify(e[k]).includes(notice)) &&
+  responses.some((r) => r.hook_id === e.hook_id && OUTPUT_FIELDS.every((k) => String(r[k] ?? '').startsWith(String(e[k] ?? ''))));
+for (const e of events.filter((e) => e.subtype === 'hook_progress' && e.hook_event === 'SessionStart')) {
+  console.log(`hook SessionStart progress (${isEarlyCopy(e) ? 'an early copy of its hook\'s output' : 'matches no hook response'}) | stdout: ${clip(e.stdout)} | stderr: ${clip(e.stderr)}`);
+}
 
 // Nothing of the plugin may ever run a planted program (the other end-to-end checks plant them).
 const planted = events.filter((e) => JSON.stringify(e).includes('PLANTED'));
@@ -98,7 +117,17 @@ if (failed.some((e) => e.stdout !== '')) fail('a hook that failed printed on std
 
 // The hooks that ran: the entry's output and the twin's exit code 0.
 const ran = responses.filter((e) => e.exit_code === 0);
-const noticeEvents = events.filter((e) => JSON.stringify(e).includes(notice));
+const holdsNotice = events.filter((e) => JSON.stringify(e).includes(notice));
+const noticeEvents = holdsNotice.filter((e) => !isEarlyCopy(e));
+// One line per event that holds the notice: its type and subtype, the fields that hold it, and a clip
+// that starts just before the notice.
+const noticeReport = holdsNotice.map((e) => {
+  const json = JSON.stringify(e);
+  const fields = Object.keys(e).filter((k) => JSON.stringify(e[k]).includes(notice));
+  const hook = e.hook_event ? ` ${e.hook_event}${e.hook_id ? ` hook ${e.hook_id}` : ''}` : '';
+  const counted = isEarlyCopy(e) ? ' (early copy, not counted)' : '';
+  return `  event ${e.type ?? 'with no type'}/${e.subtype ?? 'no subtype'}${hook}${counted}, in [${fields}]: ${clip(json.slice(Math.max(0, json.indexOf(notice) - 40)))}`;
+});
 const noticeLines = ran.filter((e) => e.stdout.split(/\r?\n/).includes(notice));
 const INDEX = '## Your agent-notebook index';
 const NOTE = '## Set-up note from the agent-notebook program';
@@ -107,7 +136,7 @@ const index = ran.filter((e) => e.stdout.startsWith(INDEX));
 const first = ran.filter((e) => e.stdout.startsWith(NOTE + '\n') && e.stdout.includes('\n' + INDEX));
 
 if (opt.expect === 'newnode' || opt.expect === 'newnode-first') {
-  if (noticeEvents.length) fail('a Node.js notice appeared in a session that has Node.js 22 or later');
+  if (noticeEvents.length) fail('a Node.js notice appeared in a session that has Node.js 22 or later', noticeReport);
   if (opt.expect === 'newnode-first') {
     if (first.length !== 1 || ran.some((e) => e.stdout.split(NOTE).length - 1 > 1) || index.length) fail(`${first.length} output(s) with the set-up note before the index, expected exactly 1`);
   } else {
@@ -117,7 +146,7 @@ if (opt.expect === 'newnode' || opt.expect === 'newnode-first') {
   if (ran.length !== 2 || ran.filter((e) => e.stdout === '').length !== 1) fail('expected the index plus one silent twin that exited 0');
 } else {
   if (noticeEvents.length !== 1 || noticeLines.length !== 1) {
-    fail(`${noticeEvents.length} event(s) hold the notice and ${noticeLines.length} hook(s) printed it as a line, expected exactly one of each`);
+    fail(`${noticeEvents.length} event(s) hold the notice and ${noticeLines.length} hook(s) printed it as a line, expected exactly one of each`, noticeReport);
   }
   if (noticeLines[0].stdout !== `${notice}\n` && noticeLines[0].stdout !== `${notice}\r\n`) fail('the notice line is not the whole output of its hook');
   if (index.length) fail('the notebook index appeared although Node.js is missing or too old');
