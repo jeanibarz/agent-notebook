@@ -62,8 +62,9 @@ async function readRules(url, headers, retryMs) {
       if (res.status === 200) return JSON.parse(await res.text());
       last = `HTTP ${res.status}`;
       // 404 (no such repository, or one this token cannot see), 401 and 403 without a
-      // rate limit do not change on a retry.
-      const limited = res.status === 429 || (res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0');
+      // rate limit do not change on a retry. GitHub marks a rate limit on a 403 with no
+      // request left (the primary limit) or with a retry-after header (the secondary one).
+      const limited = res.status === 429 || (res.status === 403 && (res.headers.get('x-ratelimit-remaining') === '0' || res.headers.has('retry-after')));
       if (res.status < 500 && !limited) break;
     } catch (err) {
       last = err instanceof Error ? err.message : String(err);

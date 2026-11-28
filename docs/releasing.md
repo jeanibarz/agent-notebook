@@ -59,7 +59,10 @@ No job holds both `id-token: write` and `contents: write`.
 - **`build-plugin` stopped at "Refuse to release while main does not require a pull request"**: this
   one is a repository setting, not the code at the tag. Put the ruleset back, then re-run the failed
   jobs: the step reads the setting as it is now, so the same tag goes through. When the message is
-  "could not read the rules" (exit 2), GitHub's API did not answer after four tries; re-run the failed jobs.
+  "could not read the rules" (exit 2), GitHub gave no usable answer; the message ends with the reason.
+  The script asks four times after a server error (5xx), a rate limit, a request that failed or was
+  redirected, or a 200 whose body is not JSON; it asks once after a 401, a 404, or a 403 that is not a
+  rate limit, which a retry would not change. Re-run the failed jobs.
 - **After `publish`** (the npm package is out and `github-release` failed): re-run the failed workflow
   run. `publish` sees that npm already has the version and skips itself, with a notice. The build is
   reproducible, so `build-plugin` makes the same zip again and `github-release` continues.
@@ -101,7 +104,13 @@ is disabled or in "evaluate" mode counts as no rule. The other three settings ar
 - [ ] **A ruleset on tags `v*`**: only the owner can create them; nobody can move or delete one
   (no "update" and no "deletion").
 - [ ] **Immutable releases** switched on (Settings, General): a published release's assets and tag cannot change.
-- [ ] **The `release` environment** has a required reviewer, and deployment is limited to tags matching `v*`.
+- [ ] **The `release` environment** accepts only tags matching `v*` (a deployment tag rule), so no
+  branch can start a job in the environment that npm Trusted Publishing accepts a publish from.
+- **Optional: a required reviewer on the `release` environment.** The owner decided against it on
+  2026-11-28 ("rulesets, no reviewer"). With one maintainer the approval would come from the account
+  that pushed the tag, so it is a pause and not a second person; and `publish` and `github-release`
+  both use the environment, one after the other, so a release would probably wait twice, the second
+  time after the npm publish. Reconsider it when a second maintainer can approve.
 
 ## What a compromised step could now do
 

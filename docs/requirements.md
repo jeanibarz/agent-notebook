@@ -2673,7 +2673,9 @@ environment of `publish` SHALL NOT change (npm Trusted Publishing keys on them).
 installed or built, in a step with no condition: the script asks GitHub for the rules active on `main`
 (`GET /repos/{repo}/rules/branches/main`, with the job's token) and exits 0 only when one has the type
 `pull_request`; with none it prints one `::error::` line and exits 1 (the refusal); when the answer cannot be
-read (a usage error, no answer after four tries, a body that is not a list of rules) it exits 2, so the release
+read (a usage error; four tries that each ended in a 5xx, a rate limit, a failed or redirected request or a body
+that is not JSON; one try that ended in a 401, a 404 or a 403 that is not a rate limit; a body that is not a list
+of rules) it exits 2, so the release
 stops in that case too and "could not tell" is never reported as "no rule". No job only warns about the rule.
 `ci.yml` SHALL run the same command on pull requests and on pushes to `main` (not in a fork), so the check has
 run against the real API before a tag depends on it.

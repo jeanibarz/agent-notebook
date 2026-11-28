@@ -152,11 +152,22 @@ describe('check-main-rule.mjs: an answer it could not read is neither ok nor a r
     expect(seen).toHaveLength(1);
   });
 
-  test('a rate limit is tried again: 429, and 403 with no request left', async () => {
-    withReplies({ status: 429, body: '{}' }, { status: 403, body: '{}', headers: { 'x-ratelimit-remaining': '0' } }, { body: JSON.stringify([rule('pull_request')]) });
+  test('a rate limit is tried again: 429, 403 with no request left, and 403 with retry-after', async () => {
+    withReplies(
+      { status: 429, body: '{}' },
+      { status: 403, body: '{}', headers: { 'x-ratelimit-remaining': '0' } },
+      { status: 403, body: '{}', headers: { 'x-ratelimit-remaining': '4000', 'retry-after': '60' } },
+      { body: JSON.stringify([rule('pull_request')]) },
+    );
     const r = await check(FAST);
     expect(r.code).toBe(0);
-    expect(seen).toHaveLength(3);
+    expect(seen).toHaveLength(4);
+  });
+
+  test('a redirect is not followed: it is asked for four times, then exit 2', async () => {
+    withReplies({ status: 302, body: '', headers: { location: `${api}/elsewhere` } });
+    expectCannotTell(await check(FAST), 'could not read the rules of the branch');
+    expect(seen.map((s) => s.url)).toEqual(Array(4).fill('/repos/o/r/rules/branches/main?per_page=100'));
   });
 
   test('a 403 that is not a rate limit is not tried again', async () => {
@@ -168,6 +179,7 @@ describe('check-main-rule.mjs: an answer it could not read is neither ok nor a r
   test('a body that is not JSON, not a list, or a list of things with no type is exit 2', async () => {
     withReplies({ body: '<html>maintenance</html>' });
     expectCannotTell(await check(FAST), 'could not read the rules of the branch');
+    expect(seen, 'a 200 that is not JSON is asked for again').toHaveLength(4);
     withReplies({ body: '{"message":"ok"}' });
     expectCannotTell(await check(FAST), 'did not answer with a list of rules');
     withReplies({ body: JSON.stringify([rule('pull_request'), { ruleset_id: 7 }]) });
@@ -177,9 +189,21 @@ describe('check-main-rule.mjs: an answer it could not read is neither ok nor a r
   });
 
   test('nothing listening at the address is exit 2', async () => {
+    // A port that was just open and is now closed: the connection is refused.
+    const gone = createServer();
+    await new Promise<void>((resolve) => gone.listen(0, '127.0.0.1', resolve));
+    const port = (gone.address() as AddressInfo).port;
+    await new Promise<void>((resolve) => gone.close(() => resolve()));
     withReplies({ body: '[]' });
-    expectCannotTell(await check(FAST, { GITHUB_API_URL: 'http://127.0.0.1:9' }), 'could not read the rules of the branch');
+    expectCannotTell(await check(FAST, { GITHUB_API_URL: `http://127.0.0.1:${port}` }), 'could not read the rules of the branch');
     expect(seen).toHaveLength(0);
+  });
+
+  test('a trailing slash on GITHUB_API_URL is dropped, and a rule with no ruleset id is still ok', async () => {
+    withReplies({ body: JSON.stringify([{ type: 'pull_request' }]) });
+    const r = await check(FAST, { GITHUB_API_URL: `${api}//` });
+    expect(r.stdout).toBe('check-main-rule: ok (main of o/r requires a pull request)\n');
+    expect(seen[0].url).toBe('/repos/o/r/rules/branches/main?per_page=100');
   });
 
   test('a usage error is exit 2 and asks GitHub nothing', async () => {
@@ -197,7 +221,8 @@ describe('check-main-rule.mjs: an answer it could not read is neither ok nor a r
 describe('the release and CI run check-main-rule.mjs where it counts (NFR-REL-001)', () => {
   const release = readFileSync(join(root, '.github', 'workflows', 'release.yml'), 'utf-8');
   const ci = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf-8');
-  const COMMAND = 'run: node scripts/check-main-rule.mjs --repo "$GH_REPO"';
+  // With the line end: `... || true` after the command would turn the refusal into a printed line.
+  const COMMAND = 'run: node scripts/check-main-rule.mjs --repo "$GH_REPO"\n';
   /** The step that runs the check: from its `- name:` line to the next step. */
   const stepIn = (workflow: string): string => {
     const at = workflow.indexOf(COMMAND);
