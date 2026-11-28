@@ -234,6 +234,14 @@ That setting turns the plugin's hooks off, silently: the plugin's skill still lo
    sha256sum agent-notebook-plugin-<v>.zip     # macOS: shasum -a 256 ...
    # Windows PowerShell: (Get-FileHash agent-notebook-plugin-<v>.zip -Algorithm SHA256).Hash.ToLower()
    ```
+
+   From 0.13.0-beta.3 on, each release is immutable and GitHub signs a record of its tag, commit and files. With the GitHub CLI signed in (`gh auth login`), this checks the downloaded zip against that record:
+
+   ```sh
+   gh release verify-asset v<v> agent-notebook-plugin-<v>.zip -R jeanibarz/agent-notebook
+   ```
+
+   It prints `Verification succeeded!` when the file is one of the release's files, and fails on a file that was changed. Measured with gh 2.98.0 on the 0.13.0-beta.3 zip. It says the file belongs to the release, not which workflow built it. The npm package carries its own build provenance (`npm view agent-notebook@<v> dist.attestations` shows it), and the release job compares the zip's `dist/` with that package byte for byte.
 3. Unpack it into a folder only administrators can write: `/opt/agent-notebook`, `/Library/Application Support/agent-notebook` or `C:\Program Files\agent-notebook`.
 4. Choose an absolute `node` of version 18 or later, and check it: `<node> --version`. The hooks run exactly this program, so it must not be one a user can replace.
 5. Put this block in the managed settings. POSIX, with `/usr/local/bin/node` and `/opt/agent-notebook` as the examples:
