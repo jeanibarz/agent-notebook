@@ -93,6 +93,13 @@ describe('check-main-rule.mjs lets a release through when main requires a pull r
     expect(seen[0].url).toBe('/repos/o/r/rules/branches/release/1.x?per_page=100');
   });
 
+  test('a trailing slash on GITHUB_API_URL is dropped, and a rule with no ruleset id is still ok', async () => {
+    withReplies({ body: JSON.stringify([{ type: 'pull_request' }]) });
+    const r = await check(FAST, { GITHUB_API_URL: `${api}//` });
+    expect(r.stdout).toBe('check-main-rule: ok (main of o/r requires a pull request)\n');
+    expect(seen[0].url).toBe('/repos/o/r/rules/branches/main?per_page=100');
+  });
+
   test('a server error is tried again, and the answer that follows decides', async () => {
     withReplies({ status: 502, body: 'bad gateway' }, { status: 500, body: '{}' }, { body: JSON.stringify([rule('pull_request')]) });
     const r = await check(FAST);
@@ -199,13 +206,6 @@ describe('check-main-rule.mjs: an answer it could not read is neither ok nor a r
     expect(seen).toHaveLength(0);
   });
 
-  test('a trailing slash on GITHUB_API_URL is dropped, and a rule with no ruleset id is still ok', async () => {
-    withReplies({ body: JSON.stringify([{ type: 'pull_request' }]) });
-    const r = await check(FAST, { GITHUB_API_URL: `${api}//` });
-    expect(r.stdout).toBe('check-main-rule: ok (main of o/r requires a pull request)\n');
-    expect(seen[0].url).toBe('/repos/o/r/rules/branches/main?per_page=100');
-  });
-
   test('a usage error is exit 2 and asks GitHub nothing', async () => {
     withReplies({ body: JSON.stringify([rule('pull_request')]) });
     expectCannotTell(await check([]), '--repo must be OWNER/NAME');
@@ -231,6 +231,8 @@ describe('the release and CI run check-main-rule.mjs where it counts (NFR-REL-00
     const end = workflow.indexOf('\n      - ', at);
     return workflow.slice(start, end === -1 ? undefined : end);
   };
+  /** The step's lines that are neither blank nor a comment: a continuation line of `run:` would show here. */
+  const linesOf = (step: string): string[] => step.split('\n').filter((l) => l.trim() !== '' && !/^\s*#/.test(l));
   const jobOf = (workflow: string, name: string): string => {
     const from = workflow.indexOf(`\n  ${name}:\n`);
     expect(from, `job ${name}`).toBeGreaterThanOrEqual(0);
@@ -253,13 +255,25 @@ describe('the release and CI run check-main-rule.mjs where it counts (NFR-REL-00
     expect(jobOf(release, 'github-release')).toMatch(/\n {4}needs: \[publish, build-plugin\]\n/);
   });
 
-  test('the step is unconditional, cannot be skipped over, and gets the token and the repository through env', () => {
-    const step = stepIn(release);
-    expect(step).not.toMatch(/\n\s+if:/);
-    expect(step).not.toMatch(/continue-on-error/);
-    expect(step).toMatch(/\n {10}GH_TOKEN: \$\{\{ github\.token \}\}\n/);
-    expect(step).toMatch(/\n {10}GH_REPO: \$\{\{ github\.repository \}\}\n/);
-    expect(jobOf(release, 'build-plugin')).not.toMatch(/continue-on-error/);
+  test('the step is exactly these lines: no condition, nothing after the command, the token and the repository through env', () => {
+    expect(linesOf(stepIn(release))).toEqual([
+      '      - name: Refuse to release while main does not require a pull request',
+      '        env:',
+      '          GH_TOKEN: ${{ github.token }}',
+      '          GH_REPO: ${{ github.repository }}',
+      '        run: node scripts/check-main-rule.mjs --repo "$GH_REPO"',
+    ]);
+    const job = jobOf(release, 'build-plugin');
+    expect(job).not.toMatch(/continue-on-error/);
+    // No condition on the job either: the lines between its name and `steps:` are these.
+    expect(linesOf(job.slice(0, job.indexOf('\n    steps:\n')))).toEqual([
+      '  build-plugin:',
+      '    permissions:',
+      '      contents: read',
+      '    runs-on: ubuntu-latest',
+      '    outputs:',
+      '      sha256: ${{ steps.build.outputs.sha256 }}',
+    ]);
   });
 
   test('no step of release.yml only warns about the rule any more', () => {
@@ -268,11 +282,14 @@ describe('the release and CI run check-main-rule.mjs where it counts (NFR-REL-00
   });
 
   test('ci.yml runs the same command on pull requests, with the job token, except in a fork', () => {
-    const step = stepIn(ci);
-    expect(step).toMatch(/\n {10}GH_TOKEN: \$\{\{ github\.token \}\}\n/);
-    expect(step).toMatch(/\n {10}GH_REPO: \$\{\{ github\.repository \}\}\n/);
-    expect(step).toMatch(/\n {8}if: matrix\.os == 'ubuntu-latest' && matrix\.node-version == 22 && !github\.event\.repository\.fork\n/);
-    expect(step).not.toMatch(/continue-on-error/);
+    expect(linesOf(stepIn(ci))).toEqual([
+      '      - name: main requires a pull request (the check the release runs first)',
+      "        if: matrix.os == 'ubuntu-latest' && matrix.node-version == 22 && !github.event.repository.fork",
+      '        env:',
+      '          GH_TOKEN: ${{ github.token }}',
+      '          GH_REPO: ${{ github.repository }}',
+      '        run: node scripts/check-main-rule.mjs --repo "$GH_REPO"',
+    ]);
     expect(ci).toMatch(/^on:\n {2}push:\n {4}branches:\n {6}- main\n {2}pull_request:\n/m);
   });
 });

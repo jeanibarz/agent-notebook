@@ -59,7 +59,7 @@ No job holds both `id-token: write` and `contents: write`.
 - **`build-plugin` stopped at "Refuse to release while main does not require a pull request"**: this
   one is a repository setting, not the code at the tag. Put the ruleset back, then re-run the failed
   jobs: the step reads the setting as it is now, so the same tag goes through. When the message is
-  "could not read the rules" (exit 2), GitHub gave no usable answer; the message ends with the reason.
+  "could not read the rules" (exit 2), GitHub gave no usable answer; the message gives the reason in parentheses.
   The script asks four times after a server error (5xx), a rate limit, a request that failed or was
   redirected, or a 200 whose body is not JSON; it asks once after a 401, a 404, or a 403 that is not a
   rate limit, which a retry would not change. Re-run the failed jobs.
